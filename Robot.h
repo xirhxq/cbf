@@ -2,8 +2,10 @@
 // Created by xirhxq on 2022/3/3.
 //
 
-#ifndef V9_0_ROBOT_H
-#define V9_0_ROBOT_H
+#ifndef CBF_MAIN_ROBOT_H
+#define CBF_MAIN_ROBOT_H
+
+//#define OPT_DEBUG
 
 #include "utils.h"
 #include "computing_geometry/Point.h"
@@ -12,6 +14,7 @@
 
 class Robot{
 public:
+    int id = 0;
     int x_ord = 0, y_ord = 1, batt_ord = 2, camera_ord = 3;
     std::vector<CBF> cbf_no_slack, cbf_slack;
     MatrixXd G;
@@ -33,10 +36,10 @@ public:
 
     Point xy();
 
-    void time_forward(VectorXd &_v, double _t, World _w);
+    void time_forward(VectorXd &_v, double runtime, double _dt, World _w);
 
     void output();
 };
 
 
-#endif //V9_0_ROBOT_H
+#endif //CBF_MAIN_ROBOT_H

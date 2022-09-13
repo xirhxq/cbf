@@ -1,6 +1,6 @@
 // Created by XIRHXQ on 12/29/21.
-#ifndef V9_0_UTILS_H
-#define V9_0_UTILS_H
+#ifndef CBF_MAIN_UTILS_H
+#define CBF_MAIN_UTILS_H
 
 #include <iostream>
 #include <cmath>
@@ -35,4 +35,4 @@ inline int sgn(double val){
     else return 1;
 }
 
-#endif //V9_0_UTILS_H
+#endif //CBF_MAIN_UTILS_H

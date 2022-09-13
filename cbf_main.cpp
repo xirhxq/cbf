@@ -5,23 +5,6 @@
 #include <fstream>
 #include <ctime>
 
-Point loop(double x_min, double x_max, double y_min, double y_max, double t, double v){
-    double dxt = (x_max - x_min) / v, dyt = (y_max - y_min) / v;
-    double dt = 2 * dxt + 2 * dyt;
-    while (t >= dt) t -= dt;
-    if (t < dxt){
-        return {x_min + v * t, y_min};
-    }
-    else if (t < dxt + dyt){
-        return {x_max, y_min + (t - dxt) * v};
-    }
-    else if (t < 2 * dxt + dyt){
-        return {x_max - (t - dxt - dyt) * v, y_max};
-    }
-    else {
-        return {x_min, y_max - (t - 2 * dxt - dyt) * v};
-    }
-}
 
 int main() {
     clock_t start = clock();
@@ -36,7 +19,7 @@ int main() {
     Polygon wd_p({  Point(0, 0),
                     Point(20, 0),
                     Point(0, 10),
-                    Point(20, 10)
+                    Point(20, 10),
     });
 
     std::vector<Point> c = {Point(19.0, 2.0),
@@ -49,34 +32,43 @@ int main() {
                             Point(1.0, 8.0)};
 
     // dens = e ^ (- k * |distance - r|)
-    double target_x_min = 8, target_x_max = 12, target_y_min = 4, target_y_max = 6;
-    double target_v = 0.5;
-    double dens_k = 10, dens_r = 2;
+//    double dens_k = 10, dens_r = 1;
 
     World wd(wd_p, c);
-    wd.dens = [=](Point p_, double t_) {
-        return exp(-fabs((p_ - loop(target_x_min, target_x_max,
-                                    target_y_min, target_y_max,
-                                    t_, target_v)).len() - dens_r) * dens_k);
-    };
-    wd.target_pos = [=] (double t_) {
-        return loop(target_x_min, target_x_max,
-                    target_y_min, target_y_max,
-                    t_, target_v);
-    };
+//    wd.target.emplace_back(
+//            Target::make_loop_rectangle_target(
+//                    {4, 3},
+//                    {16, 7},
+//                    0.5
+//            )
+//    );
+    wd.target.emplace_back(
+            Target::make_static_target(
+                    {10, 5}
+                    )
+    );
+    wd.target[0].vis_time = {{0, 15}, {30, 40}};
+//    wd.target.emplace_back(
+//            Target::make_loop_rectangle_target(
+//                    {4, 3},
+//                    {16, 7},
+//                    0.5, 32
+//            )
+//    );
+//    wd.new_target(4, 16, 3, 7, 0.5);
+//    wd.new_target(4, 16, 3, 7, 0.5, 32);
+//    wd.make_dens(0, 20);
 
     Swarm s = Swarm(6, wd);
     s.set_h();
+    s.set_h_with_time();
     s.init_log_path(data_out_path);
     s.para_log_once();
-    s.data_j["para"]["dens"]["k"] = dens_k;
-    s.data_j["para"]["dens"]["r"] = dens_r;
 
     s.output();
 
     double t_total = 40, t_gap = 0.02;
     for (int iter = 1; iter <= t_total / t_gap; iter++) {
-        s.set_h_with_time();
         s.log_once();
 //        printf("time : %.2lf -------------\n", t_gap * iter);
 //        s.time_forward(t_gap);

@@ -2,20 +2,20 @@
 // Created by xirhxq on 2022/3/4.
 //
 
-#ifndef V9_0_WORLD_H
-#define V9_0_WORLD_H
+#ifndef CBF_MAIN_WORLD_H
+#define CBF_MAIN_WORLD_H
 
 #include "utils.h"
 #include "computing_geometry/Polygon.h"
-
+#include "Target.h"
 
 class World {
 public:
     Polygon w;
-    std::vector<Point> charge_place;
-    double charge_dist = 0.3;
-    std::function<Point (double)> target_pos;
-    std::function<double (Point, double)> dens;
+    std::vector<std::pair<Point, double>> charge_place;
+    std::vector<Target> target;
+//    std::vector<std::function<Point (double)>> target_pos;
+//    std::vector<std::pair<std::function<double (Point, double)>, std::pair<double, double>>> dens;
 
 public:
     World();
@@ -26,8 +26,9 @@ public:
     double dist_to_charge_place(Point);
     bool is_charging(Point);
     Point get_random_point();
+    std::function<double (Point)> get_dens(double);
 
 };
 
 
-#endif //V9_0_WORLD_H
+#endif //CBF_MAIN_WORLD_H

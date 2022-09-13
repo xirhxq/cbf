@@ -1,0 +1,68 @@
+//
+// Created by xirhxq on 2022/9/13.
+//
+
+#include "Target.h"
+
+Target::Target() {
+    type = TargetType::Static;
+    pos = [](double _t){
+        return Point(0, 0);
+    };
+    vis_time = {{0, inf}};
+    den_para = {{"x", 0.0}, {"y", 0.0}};
+}
+
+bool Target::visible(double _t) {
+    for (auto v: vis_time){
+        if (_t >= v.first && _t <= v.second) return true;
+    }
+    return false;
+}
+
+Target Target::make_static_target(Point _p) {
+    Target res;
+    res.pos = [_p](double _t){
+        return Point(_p.x, _p.y);
+    };
+    res.den_para = {{"x", _p.x},
+                    {"y", _p.y},
+                    {"k", 10},
+                    {"r", 1.0}};
+    return res;
+}
+
+Point loop_rect(double x_min, double x_max, double y_min, double y_max, double t, double v, double bias = 0.0){
+    t += bias;
+    double dxt = (x_max - x_min) / v, dyt = (y_max - y_min) / v;
+    double dt = 2 * dxt + 2 * dyt;
+    t += dt;
+    while (t >= dt) t -= dt;
+    if (t < dxt){
+        return {x_min + v * t, y_min};
+    }
+    else if (t < dxt + dyt){
+        return {x_max, y_min + (t - dxt) * v};
+    }
+    else if (t < 2 * dxt + dyt){
+        return {x_max - (t - dxt - dyt) * v, y_max};
+    }
+    else {
+        return {x_min, y_max - (t - 2 * dxt - dyt) * v};
+    }
+}
+
+Target Target::make_loop_rectangle_target(Point _min, Point _max, double _v, double _bias) {
+    Target res;
+    res.type = TargetType::LoopRect;
+    res.pos = [=] (double t_) {
+        return loop_rect(_min.x, _max.x,
+                    _min.y, _max.y,
+                    t_, _v, _bias);
+    };
+    res.den_para = {
+            {"k", 10},
+            {"r", 1.0}
+    };
+    return res;
+}
