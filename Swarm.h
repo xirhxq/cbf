@@ -1,7 +1,7 @@
 // Created by XIRHXQ on 12/30/21.
 
-#ifndef V9_0_SWARM_H
-#define V9_0_SWARM_H
+#ifndef CBF_MAIN_SWARM_H
+#define CBF_MAIN_SWARM_H
 
 #include "utils.h"
 #include "computing_geometry/Polygon.h"
@@ -45,4 +45,4 @@ public:
 };
 
 
-#endif //V9_0_SWARM_H
+#endif //CBF_MAIN_SWARM_H
