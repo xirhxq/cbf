@@ -49,9 +49,18 @@ Point Robot::xy() {
     return Point(X(x_ord), X(y_ord));
 }
 
-void Robot::time_forward(VectorXd& _v, double runtime, double _dt, World _w) {
+json Robot::time_forward(VectorXd& _v, double runtime, double _dt, World _w) {
+    json robot_j = {
+            {"nominal", {
+                    {"x", _v(x_ord)},
+                    {"y", _v(y_ord)}
+            }}
+    };
+    json cbf_no_slack_json, cbf_slack_json;
     if (_w.is_charging(X) && X(batt_ord) <= 40.0){
         X(batt_ord) += _dt * (10);
+        robot_j["result"] = {{"x", 0.0}, {"y", 0.0}};
+        return robot_j;
     }
     else{
         VectorXd opt_res = _v;
@@ -99,17 +108,22 @@ void Robot::time_forward(VectorXd& _v, double runtime, double _dt, World _w) {
                 for (int j = 0; j < X.size(); j++){
                     ln += u_coe(j) * var_v[j];
                 }
-                double constraint_const = i.constraint_const(F, G, X, runtime);
+                double constraint_const = i.constraint_const_with_time(F, G, X, runtime);
+                cbf_no_slack_json.push_back({
+                                                    {"x", u_coe(x_ord)},
+                                                    {"y", u_coe(y_ord)},
+                                                    {"const", constraint_const}
+                });
 #ifdef OPT_DEBUG
                 std::cout << "cbf_no_slack_const: " << -constraint_const << std::endl;
 #endif
                 model.addConstr(ln, '>', -constraint_const);
             }
+            robot_j["cbf_no_slack"] = cbf_no_slack_json;
 
             for (int i = 0; i < cbf_slack.size(); i++){
                 GRBLinExpr ln = 0.0;
                 VectorXd u_coe = cbf_slack[i].constraint_u_coe(F, G, X, runtime);
-//                u_coe(x_ord) = 0, u_coe(y_ord) = 0;
 #ifdef OPT_DEBUG
                 std::cout << "cbf_slack_u_coe: " << std::endl << u_coe << std::endl;
 #endif
@@ -118,12 +132,20 @@ void Robot::time_forward(VectorXd& _v, double runtime, double _dt, World _w) {
                 }
 //                ln += u_coe(3) * var_v[3];
                 ln += var_slack[i];
-                double constraint_const = cbf_slack[i].constraint_const(F, G, X, runtime);
+                double constraint_const = cbf_slack[i].constraint_const_without_time(
+                        F, G, X, runtime);
+
+                cbf_slack_json.push_back({
+                                                    {"x", u_coe(x_ord)},
+                                                    {"y", u_coe(y_ord)},
+                                                    {"const", constraint_const}
+                                            });
 #ifdef OPT_DEBUG
                 std::cout << "cbf_slack_const: " << -constraint_const << std::endl;
 #endif
                 model.addConstr(ln, '>', -constraint_const);
             }
+            robot_j["cbf_slack"] = cbf_slack_json;
 
 #ifdef OPT_DEBUG
             std::cout << "Now State" << std::endl << X << std::endl;
@@ -137,6 +159,7 @@ void Robot::time_forward(VectorXd& _v, double runtime, double _dt, World _w) {
             model.optimize();
 
             for (int i = 0; i < X.size(); i++) opt_res(i)  = var_v[i].get(GRB_DoubleAttr_X);
+            robot_j["result"] = {{"x", opt_res(x_ord)}, {"y", opt_res(y_ord)}};
             VectorXd sl(var_slack.size());
             for (int i = 0; i < var_slack.size(); i++) sl(i) = var_slack[i].get(GRB_DoubleAttr_X);
 #ifdef OPT_DEBUG
@@ -153,14 +176,17 @@ void Robot::time_forward(VectorXd& _v, double runtime, double _dt, World _w) {
 
         } catch(GRBException e) {
             std::cout << "Error code = " << e.getErrorCode() << std::endl;
+            printf(".......\n");
             std::cout << e.getMessage() << std::endl;
             assert(0);
         } catch(...) {
             std::cout << "Exception during optimization" << std::endl;
+            printf("...................\n");
             assert(0);
         }
 
         X += (F + G * opt_res) * _dt;
+        return robot_j;
     }
 }
 

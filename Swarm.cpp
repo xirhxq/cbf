@@ -61,8 +61,11 @@ void Swarm::set_h() {
             log(nearest_dis(Point(_x(r[i].x_ord), _x(r[i].y_ord)), wd));
         };
         CBF energy_cbf;
+        energy_cbf.name = "energy_cbf";
         energy_cbf.h = dis_h;
         energy_cbf.alpha = [](double _h) {return _h;};
+        energy_cbf.ctrl_var.resize(r[i].X.size());
+        energy_cbf.ctrl_var << 1, 1, 1, 1;
         r[i].cbf_no_slack.push_back(energy_cbf);
     }
 }
@@ -71,27 +74,45 @@ void Swarm::set_h_with_time(){
     std::function<double(Point, double)> angle_to_center = [=](Point _p, double _t) {
         double res = -1, ang = 0.0;
         for (auto i: wd.target){
-            if (res == -1 || _p.distance_to(i.pos(_t)) < res){
-                res = _p.distance_to(i.pos(_t));
-                ang = _p.angle_to(i.pos(_t));
+            if (i.visible(_t)) {
+                if (res == -1 || _p.distance_to(i.pos(_t)) < res){
+                    res = _p.distance_to(i.pos(_t));
+                    ang = _p.angle_to(i.pos(_t));
+                }
             }
         }
-//        double ang =  _p.angle_to(wd.target_pos(runtime));
 //        std::cout << "ang = " << 180 / pi * ang << std::endl;
         return ang;
     };
     for (int i = 1; i <= n; i++){
         r[i].cbf_slack.clear();
         std::function<double(VectorXd, double)> camera_angle = [=](VectorXd _x, double _t){
-            double delta_angle = _x(r[i].camera_ord)
-                                 - angle_to_center(Point(_x(r[i].x_ord), _x(r[i].y_ord)), _t);
+            Point pos{_x(r[i].x_ord), _x(r[i].y_ord)};
+            double res = -1, delta_angle = 0.0;
+            for (auto tar: wd.target){
+                if (!tar.visible(_t)) continue;
+                double dis = pos.distance_to(tar.pos(_t));
+//                if (dis < 0.5) continue;
+                if (res == -1 || dis < res){
+                    res = dis;
+                    delta_angle = _x(r[i].camera_ord) - pos.angle_to(tar.pos(_t));
+                }
+            }
+//            double delta_angle = _x(r[i].camera_ord)
+//                                 - angle_to_center(Point(_x(r[i].x_ord),
+//                                                     _x(r[i].y_ord)),
+//                                                   _t);
             if (delta_angle <= -pi) delta_angle += 2 * pi;
             else if (delta_angle >= pi) delta_angle -= 2 * pi;
 //            std::cout << "delta_angle = " << delta_angle << std::endl;
             return -5 * abs(delta_angle);
         };
         CBF camera_cbf;
+        camera_cbf.name = "camera_cbf";
         camera_cbf.h = camera_angle;
+        camera_cbf.ctrl_var.resize(r[i].X.size());
+        camera_cbf.ctrl_var << 0, 0, 0, 1;
+//        camera_cbf.ctrl_var << 1, 1, 1, 1;
 //        camera_cbf.alpha = [](double _h) {return _h;};
         r[i].cbf_slack.push_back(camera_cbf);
 
@@ -191,17 +212,17 @@ void Swarm::cvt_forward(double _t) {
         return wd.get_dens(runtime)(_p);
         }, spacing);
 
-    json tmp_j;
+    json cvt_j, opt_j;
 
     for (int i = 1; i <= n; i++){
 #ifdef OPT_DEBUG
         std::cout << "Robot #" << i << "(" << r[i].id << ")@ runtime: " << runtime << std::endl;
 #endif
-        tmp_j[i - 1]["num"] = c.pl[i].n + 1;
+        cvt_j[i - 1]["num"] = c.pl[i].n + 1;
         for (int j = 1; j <= c.pl[i].n; j++) {
-            tmp_j[i - 1]["pos"].push_back({{"x", c.pl[i].p[j].x}, {"y", c.pl[i].p[j].y}});
+            cvt_j[i - 1]["pos"].push_back({{"x", c.pl[i].p[j].x}, {"y", c.pl[i].p[j].y}});
         }
-        tmp_j[i - 1]["pos"].push_back({{"x", c.pl[i].p[1].x}, {"y", c.pl[i].p[1].y}});
+        cvt_j[i - 1]["pos"].push_back({{"x", c.pl[i].p[1].x}, {"y", c.pl[i].p[1].y}});
         Point up = ((c.ct[i] - r[i].xy()) * 5).saturation(1.0);
         VectorXd u;
         u.resize(r[i].X.size());
@@ -210,10 +231,12 @@ void Swarm::cvt_forward(double _t) {
         u(r[i].y_ord) = up.y;
 //        std::cout << "Robot " << i << std::endl;
 //        std::cout << u << std::endl;
-        r[i].time_forward(u, runtime, _t, wd);
+        json robot_j = r[i].time_forward(u, runtime, _t, wd);
+        opt_j.push_back(robot_j);
     }
     int sz = data_j["state"].size();
-    data_j["state"][sz - 1]["cvt"] = tmp_j;
+    data_j["state"][sz - 1]["cvt"] = cvt_j;
+    data_j["state"][sz - 1]["opt"] = opt_j;
     runtime += _t;
 }
 

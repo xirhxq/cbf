@@ -21,8 +21,8 @@ public:
     std::map<std::string, double> den_para;
 
     Target();
-    void set_visible_time(double);
     bool visible(double);
+    double time_gap_to_vis(double);
 
     static Target make_static_target(Point _p);
     static Target make_loop_rectangle_target(Point _min, Point _max, double _v, double _bias = 0.0);

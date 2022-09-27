@@ -17,37 +17,36 @@ int main() {
 
 
     Polygon wd_p({  Point(0, 0),
+//                    Point(10, -5),
                     Point(20, 0),
                     Point(0, 10),
                     Point(20, 10),
+//                    Point(10, 15),
     });
 
-    std::vector<Point> c = {Point(19.0, 2.0),
-                            Point(19.0, 4.0),
-                            Point(19.0, 6.0),
-                            Point(19.0, 8.0),
-                            Point(1.0, 2.0),
-                            Point(1.0, 4.0),
-                            Point(1.0, 6.0),
-                            Point(1.0, 8.0)};
+    std::vector<Point> c = {
+//            Point(10, 13.0),
+//            Point(10, -3.0),
+            Point(19.0, 2.0),
+            Point(19.0, 4.0),
+            Point(19.0, 6.0),
+            Point(19.0, 8.0),
+            Point(1.0, 2.0),
+            Point(1.0, 4.0),
+            Point(1.0, 6.0),
+            Point(1.0, 8.0)
+    };
 
     // dens = e ^ (- k * |distance - r|)
 //    double dens_k = 10, dens_r = 1;
 
     World wd(wd_p, c);
 //    wd.target.emplace_back(
-//            Target::make_loop_rectangle_target(
-//                    {4, 3},
-//                    {16, 7},
-//                    0.5
-//            )
+//            Target::make_static_target(
+//                    {10, 5}
+//                    )
 //    );
-    wd.target.emplace_back(
-            Target::make_static_target(
-                    {10, 5}
-                    )
-    );
-    wd.target[0].vis_time = {{0, 15}, {30, 40}};
+//    wd.target[0].vis_time = {{0, 15}, {30, 40}};
 //    wd.target.emplace_back(
 //            Target::make_loop_rectangle_target(
 //                    {4, 3},
@@ -55,9 +54,14 @@ int main() {
 //                    0.5, 32
 //            )
 //    );
-//    wd.new_target(4, 16, 3, 7, 0.5);
-//    wd.new_target(4, 16, 3, 7, 0.5, 32);
-//    wd.make_dens(0, 20);
+//    wd.target[1].vis_time = {{10, 22}};
+//    wd.target.emplace_back(
+//            Target::make_loop_rectangle_target(
+//                    {4, 3},
+//                    {16, 7},
+//                    0.5
+//            )
+//    );
 
     Swarm s = Swarm(6, wd);
     s.set_h();

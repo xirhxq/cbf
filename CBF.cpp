@@ -9,10 +9,6 @@
 CBF::CBF() {
 }
 
-//double CBF::h(VectorXd _v) {
-//    return _v(2) - log(dist_to_charge_place(Point(_v)) / charge_dist[nearest_charge_place(Point(_v))]);
-//}
-
 double CBF::dh(VectorXd _x, double _t, int _i){
     VectorXd x_plus_dx = _x, x_minus_dx = _x;
     x_plus_dx(_i) += delta;
@@ -33,11 +29,22 @@ VectorXd CBF::dhdx(VectorXd _x, double _t) {
 }
 
 VectorXd CBF::constraint_u_coe(VectorXd& _f, MatrixXd& _g, VectorXd& _x, double _t) {
-    return dhdx(_x, _t).transpose() * _g;
+    VectorXd v = dhdx(_x, _t).transpose() * _g;
+    return v.cwiseProduct(ctrl_var);
 }
 
-double CBF::constraint_const(VectorXd & _f, MatrixXd & _g, VectorXd & _x, double _t) {
-//    printf("h: %lf\tdhdt: %lf\t dhdx.dot(_f): %lf\talpha(h): %lf\n", h(_x, _t),
-//           dhdt(_x, _t), dhdx(_x, _t).dot(_f), alpha(h(_x, _t)));
+double CBF::constraint_const_with_time(VectorXd & _f, MatrixXd & _g, VectorXd & _x, double _t) {
+#ifdef CBF_DEBUG
+    printf("h: %lf\tdhdt: %lf\t dhdx.dot(_f): %lf\talpha(h): %lf\n", h(_x, _t),
+           dhdt(_x, _t), dhdx(_x, _t).dot(_f), alpha(h(_x, _t)));
+#endif
     return dhdt(_x, _t) + dhdx(_x, _t).dot(_f) + alpha(h(_x, _t));
+}
+
+double CBF::constraint_const_without_time(VectorXd & _f, MatrixXd & _g, VectorXd & _x, double _t) {
+#ifdef CBF_DEBUG
+    printf("h: %lf\tdhdx.dot(_f): %lf\talpha(h): %lf\n", h(_x, _t),
+           dhdx(_x, _t).dot(_f), alpha(h(_x, _t)));
+#endif
+    return dhdx(_x, _t).dot(_f) + alpha(h(_x, _t));
 }

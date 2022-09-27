@@ -47,16 +47,16 @@ bool World::is_charging(Point _p) {
 
 std::function<double (Point)> World::get_dens(double _t) {
     return [=](Point p_){
-        double res = 0.0;
-        int vis_cnt = 0;
+        double res = eps;
         for (auto i: target){
             if (i.visible(_t)){
-                vis_cnt++;
-                res += exp(-fabs((p_ - i.pos(_t)).len() - i.den_para["r"]) * i.den_para["k"]);
+                res += exp((
+                            pow(-fabs((p_ - i.pos(_t)).len() - i.den_para["r"]), 3)
+                            + 2
+                            ) * 10);
             }
         }
-        if (vis_cnt > 0) return res;
-        else return 1.0;
+        return res;
     };
 }
 

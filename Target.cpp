@@ -20,6 +20,15 @@ bool Target::visible(double _t) {
     return false;
 }
 
+double Target::time_gap_to_vis(double _t) {
+    double res = fabs(_t - vis_time[0].first);
+    for (auto v: vis_time){
+        res = std::min(res, fabs(_t - v.first));
+        res = std::min(res, fabs(_t - v.second));
+    }
+    return res;
+}
+
 Target Target::make_static_target(Point _p) {
     Target res;
     res.pos = [_p](double _t){
@@ -28,7 +37,7 @@ Target Target::make_static_target(Point _p) {
     res.den_para = {{"x", _p.x},
                     {"y", _p.y},
                     {"k", 10},
-                    {"r", 1.0}};
+                    {"r", 3}};
     return res;
 }
 

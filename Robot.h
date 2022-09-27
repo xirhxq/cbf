@@ -36,7 +36,7 @@ public:
 
     Point xy();
 
-    void time_forward(VectorXd &_v, double runtime, double _dt, World _w);
+    json time_forward(VectorXd &_v, double runtime, double _dt, World _w);
 
     void output();
 };
