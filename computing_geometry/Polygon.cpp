@@ -296,3 +296,47 @@ void Polygon::get_y_limit(double *y, double inflation) {
     y[1] = mid + (y[1] - mid) * inflation;
 }
 
+pd Polygon::get_x_limit(double inflation) {
+    double res[2];
+    get_x_limit(res, inflation);
+    return {res[0], res[1]};
+}
+
+pd Polygon::get_y_limit(double inflation) {
+    double res[2];
+    get_y_limit(res, inflation);
+    return {res[0], res[1]};
+}
+
+pd Polygon::get_y_lim_at_certain_x(double _x) {
+//    printf("@ x = %.12lf\n", _x);
+//    output();
+    std::vector<double> vec_y;
+    for (int i = 1; i <= n; i++){
+//        printf("From: (%.12lf, %.12lf)\nTo: (%.12lf, %.12lf)\n",
+//               p[i].x, p[i].y,
+//               p[index_after(n, i, 1)].x,
+//               p[index_after(n, i, 1)].y);
+        if (fabs(p[i].x - _x) <= eps && fabs(p[index_after(n, i, 1)].x - _x) <= eps){
+//            printf("Vertical!!\n");
+            vec_y.push_back(p[i].y);
+            vec_y.push_back(p[index_after(n, i, 1)].y);
+        }
+        else if ((p[i].x <= _x) != (p[index_after(n, i, 1)].x <= _x)
+                ||(p[i].x >= _x) != (p[index_after(n, i, 1)].x >= _x)){
+//            printf("May cross!!!\n");
+            Line l = Line(p[i], p[index_after(n, i, 1)]);
+            Point inter_p = l.cross_point({{_x, 0}, {_x, 1}});
+            vec_y.push_back(inter_p.y);
+        }
+    }
+//    printf("vec_y: ");
+//    for (auto v: vec_y){
+//        printf("%.12lf ", v);
+//    }
+//    printf("\n");
+    std::sort(vec_y.begin(), vec_y.end());
+    return pd(*vec_y.begin(), *vec_y.rbegin());
+}
+
+

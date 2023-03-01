@@ -8,8 +8,11 @@ include_directories(/Library/gurobi951/macos_universal2/include)
 add_executable(cbf_main cbf_main.cpp Robot.cpp World.cpp
         computing_geometry/Point.cpp computing_geometry/Line.cpp
         computing_geometry/Polygon.cpp computing_geometry/CVT.cpp
-        Swarm.cpp CBF.cpp Target.cpp)
+        Swarm.cpp CBF.cpp Target.cpp GridWorld.cpp)
 target_link_libraries(cbf_main libgurobi_c++.a libgurobi95.dylib)
 
-add_executable(test test_opt.cpp)
+add_executable(test test_opt.cpp GridWorld.cpp
+        computing_geometry/Point.cpp
+        computing_geometry/Polygon.cpp
+        computing_geometry/Line.cpp)
 target_link_libraries(test libgurobi_c++.a libgurobi95.dylib)

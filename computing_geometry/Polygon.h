@@ -50,6 +50,11 @@ public:
     void get_x_limit(double *x, double inflation = 1.2);
     void get_y_limit(double *y, double inflation = 1.2);
 
+    pd get_x_limit(double inflation = 1.2);
+    pd get_y_limit(double inflation = 1.2);
+
+    pd get_y_lim_at_certain_x(double _x);
+
 };
 
 #endif //V9_0_POLYGON_H

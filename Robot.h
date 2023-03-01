@@ -16,7 +16,7 @@ class Robot{
 public:
     int id = 0;
     int x_ord = 0, y_ord = 1, batt_ord = 2, camera_ord = 3;
-    std::vector<CBF> cbf_no_slack, cbf_slack;
+    std::map<std::string, CBF> cbf_no_slack, cbf_slack;
     MatrixXd G;
     VectorXd F, X;
 

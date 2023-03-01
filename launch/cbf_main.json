@@ -1,0 +1,41 @@
+{
+  "world": [
+    {"x": -15, "y": 0},
+    {"x": 15, "y": 0},
+    {"x": -15, "y": 30},
+    {"x": 15, "y": 30}
+  ],
+  "charge":[
+    {"x": -3, "y": 1},
+    {"x": 0, "y": 1},
+    {"x": 3, "y": 1}
+  ],
+  "swarm": {
+    "num": 14,
+    "//initial_position": ["specified", "random_in_poly", "random_all"],
+    "initial_position": "random_in_poly",
+    "random_poly": [
+      {"x": -2, "y": 0},
+      {"x": -2, "y": 2},
+      {"x": 2, "y": 2},
+      {"x": 2, "y": 0}
+    ],
+    "specified_pos": [
+      {"x": 10, "y": 4},
+      {"x": 10, "y": 5},
+      {"x": 10, "y": 6}
+    ]
+  },
+  "cbfs": {
+    "energy_cbf": "on",
+    "safety_cbf": "off",
+    "cvt_cbf": "on",
+    "comm_cbf": "off",
+    "camera_cbf": "off"
+  },
+  "execute": {
+    "time_total": 100,
+    "step_time": 0.02,
+    "output_grid": "on"
+  }
+}

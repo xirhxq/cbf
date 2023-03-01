@@ -30,6 +30,11 @@ VectorXd CBF::dhdx(VectorXd _x, double _t) {
 
 VectorXd CBF::constraint_u_coe(VectorXd& _f, MatrixXd& _g, VectorXd& _x, double _t) {
     VectorXd v = dhdx(_x, _t).transpose() * _g;
+#ifdef CBF_DEBUG
+    std::cout << "dhdx = " << std::endl << dhdx(_x, _t) << std::endl;
+    std::cout << "v = " << v << std::endl;
+    std::cout << "ret = " << v.cwiseProduct(ctrl_var) << std::endl;
+#endif
     return v.cwiseProduct(ctrl_var);
 }
 
