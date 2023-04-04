@@ -46,6 +46,7 @@ public:
 
     double get_res_in_polygon(Polygon _p);
     json set_res_in_polygon(Polygon _p, bool _res, bool _update_json = false);
+    json set_res_in_radii(Point _pt, double _r, bool _res, bool _update_json = false);
     Point get_centroid_in_polygon(Polygon _p);
 
     void output_centroid_in_polygon(Polygon _p);

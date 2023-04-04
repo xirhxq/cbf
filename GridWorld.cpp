@@ -19,22 +19,22 @@ GridWorld::GridWorld(pd _x_lim, int _x_num,
 }
 
 void GridWorld::reset(bool _res) {
-    for (auto a: vis){
+    for (auto a: vis) {
         a = _res;
     }
 }
 
-void GridWorld::output(char c){
+void GridWorld::output(char c) {
     printf("< Gridworld of (%.2lf-%.2lf, %.2lf-%.2lf) -> (%d, %d) grids",
            x_lim.first, x_lim.second, y_lim.first, y_lim.second, x_num, y_num);
     printf("\n");
-    for (int j = y_num - 1; j >= 0; j--){
-        for (int i = 0; i < x_num; i++){
-            printf("%c", (get_result(i, j) == true)? c: '.');
+    for (int j = y_num - 1; j >= 0; j--) {
+        for (int i = 0; i < x_num; i++) {
+            printf("%c", (get_result(i, j) == true) ? c : '.');
         }
         printf("\n");
     }
-    for (int x_ind = 0; x_ind < x_num; x_ind++){
+    for (int x_ind = 0; x_ind < x_num; x_ind++) {
         printf("-");
     }
     printf(">\n");
@@ -43,10 +43,9 @@ void GridWorld::output(char c){
 int GridWorld::get_num_in_lim(double _a, pd _lim, int _sz, std::string _mode) {
     double ratio = (_a - _lim.first) / (_lim.second - _lim.first);
     int ret = lround(ratio * _sz);
-    if (_mode == "ceil"){
+    if (_mode == "ceil") {
         ret = ceil(ratio * _sz);
-    }
-    else if (_mode == "floor"){
+    } else if (_mode == "floor") {
         ret = floor(ratio * _sz);
     }
     ret = std::max(std::min(ret, _sz - 1), 0);
@@ -138,13 +137,13 @@ double GridWorld::get_res_in_polygon(Polygon _p) {
     pd x_ind_pd, y_ind_pd;
     x_ind_pd.first = get_num_in_xlim(x_lim_pd.first, "ceil");
     x_ind_pd.second = get_num_in_xlim(x_lim_pd.second, "floor");
-    for (int x_ind = x_ind_pd.first; x_ind <= x_ind_pd.second; x_ind++){
+    for (int x_ind = x_ind_pd.first; x_ind <= x_ind_pd.second; x_ind++) {
         double x_pos = get_xpos_in_xlim(x_ind);
         y_lim_pd = _p.get_y_lim_at_certain_x(x_pos);
         y_ind_pd.first = get_num_in_ylim(y_lim_pd.first, "ceil");
         y_ind_pd.second = get_num_in_ylim(y_lim_pd.second, "floor");
-        for (int y_ind = y_ind_pd.first; y_ind <= y_ind_pd.second; y_ind++){
-            res += (get_result(x_ind, y_ind) == true)? true_weight: false_weight;
+        for (int y_ind = y_ind_pd.first; y_ind <= y_ind_pd.second; y_ind++) {
+            res += (get_result(x_ind, y_ind) == true) ? true_weight : false_weight;
 #ifdef GRIDWORLD_DEBUG
             printf("(%d, %d) -> %d res = %.2lf\n", x_ind, y_ind, get_result(x_ind, y_ind) == true, res);
 #endif
@@ -160,16 +159,49 @@ json GridWorld::set_res_in_polygon(Polygon _p, bool _res, bool _update_json) {
     x_ind_pd.first = get_num_in_xlim(x_lim_pd.first, "ceil");
     x_ind_pd.second = get_num_in_xlim(x_lim_pd.second, "floor");
 //    printf("x_lim: (%.12lf, %.12lf)\tx_ind: (%lf, %lf)\n", x_lim_pd.first, x_lim_pd.second, x_ind_pd.first, x_ind_pd.second);
-    for (int x_ind = x_ind_pd.first; x_ind <= x_ind_pd.second; x_ind++){
+    for (int x_ind = x_ind_pd.first; x_ind <= x_ind_pd.second; x_ind++) {
         double x_pos = get_xpos_in_xlim(x_ind);
         if (x_pos > x_lim_pd.second || x_pos < x_lim_pd.first) continue;
 //        printf("x_ind = %d, x_pos = %.12lf\n", x_ind, x_pos);
         y_lim_pd = _p.get_y_lim_at_certain_x(x_pos);
         y_ind_pd.first = get_num_in_ylim(y_lim_pd.first, "ceil");
         y_ind_pd.second = get_num_in_ylim(y_lim_pd.second, "floor");
-        for (int y_ind = y_ind_pd.first; y_ind <= y_ind_pd.second; y_ind++){
-            if (_update_json && get_result(x_ind, y_ind) != _res){
-                ret.push_back({{"x", x_ind}, {"y", y_ind}});
+        for (int y_ind = y_ind_pd.first; y_ind <= y_ind_pd.second; y_ind++) {
+            if (_update_json && get_result(x_ind, y_ind) != _res) {
+                ret.push_back({{"x", x_ind},
+                               {"y", y_ind}});
+            }
+            set_result(x_ind, y_ind, _res);
+        }
+    }
+    return ret;
+}
+
+json GridWorld::set_res_in_radii(Point _pt, double _r, bool _res, bool _update_json) {
+    Point p[4] = {{_pt.x - _r, _pt.y - _r},
+                  {_pt.x + _r, _pt.y - _r},
+                  {_pt.x + _r, _pt.y + _r},
+                  {_pt.x - _r, _pt.y + _r}};
+    Polygon _p = Polygon(4, p);
+    json ret = json::array();
+    pd x_lim_pd = _p.get_x_limit(1.0), y_lim_pd;
+    pd x_ind_pd, y_ind_pd;
+    x_ind_pd.first = get_num_in_xlim(x_lim_pd.first, "ceil");
+    x_ind_pd.second = get_num_in_xlim(x_lim_pd.second, "floor");
+//    printf("x_lim: (%.12lf, %.12lf)\tx_ind: (%lf, %lf)\n", x_lim_pd.first, x_lim_pd.second, x_ind_pd.first, x_ind_pd.second);
+    for (int x_ind = x_ind_pd.first; x_ind <= x_ind_pd.second; x_ind++) {
+        double x_pos = get_xpos_in_xlim(x_ind);
+        if (x_pos > x_lim_pd.second || x_pos < x_lim_pd.first) continue;
+//        printf("x_ind = %d, x_pos = %.12lf\n", x_ind, x_pos);
+        y_lim_pd = _p.get_y_lim_at_certain_x(x_pos);
+        y_ind_pd.first = get_num_in_ylim(y_lim_pd.first, "ceil");
+        y_ind_pd.second = get_num_in_ylim(y_lim_pd.second, "floor");
+        for (int y_ind = y_ind_pd.first; y_ind <= y_ind_pd.second; y_ind++) {
+            Point set_point = get_point_in_area(x_ind, y_ind);
+            if (set_point.distance_to(_pt) > _r) continue;
+            if (_update_json && get_result(x_ind, y_ind) != _res) {
+                ret.push_back({{"x", x_ind},
+                               {"y", y_ind}});
             }
             set_result(x_ind, y_ind, _res);
         }
@@ -185,28 +217,27 @@ Point GridWorld::get_centroid_in_polygon(Polygon _p) {
     pd x_ind_pd, y_ind_pd;
     x_ind_pd.first = get_num_in_xlim(x_lim_pd.first, "ceil");
     x_ind_pd.second = get_num_in_xlim(x_lim_pd.second, "floor");
-    for (int x_ind = x_ind_pd.first; x_ind <= x_ind_pd.second; x_ind++){
+    for (int x_ind = x_ind_pd.first; x_ind <= x_ind_pd.second; x_ind++) {
         double x_pos = get_xpos_in_xlim(x_ind);
         y_lim_pd = _p.get_y_lim_at_certain_x(x_pos);
         y_ind_pd.first = get_num_in_ylim(y_lim_pd.first, "ceil");
         y_ind_pd.second = get_num_in_ylim(y_lim_pd.second, "floor");
-        for (int y_ind = y_ind_pd.first; y_ind <= y_ind_pd.second; y_ind++){
+        for (int y_ind = y_ind_pd.first; y_ind <= y_ind_pd.second; y_ind++) {
             double y_pos = get_ypos_in_ylim(y_ind);
 #ifdef GRIDWORLD_DEBUG
             printf("(%d, %d) -> (%.2lf, %.2lf) = %d\n", x_ind, y_ind, x_pos, y_pos, get_result(x_ind, y_ind));
 #endif
-            total_cnt ++;
+            total_cnt++;
             total_x_sum += x_pos;
             total_y_sum += y_pos;
             if (get_result(x_ind, y_ind)) {
 #ifdef GRIDWORLD_DEBUG
                 printf("true\n");
 #endif
-                true_cnt ++;
+                true_cnt++;
                 x_sum += x_pos * true_weight;
                 y_sum += y_pos * true_weight;
-            }
-            else {
+            } else {
 #ifdef GRIDWORLD_DEBUG
                 printf("false\n");
 #endif
@@ -222,10 +253,9 @@ Point GridWorld::get_centroid_in_polygon(Polygon _p) {
 #ifdef GRIDWORLD_DEBUG
     printf("total weight = %.2lf x/y sum = (%.2lf, %.2lf)\n", total_weight, x_sum, y_sum);
 #endif
-    if (total_weight > 0){
+    if (total_weight > 0) {
         return Point(x_sum / total_weight, y_sum / total_weight);
-    }
-    else {
+    } else {
         return Point(total_x_sum / total_cnt, total_y_sum / total_cnt);
     }
 }
@@ -240,19 +270,19 @@ void GridWorld::output_centroid_in_polygon(Polygon _p) {
     _p.output();
 #endif
     auto vis_temp = vis;
-    for (auto a: vis_temp){
+    for (auto a: vis_temp) {
         a = false;
     }
     pd x_lim_pd = _p.get_x_limit(1.0), y_lim_pd;
     pd x_ind_pd, y_ind_pd;
     x_ind_pd.first = get_num_in_xlim(x_lim_pd.first, "ceil");
     x_ind_pd.second = get_num_in_xlim(x_lim_pd.second, "floor");
-    for (int x_ind = x_ind_pd.first; x_ind <= x_ind_pd.second; x_ind++){
+    for (int x_ind = x_ind_pd.first; x_ind <= x_ind_pd.second; x_ind++) {
         double x_pos = get_xpos_in_xlim(x_ind);
         y_lim_pd = _p.get_y_lim_at_certain_x(x_pos);
         y_ind_pd.first = get_num_in_ylim(y_lim_pd.first, "ceil");
         y_ind_pd.second = get_num_in_ylim(y_lim_pd.second, "floor");
-        for (int y_ind = y_ind_pd.first; y_ind <= y_ind_pd.second; y_ind++){
+        for (int y_ind = y_ind_pd.first; y_ind <= y_ind_pd.second; y_ind++) {
             vis_temp[get_ind(x_ind, y_ind)] = true;
         }
     }

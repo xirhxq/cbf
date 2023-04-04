@@ -124,7 +124,7 @@ void Swarm::set_energy_cbf() {
         };
         auto fix_comm_h = [=](VectorXd _x, double _t) {
             double res = inf;
-            double max_comm_dis = 2.0;
+            double max_comm_dis = 8.5;
             int pid = part_id(i);
             if (pid == 1) {
 //                printf("%d to Base@(%d, 0)\n", i, -3 + 6 * part(i));
@@ -141,7 +141,7 @@ void Swarm::set_energy_cbf() {
                                                      .distance_to(Point(0, 0))));
             }
             for (int t = std::max(1, pid - 2); t <= pid + 2 && t <= n / 2; t++) {
-                if (t == pid) continue;
+                if (t <= pid) continue;
 //                printf("%d to %d\n", i, t + part(i) * n / 2);
                 res = std::min(res, 0.5 * (max_comm_dis - Point(_x(r[i].x_ord),
                                                                 _x(r[i].y_ord))
@@ -439,12 +439,13 @@ void Swarm::get_y_limit(double *_y, double inflation) {
 void Swarm::update_vis() {
     update_j = json::array();
     for (int i = 1; i <= n; i++) {
-        double tol = 0.8;
+        double tol = 2;
         Point deny_p[4] = {{r[i].x() - tol, r[i].y() - tol},
                            {r[i].x() + tol, r[i].y() - tol},
                            {r[i].x() + tol, r[i].y() + tol},
                            {r[i].x() - tol, r[i].y() + tol}};
-        update_j.push_back(gw.set_res_in_polygon(Polygon(4, deny_p), true, true));
+//        update_j.push_back(gw.set_res_in_polygon(Polygon(4, deny_p), true, true));
+        update_j.push_back(gw.set_res_in_radii(r[i].xy(), tol, true, true));
     }
 }
 

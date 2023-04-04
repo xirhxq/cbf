@@ -3,6 +3,7 @@ import math
 import os
 import re
 import time
+import ffmpeg
 
 import matplotlib
 import matplotlib.animation as animation
@@ -15,19 +16,33 @@ from matplotlib.patches import Wedge
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 
+def sort_data():
+    for filename in os.listdir('data'):
+        if os.path.isfile(os.path.join('data', filename)) and any(c.isnumeric() for c in filename):
+            name, ext = os.path.splitext(filename)
+            parts = name.split('_')
+            subfolder = '_'.join(parts[:-1])
+            new_name = parts[-1] + ext
+            subfolder_path = os.path.join('data', subfolder)
+            if not os.path.exists(subfolder_path):
+                os.mkdir(subfolder_path)
+            os.rename(os.path.join('data', filename), os.path.join(subfolder_path, new_name))
+            print(f'Move {os.path.join("data", filename)} to {os.path.join(subfolder_path, new_name)}')
+
+
 def find_file(ptn):
     ptn = re.compile(ptn)
     src = 'data'
     files = os.listdir(src)
     json_files = []
     for file in files:
-        if re.match(ptn, file):
-            json_files.append(f'{src}/{file}')
+        if re.match(ptn, file) and os.path.isdir(os.path.join(src, file)):
+            json_files.append(os.path.join(src, file))
     # json_files.sort(key=lambda fp: os.path.getctime(fp), reverse=True)
     json_files.sort(reverse=True)
-    newest_json = json_files[0]
-    print('find {}'.format(newest_json))
-    return newest_json[:newest_json.rfind('_') + 1]
+    newest_json = json_files[0] + '/'
+    print(f'find {newest_json}')
+    return newest_json
 
 
 def name_to_color(_name):
@@ -42,7 +57,7 @@ def name_to_color(_name):
 
 
 class MyBarPlot:
-    def __init__(self, _x, _y, _ax, _name, _color='default'):
+    def __init__(self, _x, _y, _ax, _name, _color='default', markeron=True):
         self.x_data = _x
         self.y_data = _y
         self.name = _name
@@ -50,10 +65,11 @@ class MyBarPlot:
         if _color == 'default':
             _color = name_to_color(_name)
         _ax.plot(self.x_data, self.y_data, color=_color)
-        marker, = _ax.plot(self.x_data[:1], self.y_data[:1], "r*")
-        self.marker = marker
-        line, = _ax.plot(self.x_data[:1] * 2, [self.y_data[0], 0], "r")
-        self.line = line
+        if markeron:
+            marker, = _ax.plot(self.x_data[:1], self.y_data[:1], "r*")
+            self.marker = marker
+            line, = _ax.plot(self.x_data[:1] * 2, [self.y_data[0], 0], "r")
+            self.line = line
 
     def update(self, _num):
         self.marker.set_data(self.x_data[_num], self.y_data[_num])
@@ -141,11 +157,11 @@ class MyProgressBar:
                                                       _num, elap_time,
                                                       eta),
               end="")
-        
+
     def end(self):
         toc = time.time()
         print("{:.2f} seconds elapsed".format(toc - self.tic))
-        
+
 
 def draw_map(file, usetex=False, robot_anno=True, energycbfplot=True, cvtcbfplot=True, optplot=False,
              cameracbfplot=False, commcbfplot=False, safecbfplot=False, bigtimetext=False, figsize=(25, 15),
@@ -159,7 +175,8 @@ def draw_map(file, usetex=False, robot_anno=True, energycbfplot=True, cvtcbfplot
     matplotlib.use('agg')
 
     robot_num = data_dict["para"]["number"]
-    row, col = 8, math.ceil(robot_num / 2)
+    half_num = math.ceil(robot_num / 2)
+    row, col = 8, half_num
 
     fig = plt.figure(figsize=figsize)
     gs = GridSpec(row, col)
@@ -170,7 +187,7 @@ def draw_map(file, usetex=False, robot_anno=True, energycbfplot=True, cvtcbfplot
     if bar_plot_on or opt_plot_on:
         ax = plt.subplot(gs[:-2 * (int(bar_plot_on) + int(opt_plot_on)), :])
     else:
-        ax = plt.subplot(gs[:,:])
+        ax = plt.subplot(gs[:, :])
     ax.set_aspect(1)
 
     if show_bar:
@@ -225,13 +242,13 @@ def draw_map(file, usetex=False, robot_anno=True, energycbfplot=True, cvtcbfplot
     runtime_list = [dt["runtime"] for dt in data_dict["state"]]
     if energycbfplot:
         energy_cbf_plot = [MyBarPlot(runtime_list, [dt["robot"][i]["energy_cbf"] for dt in data_dict["state"]],
-                                     plt.subplot(gs[-1 - i // 11, i % 11]),
-                                     "Robot #{}".format(i + 1), _color='mediumblue')
+                                     plt.subplot(gs[-1 - i // half_num, i % half_num]),
+                                     "#{}".format(i + 1), _color='mediumblue')
                            for i in range(robot_num)]
     if cvtcbfplot:
         cvt_cbf_plot = [MyBarPlot(runtime_list, [dt["robot"][i]["cvt_cbf"] for dt in data_dict["state"]],
-                                  plt.subplot(gs[-1 - i // 11, i % 11]),
-                                  "Robot #{}".format(i + 1), _color='orangered')
+                                  plt.subplot(gs[-1 - i // half_num, i % half_num]),
+                                  "#{}".format(i + 1), _color='orangered')
                         for i in range(robot_num)]
 
     if cameracbfplot:
@@ -314,18 +331,20 @@ def draw_map(file, usetex=False, robot_anno=True, energycbfplot=True, cvtcbfplot
                                    theta1=camera_list[i] - 15, theta2=camera_list[i] + 15))
 
             if robot_anno:
-                ax.annotate((f'    Robot #{i + 1}:' + '\n'
-                             + rf'$\quadE = {batt_list[i]:.2f}$' + '\n'
-                             + rf'$\quad\theta = {camera_list[i]:.2f}$'
-                             ),
-                            xy=(pos_x_list[i], pos_y_list[i]))
+                # ax.annotate((f'    Robot #{i + 1}:' + '\n'
+                #              + rf'$\quadE = {batt_list[i]:.2f}$' + '\n'
+                #              + rf'$\quad\theta = {camera_list[i]:.2f}$'
+                #              ),
+                #             xy=(pos_x_list[i], pos_y_list[i]))
+                ax.annotate(f'    #{i + 1}' + '\n' + f'  E: {batt_list[i]:.2f} ', xy=(pos_x_list[i], pos_y_list[i]), fontsize=8)
 
             if "cvt" in data_now and show_cvt:
                 ax.plot(poly_x_list[i], poly_y_list[i], 'k')
                 ax.plot([ct["x"] for ct in poly_center_list], [ct["y"] for ct in poly_center_list], '*', color='lime')
 
         if bigtimetext:
-            ax.text(0.38, 0.95, r'$\mathrm{Time}$' + f' $=$ ${data_now["runtime"]:.2f}$' + r'$\mathrm{s}$', transform=ax.transAxes, fontsize=40)
+            ax.set_title(r'$\mathrm{Time}$' + f' $=$ ${data_now["runtime"]:.2f}$' + r'$\mathrm{s}$', fontsize=25, y=0.95)
+            # ax.text(0.38, 0.95, r'$\mathrm{Time}$' + f' $=$ ${data_now["runtime"]:.2f}$' + r'$\mathrm{s}$', transform=ax.transAxes, fontsize=40)
         else:
             ax.text(0.05, 0.95, 'Time = {:.2f}s'.format(data_now["runtime"]), transform=ax.transAxes)
         ax.set_xlim(data_dict["para"]["lim"]["x"])
@@ -333,7 +352,7 @@ def draw_map(file, usetex=False, robot_anno=True, energycbfplot=True, cvtcbfplot
 
         ax.plot(world_x_list, world_y_list, 'k')
         if not show_axis:
-            plt.axis('off')
+            ax.set_axis_off()
 
         for i in range(robot_num):
             if energycbfplot:
@@ -348,7 +367,7 @@ def draw_map(file, usetex=False, robot_anno=True, energycbfplot=True, cvtcbfplot
             for cbf in safe_cbf_plot:
                 cbf.update(num)
         if num in shot_list:
-            plt.savefig(f'data/sim1at{int(num / fps)}00.png', bbox_inches='tight')
+            plt.savefig(filename + f'res_at_sec_{int(num / fps)}.png', bbox_inches='tight')
             print('Shot!', end='')
         return
 
@@ -360,25 +379,298 @@ def draw_map(file, usetex=False, robot_anno=True, energycbfplot=True, cvtcbfplot
     # print("\ngif saved in {}".format(filename + 'res.gif'))
 
     ani.save(filename + 'res.mp4', writer='ffmpeg', fps=int(1 / interval))
-    print("\nmp4 saved in {}".format(filename + 'res.mp4'))
+    print("\nmp4 saved in {}".format(filename[:-1] + '/res.mp4'))
 
     pb.end()
 
 
+def draw_stats(file, usetex=False, energycbfplot=True, cvtcbfplot=True, optplot=False,
+               cameracbfplot=False, commcbfplot=False, safecbfplot=False, figsize=(25, 15),
+               show_axis=True):
+    if usetex:
+        matplotlib.rc('text', usetex=True)
+
+    with open(file + 'data.json') as f:
+        data_dict = json.load(f)
+
+    matplotlib.use('agg')
+
+    plt.figure(figsize=figsize)
+
+    robot_num = data_dict["para"]["number"]
+
+    runtime_list = [dt["runtime"] for dt in data_dict["state"]]
+
+    pb = MyProgressBar(robot_num)
+
+    for i in range(robot_num):
+        plt.subplot(211).clear()
+        plt.subplot(212).clear()
+        plt.subplot(211).plot(runtime_list, [dt["robot"][i]["batt"] for dt in data_dict["state"]], color='C0')
+        plt.subplot(211).set_title('Energy Level' + f' of UAV #{i + 1}')
+        plt.subplot(211).set_xlabel('Time / s')
+        plt.subplot(211).set_ylabel('Energy Level')
+
+        plt.subplot(212).plot(runtime_list, [max(dt["robot"][i]["energy_cbf"], 0) for dt in data_dict["state"]], color='C0')
+        plt.subplot(212).set_title(r'CBF Value $min(h_{energy}, h_{l10n})$' + f' of UAV #{i + 1}')
+        plt.subplot(212).set_xlabel('Time / s')
+        plt.subplot(212).set_ylabel('$min(h_{energy}, h_{l10n})$')
+        plt.subplots_adjust(hspace=0.7)
+        # leg = ax.legend()
+        plot_file_name = file[:-1] + f'/{i + 1}_energy&cbfval.png'
+        plt.savefig(plot_file_name, bbox_inches='tight')
+        pb.update(i + 1)
+
+    pb.end()
+
+
+def draw_cbfs(file, usetex=False, energycbfplot=True, cvtcbfplot=True, optplot=False,
+              cameracbfplot=False, commcbfplot=False, safecbfplot=False, figsize=(25, 15),
+              show_axis=True):
+    if usetex:
+        matplotlib.rc('text', usetex=True)
+
+    with open(file + 'data.json') as f:
+        data_dict = json.load(f)
+
+    matplotlib.use('agg')
+
+    plt.figure(figsize=figsize)
+
+    robot_num = data_dict["para"]["number"]
+
+    runtime_list = [dt["runtime"] for dt in data_dict["state"]]
+
+    pb = MyProgressBar(robot_num)
+
+    for i in range(robot_num):
+        plt.subplot(211).clear()
+        plt.subplot(212).clear()
+        plt.subplot(211).plot(runtime_list, [dt["robot"][i]["cvt_cbf"] for dt in data_dict["state"]], color='C0')
+        plt.subplot(211).set_title(r'CBF Value $h_{cvt}$' + f' of UAV #{i + 1}')
+        plt.subplot(211).set_xlabel('Time / s')
+        plt.subplot(211).set_ylabel('$h_{cvt}$')
+
+        plt.subplot(212).plot(runtime_list, [max(dt["robot"][i]["energy_cbf"], 0) for dt in data_dict["state"]], color='C0')
+        plt.subplot(212).set_title(r'CBF Value $min(h_{energy}, h_{l10n})$' + f' of UAV #{i + 1}')
+        plt.subplot(212).set_xlabel('Time / s')
+        plt.subplot(212).set_ylabel('$min(h_{energy}, h_{l10n})$')
+        plt.subplots_adjust(hspace=0.7)
+        # leg = ax.legend()
+        plot_file_name = file[:-1] + f'/{i + 1}_cbfs.png'
+        plt.savefig(plot_file_name, bbox_inches='tight')
+        pb.update(i + 1)
+
+    pb.end()
+
+
+def draw_energy_all(file, usetex=False, energycbfplot=True, cvtcbfplot=True, optplot=False,
+                    cameracbfplot=False, commcbfplot=False, safecbfplot=False, figsize=(25, 15),
+                    show_axis=True):
+    if usetex:
+        matplotlib.rc('text', usetex=True)
+
+    with open(file + 'data.json') as f:
+        data_dict = json.load(f)
+
+    matplotlib.use('agg')
+
+    plt.figure(figsize=figsize)
+
+    robot_num = data_dict["para"]["number"]
+
+    runtime_list = [dt["runtime"] for dt in data_dict["state"]]
+
+    for i in range(robot_num):
+        plt.subplot(111).plot(runtime_list, [dt["robot"][i]["batt"] for dt in data_dict["state"]], label=f'UAV #{i + 1}')
+
+    leg = plt.subplot(111).legend(bbox_to_anchor=(1.0, -0.15), ncol=5)
+    plt.subplot(111).set_xlabel('Time / s')
+    plt.subplot(111).set_ylabel('Energy Level')
+    plt.subplot(111).set_title('Energy Level' + f' of all UAVs')
+    plot_file_name = file[:-1] + f'/energy_all.png'
+    plt.savefig(plot_file_name, bbox_inches='tight')
+
+
+def draw_all_cvt_cbf(file, usetex=False, energycbfplot=True, cvtcbfplot=True, optplot=False,
+                     cameracbfplot=False, commcbfplot=False, safecbfplot=False, figsize=(25, 15),
+                     show_axis=True):
+    if usetex:
+        matplotlib.rc('text', usetex=True)
+
+    with open(file + 'data.json') as f:
+        data_dict = json.load(f)
+
+    matplotlib.use('agg')
+
+    robot_num = data_dict["para"]["number"]
+    half_num = math.ceil(robot_num / 2)
+    row, col = half_num, 2
+
+    fig = plt.figure(figsize=figsize)
+    gs = GridSpec(row, col)
+
+    runtime_list = [dt["runtime"] for dt in data_dict["state"]]
+
+    cvt_cbf_plot = [MyBarPlot(runtime_list, [dt["robot"][i]["cvt_cbf"] for dt in data_dict["state"]],
+                              plt.subplot(gs[i % half_num, i // half_num]),
+                              "#{}".format(i + 1), _color='orangered', markeron=False)
+                    for i in range(robot_num)]
+    plot_file_name = file[:-1] + f'/all_cvt_cbf.png'
+    plt.savefig(plot_file_name, bbox_inches='tight')
+
+
+def draw_heatmap(file, usetex=False, energycbfplot=True, cvtcbfplot=True, optplot=False,
+                 cameracbfplot=False, commcbfplot=False, safecbfplot=False, figsize=(25, 15),
+                 show_axis=True):
+    if usetex:
+        matplotlib.rc('text', usetex=True)
+
+    with open(file + 'data.json') as f:
+        data_dict = json.load(f)
+
+    matplotlib.use('agg')
+
+    plt.figure(figsize=figsize)
+
+    robot_num = data_dict["para"]["number"]
+
+    runtime_list = [dt["runtime"] for dt in data_dict["state"]]
+
+    pb = MyProgressBar(robot_num)
+
+    for i in range(robot_num):
+        plt.subplot(111).clear()
+        plt.subplot(111).set_aspect(1)
+        plt.subplot(111).set_xlabel('x')
+        plt.subplot(111).set_ylabel('y')
+        plt.subplot(111).set_title('Heatmap of' + f' UAV {i + 1}')
+
+        x_pos_ls = [dt["robot"][i]["x"] for dt in data_dict["state"]]
+        y_pos_ls = [dt["robot"][i]["y"] for dt in data_dict["state"]]
+
+        # 使用 2D 直方图生成热力图
+        heatmap, xedges, yedges = np.histogram2d(x_pos_ls, y_pos_ls, bins=20,
+                                                 range=[[-10, 10], [0, 20]])
+
+        # 将热力图数据转换为图像数据
+        extent = [xedges[0], xedges[-1], yedges[0], yedges[-1]]
+        heatmap = heatmap.T
+
+        # 绘制热力图
+        plt.clf()
+        plt.imshow(heatmap, extent=extent, origin='lower', cmap='jet', aspect='auto')
+        # plt.colorbar()
+
+        plt.ylim([0, 20])
+        plt.xlim([-10, 10])
+        yticks = np.arange(yedges[0], yedges[-1]+1, 5)
+        plt.yticks(yticks)
+        # plt.title('Heat-map' + f' of UAV #{i + 1}')
+
+        plot_file_name = file[:-1] + f'/{i + 1}_heatmap.png'
+        plt.savefig(plot_file_name, bbox_inches='tight')
+        pb.update(i + 1)
+
+    pb.end()
+
+
+def screenshot_from_video(filename):
+    # 指定要导出图像的时间点
+    timepoints = [0, 10, 25, 80, 140, 220, 275]
+
+    # 指定要导出图像的视频文件
+    input_file = filename + 'res.mp4'
+
+    # 循环遍历每个时间点，并导出相应的图像
+    for t in timepoints:
+        # 设置导出图像的文件名
+        output_file = filename + f'res_at_sec_{t}.png'
+
+        # 使用FFmpeg导出图像
+        (
+            ffmpeg
+            .input(input_file, ss=t)
+            .filter('scale', '-1', '720')
+            .output(output_file, vframes=1)
+            .overwrite_output()
+            .run()
+        )
+
+        # 确认导出的文件存在
+        if os.path.isfile(output_file):
+            print(f'导出成功：{output_file}')
+        else:
+            print(f'导出失败：{output_file}')
+
+
 if __name__ == '__main__':
-    filename = find_file('10-14_10-33.*.json')
+    sort_data()
+    filename = find_file('03-*.*')
     ral_settings = {
         'energycbfplot': False,
         'cvtcbfplot': False,
         'robot_anno': False,
-        'usetex': True,
+        # 'usetex': True,
         'bigtimetext': True,
         'show_camera': False,
         'show_cvt': True,
         'show_bar': False,
         'show_axis': False,
-        'figsize': (15, 15),
-        'shot_list': [0, 3, 15, 25, 50, 63]
+        'figsize': (8, 8),
+        'shot_list': [0, 10, 25, 80, 140, 220, 275]
     }
-    # draw_map(filename)
-    draw_map(filename, **ral_settings)
+    main_settings = {
+        'energycbfplot': False,
+        'cvtcbfplot': False,
+        'robot_anno': True,
+        # 'usetex': True,
+        'bigtimetext': False,
+        'show_camera': False,
+        'show_cvt': True,
+        'show_bar': False,
+        'show_axis': False,
+        'figsize': (7, 7),
+        'shot_list': []
+    }
+    settings = ral_settings
+    while True:
+        print('-' * 10 + 'Choose which drawing you want:' + '-' * 10)
+        print('[0]: Quit')
+        print('[1]: Draw whole map video')
+        print('[2]: Draw map video with shots')
+        print('[3]: Draw stats')
+        print('[4]: Draw all energy')
+        print('[5]: Draw cbf values')
+        print('[6]: Draw heat-maps')
+        print('[7]: Draw all cvt cbf')
+        print('[8]: Screenshots from video')
+        op = int(input('Input the number: '))
+        # draw_map(filename)
+        if op == 0:
+            break
+        elif op == 1:
+            ral_settings['shot_list'] = []
+            draw_map(filename, **settings)
+        elif op == 2:
+            draw_map(filename, **settings)
+        else:
+            settings = {k: v for k, v in settings.items() if k in ['energycbfplot', 'cvtcbfplot', 'show_axis']}
+            if op == 3:
+                settings['figsize'] = (8, 4)
+                draw_stats(filename, **settings)
+            elif op == 4:
+                settings['figsize'] = (8, 4)
+                draw_energy_all(filename, **settings)
+            elif op == 5:
+                settings['figsize'] = (8, 4)
+                draw_cbfs(filename, **settings)
+            elif op == 6:
+                settings['figsize'] = (8, 8)
+                draw_heatmap(filename, **settings)
+            elif op == 7:
+                settings['figsize'] = (15, 20)
+                draw_all_cvt_cbf(filename, **settings)
+            elif op == 8:
+                screenshot_from_video(filename)
+
