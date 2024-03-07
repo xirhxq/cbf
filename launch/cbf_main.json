@@ -36,6 +36,6 @@
   "execute": {
     "time_total": 300,
     "step_time": 0.02,
-    "output_grid": "on"
+    "output_grid": "off"
   }
 }

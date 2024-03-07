@@ -14,6 +14,7 @@ from matplotlib.gridspec import GridSpec
 from matplotlib.patches import Circle
 from matplotlib.patches import Wedge
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+import matplotlib.ticker as ticker
 
 
 def sort_data():
@@ -447,14 +448,14 @@ def draw_cbfs(file, usetex=False, energycbfplot=True, cvtcbfplot=True, optplot=F
         plt.subplot(211).clear()
         plt.subplot(212).clear()
         plt.subplot(211).plot(runtime_list, [dt["robot"][i]["cvt_cbf"] for dt in data_dict["state"]], color='C0')
-        plt.subplot(211).set_title(r'CBF Value $h_{cvt}$' + f' of UAV #{i + 1}')
+        plt.subplot(211).set_title(r'CBF Value $h_{task}$' + f' of UAV #{i + 1}')
         plt.subplot(211).set_xlabel('Time / s')
-        plt.subplot(211).set_ylabel('$h_{cvt}$')
+        plt.subplot(211).set_ylabel('$h_{task}$')
 
         plt.subplot(212).plot(runtime_list, [max(dt["robot"][i]["energy_cbf"], 0) for dt in data_dict["state"]], color='C0')
-        plt.subplot(212).set_title(r'CBF Value $min(h_{energy}, h_{l10n})$' + f' of UAV #{i + 1}')
+        plt.subplot(212).set_title(r'CBF Value $h_{constraint}$' + f' of UAV #{i + 1}')
         plt.subplot(212).set_xlabel('Time / s')
-        plt.subplot(212).set_ylabel('$min(h_{energy}, h_{l10n})$')
+        plt.subplot(212).set_ylabel('$h_{constraint}$')
         plt.subplots_adjust(hspace=0.7)
         # leg = ax.legend()
         plot_file_name = file[:-1] + f'/{i + 1}_cbfs.png'
@@ -490,6 +491,69 @@ def draw_energy_all(file, usetex=False, energycbfplot=True, cvtcbfplot=True, opt
     plt.subplot(111).set_title('Energy Level' + f' of all UAVs')
     plot_file_name = file[:-1] + f'/energy_all.png'
     plt.savefig(plot_file_name, bbox_inches='tight')
+
+def draw_energy2(files, usetex=False, energycbfplot=True, cvtcbfplot=True, optplot=False,
+                    cameracbfplot=False, commcbfplot=False, safecbfplot=False, figsize=(25, 15),
+                    show_axis=True):
+    if usetex:
+        matplotlib.rc('text', usetex=True)
+
+    matplotlib.use('agg')
+
+    plt.figure(figsize=figsize)
+
+    robot_num = len(files)
+
+    for i in range(robot_num):
+        with open(files[i] + 'data.json') as f:
+            data_dict = json.load(f)
+        runtime_list = [dt["runtime"] for dt in data_dict["state"]]
+        plt.subplot(111).plot(runtime_list, [dt["robot"][1]["batt"] * 0.005 + 3.7 for dt in data_dict["state"]],
+                              label=f'{files[i][:-1].split("_")[-1]}')
+
+    leg = plt.subplot(111).legend(loc='best')
+    plt.subplot(111).set_xlabel('Time / s')
+    plt.subplot(111).set_ylabel('Energy Level / V')
+    plt.subplot(111).set_title('Energy Level of UAV #2 in different approaches')
+    plt.axhspan(3.7, 4.2, facecolor='gray', alpha=0.5)
+
+    plot_file_name = files[0][:-1] + f'/energy_2_contrast.png'
+    plt.savefig(plot_file_name, bbox_inches='tight')
+
+
+def drawDistance1To2ForAll(files, usetex=False, energycbfplot=True, cvtcbfplot=True, optplot=False,
+                          cameracbfplot=False, commcbfplot=False, safecbfplot=False, figsize=(25, 15),
+                          show_axis=True):
+    if usetex:
+        matplotlib.rc('text', usetex=True)
+
+    matplotlib.use('agg')
+
+    plt.figure(figsize=figsize)
+
+    fileInd = len(files)
+
+    for i in range(fileInd):
+        with open(files[i] + 'data.json') as f:
+            data_dict = json.load(f)
+        runtime_list = [dt["runtime"] for dt in data_dict["state"]]
+        distance = [np.sqrt((dt["robot"][0]["x"] - dt["robot"][1]["x"]) ** 2 +
+                            (dt["robot"][0]["y"] - dt["robot"][1]["y"]) ** 2) * 85
+                    for dt in data_dict["state"]]
+        plt.subplot(111).plot(runtime_list, distance,
+                                label=f'{files[i][:-1].split("_")[-1]}')
+
+    leg = plt.subplot(111).legend(loc='best')
+    plt.subplot(111).set_xlabel('Time / s')
+    plt.subplot(111).set_ylabel('Distance / m')
+    plt.subplot(111).set_title('Distance from UAV #2 to UAV #1 in different approaches')
+
+    plt.axhspan(0, 850, facecolor='gray', alpha=0.5)
+
+    plot_file_name = files[0][:-1] + f'/distance_1_2_all_contrast.png'
+    plt.savefig(plot_file_name, bbox_inches='tight')
+
+
 
 
 def draw_all_cvt_cbf(file, usetex=False, energycbfplot=True, cvtcbfplot=True, optplot=False,
@@ -567,12 +631,69 @@ def draw_heatmap(file, usetex=False, energycbfplot=True, cvtcbfplot=True, optplo
         yticks = np.arange(yedges[0], yedges[-1]+1, 5)
         plt.yticks(yticks)
         # plt.title('Heat-map' + f' of UAV #{i + 1}')
+        # axis off
+        plt.axis('off')
 
         plot_file_name = file[:-1] + f'/{i + 1}_heatmap.png'
         plt.savefig(plot_file_name, bbox_inches='tight')
         pb.update(i + 1)
 
     pb.end()
+
+
+def drawSearchHeatmap(file, usetex=False, energycbfplot=True, cvtcbfplot=True, optplot=False,
+                      cameracbfplot=False, commcbfplot=False, safecbfplot=False, figsize=(25, 15),
+                      show_axis=True):
+    if usetex:
+        matplotlib.rc('text', usetex=True)
+
+    with open(file + 'data.json') as f:
+        data_dict = json.load(f)
+
+    matplotlib.use('agg')
+
+    plt.figure(figsize=figsize)
+
+    robot_num = data_dict["para"]["number"]
+
+    runtime_list = [dt["runtime"] for dt in data_dict["state"]]
+
+    xnum, ynum = data_dict["para"]["grid_world"]["x_num"], data_dict["para"]["grid_world"]["y_num"]
+    Z = np.zeros((ynum, xnum))
+    Z -= 1
+
+    length = len(data_dict["state"])
+    for l in range(length):
+        data_now = data_dict["state"][l]
+        for i in range(robot_num):
+            update_grids = data_now["update"][i]
+            for grid in update_grids:
+                if Z[grid["y"], grid["x"]] == -1:
+                    Z[grid["y"], grid["x"]] = l
+
+    plt.subplot(111).clear()
+    plt.subplot(111).set_aspect(1)
+    plt.subplot(111).set_xlabel('x/m')
+    plt.subplot(111).set_ylabel('y/m')
+    plt.subplot(111).set_title('Search Heatmap')
+
+    Z = np.flipud(Z)
+
+    plt.imshow(Z, cmap='jet', aspect='auto', extent=[-10, 10, 0, 20])
+    plt.colorbar().set_label('Time / s')
+
+    def scale_x(value, _):
+        return f'{int(value * 100)}'
+
+    def scale_y(value, _):
+        return f'{int(value * 100)}'
+
+    plt.gca().xaxis.set_major_formatter(ticker.FuncFormatter(scale_x))
+    plt.gca().yaxis.set_major_formatter(ticker.FuncFormatter(scale_y))
+
+
+    plot_file_name = file[:-1] + f'/SearchHeatmap.png'
+    plt.savefig(plot_file_name, bbox_inches='tight')
 
 
 def screenshot_from_video(filename):
@@ -585,7 +706,7 @@ def screenshot_from_video(filename):
     # 循环遍历每个时间点，并导出相应的图像
     for t in timepoints:
         # 设置导出图像的文件名
-        output_file = filename + f'res_at_sec_{t}.png'
+        output_file = filename + f'res_at_sec_{t}_new.png'
 
         # 使用FFmpeg导出图像
         (
@@ -606,7 +727,8 @@ def screenshot_from_video(filename):
 
 if __name__ == '__main__':
     sort_data()
-    filename = find_file('03-*.*')
+    filenames = [find_file('.*_Ours'), find_file('.*_CVT'), find_file('.*_EnergyCBF&CVT')]
+    print(f'{filenames = }')
     ral_settings = {
         'energycbfplot': False,
         'cvtcbfplot': False,
@@ -634,43 +756,68 @@ if __name__ == '__main__':
         'shot_list': []
     }
     settings = ral_settings
-    while True:
-        print('-' * 10 + 'Choose which drawing you want:' + '-' * 10)
-        print('[0]: Quit')
-        print('[1]: Draw whole map video')
-        print('[2]: Draw map video with shots')
-        print('[3]: Draw stats')
-        print('[4]: Draw all energy')
-        print('[5]: Draw cbf values')
-        print('[6]: Draw heat-maps')
-        print('[7]: Draw all cvt cbf')
-        print('[8]: Screenshots from video')
-        op = int(input('Input the number: '))
-        # draw_map(filename)
-        if op == 0:
-            break
-        elif op == 1:
-            ral_settings['shot_list'] = []
-            draw_map(filename, **settings)
-        elif op == 2:
-            draw_map(filename, **settings)
-        else:
+    if len(filenames) == 1:
+        filename = filenames[0]
+
+        while True:
+            print('-' * 10 + 'Choose which drawing you want:' + '-' * 10)
+            print('[0]: Quit')
+            print('[1]: Draw whole map video')
+            print('[2]: Draw map video with shots')
+            print('[3]: Draw stats')
+            print('[4]: Draw all energy')
+            print('[5]: Draw cbf values')
+            print('[6]: Draw heat-maps')
+            print('[7]: Draw all cvt cbf')
+            print('[8]: Screenshots from video')
+            print('[9]: Draw search heat-map')
+            op = int(input('Input the number: '))
+            # draw_map(filename)
+            if op == 0:
+                break
+            elif op == 1:
+                ral_settings['shot_list'] = []
+                draw_map(filename, **settings)
+            elif op == 2:
+                draw_map(filename, **settings)
+            else:
+                settings = {k: v for k, v in settings.items() if k in ['energycbfplot', 'cvtcbfplot', 'show_axis']}
+                if op == 3:
+                    settings['figsize'] = (8, 4)
+                    draw_stats(filename, **settings)
+                elif op == 4:
+                    settings['figsize'] = (8, 4)
+                    draw_energy_all(filename, **settings)
+                elif op == 5:
+                    settings['figsize'] = (8, 4)
+                    draw_cbfs(filename, **settings)
+                elif op == 6:
+                    settings['figsize'] = (8, 8)
+                    draw_heatmap(filename, **settings)
+                elif op == 7:
+                    settings['figsize'] = (15, 20)
+                    draw_all_cvt_cbf(filename, **settings)
+                elif op == 8:
+                    screenshot_from_video(filename)
+                elif op == 9:
+                    settings['figsize'] = (8, 8)
+                    drawSearchHeatmap(filename, **settings)
+    else:
+        while True:
             settings = {k: v for k, v in settings.items() if k in ['energycbfplot', 'cvtcbfplot', 'show_axis']}
-            if op == 3:
-                settings['figsize'] = (8, 4)
-                draw_stats(filename, **settings)
-            elif op == 4:
-                settings['figsize'] = (8, 4)
-                draw_energy_all(filename, **settings)
-            elif op == 5:
-                settings['figsize'] = (8, 4)
-                draw_cbfs(filename, **settings)
-            elif op == 6:
-                settings['figsize'] = (8, 8)
-                draw_heatmap(filename, **settings)
-            elif op == 7:
-                settings['figsize'] = (15, 20)
-                draw_all_cvt_cbf(filename, **settings)
-            elif op == 8:
-                screenshot_from_video(filename)
+            print('-' * 10 + 'Choose which drawing you want:' + '-' * 10)
+            print('[0]: Quit')
+            print('[1]: Draw energys')
+            print('[2]: Draw distance between 1 and 2')
+            op = int(input('Input the number: '))
+            # draw_map(filename)
+            if op == 0:
+                break
+            elif op == 1:
+                settings['figsize'] = (8, 3)
+                draw_energy2(filenames, **settings)
+            elif op == 2:
+                settings['figsize'] = (8, 3)
+                drawDistance1To2ForAll(filenames, **settings)
+
 

@@ -149,6 +149,41 @@ void Swarm::set_energy_cbf() {
             }
             return res;
         };
+        auto fix_comm_h_realexp = [=](VectorXd _x, double _t) {
+            double res = inf;
+            double max_comm_dis = 10;
+            if (i == 1) {
+                res = std::min(
+                        res,
+                        0.5 * (
+                                max_comm_dis -
+                                Point(_x(r[i].x_ord), _x(r[i].y_ord))
+                                .distance_to(Point(5, 0))
+                        )
+                );
+            }
+            if (i <= 2) {
+                res = std::min(
+                        res,
+                        0.5 * (
+                                max_comm_dis -
+                                Point(_x(r[i].x_ord), _x(r[i].y_ord))
+                                .distance_to(Point(-5, 0))
+                        )
+                );
+            }
+            for (int t = std::max(1, i - 2); t < i; t++) {
+                res = std::min(
+                        res,
+                        0.5 * (
+                                max_comm_dis -
+                                Point(_x(r[i].x_ord),_x(r[i].y_ord))
+                                .distance_to(r[t].xy())
+                        )
+                );
+            }
+            return res;
+        };
         auto battery_h = [=](VectorXd _x, double _t) {
             double res = inf;
             res = std::min(res, _x(r[i].batt_ord) -
@@ -168,7 +203,8 @@ void Swarm::set_energy_cbf() {
         auto energy_h = [=](VectorXd _x, double _t) {
             double res = inf;
             res = std::min(res, battery_h(_x, _t));
-            res = std::min(res, fix_comm_h(_x, _t));
+//            res = std::min(res, fix_comm_h(_x, _t));
+//            res = std::min(res, fix_comm_h_realexp(_x, _t));
             return res;
         };
         CBF energy_cbf;

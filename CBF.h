@@ -7,7 +7,7 @@
 
 //#define CBF_DEBUG
 
-#include "computing_geometry/Line.h"
+#include "utils.h"
 
 class CBF{
 public:
