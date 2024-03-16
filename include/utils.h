@@ -1,4 +1,3 @@
-// Created by XIRHXQ on 12/29/21.
 #ifndef CBF_MAIN_UTILS_H
 #define CBF_MAIN_UTILS_H
 

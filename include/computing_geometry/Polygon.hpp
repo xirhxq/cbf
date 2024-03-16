@@ -1,5 +1,3 @@
-// Created by XIRHXQ on 12/29/21.
-
 #ifndef CBF_MAIN_POLYGON_HPP
 #define CBF_MAIN_POLYGON_HPP
 

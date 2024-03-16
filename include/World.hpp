@@ -1,7 +1,3 @@
-//
-// Created by xirhxq on 2022/3/4.
-//
-
 #ifndef CBF_MAIN_WORLD_HPP
 #define CBF_MAIN_WORLD_HPP
 
