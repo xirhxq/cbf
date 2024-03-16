@@ -1,6 +1,6 @@
-#include "utils.h"
-#include "computing_geometry/Point.h"
-#include "Swarm.h"
+#include "../include/utils.h"
+#include "computing_geometry/Point.hpp"
+#include "../include/Swarm.hpp"
 
 #include <fstream>
 #include <ctime>

@@ -2,7 +2,7 @@ import json, os, re, math, numpy as np, time
 
 
 ptn = re.compile('.*.json')
-src = 'data'
+src = '../data'
 files = os.listdir(src)
 
 json_files = []
