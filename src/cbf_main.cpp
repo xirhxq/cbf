@@ -21,7 +21,7 @@ int main() {
     time_t tt = time(NULL);
     tm *t = localtime(&tt);
     char data_out_path[256];
-    sprintf(data_out_path, R"(../data/%02d-%02d_%02d-%02d_data.json)",
+    snprintf(data_out_path, 256, R"(../data/%02d-%02d_%02d-%02d_data.json)",
             t->tm_mon + 1, t->tm_mday, t->tm_hour, t->tm_min);
 
     Polygon world_poly(Polygon(get_point_vector_from_json(data["world"])));

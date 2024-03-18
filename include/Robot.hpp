@@ -93,13 +93,13 @@ public:
                 std::vector<GRBVar> var_v;
                 char s[10];
                 for (int i = 0; i < X.size(); i++) {
-                    sprintf(s, "var_%d", i);
+                    snprintf(s, 10, "var_%d", i);
                     var_v.push_back(model.addVar(-GRB_INFINITY, GRB_INFINITY, 0.0, GRB_CONTINUOUS, s));
                 }
 
                 std::vector<GRBVar> var_slack;
                 for (int i = 0; i < cbf_slack.size(); i++) {
-                    sprintf(s, "slack_%d", i);
+                    snprintf(s, 10, "slack_%d", i);
                     var_slack.push_back(model.addVar(-GRB_INFINITY, GRB_INFINITY, 0.0, GRB_CONTINUOUS, s));
                 }
 
