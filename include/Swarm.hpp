@@ -1,11 +1,7 @@
-// Created by XIRHXQ on 12/30/21.
-
 #ifndef CBF_MAIN_SWARM_HPP
 #define CBF_MAIN_SWARM_HPP
 
 #include "utils.h"
-#include "computing_geometry/Polygon.hpp"
-#include "computing_geometry/CVT.hpp"
 #include "World.hpp"
 #include "Robot.hpp"
 #include "GridWorld.hpp"

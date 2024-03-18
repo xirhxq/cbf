@@ -1,12 +1,7 @@
-//
-// Created by xirhxq on 2022/9/13.
-//
-
 #ifndef CBF_MAIN_TARGET_HPP
 #define CBF_MAIN_TARGET_HPP
 
 #include "utils.h"
-#include "computing_geometry/Point.hpp"
 
 enum class TargetType{
     Static,

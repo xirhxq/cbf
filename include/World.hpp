@@ -2,7 +2,6 @@
 #define CBF_MAIN_WORLD_HPP
 
 #include "utils.h"
-#include "computing_geometry/Polygon.hpp"
 #include "Target.hpp"
 
 class World {

@@ -4,7 +4,6 @@
 //#define OPT_DEBUG
 
 #include "utils.h"
-#include "computing_geometry/Point.hpp"
 #include "CBF.hpp"
 #include "World.hpp"
 

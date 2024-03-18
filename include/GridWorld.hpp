@@ -4,8 +4,6 @@
 //#define GRIDWORLD_DEBUG
 
 #include "utils.h"
-#include "computing_geometry/Point.hpp"
-#include "computing_geometry/Polygon.hpp"
 
 class GridWorld {
 public:

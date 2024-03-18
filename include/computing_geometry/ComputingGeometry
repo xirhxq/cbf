@@ -1,0 +1,9 @@
+#ifndef COMPUTING_GEOMETRY_COMPUTINGGEOMETRY
+#define COMPUTING_GEOMETRY_COMPUTINGGEOMETRY
+
+#include "Point.hpp"
+#include "Line.hpp"
+#include "Polygon.hpp"
+#include "CVT.hpp"
+
+#endif //COMPUTING_GEOMETRY_COMPUTINGGEOMETRY

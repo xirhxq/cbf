@@ -1,7 +1,7 @@
 #ifndef CBF_MAIN_POINT_HPP
 #define CBF_MAIN_POINT_HPP
 
-#include "../utils.h"
+#include "Utils.h"
 
 class Point{
 

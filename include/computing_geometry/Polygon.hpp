@@ -1,8 +1,7 @@
 #ifndef CBF_MAIN_POLYGON_HPP
 #define CBF_MAIN_POLYGON_HPP
 
-#include "../utils.h"
-//#include "Point.h"
+#include "Utils.h"
 #include "Line.hpp"
 
 #include <functional>
