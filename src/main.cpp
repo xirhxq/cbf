@@ -20,9 +20,20 @@ int main() {
     json data = json::parse(f);
     time_t tt = time(NULL);
     tm *t = localtime(&tt);
-    char data_out_path[256];
-    snprintf(data_out_path, 256, R"(../data/%02d-%02d_%02d-%02d_data.json)",
+
+    char folderName[256];
+    snprintf(folderName, 256, R"(../data/%02d-%02d_%02d-%02d)",
             t->tm_mon + 1, t->tm_mday, t->tm_hour, t->tm_min);
+
+    if (mkdir(folderName, 0777) == -1) {
+        std::cerr << "Error :  " << strerror(errno) << std::endl;
+    } else {
+        std::cout << "Directory " << folderName << " created" << std::endl;
+    }
+
+    char fileName[256];
+    snprintf(fileName, 256, R"(%s/%s)", folderName, "data.json");
+
 
     Polygon world_poly(Polygon(get_point_vector_from_json(data["world"])));
     auto c = get_point_vector_from_json(data["charge"]);
@@ -71,7 +82,7 @@ int main() {
     if (data["cbfs"]["camera_cbf"] == "on") {
         s.set_camera_cbf();
     }
-    s.init_log_path(data_out_path);
+    s.init_log_path(fileName);
     s.para_log_once();
 
     s.output();
@@ -105,7 +116,7 @@ int main() {
 //    s.gw.output();
     s.output();
     s.end_log();
-    printf("Data saved in %s\n", data_out_path);
+    printf("Data saved in %s\n", fileName);
 
     clock_t finish = clock();
     double duration = (double) (finish - start) / CLOCKS_PER_SEC;

@@ -3,6 +3,7 @@
 
 #include <iostream>
 #include <cmath>
+#include <sys/stat.h>
 #include "nlohmann/json.hpp"
 #include "Eigen/Dense"
 #include "gurobi_c++.h"
