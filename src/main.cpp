@@ -16,10 +16,12 @@ std::vector<Point> get_point_vector_from_json(json j) {
 int main() {
     clock_t start = clock();
 
-    std::ifstream f("../launch/cbf_main.json");
+    std::ifstream f("../launch/main.json");
     json data = json::parse(f);
     time_t tt = time(NULL);
     tm *t = localtime(&tt);
+
+    mkdir("../data", 0777);
 
     char folderName[256];
     snprintf(folderName, 256, R"(../data/%02d-%02d_%02d-%02d)",
