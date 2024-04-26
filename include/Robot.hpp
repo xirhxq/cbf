@@ -6,72 +6,36 @@
 #include "utils.h"
 #include "CBF.hpp"
 #include "World.hpp"
+#include "State.hpp"
 
 class Robot {
 public:
     int id = 0;
-    int xIndex = 0, yIndex = 1, batteryIndex = 2, yawIndex = 3;
     std::map<std::string, CBF> cbfNoSlack, cbfSlack;
     MatrixXd G;
-    VectorXd F, X;
+    VectorXd F;
+    State state;
 
 public:
 
     Robot() = default;
 
-    Robot(int dimension) {
+    Robot(int dimension): state(dimension) {
         G = MatrixXd::Identity(dimension, dimension);
-        X.resize(dimension);
         F.resize(dimension);
     }
 
-    void setPosition(Point position) {
-        X(xIndex) = position.x;
-        X(yIndex) = position.y;
-    }
-
-    void setBattery(double battery) {
-        if (X.size() > 2) {
-            X(batteryIndex) = battery;
-        }
-    }
-
-    void setXYIndex(int xIndex, int yIndex) {
-        xIndex = xIndex;
-        yIndex = yIndex;
-    }
-
-    double x() {
-        return X(xIndex);
-    }
-
-    double y() {
-        return X(yIndex);
-    }
-
-    double battery() {
-        return X(batteryIndex);
-    }
-
-    double yaw() {
-        return X(yawIndex);
-    }
-
-
-    Point xy() const {
-        return {X(xIndex), X(yIndex)};
-    }
-
     json stepTimeForward(VectorXd &nominalControlInput, double runtime, double dt, World world) {
+        State inputState(nominalControlInput);
         json jsonRobot = {
                 {"nominal", {
-                        {"x", nominalControlInput(xIndex)},
-                        {"y", nominalControlInput(yIndex)}
+                        {"x", inputState.x()},
+                        {"y", inputState.y()}
                 }}
         };
         json jsonCBFNoSlack = json::array(), jsonCBFSlack = json::array();
-        if (world.isCharging(X) && X(batteryIndex) <= 100.0) {
-            X(batteryIndex) += dt * (10);
+        if (world.isCharging(state.xy()) && state.battery() <= 100.0) {
+            state.setBattery(state.battery() + dt * (10));
             jsonRobot["result"] = {{"x", 0.0},
                                    {"y", 0.0}};
             jsonRobot["cbf_no_slack"] = jsonCBFNoSlack;
@@ -92,7 +56,7 @@ public:
                 // Create variables
                 std::vector<GRBVar> vars;
                 char s[10];
-                for (int i = 0; i < X.size(); i++) {
+                for (int i = 0; i < state.X.size(); i++) {
                     snprintf(s, 10, "var_%d", i);
                     vars.push_back(model.addVar(-GRB_INFINITY, GRB_INFINITY, 0.0, GRB_CONTINUOUS, s));
                 }
@@ -105,7 +69,7 @@ public:
 
                 // Set objective:
                 GRBQuadExpr obj = 0.0;
-                for (int i = 0; i < X.size(); i++) {
+                for (int i = 0; i < state.X.size(); i++) {
                     obj += (vars[i] - nominalControlInput[i]) * (vars[i] - nominalControlInput[i]);
                 }
                 for (int i = 0; i < cbfSlack.size(); i++) {
@@ -116,15 +80,15 @@ public:
                 // Add constraint:
                 for (auto &i: cbfNoSlack) {
                     GRBLinExpr ln = 0.0;
-                    VectorXd uCoe = i.second.constraintUCoe(F, G, X, runtime);
-                    for (int j = 0; j < X.size(); j++) {
+                    VectorXd uCoe = i.second.constraintUCoe(F, G, state.X, runtime);
+                    for (int j = 0; j < state.X.size(); j++) {
                         ln += uCoe(j) * vars[j];
                     }
-                    double constraintConstWithTime = i.second.constraintConstWithTime(F, G, X, runtime);
+                    double constraintConstWithTime = i.second.constraintConstWithTime(F, G, state.X, runtime);
                     jsonCBFNoSlack.push_back({
                                                      {"name",  i.first},
-                                                     {"x",     uCoe(xIndex)},
-                                                     {"y",     uCoe(yIndex)},
+                                                     {"x",     State(uCoe).x()},
+                                                     {"y",     State(uCoe).y()},
                                                      {"const", constraintConstWithTime}
                                              });
                     model.addConstr(ln, '>', -constraintConstWithTime);
@@ -134,18 +98,18 @@ public:
                 int cnt = 0;
                 for (auto &i: cbfSlack) {
                     GRBLinExpr ln = 0.0;
-                    VectorXd uCoe = i.second.constraintUCoe(F, G, X, runtime);
-                    for (int j = 0; j < X.size(); j++) {
+                    VectorXd uCoe = i.second.constraintUCoe(F, G, state.X, runtime);
+                    for (int j = 0; j < state.X.size(); j++) {
                         ln += uCoe(j) * vars[j];
                     }
                     ln += slackVars[cnt];
                     double constraintConst = i.second.constraintConstWithoutTime(
-                            F, G, X, runtime);
+                            F, G, state.X, runtime);
 
                     jsonCBFSlack.push_back({
                                                    {"name",  i.first},
-                                                   {"x",     uCoe(xIndex)},
-                                                   {"y",     uCoe(yIndex)},
+                                                   {"x",     State(uCoe).x()},
+                                                   {"y",     State(uCoe).y()},
                                                    {"const", constraintConst}
                                            });
                     model.addConstr(ln, '>', -constraintConst);
@@ -157,10 +121,10 @@ public:
 //                model.set(GRB_IntParam_OutputFlag, 0);
                 model.optimize();
 
-                for (int i = 0; i < X.size(); i++) optimalControlInput(i) = vars[i].get(GRB_DoubleAttr_X);
+                for (int i = 0; i < state.X.size(); i++) optimalControlInput(i) = vars[i].get(GRB_DoubleAttr_X);
                 jsonRobot["result"] = {
-                        {"x", optimalControlInput(xIndex)},
-                        {"y", optimalControlInput(yIndex)}
+                        {"x", State(optimalControlInput).x()},
+                        {"y", State(optimalControlInput).y()}
                 };
                 VectorXd slacks(slackVars.size());
                 for (int i = 0; i < slackVars.size(); i++) slacks(i) = slackVars[i].get(GRB_DoubleAttr_X);
@@ -176,15 +140,15 @@ public:
                 assert(0);
             }
 
-            X += (F + G * optimalControlInput) * dt;
+            state.X += (F + G * optimalControlInput) * dt;
             return jsonRobot;
         }
     }
 
     void output() {
-        std::cout << "A UGV @ (" << x() << ", " << y() << ")";
-        if (X.size() > 2) {
-            std::cout << " with Battery " << X(batteryIndex);
+        std::cout << "A UGV @ (" << state.x() << ", " << state.y() << ")";
+        if (state.X.size() > 2) {
+            std::cout << " with Battery " << state.battery();
         }
         std::cout << std::endl;
     }

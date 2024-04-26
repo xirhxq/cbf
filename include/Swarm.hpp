@@ -25,7 +25,8 @@ public:
     Swarm(int n, Point *initialPosition, World world) : n(n), world(world), robots(n, Robot(3)) {
         for (int i = 0; i < n; i++) {
             robots[i].id = i + 1;
-            robots[i].X << initialPosition[i].x, initialPosition[i].y, 1.0 * (rand() % 40) / 40 + 10;
+            robots[i].state.setPosition(initialPosition[i]);
+            robots[i].state.setBattery(1.0 * (rand() % 40) / 40 + 10);
             robots[i].F << 0, 0, -1;
         }
         auto worldXLimit = world.boundary.get_x_limit(1.0), worldYLimit = world.boundary.get_y_limit(1.0);
@@ -45,8 +46,8 @@ public:
             robots[i].id = i + 1;
             robots[i].G(2, 2) = 0;
             robots[i].G(3, 3) = 1;
-            robots[i].setBattery(20.0 * (rand() % 100) / 100 + 10);
-            robots[i].X(3) = pi;
+            robots[i].state.setBattery(20.0 * (rand() % 100) / 100 + 10);
+            robots[i].state.setYawDeg(180);
             robots[i].F << 0, 0, -1, 0;
             robots[i].cbfSlack.clear();
             robots[i].cbfNoSlack.clear();
@@ -57,33 +58,34 @@ public:
     void output() {
         printf("An Swarm with %d robots @ time %.4lf: ---------\n", n, runtime);
         for (auto &robot: robots) {
-            printf("Robot %d: (%.4lf, %.4lf, %.4lf, %.4lf)\n", robot.id, robot.x(), robot.y(), robot.battery(),
-                   robot.yaw());
+            printf("Robot %d: (%.4lf, %.4lf, %.4lf, %.4lf)\n", robot.id, robot.state.x(), robot.state.y(),
+                   robot.state.battery(), robot.state.yawDeg());
         }
         printf("--------------\n");
     }
 
     void randomInitialPosition() {
         for (auto &robot: robots) {
-            robot.setPosition(world.getRandomPoint());
+            robot.state.setPosition(world.getRandomPoint());
         }
     }
 
     void randomInitialPosition(Polygon poly) {
         for (auto &robot: robots) {
-            robot.setPosition(poly.get_random_point());
+            robot.state.setPosition(poly.get_random_point());
         }
     }
 
     void setInitialPosition(std::vector<Point> initialPositions) {
         for (int i = 0; i < n; i++) {
-            robots[i].setPosition(initialPositions[i]);
+            robots[i].state.setPosition(initialPositions[i]);
         }
     }
 
     void setEnergyCBF() {
         for (auto &robot: robots) {
-            auto batteryH = [&](VectorXd state, double t) {
+            auto batteryH = [&](VectorXd x, double t) {
+                State state(x);
                 std::function<double(Point, World)> minDistanceToChargingStations = [&](Point myPosition, World world) {
                     return (
                             world.distanceToChargingStations(myPosition)
@@ -91,12 +93,12 @@ public:
                     );
                 };
 
-                Point myPosition(state(robot.xIndex), state(robot.yIndex));
+                Point myPosition = state.xy();
 
                 double h = inf;
                 h = std::min(
                         h,
-                        state(robot.batteryIndex) - log(minDistanceToChargingStations(myPosition, world))
+                        state.battery() - log(minDistanceToChargingStations(myPosition, world))
                 );
                 return h;
             };
@@ -105,7 +107,7 @@ public:
             energyCBF.name = "energyCBF";
             energyCBF.h = batteryH;
             energyCBF.alpha = [](double _h) { return _h; };
-            energyCBF.controlVariable.resize(robot.X.size());
+            energyCBF.controlVariable.resize(robot.state.X.size());
             energyCBF.controlVariable << 1, 1, 1, 1;
             robot.cbfNoSlack["energyCBF"] = energyCBF;
         }
@@ -127,10 +129,11 @@ public:
         for (auto &robot: robots) {
             CBF yawCBF;
             yawCBF.name = "yawCBF";
-            yawCBF.h = [&](VectorXd state, double t) {
-                Point myPosition(state(robot.xIndex), state(robot.yIndex));
+            yawCBF.h = [&](VectorXd x, double t) {
+                State state(x);
+                Point myPosition = state.xy();
                 double headingRad = headingToNearestTarget(myPosition, t);
-                double deltaHeadingRad = headingRad - state(robot.yawIndex);
+                double deltaHeadingRad = headingRad - state.yawRad();
                 deltaHeadingRad = atan2(sin(deltaHeadingRad), cos(deltaHeadingRad));
                 double kp = 5;
 
@@ -141,7 +144,7 @@ public:
                 );
                 return h;
             };
-            yawCBF.controlVariable.resize(robot.X.size());
+            yawCBF.controlVariable.resize(robot.state.X.size());
             yawCBF.controlVariable << 0, 0, 0, 1;
             robot.cbfNoSlack["yawCBF"] = yawCBF;
         }
@@ -149,19 +152,20 @@ public:
 
     void setCommCBF() {
         for (auto &robot: robots) {
-            auto autoFormationCommH = [&](VectorXd state, double t) {
+            auto autoFormationCommH = [&](VectorXd x, double t) {
+                State state(x);
                 double maxCommRange = 8;
-                Point myPosition(state(robot.xIndex), state(robot.yIndex));
+                Point myPosition = state.xy();
                 Point origin(0, 0);
 
                 auto robotDistanceToOrigin = [&](Robot r) {
-                    return r.xy().distance_to(origin);
+                    return r.state.xy().distance_to(origin);
                 };
 
                 std::vector<Robot> robotsInCommRange;
                 for (auto &otherRobot: robots) {
                     if (robot.id == otherRobot.id) continue;
-                    if (robot.xy().distance_to(otherRobot.xy()) > maxCommRange) continue;
+                    if (robot.state.xy().distance_to(otherRobot.state.xy()) > maxCommRange) continue;
                     if (robotDistanceToOrigin(otherRobot) > robotDistanceToOrigin(robot)) continue;
                     robotsInCommRange.push_back(otherRobot);
                 }
@@ -179,7 +183,7 @@ public:
 
                 std::vector<Point> formationPoints;
                 for (auto &otherRobot: formationRobots) {
-                    formationPoints.push_back(otherRobot.xy());
+                    formationPoints.push_back(otherRobot.state.xy());
                 }
                 if (formationPoints.size() < 2) {
                     formationPoints.push_back(origin);
@@ -197,12 +201,13 @@ public:
                 }
                 return h;
             };
-            auto fixedFormationCommH = [&](VectorXd state, double t) {
+            auto fixedFormationCommH = [&](VectorXd x, double t) {
+                State state(x);
                 auto partId = [&](int id) { return (id - 1) % (n / 2) + 1; };
                 auto isSecondPart = [&](int id) { return id > (n / 2); };
 
                 double maxCommDistance = 8.5;
-                Point myPosition(state(robot.xIndex), state(robot.yIndex));
+                Point myPosition = state.xy();
                 Point baseOfMyPart = Point(-3 + 6 * isSecondPart(robot.id), 0);
                 Point origin(0, 0);
 
@@ -216,7 +221,7 @@ public:
                     if (isSecondPart(robot.id) != isSecondPart(other.id)) continue;
                     if (partId(other.id) <= idInPart) continue;
                     if (partId(other.id) > idInPart + 2) continue;
-                    formationPoints.push_back(other.xy());
+                    formationPoints.push_back(other.state.xy());
                 }
 
                 double h = inf;
@@ -235,7 +240,7 @@ public:
             CBF commCBF;
             commCBF.name = "commCBF";
             commCBF.h = fixedFormationCommH;
-            commCBF.controlVariable.resize(robot.X.size());
+            commCBF.controlVariable.resize(robot.state.X.size());
             commCBF.controlVariable << 1, 1, 1, 1;
             robot.cbfNoSlack["commCBF"] = commCBF;
         }
@@ -243,8 +248,9 @@ public:
 
     void setSafetyCBF() {
         for (auto &robot: robots) {
-            auto safetyH = [&](VectorXd state, double t) {
-                Point myPosition(state(robot.xIndex), state(robot.yIndex));
+            auto safetyH = [&](VectorXd x, double t) {
+                State state(x);
+                Point myPosition = state.xy();
 
                 double safeDistance = 3;
 
@@ -253,7 +259,7 @@ public:
                     if (robot.id == otherRobot.id) continue;
                     h = std::min(
                             h,
-                            0.5 * (myPosition.distance_to(otherRobot.xy()) - safeDistance)
+                            0.5 * (myPosition.distance_to(otherRobot.state.xy()) - safeDistance)
                     );
                 }
                 return h;
@@ -262,7 +268,7 @@ public:
             CBF safetyCBF;
             safetyCBF.name = "safetyCBF";
             safetyCBF.h = safetyH;
-            safetyCBF.controlVariable.resize(robot.X.size());
+            safetyCBF.controlVariable.resize(robot.state.X.size());
             safetyCBF.controlVariable << 1, 1, 1, 1;
             robot.cbfNoSlack["safetyCBF"] = safetyCBF;
         }
@@ -321,16 +327,16 @@ public:
         stepData["runtime"] = runtime;
         for (auto &robot: robots) {
             stepData["robot"].push_back({
-                                                 {"x",    robot.x()},
-                                                 {"y",    robot.y()},
-                                                 {"battery", robot.battery()},
-                                                 {"yawRad",  robot.yaw()}
+                                                 {"x",    robot.state.x()},
+                                                 {"y",    robot.state.y()},
+                                                 {"battery", robot.state.battery()},
+                                                 {"yawRad",  robot.state.yawRad()}
                                          });
             for (auto &cbf: robot.cbfNoSlack) {
-                stepData["robot"].back()[cbf.first] = cbf.second.h(robot.X, runtime);
+                stepData["robot"].back()[cbf.first] = cbf.second.h(robot.state.X, runtime);
             }
             for (auto &cbf: robot.cbfSlack) {
-                stepData["robot"].back()[cbf.first] = cbf.second.h(robot.X, runtime);
+                stepData["robot"].back()[cbf.first] = cbf.second.h(robot.state.X, runtime);
             }
             stepData["cvt"].push_back({
                                               {"num", cvt.pl[robot.id].n + 1}
@@ -377,7 +383,7 @@ public:
     void calCVT() {
         cvt = CVT(n, world.boundary);
         for (auto &robot: robots) {
-            cvt.pt[robot.id] = robot.xy();
+            cvt.pt[robot.id] = robot.state.xy();
         }
         cvt.cal_poly();
 //        cvt.cal_centroid([&](const Point &_p) {
@@ -396,17 +402,16 @@ public:
         for (auto &robot: robots) {
             double kp = 5.0;
             CBF cvtCBF;
-            cvtCBF.controlVariable.resize(robot.X.size());
+            cvtCBF.controlVariable.resize(robot.state.X.size());
             cvtCBF.controlVariable << 1, 1, 1, 1;
             cvtCBF.name = "cvtCBF";
             Point cvtCenter = cvt.ct[robot.id];
-            int xIndex = robot.xIndex;
-            int yIndex = robot.yIndex;
 #ifdef TIMER_ON
             begin = clock();
 #endif
-            cvtCBF.h = [cvtCenter, kp, xIndex, yIndex](VectorXd state, double t) {
-                Point myPosition = Point(state(xIndex), state(yIndex));
+            cvtCBF.h = [cvtCenter, kp](VectorXd x, double t) {
+                State state(x);
+                Point myPosition = state.xy();
                 return -kp * cvtCenter.distance_to(myPosition);
             };
 #ifdef TIMER_ON
@@ -425,7 +430,7 @@ public:
         json optimisationData;
         for (auto &robot: robots) {
             VectorXd u;
-            u.resize(robot.X.size());
+            u.resize(robot.state.X.size());
             u.setZero();
             json robotData = robot.stepTimeForward(u, runtime, dt, world);
             optimisationData.push_back(robotData);
@@ -438,7 +443,7 @@ public:
     std::vector<Point> getPositions() {
         std::vector<Point> positions;
         for (auto &robot: robots) {
-            positions.push_back(robot.xy());
+            positions.push_back(robot.state.xy());
         }
         return positions;
     }
@@ -456,13 +461,13 @@ public:
         for (auto &robot: robots) {
             double tol = 2;
             Point visibleBoundary[4] = {
-                    {robot.x() - tol, robot.y() - tol},
-                    {robot.x() + tol, robot.y() - tol},
-                    {robot.x() + tol, robot.y() + tol},
-                    {robot.x() - tol, robot.y() + tol}
+                    {robot.state.x() - tol, robot.state.y() - tol},
+                    {robot.state.x() + tol, robot.state.y() - tol},
+                    {robot.state.x() + tol, robot.state.y() + tol},
+                    {robot.state.x() - tol, robot.state.y() + tol}
             };
 //            updatedGridWorld.push_back(gridWorld.setValueInPolygon(Polygon(4, visibleBoundary), true, true));
-            updatedGridWorld.push_back(gridWorld.setValueInCircle(robot.xy(), tol, true, true));
+            updatedGridWorld.push_back(gridWorld.setValueInCircle(robot.state.xy(), tol, true, true));
         }
     }
 
@@ -482,8 +487,8 @@ public:
             }
         }
         for (auto &robot: robots) {
-            charMap[gridWorld.getNumInYLim(robot.y()) * yNum / gridWorld.yNum]
-            [gridWorld.getNumInXLim(robot.x()) * xNum / gridWorld.xNum] = 'a' + robot.id - 1;
+            charMap[gridWorld.getNumInYLim(robot.state.y()) * yNum / gridWorld.yNum]
+            [gridWorld.getNumInXLim(robot.state.x()) * xNum / gridWorld.xNum] = 'a' + robot.id - 1;
         }
         for (int j = yNum - 1; j >= 0; j--) {
             for (int i = 0; i < xNum; i++) {
