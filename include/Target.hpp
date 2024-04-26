@@ -11,75 +11,75 @@ enum class TargetType{
 class Target {
 public:
     TargetType type;
-    std::vector<std::pair<double ,double>> vis_time;
+    std::vector<std::pair<double ,double>> visibleTimeRanges;
     std::function<Point (double)> pos;
-    std::map<std::string, double> den_para;
+    std::map<std::string, double> densityParams;
     Target() {
         type = TargetType::Static;
-        pos = [](double _t){
+        pos = [](double t){
             return Point(0, 0);
         };
-        vis_time = {{0, inf}};
-        den_para = {{"x", 0.0}, {"y", 0.0}};
+        visibleTimeRanges = {{0, inf}};
+        densityParams = {{"x", 0.0}, {"y", 0.0}};
     }
 
-    bool visible(double _t) {
-        for (auto v: vis_time){
-            if (_t >= v.first && _t <= v.second) return true;
+    bool visibleAtTime(double t) {
+        for (auto v: visibleTimeRanges){
+            if (t >= v.first && t <= v.second) return true;
         }
         return false;
     }
 
-    double time_gap_to_vis(double _t) {
-        double res = fabs(_t - vis_time[0].first);
-        for (auto v: vis_time){
-            res = std::min(res, fabs(_t - v.first));
-            res = std::min(res, fabs(_t - v.second));
+    double timeToVisible(double t) {
+        double res = fabs(t - visibleTimeRanges[0].first);
+        for (auto v: visibleTimeRanges){
+            res = std::min(res, fabs(t - v.first));
+            res = std::min(res, fabs(t - v.second));
         }
         return res;
     }
 
-    Target make_static_target(Point _p) {
+    Target makeStaticTarget(Point point) {
         Target res;
-        res.pos = [_p](double _t){
-            return Point(_p.x, _p.y);
+        res.pos = [point](double t){
+            return Point(point.x, point.y);
         };
-        res.den_para = {{"x", _p.x},
-                        {"y", _p.y},
-                        {"k", 10},
-                        {"r", 3}};
+        res.densityParams = {{"x", point.x},
+                             {"y", point.y},
+                             {"k", 10},
+                             {"r", 3}};
         return res;
     }
 
-    Point loop_rect(double x_min, double x_max, double y_min, double y_max, double t, double v, double bias = 0.0){
+    Point loopInRectangle(double xMin, double xMax, double yMin, double yMax, double t, double velocity, double bias = 0.0){
         t += bias;
-        double dxt = (x_max - x_min) / v, dyt = (y_max - y_min) / v;
+        double dxt = (xMax - xMin) / velocity, dyt = (yMax - yMin) / velocity;
         double dt = 2 * dxt + 2 * dyt;
         t += dt;
         while (t >= dt) t -= dt;
         if (t < dxt){
-            return {x_min + v * t, y_min};
+            return {xMin + velocity * t, yMin};
         }
         else if (t < dxt + dyt){
-            return {x_max, y_min + (t - dxt) * v};
+            return {xMax, yMin + (t - dxt) * velocity};
         }
         else if (t < 2 * dxt + dyt){
-            return {x_max - (t - dxt - dyt) * v, y_max};
+            return {xMax - (t - dxt - dyt) * velocity, yMax};
         }
         else {
-            return {x_min, y_max - (t - 2 * dxt - dyt) * v};
+            return {xMin, yMax - (t - 2 * dxt - dyt) * velocity};
         }
     }
 
-    Target make_loop_rectangle_target(Point _min, Point _max, double _v, double _bias = 0.0) {
+    Target makeLoopRectangleTarget(Point minPoint, Point maxPoint, double velocity, double bias = 0.0) {
         Target res;
         res.type = TargetType::LoopRect;
         res.pos = [=] (double t_) {
-            return loop_rect(_min.x, _max.x,
-                             _min.y, _max.y,
-                             t_, _v, _bias);
+            return loopInRectangle(minPoint.x, maxPoint.x,
+                                   minPoint.y, maxPoint.y,
+                                   t_, velocity, bias);
         };
-        res.den_para = {
+        res.densityParams = {
                 {"k", 10},
                 {"r", 1.0}
         };

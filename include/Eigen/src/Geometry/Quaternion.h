@@ -78,7 +78,7 @@ class QuaternionBase : public RotationBase<Derived, 3>
   /** \returns a reference to the \c z coefficient (if Derived is a non-const lvalue) */
   EIGEN_DEVICE_FUNC inline NonConstCoeffReturnType z() { return this->derived().coeffs().z(); }
   /** \returns a reference to the \c w coefficient (if Derived is a non-const lvalue) */
-  EIGEN_DEVICE_FUNC inline NonConstCoeffReturnType w() { return this->derived().coeffs().w(); }
+  EIGEN_DEVICE_FUNC inline NonConstCoeffReturnType w() { return this->derived().coeffs().boundary(); }
 
   /** \returns a read-only vector expression of the imaginary part (x,y,z) */
   EIGEN_DEVICE_FUNC inline const VectorBlock<const Coefficients,3> vec() const { return coeffs().template head<3>(); }

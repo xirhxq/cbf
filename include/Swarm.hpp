@@ -13,523 +13,488 @@ class Swarm {
 public:
     int n;
     double runtime = 0.0;
-    Robot r[maxp];
-    World wd;
+    Robot robots[maxp];
+    World world;
     double spacing = 0.1;
-    std::ofstream data_log;
-    json data_j;
-    CVT c;
-    GridWorld gw;
-    json update_j;
+    std::ofstream ofstream;
+    json data;
+    CVT cvt;
+    GridWorld gridWorld;
+    json updatedGridWorld;
 public:
-    Swarm(int _n, Point *_p, World &_wd) {
-        n = _n;
-        for (int i = 1; i <= _n; i++) {
-            r[i] = Robot(3);
-            r[i].id = i;
-            r[i].X << _p[i - 1].x, _p[i - 1].y, 1.0 * (rand() % 40) / 40 + 10;
-            r[i].F << 0, 0, -1;
+    Swarm(int n, Point *initialPosition, World world) : n(n), world(world) {
+        for (int i = 1; i <= n; i++) {
+            robots[i] = Robot(3);
+            robots[i].id = i;
+            robots[i].X << initialPosition[i - 1].x, initialPosition[i - 1].y, 1.0 * (rand() % 40) / 40 + 10;
+            robots[i].F << 0, 0, -1;
         }
-        wd = _wd;
-        auto wd_x_lim_pd = wd.w.get_x_limit(1.0), wd_y_lim_pd = wd.w.get_y_limit(1.0);
-        int x_num = (wd_x_lim_pd.second - wd_x_lim_pd.first) / spacing;
-        int y_num = (wd_y_lim_pd.second - wd_y_lim_pd.first) / spacing;
-        gw = GridWorld(wd_x_lim_pd, x_num, wd_y_lim_pd, y_num);
+        auto worldXLimit = world.boundary.get_x_limit(1.0), worldYLimit = world.boundary.get_y_limit(1.0);
+        int xNum = (worldXLimit.second - worldXLimit.first) / spacing;
+        int yNum = (worldYLimit.second - worldYLimit.first) / spacing;
+        gridWorld = GridWorld(worldXLimit, xNum, worldYLimit, yNum);
         runtime = 0.0;
     }
 
-    Swarm(int _n, World &_wd) {
-        n = _n;
-        wd = _wd;
-        auto wd_x_lim_pd = wd.w.get_x_limit(1.0), wd_y_lim_pd = wd.w.get_y_limit(1.0);
-        int x_num = (wd_x_lim_pd.second - wd_x_lim_pd.first) / spacing;
-        int y_num = (wd_y_lim_pd.second - wd_y_lim_pd.first) / spacing;
-        gw = GridWorld(wd_x_lim_pd, x_num, wd_y_lim_pd, y_num);
+    Swarm(int n, World world) : n(n), world(world) {
+        auto worldXLimit = world.boundary.get_x_limit(1.0), worldYLimit = world.boundary.get_y_limit(1.0);
+        int xNum = (worldXLimit.second - worldXLimit.first) / spacing;
+        int yNum = (worldYLimit.second - worldYLimit.first) / spacing;
+        gridWorld = GridWorld(worldXLimit, xNum, worldYLimit, yNum);
         runtime = 0.0;
-        for (int i = 1; i <= _n; i++) {
-            r[i] = Robot(4);
-            r[i].id = i;
-            r[i].G(2, 2) = 0;
-            r[i].G(3, 3) = 1;
-            r[i].set_battery(20.0 * (rand() % 100) / 100 + 10);
-            r[i].X(3) = pi;
+        for (int i = 1; i <= n; i++) {
+            robots[i] = Robot(4);
+            robots[i].id = i;
+            robots[i].G(2, 2) = 0;
+            robots[i].G(3, 3) = 1;
+            robots[i].setBattery(20.0 * (rand() % 100) / 100 + 10);
+            robots[i].X(3) = pi;
 //        r[i].set_battery(i * 10 + 10);
 //        r[i].F << 0, 0, -1;
-            r[i].F << 0, 0, -1, 0;
-            r[i].cbf_slack.clear();
-            r[i].cbf_no_slack.clear();
+            robots[i].F << 0, 0, -1, 0;
+            robots[i].cbfSlack.clear();
+            robots[i].cbfNoSlack.clear();
         }
-        random_initial_position();
+        randomInitialPosition();
     }
 
     void output() {
         printf("An Swarm with %d robots @ time %.4lf: ---------\n", n, runtime);
         for (int i = 1; i <= n; i++) {
             printf("Robot #%d: ", i);
-            r[i].output();
+            robots[i].output();
         }
         printf("--------------\n");
     }
 
-    void random_initial_position() {
+    void randomInitialPosition() {
         for (int i = 1; i <= n; i++) {
-            r[i].set_position(wd.get_random_point());
+            robots[i].setPosition(world.getRandomPoint());
         }
     }
 
-    void random_initial_position(Polygon _p) {
+    void randomInitialPosition(Polygon poly) {
         for (int i = 1; i <= n; i++) {
-            r[i].set_position(_p.get_random_point());
+            robots[i].setPosition(poly.get_random_point());
         }
     }
 
-    void set_initial_position(std::vector<Point> _v) {
+    void setInitialPosition(std::vector<Point> initialPositions) {
         for (int i = 1; i <= n; i++) {
-            r[i].set_position(_v[i - 1]);
+            robots[i].setPosition(initialPositions[i - 1]);
         }
     }
 
-    void set_energy_cbf() {
-        std::function<double(Point, World)> nearest_dis = [=](Point _p, World _w) {
-            return _w.dist_to_charge_place(_p) / _w.charge_place[_w.nearest_charge_place(_p)].second;
+    void setEnergyCBF() {
+        std::function<double(Point, World)> minDistanceToChargingStations = [=](Point myPosition, World world) {
+            return (
+                    world.distanceToChargingStations(myPosition)
+                    / world.chargingStations[world.nearestChargingStation(myPosition)].second
+            );
         };
-        auto dis_to_base = [=](int x) {
-            return r[x].xy().len();
+        auto robotDistanceToBase = [=](int id) {
+            return robots[id].xy().len();
         };
-        auto part_id = [=](int x) { return (x - 1) % (n / 2) + 1; };
-        auto part = [=](int x) { return x > (n / 2); };
+        auto partId = [=](int id) { return (id - 1) % (n / 2) + 1; };
+        auto isSecondPart = [=](int x) { return x > (n / 2); };
         for (int i = 1; i <= n; i++) {
-//        printf("set energy cbf of #%d (%d, %d)\n", i, part(i), part_id(i));
-            auto swarm_comm_h = [=](VectorXd _x, double _t) {
-                std::vector<int> ind_v;
+            auto autoFormationCommH = [=](VectorXd state, double t) {
+                std::vector<int> idsInCommRange;
                 for (int j = 1; j <= n; j++) {
                     if (i == j) continue;
-                    if (r[i].xy().distance_to(r[j].xy()) > 8) continue;
-                    ind_v.push_back(j);
+                    if (robots[i].xy().distance_to(robots[j].xy()) > 8) continue;
+                    idsInCommRange.push_back(j);
                 }
-                std::sort(ind_v.begin(), ind_v.end(), [=](int a, int b) {
-                    return dis_to_base(a) < dis_to_base(b);
+                std::sort(idsInCommRange.begin(), idsInCommRange.end(), [=](int a, int b) {
+                    return robotDistanceToBase(a) < robotDistanceToBase(b);
                 });
-//            printf("Distance sort:");
-//            for (auto &a: ind_v){
-//                printf("%d ", a);
-//            }
-//            printf("\n");
-                double res = inf;
-                int loc = std::distance(ind_v.begin(), std::find(ind_v.begin(), ind_v.end(), i));
-                if (loc < 2) {
-//            if (part_id(i) <= 2) {
-//                printf("%d -> base\n", i);
-                    res = std::min(res,
-                                   0.5 * (8 - Point(_x(r[i].x_ord),
-                                                    _x(r[i].y_ord)).distance_to(Point(0, 0))));
+                double h = inf;
+                int indexOfI = std::distance(
+                        idsInCommRange.begin(),
+                        std::find(idsInCommRange.begin(), idsInCommRange.end(), i)
+                );
+                if (indexOfI < 2) {
+                    h = std::min(
+                            h,
+                            0.5 * (8 - Point(
+                                    state(robots[i].xIndex),
+                                    state(robots[i].yIndex)
+                            ).distance_to(Point(0, 0))
+                            ));
                 }
-                for (int t = std::max(0, loc - 2); t < loc; t++) {
-                    int j = ind_v[t];
-//            for (int j = 1; j <= n; j++) {
-//                if (i == j) continue;
-//                if (i > j - 1 || i < j - 2) continue;
-//                if (part(i) != part(j)) continue;
-//                if (part_id(i) > part_id(j) - 1) continue;
-//                if (part_id(i) < part_id(j) - 2) continue;
-//                printf("%d -> %d\n", i, j);
-                    res = std::min(res,
-                                   0.5 * (8 - Point(_x(r[i].x_ord),
-                                                    _x(r[i].y_ord)).distance_to(r[j].xy())));
+                for (int id = std::max(0, indexOfI - 2); id < indexOfI; id++) {
+                    int j = idsInCommRange[id];
+                    h = std::min(
+                            h,
+                            0.5 * (8 - Point(
+                                    state(robots[i].xIndex),
+                                    state(robots[i].yIndex))
+                                    .distance_to(robots[j].xy())
+                            ));
                 }
-                return res;
+                return h;
             };
-            auto fix_comm_h = [=](VectorXd _x, double _t) {
-                double res = inf;
-                double max_comm_dis = 8.5;
-                int pid = part_id(i);
-                if (pid == 1) {
-//                printf("%d to Base@(%d, 0)\n", i, -3 + 6 * part(i));
-                    res = std::min(res,
-                                   0.5 * (max_comm_dis - Point(_x(r[i].x_ord),
-                                                               _x(r[i].y_ord))
-                                           .distance_to(Point(-3 + 6 * part(i), 0))));
+            auto fixedFormationCommH = [=](VectorXd state, double t) {
+                double h = inf;
+                double maxCommDistance = 8.5;
+                int idInPart = partId(i);
+                if (idInPart == 1) {
+                    h = std::min(
+                            h,
+                            0.5 * (maxCommDistance - Point(
+                                    state(robots[i].xIndex),
+                                    state(robots[i].yIndex))
+                                    .distance_to(Point(-3 + 6 * isSecondPart(i), 0))
+                            ));
                 }
-                if (pid <= 2) {
-//                printf("%d to Base@(0, 0)\n", i);
-                    res = std::min(res,
-                                   0.5 * (max_comm_dis - Point(_x(r[i].x_ord),
-                                                               _x(r[i].y_ord))
-                                           .distance_to(Point(0, 0))));
+                if (idInPart <= 2) {
+                    h = std::min(
+                            h,
+                            0.5 * (maxCommDistance - Point(
+                                    state(robots[i].xIndex),
+                                    state(robots[i].yIndex))
+                                    .distance_to(Point(0, 0))
+                            ));
                 }
-                for (int t = std::max(1, pid - 2); t <= pid + 2 && t <= n / 2; t++) {
-                    if (t <= pid) continue;
-//                printf("%d to %d\n", i, t + part(i) * n / 2);
-                    res = std::min(res, 0.5 * (max_comm_dis - Point(_x(r[i].x_ord),
-                                                                    _x(r[i].y_ord))
-                            .distance_to(r[t + part(i) * n / 2].xy())));
+                for (int id = std::max(1, idInPart - 2); id <= idInPart + 2 && id <= n / 2; id++) {
+                    if (id <= idInPart) continue;
+                    h = std::min(
+                            h,
+                            0.5 * (maxCommDistance - Point(
+                                    state(robots[i].xIndex),
+                                    state(robots[i].yIndex))
+                                    .distance_to(robots[id + isSecondPart(i) * n / 2].xy())
+                            ));
                 }
-                return res;
+                return h;
             };
-            auto fix_comm_h_realexp = [=](VectorXd _x, double _t) {
-                double res = inf;
-                double max_comm_dis = 10;
-                if (i == 1) {
-                    res = std::min(
-                            res,
-                            0.5 * (
-                                    max_comm_dis -
-                                    Point(_x(r[i].x_ord), _x(r[i].y_ord))
-                                            .distance_to(Point(5, 0))
-                            )
-                    );
-                }
-                if (i <= 2) {
-                    res = std::min(
-                            res,
-                            0.5 * (
-                                    max_comm_dis -
-                                    Point(_x(r[i].x_ord), _x(r[i].y_ord))
-                                            .distance_to(Point(-5, 0))
-                            )
-                    );
-                }
-                for (int t = std::max(1, i - 2); t < i; t++) {
-                    res = std::min(
-                            res,
-                            0.5 * (
-                                    max_comm_dis -
-                                    Point(_x(r[i].x_ord),_x(r[i].y_ord))
-                                            .distance_to(r[t].xy())
-                            )
-                    );
-                }
-                return res;
+            auto batteryH = [=](VectorXd state, double t) {
+                double h = inf;
+                h = std::min(
+                        h,
+                        state(robots[i].batteryIndex) -
+                        log(minDistanceToChargingStations(
+                                Point(
+                                        state(robots[i].xIndex),
+                                        state(robots[i].yIndex)
+                                ),
+                                world)
+                        ));
+                return h;
             };
-            auto battery_h = [=](VectorXd _x, double _t) {
-                double res = inf;
-                res = std::min(res, _x(r[i].batt_ord) -
-                                    log(nearest_dis(Point(_x(r[i].x_ord), _x(r[i].y_ord)), wd)));
-                return res;
-            };
-            auto safety_h = [=](VectorXd _x, double _t) {
-                double res = inf;
+            auto safetyH = [=](VectorXd state, double t) {
+                double h = inf;
                 for (int j = 1; j <= n; j++) {
                     if (i == j) continue;
-                    res = std::min(res,
-                                   0.5 * (Point(_x(r[i].x_ord),
-                                                _x(r[i].y_ord)).distance_to(r[j].xy()) - 3));
+                    h = std::min(
+                            h,
+                            0.5 * (Point(
+                                    state(robots[i].xIndex),
+                                    state(robots[i].yIndex)
+                            ).distance_to(robots[j].xy()) - 3)
+                    );
                 }
-                return res;
+                return h;
             };
-            auto energy_h = [=](VectorXd _x, double _t) {
-                double res = inf;
-                res = std::min(res, battery_h(_x, _t));
-//            res = std::min(res, fix_comm_h(_x, _t));
-//            res = std::min(res, fix_comm_h_realexp(_x, _t));
-                return res;
+            auto energy_h = [=](VectorXd state, double t) {
+                double h = inf;
+                h = std::min(h, batteryH(state, t));
+                return h;
             };
-            CBF energy_cbf;
-            energy_cbf.name = "energy_cbf";
-            energy_cbf.h = energy_h;
-            energy_cbf.alpha = [](double _h) { return _h; };
-            energy_cbf.ctrl_var.resize(r[i].X.size());
-            energy_cbf.ctrl_var << 1, 1, 1, 1;
-            r[i].cbf_no_slack["energy_cbf"] = energy_cbf;
+            CBF energyCBF;
+            energyCBF.name = "energyCBF";
+            energyCBF.h = energy_h;
+            energyCBF.alpha = [](double _h) { return _h; };
+            energyCBF.controlVariable.resize(robots[i].X.size());
+            energyCBF.controlVariable << 1, 1, 1, 1;
+            robots[i].cbfNoSlack["energy_cbf"] = energyCBF;
         }
     }
 
-    void set_camera_cbf() {
-        std::function<double(Point, double)> angle_to_center = [=](Point _p, double _t) {
-            double res = -1, ang = 0.0;
-            for (auto i: wd.target) {
-                if (i.visible(_t)) {
-                    if (res == -1 || _p.distance_to(i.pos(_t)) < res) {
-                        res = _p.distance_to(i.pos(_t));
-                        ang = _p.angle_to(i.pos(_t));
+    void setYawCBF() {
+        std::function<double(Point, double)> headingToTarget = [=](Point myPosition, double t) {
+            double res = -1, headingRad = 0.0;
+            for (auto i: world.targets) {
+                if (i.visibleAtTime(t)) {
+                    if (res == -1 || myPosition.distance_to(i.pos(t)) < res) {
+                        res = myPosition.distance_to(i.pos(t));
+                        headingRad = myPosition.angle_to(i.pos(t));
                     }
                 }
             }
-//        std::cout << "ang = " << 180 / pi * ang << std::endl;
-            return ang;
+            return headingRad;
         };
         for (int i = 1; i <= n; i++) {
-            std::function<double(VectorXd, double)> camera_angle = [=](VectorXd _x, double _t) {
-                Point pos{_x(r[i].x_ord), _x(r[i].y_ord)};
-                double res = -1, delta_angle = 0.0;
-                for (auto tar: wd.target) {
-                    if (!tar.visible(_t)) continue;
-                    double dis = pos.distance_to(tar.pos(_t));
+            std::function<double(VectorXd, double)> cameraAngle = [=](VectorXd x, double t) {
+                Point pos{x(robots[i].xIndex), x(robots[i].yIndex)};
+                double res = -1, dYawRad = 0.0;
+                for (auto tar: world.targets) {
+                    if (!tar.visibleAtTime(t)) continue;
+                    double dis = pos.distance_to(tar.pos(t));
 //                if (dis < 0.5) continue;
                     if (res == -1 || dis < res) {
                         res = dis;
-                        delta_angle = _x(r[i].camera_ord) - pos.angle_to(tar.pos(_t));
+                        dYawRad = x(robots[i].cameraIndex) - pos.angle_to(tar.pos(t));
                     }
                 }
 //            double delta_angle = _x(r[i].camera_ord)
 //                                 - angle_to_center(Point(_x(r[i].x_ord),
 //                                                     _x(r[i].y_ord)),
 //                                                   _t);
-                if (delta_angle <= -pi) delta_angle += 2 * pi;
-                else if (delta_angle >= pi) delta_angle -= 2 * pi;
+                if (dYawRad <= -pi) dYawRad += 2 * pi;
+                else if (dYawRad >= pi) dYawRad -= 2 * pi;
 //            std::cout << "delta_angle = " << delta_angle << std::endl;
-                return -5 * abs(delta_angle);
+                return -5 * abs(dYawRad);
             };
-            CBF camera_cbf;
-            camera_cbf.name = "camera_cbf";
-            camera_cbf.h = camera_angle;
-            camera_cbf.ctrl_var.resize(r[i].X.size());
-            camera_cbf.ctrl_var << 0, 0, 0, 1;
+            CBF yawCBF;
+            yawCBF.name = "yawCBF";
+            yawCBF.h = cameraAngle;
+            yawCBF.controlVariable.resize(robots[i].X.size());
+            yawCBF.controlVariable << 0, 0, 0, 1;
 //        camera_cbf.ctrl_var << 1, 1, 1, 1;
 //        camera_cbf.alpha = [](double _h) {return _h;};
-            r[i].cbf_slack["camera_cbf"] = camera_cbf;
+            robots[i].cbfSlack["camera_cbf"] = yawCBF;
 
         }
     }
 
-    void set_comm_cbf() {
-        CBF comm_cbf;
-        comm_cbf.ctrl_var.resize(r[1].X.size());
-        comm_cbf.ctrl_var << 1, 1, 1, 1;
+    void setCommCBF() {
+        CBF commCBF;
+        commCBF.controlVariable.resize(robots[1].X.size());
+        commCBF.controlVariable << 1, 1, 1, 1;
 
         for (int i = 1; i <= n; i++) {
             for (int j = 1; j <= n; j++) {
                 if (i == j) continue;
                 if ((i > 3) != (j > 3)) continue;
-                comm_cbf.name = "comm_to_" + std::to_string(j);
-                comm_cbf.h = [=](VectorXd _x, double _t) {
-                    return 2 - Point(_x(r[i].x_ord), _x(r[i].y_ord)).distance_to(r[j].xy());
+                commCBF.name = "CommTo" + std::to_string(j);
+                commCBF.h = [=](VectorXd _x, double _t) {
+                    return 2 - Point(_x(robots[i].xIndex), _x(robots[i].yIndex)).distance_to(robots[j].xy());
                 };
-                r[i].cbf_slack[comm_cbf.name] = comm_cbf;
+                robots[i].cbfSlack[commCBF.name] = commCBF;
             }
         }
     }
 
-    void set_safety_cbf() {
-        CBF safety_cbf;
-        safety_cbf.ctrl_var.resize(r[1].X.size());
-        safety_cbf.ctrl_var << 1, 1, 1, 1;
+    void setSafetyCBF() {
+        CBF safetyCBF;
+        safetyCBF.controlVariable.resize(robots[1].X.size());
+        safetyCBF.controlVariable << 1, 1, 1, 1;
 
         for (int i = 1; i <= n; i++) {
             for (int j = 1; j <= n; j++) {
                 if (i == j) continue;
-                safety_cbf.name = "safe_to_" + std::to_string(j);
-                safety_cbf.h = [=](VectorXd _x, double _t) {
-                    return 5.0 * (Point(_x(r[i].x_ord), _x(r[i].y_ord)).distance_to(r[j].xy()) - 3);
+                safetyCBF.name = "SafetyTo" + std::to_string(j);
+                safetyCBF.h = [=](VectorXd x, double t) {
+                    return 5.0 * (Point(x(robots[i].xIndex), x(robots[i].yIndex)).distance_to(robots[j].xy()) - 3);
                 };
-                r[i].cbf_slack[safety_cbf.name] = safety_cbf;
+                robots[i].cbfSlack[safetyCBF.name] = safetyCBF;
             }
         }
     }
 
-    void init_log_path(char *_p) {
-        data_log.open(_p, std::ios::app);
+    void initLogPath(char *_p) {
+        ofstream.open(_p, std::ios::app);
     }
 
-    void end_log() {
-        data_log << std::fixed << std::setprecision(6) << data_j;
-        data_log.close();
+    void endLog() {
+        ofstream << std::fixed << std::setprecision(6) << data;
+        ofstream.close();
     }
 
-    void para_log_once() {
-        data_j["para"]["number"] = n;
+    void logParams() {
+        data["para"]["number"] = n;
         double x_lim[2], y_lim[2];
-        get_x_limit(x_lim), get_y_limit(y_lim);
-        data_j["para"]["lim"]["x"] = {x_lim[0], x_lim[1]};
-        data_j["para"]["lim"]["y"] = {y_lim[0], y_lim[1]};
-        get_x_limit(x_lim, 1.0), get_y_limit(y_lim, 1.0);
-        for (int i = 1; i <= wd.w.n; i++) {
-            data_j["para"]["world"].push_back({
-                                                      {"x", wd.w.p[i].x},
-                                                      {"y", wd.w.p[i].y}
-                                              });
+        getXLimit(x_lim), getYLimit(y_lim);
+        data["para"]["lim"]["x"] = {x_lim[0], x_lim[1]};
+        data["para"]["lim"]["y"] = {y_lim[0], y_lim[1]};
+        getXLimit(x_lim, 1.0), getYLimit(y_lim, 1.0);
+        for (int i = 1; i <= world.boundary.n; i++) {
+            data["para"]["world"].push_back({
+                                                    {"x", world.boundary.p[i].x},
+                                                    {"y", world.boundary.p[i].y}
+                                            });
         }
-        data_j["para"]["world"].push_back({
-                                                  {"x", wd.w.p[1].x},
-                                                  {"y", wd.w.p[1].y}
-                                          });
-        data_j["para"]["charge"]["num"] = wd.charge_place.size();
-        for (auto &i: wd.charge_place) {
-            data_j["para"]["charge"]["pos"].push_back({
-                                                              {"x", i.first.x},
-                                                              {"y", i.first.y}
-                                                      });
-            data_j["para"]["charge"]["dist"].push_back(i.second);
+        data["para"]["world"].push_back({
+                                                {"x", world.boundary.p[1].x},
+                                                {"y", world.boundary.p[1].y}
+                                        });
+        data["para"]["charge"]["num"] = world.chargingStations.size();
+        for (auto &i: world.chargingStations) {
+            data["para"]["charge"]["pos"].push_back({
+                                                            {"x", i.first.x},
+                                                            {"y", i.first.y}
+                                                    });
+            data["para"]["charge"]["dist"].push_back(i.second);
         }
-        for (auto &i: wd.target) {
-            data_j["para"]["target"].push_back({
-                                                       {"k", i.den_para["k"]},
-                                                       {"r", i.den_para["r"]}
-                                               });
+        for (auto &i: world.targets) {
+            data["para"]["target"].push_back({
+                                                     {"k", i.densityParams["k"]},
+                                                     {"r", i.densityParams["r"]}
+                                             });
         }
-        data_j["para"]["grid_world"] = {
-                {"x_num", gw.x_num},
-                {"y_num", gw.y_num},
-                {"x_lim", {gw.x_lim.first, gw.x_lim.second}},
-                {"y_lim", {gw.y_lim.first, gw.y_lim.second}}
+        data["para"]["grid_world"] = {
+                {"x_num", gridWorld.xNum},
+                {"y_num", gridWorld.yNum},
+                {"x_lim", {gridWorld.xLim.first, gridWorld.xLim.second}},
+                {"y_lim", {gridWorld.yLim.first, gridWorld.yLim.second}}
         };
     }
 
-    void log_once() {
+    void logOnce() {
         json tmp_j;
         tmp_j["runtime"] = runtime;
         for (int i = 1; i <= n; i++) {
             tmp_j["robot"][i - 1] = {
-                    {"x",      r[i].x()},
-                    {"y",      r[i].y()},
-                    {"batt",   r[i].batt()},
-                    {"camera", r[i].camera()}
+                    {"x",      robots[i].x()},
+                    {"y",      robots[i].y()},
+                    {"batt",   robots[i].batt()},
+                    {"camera", robots[i].camera()}
             };
-            for (auto cbf: r[i].cbf_no_slack) {
+            for (auto cbf: robots[i].cbfNoSlack) {
                 auto h = cbf.second;
-                tmp_j["robot"][i - 1][cbf.first] = h.h(r[i].X, runtime);
+                tmp_j["robot"][i - 1][cbf.first] = h.h(robots[i].X, runtime);
             }
-            for (auto cbf: r[i].cbf_slack) {
+            for (auto cbf: robots[i].cbfSlack) {
                 auto h = cbf.second;
-                tmp_j["robot"][i - 1][cbf.first] = h.h(r[i].X, runtime);
+                tmp_j["robot"][i - 1][cbf.first] = h.h(robots[i].X, runtime);
             }
-            tmp_j["cvt"][i - 1]["num"] = c.pl[i].n + 1;
-            for (int j = 1; j <= c.pl[i].n; j++) {
-                tmp_j["cvt"][i - 1]["pos"].push_back({{"x", c.pl[i].p[j].x},
-                                                      {"y", c.pl[i].p[j].y}});
+            tmp_j["cvt"][i - 1]["num"] = cvt.pl[i].n + 1;
+            for (int j = 1; j <= cvt.pl[i].n; j++) {
+                tmp_j["cvt"][i - 1]["pos"].push_back({{"x", cvt.pl[i].p[j].x},
+                                                      {"y", cvt.pl[i].p[j].y}});
             }
-            tmp_j["cvt"][i - 1]["pos"].push_back({{"x", c.pl[i].p[1].x},
-                                                  {"y", c.pl[i].p[1].y}});
-            tmp_j["cvt"][i - 1]["center"] = {{"x", c.ct[i].x},
-                                             {"y", c.ct[i].y}};
+            tmp_j["cvt"][i - 1]["pos"].push_back({{"x", cvt.pl[i].p[1].x},
+                                                  {"y", cvt.pl[i].p[1].y}});
+            tmp_j["cvt"][i - 1]["center"] = {{"x", cvt.ct[i].x},
+                                             {"y", cvt.ct[i].y}};
         }
-        for (auto i: wd.target) {
-            if (i.visible(runtime)) {
+        for (auto i: world.targets) {
+            if (i.visibleAtTime(runtime)) {
                 tmp_j["target"].push_back({
                                                   {"x", i.pos(runtime).x},
                                                   {"y", i.pos(runtime).y},
-                                                  {"k", i.den_para["k"]},
-                                                  {"r", i.den_para["r"]}
+                                                  {"k", i.densityParams["k"]},
+                                                  {"r", i.densityParams["r"]}
                                           });
             }
         }
-//    json data_grid_world;
-//    for (int i = 0; i < gw.x_num; i++) {
-//        json tmp_j = json::array();
-//        for (int j = 0; j < gw.y_num; j++) {
-//            tmp_j.push_back(gw.get_result(i, j) == true ? gw.true_weight : gw.false_weight);
-//        }
-//        data_grid_world.push_back(tmp_j);
-//    }
-//    tmp_j["grid_world"] = data_grid_world;
-        tmp_j["update"] = update_j;
-        data_j["state"].push_back(tmp_j);
+        tmp_j["update"] = updatedGridWorld;
+        data["state"].push_back(tmp_j);
     }
 
-    void time_forward(double _t) {
+    void stepTimeForward(double dt) {
         for (int i = 1; i <= n; i++) {
             VectorXd u{3};
             u << 0, 0, 0;
-            r[i].time_forward(u, runtime, _t, wd);
+            robots[i].stepTimeForward(u, runtime, dt, world);
         }
-        runtime += _t;
+        runtime += dt;
     }
 
-    void cal_cvt() {
-        c = CVT(n, wd.w);
+    void calCVT() {
+        cvt = CVT(n, world.boundary);
         for (int i = 1; i <= n; i++) {
-            c.pt[i] = r[i].xy();
+            cvt.pt[i] = robots[i].xy();
         }
-        c.cal_poly();
+        cvt.cal_poly();
 //    c.cal_centroid([=](const Point &_p) {
 //        return wd.get_dens(runtime)(_p);
 //    }, spacing);
-        for (int i = 1; i <= c.n; i++) {
-            c.ct[i] = gw.get_centroid_in_polygon(c.pl[i]);
+        for (int i = 1; i <= cvt.n; i++) {
+            cvt.ct[i] = gridWorld.getCentroidInPolygon(cvt.pl[i]);
         }
     }
 
-    void set_cvt_cbf() {
+    void setCVTCBF() {
         for (int i = 1; i <= n; i++) {
-            CBF cvt_cbf;
-            cvt_cbf.ctrl_var.resize(r[i].X.size());
-            cvt_cbf.ctrl_var << 1, 1, 1, 1;
-            cvt_cbf.name = "cvt_cbf";
-            cvt_cbf.h = [=](VectorXd _x, double _t) {
-                return -5.0 * c.ct[i].distance_to(Point(_x(r[i].x_ord), _x(r[i].y_ord)));
+            CBF cvtCBF;
+            cvtCBF.controlVariable.resize(robots[i].X.size());
+            cvtCBF.controlVariable << 1, 1, 1, 1;
+            cvtCBF.name = "cvt_cbf";
+            cvtCBF.h = [=](VectorXd x, double t) {
+                return -5.0 * cvt.ct[i].distance_to(Point(x(robots[i].xIndex), x(robots[i].yIndex)));
             };
-            cvt_cbf.alpha = [](double _h) { return _h; };
-            r[i].cbf_slack[cvt_cbf.name] = cvt_cbf;
+            cvtCBF.alpha = [](double h) { return h; };
+            robots[i].cbfSlack[cvtCBF.name] = cvtCBF;
         }
     }
 
-    void cvt_forward(double _t) {
-
-        json opt_j;
-
+    void cvtForward(double _t) {
+        json optimisationData;
         for (int i = 1; i <= n; i++) {
-#ifdef OPT_DEBUG
-            std::cout << "Robot #" << i << "(" << r[i].id << ")@ runtime: " << runtime << std::endl;
-#endif
-            Point up = ((c.ct[i] - r[i].xy()) * 5).saturation(1.0);
+            Point up = ((cvt.ct[i] - robots[i].xy()) * 5).saturation(1.0);
             VectorXd u;
-            u.resize(r[i].X.size());
+            u.resize(robots[i].X.size());
             u.setZero();
 //        u(r[i].x_ord) = up.x;
 //        u(r[i].y_ord) = up.y;
-            json robot_j = r[i].time_forward(u, runtime, _t, wd);
-            opt_j.push_back(robot_j);
+            json robotData = robots[i].stepTimeForward(u, runtime, _t, world);
+            optimisationData.push_back(robotData);
         }
-        int sz = data_j["state"].size();
-        data_j["state"][sz - 1]["opt"] = opt_j;
+        int sz = data["state"].size();
+        data["state"][sz - 1]["opt"] = optimisationData;
         runtime += _t;
     }
 
-    void get_pos(Point _p[]) {
+    std::vector<Point> getPositions() {
+        std::vector<Point> positions;
         for (int i = 1; i <= n; i++) {
-            _p[i - 1] = r[i].xy();
+            positions.push_back(robots[i].xy());
         }
+        return positions;
     }
 
-    void get_x_limit(double _x[], double inflation = 1.2) {
-        wd.w.get_x_limit(_x, inflation);
+    void getXLimit(double _x[], double inflation = 1.2) {
+        world.boundary.get_x_limit(_x, inflation);
     }
 
-    void get_y_limit(double *_y, double inflation = 1.2) {
-        wd.w.get_y_limit(_y, inflation);
+    void getYLimit(double *_y, double inflation = 1.2) {
+        world.boundary.get_y_limit(_y, inflation);
     }
 
-    void update_vis() {
-        update_j = json::array();
+    void updateGridWorld() {
+        updatedGridWorld = json::array();
         for (int i = 1; i <= n; i++) {
             double tol = 2;
-            Point deny_p[4] = {{r[i].x() - tol, r[i].y() - tol},
-                               {r[i].x() + tol, r[i].y() - tol},
-                               {r[i].x() + tol, r[i].y() + tol},
-                               {r[i].x() - tol, r[i].y() + tol}};
-//        update_j.push_back(gw.set_res_in_polygon(Polygon(4, deny_p), true, true));
-            update_j.push_back(gw.set_res_in_radii(r[i].xy(), tol, true, true));
+            Point visibleBoundary[4] = {
+                    {robots[i].x() - tol, robots[i].y() - tol},
+                    {robots[i].x() + tol, robots[i].y() - tol},
+                    {robots[i].x() + tol, robots[i].y() + tol},
+                    {robots[i].x() - tol, robots[i].y() + tol}
+            };
+//            updatedGridWorld.push_back(gridWorld.setValueInPolygon(Polygon(4, visibleBoundary), true, true));
+            updatedGridWorld.push_back(gridWorld.setValueInCircle(robots[i].xy(), tol, true, true));
         }
     }
 
-    void grid_world_output() {
+    void gridWorldOutput() {
         system("clear");
 //    std::cout << "\033[2J\033[H";
-        std::vector<std::vector<char> > v;
-        int y_num = 60, x_num = 150;
-        v.resize(y_num);
-        for (auto &a: v) {
-            a.resize(x_num);
+        std::vector<std::vector<char> > charMap;
+        int yNum = 60, xNum = 150;
+        charMap.resize(yNum);
+        for (auto &a: charMap) {
+            a.resize(xNum);
         }
-        for (int j = y_num - 1; j >= 0; j--) {
-            for (int i = 0; i < x_num; i++) {
-                v[j][i] = (gw.get_result(i * gw.x_num / x_num,
-                                         j * gw.y_num / y_num) == true) ?
-                          ' ' : '.';
+        for (int j = yNum - 1; j >= 0; j--) {
+            for (int i = 0; i < xNum; i++) {
+                charMap[j][i] = (gridWorld.getValue(i * gridWorld.xNum / xNum, j * gridWorld.yNum / yNum) == true)
+                                ? ' ' : '.';
             }
         }
         for (int i = 1; i <= n; i++) {
-            v[gw.get_num_in_ylim(r[i].y()) * y_num / gw.y_num]
-            [gw.get_num_in_xlim(r[i].x()) * x_num / gw.x_num] = 'a' + i - 1;
+            charMap[gridWorld.getNumInYLim(robots[i].y()) * yNum / gridWorld.yNum]
+            [gridWorld.getNumInXLim(robots[i].x()) * xNum / gridWorld.xNum] = 'a' + i - 1;
         }
-        for (int j = y_num - 1; j >= 0; j--) {
-            for (int i = 0; i < x_num; i++) {
-                if (isalpha(v[j][i])) {
+        for (int j = yNum - 1; j >= 0; j--) {
+            for (int i = 0; i < xNum; i++) {
+                if (isalpha(charMap[j][i])) {
                     std::cout << RED;
-                    printf("%c", v[j][i]);
+                    printf("%c", charMap[j][i]);
                     std::cout << GREEN;
                 } else {
-                    printf("%c", v[j][i]);
+                    printf("%c", charMap[j][i]);
                 }
             }
             printf("\n");

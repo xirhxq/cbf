@@ -7,7 +7,7 @@
 #include "nlohmann/json.hpp"
 #include "Eigen/Dense"
 #include "gurobi_c++.h"
-#include "computing_geometry/ComputingGeometry"
+#include "ComputingGeometry/ComputingGeometry"
 
 using namespace Eigen;
 using json = nlohmann::json;

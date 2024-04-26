@@ -68,24 +68,24 @@ int main() {
     Swarm s = Swarm(data["swarm"]["num"], wd);
 
     if (data["swarm"]["initial_position"] == "random_in_poly") {
-        s.random_initial_position(Polygon(get_point_vector_from_json(data["swarm"]["random_poly"])));
+        s.randomInitialPosition(Polygon(get_point_vector_from_json(data["swarm"]["random_poly"])));
     } else if (data["swarm"]["initial_position"] == "specified") {
         auto v = get_point_vector_from_json(data["swarm"]["specified_pos"]);
-        s.set_initial_position(v);
+        s.setInitialPosition(v);
     }
     else if (data["swarm"]["initial_position"] == "random_all"){
-        s.random_initial_position();
+        s.randomInitialPosition();
     }
 
 
     if (data["cbfs"]["energy_cbf"] == "on") {
-        s.set_energy_cbf();
+        s.setEnergyCBF();
     }
     if (data["cbfs"]["camera_cbf"] == "on") {
-        s.set_camera_cbf();
+        s.setYawCBF();
     }
-    s.init_log_path(fileName);
-    s.para_log_once();
+    s.initLogPath(fileName);
+    s.logParams();
 
     s.output();
 
@@ -97,27 +97,27 @@ int main() {
             printf("%.2lf seconds elapsed...\n", t_gap * (iter - 1));
         }
         if (data["cbfs"]["comm_cbf"] == "on"){
-            s.set_comm_cbf();
+            s.setCommCBF();
         }
-        s.update_vis();
+        s.updateGridWorld();
         if (data["cbfs"]["cvt_cbf"] == "on") {
-            s.cal_cvt();
-            s.set_cvt_cbf();
+            s.calCVT();
+            s.setCVTCBF();
         }
         if (data["cbfs"]["safety_cbf"] == "on") {
-            s.set_safety_cbf();
+            s.setSafetyCBF();
         }
-        s.log_once();
-        s.cvt_forward(t_gap);
+        s.logOnce();
+        s.cvtForward(t_gap);
         if (data["execute"]["output_grid"] == "on") {
-            s.grid_world_output();
+            s.gridWorldOutput();
         }
     }
 
     printf("\nAfter %.4lf seconds\n", t_total);
 //    s.gw.output();
     s.output();
-    s.end_log();
+    s.endLog();
     printf("Data saved in %s\n", fileName);
 
     clock_t finish = clock();

@@ -7,304 +7,259 @@
 
 class GridWorld {
 public:
-    std::pair<double, double> x_lim, y_lim;
-    int x_num{}, y_num{};
+    std::pair<double, double> xLim, yLim;
+    int xNum{}, yNum{};
     std::vector<bool> vis;
-    double true_weight = 0.0, false_weight = 1.0;
+    double trueWeight = 0.0, falseWeight = 1.0;
 
 public:
     GridWorld() {
 
     }
-    GridWorld(pd _x_lim, int _x_num, pd _y_lim, int _y_num) {
-        x_lim = _x_lim;
-        y_lim = _y_lim;
-        x_num = _x_num;
-        y_num = _y_num;
-        vis.resize(_x_num * _y_num);
+    GridWorld(pd xLim, int xNum, pd yLim, int yNum): xLim(xLim), yLim(yLim), xNum(xNum), yNum(yNum) {
+        vis.resize(xNum * yNum);
         reset();
     }
 
-    void reset(bool _res = false) {
+    void reset(bool value = false) {
         for (auto a: vis) {
-            a = _res;
+            a = value;
         }
     }
 
     void output(char c = '*') {
         printf("< Gridworld of (%.2lf-%.2lf, %.2lf-%.2lf) -> (%d, %d) grids",
-               x_lim.first, x_lim.second, y_lim.first, y_lim.second, x_num, y_num);
+               xLim.first, xLim.second, yLim.first, yLim.second, xNum, yNum);
         printf("\n");
-        for (int j = y_num - 1; j >= 0; j--) {
-            for (int i = 0; i < x_num; i++) {
-                printf("%c", (get_result(i, j) == true) ? c : '.');
+        for (int j = yNum - 1; j >= 0; j--) {
+            for (int i = 0; i < xNum; i++) {
+                printf("%c", (getValue(i, j) == true) ? c : '.');
             }
             printf("\n");
         }
-        for (int x_ind = 0; x_ind < x_num; x_ind++) {
+        for (int i = 0; i < xNum; i++) {
             printf("-");
         }
         printf(">\n");
     }
 
-    int get_num_in_lim(double _a, pd _lim, int _sz, std::string _mode = "round") {
-        double ratio = (_a - _lim.first) / (_lim.second - _lim.first);
-        int ret = lround(ratio * _sz);
-        if (_mode == "ceil") {
-            ret = ceil(ratio * _sz);
-        } else if (_mode == "floor") {
-            ret = floor(ratio * _sz);
+    int getNumInLim(double coordinate, pd lim, int size, std::string mode = "round") {
+        double ratio = (coordinate - lim.first) / (lim.second - lim.first);
+        int ret = lround(ratio * size);
+        if (mode == "ceil") {
+            ret = ceil(ratio * size);
+        } else if (mode == "floor") {
+            ret = floor(ratio * size);
         }
-        ret = std::max(std::min(ret, _sz - 1), 0);
+        ret = std::max(std::min(ret, size - 1), 0);
 //    printf("ratio = %.2lf ret = %d\n", ratio, ret);
         return ret;
     }
 
-    int get_num_in_xlim(double _x, std::string _mode = "round") {
-        return get_num_in_lim(_x, x_lim, x_num, _mode);
+    int getNumInXLim(double x, std::string mode = "round") {
+        return getNumInLim(x, xLim, xNum, mode);
     }
 
-    int get_num_in_ylim(double _y, std::string _mode = "round") {
-        return get_num_in_lim(_y, y_lim, y_num, _mode);
+    int getNumInYLim(double y, std::string mode = "round") {
+        return getNumInLim(y, yLim, yNum, mode);
     }
 
-    int get_ind(int _x_ind, int _y_ind) const {
-        int ind = _x_ind * y_num + _y_ind;
+    int getIndex(int xIndex, int yIndex) const {
+        int ind = xIndex * yNum + yIndex;
         return ind;
     }
 
-    int get_x_ind(int _ind) const {
-        int x_ind = _ind / y_num;
-        return x_ind;
+    int getXIndex(int index) const {
+        int xIndex = index / yNum;
+        return xIndex;
     }
 
-    int get_y_ind(int _ind) const {
-        int y_ind = _ind % y_num;
-        return y_ind;
+    int getYIndex(int index) const {
+        int yIndex = index % yNum;
+        return yIndex;
     }
 
-    bool get_result(Point _p) {
-        int x_ind = get_num_in_xlim(_p.x);
-        int y_ind = get_num_in_ylim(_p.y);
-        int ind = get_ind(x_ind, y_ind);
+    bool getValue(Point point) {
+        int xIndex = getNumInXLim(point.x);
+        int yIndex = getNumInYLim(point.y);
+        int index = getIndex(xIndex, yIndex);
 //    printf("(%d, %d) == (%d) -> %d\n", x_ind, y_ind, ind, bool(vis[ind]));
+        return vis[index] == true;
+    }
+
+    bool getValue(int index) {
+        return vis[index] == true;
+    }
+
+    bool getValue(int xIndex, int yIndex) {
+        xIndex = std::max(0, std::min(xIndex, xNum - 1));
+        yIndex = std::max(0, std::min(yIndex, yNum - 1));
+        int ind = getIndex(xIndex, yIndex);
         return vis[ind] == true;
     }
 
-    bool get_result(int _ind) {
-        return vis[_ind] == true;
+    void setValue(Point point, bool value) {
+        int xIndex = getNumInXLim(point.x);
+        int yIndex = getNumInYLim(point.y);
+        vis[getIndex(xIndex, yIndex)] = value;
     }
 
-    bool get_result(int _x_ind, int _y_ind) {
-        _x_ind = std::max(0, std::min(_x_ind, x_num - 1));
-        _y_ind = std::max(0, std::min(_y_ind, y_num - 1));
-        int ind = get_ind(_x_ind, _y_ind);
-        return vis[ind] == true;
+    void setValue(int xIndex, int yIndex, bool value) {
+        vis[getIndex(xIndex, yIndex)] = value;
     }
 
-    void set_result(Point _p, bool _res) {
-        int x_ind = get_num_in_xlim(_p.x);
-        int y_ind = get_num_in_ylim(_p.y);
-        vis[get_ind(x_ind, y_ind)] = _res;
+    void setValue(int index, bool value) {
+        vis[index] = value;
     }
 
-    void set_result(int _x_ind, int _y_ind, bool _res) {
-        vis[get_ind(_x_ind, _y_ind)] = _res;
-    }
-
-    void set_result(int _ind, bool _res) {
-        vis[_ind] = _res;
-    }
-
-    double get_pos_in_lim(int _ind, pd _lim, int _sz) {
-        double ratio = 1.0 * _ind / _sz;
-        double pos = _lim.first * (1.0 - ratio) + _lim.second * ratio;
+    double getPositionInLimit(int index, pd limit, int size) {
+        double ratio = 1.0 * index / size;
+        double pos = limit.first * (1.0 - ratio) + limit.second * ratio;
         return pos;
     }
 
-    double get_xpos_in_xlim(int _x_ind) {
-        return get_pos_in_lim(_x_ind, x_lim, x_num);
+    double getXPositionInXLimit(int xIndex) {
+        return getPositionInLimit(xIndex, xLim, xNum);
     }
 
-    double get_ypos_in_ylim(int _y_ind) {
-        return get_pos_in_lim(_y_ind, y_lim, y_num);
+    double getYPositionInYLimit(int yIndex) {
+        return getPositionInLimit(yIndex, yLim, yNum);
     }
 
-    Point get_point_in_area(int _x_ind, int _y_ind) {
-        return {get_xpos_in_xlim(_x_ind), get_ypos_in_ylim(_y_ind)};
+    Point getPointInArea(int xIndex, int yIndex) {
+        return {getXPositionInXLimit(xIndex), getYPositionInYLimit(yIndex)};
     }
 
-    Point get_point_in_area(int _ind) {
-        return {get_xpos_in_xlim(get_x_ind(_ind)), get_ypos_in_ylim(get_y_ind(_ind))};
+    Point getPointInArea(int index) {
+        return {getXPositionInXLimit(getXIndex(index)), getYPositionInYLimit(getYIndex(index))};
     }
 
-    double get_res_in_polygon(Polygon _p) {
+    double getValueInPolygon(Polygon poly) {
         double res = 0;
-        pd x_lim_pd = _p.get_x_limit(1.0), y_lim_pd;
-        pd x_ind_pd, y_ind_pd;
-        x_ind_pd.first = get_num_in_xlim(x_lim_pd.first, "ceil");
-        x_ind_pd.second = get_num_in_xlim(x_lim_pd.second, "floor");
-        for (int x_ind = x_ind_pd.first; x_ind <= x_ind_pd.second; x_ind++) {
-            double x_pos = get_xpos_in_xlim(x_ind);
-            y_lim_pd = _p.get_y_lim_at_certain_x(x_pos);
-            y_ind_pd.first = get_num_in_ylim(y_lim_pd.first, "ceil");
-            y_ind_pd.second = get_num_in_ylim(y_lim_pd.second, "floor");
-            for (int y_ind = y_ind_pd.first; y_ind <= y_ind_pd.second; y_ind++) {
-                res += (get_result(x_ind, y_ind) == true) ? true_weight : false_weight;
-#ifdef GRIDWORLD_DEBUG
-                printf("(%d, %d) -> %d res = %.2lf\n", x_ind, y_ind, get_result(x_ind, y_ind) == true, res);
-#endif
+        pd xLimit = poly.get_x_limit(1.0), yLimit;
+        pd xIndexes, yIndexes;
+        xIndexes.first = getNumInXLim(xLimit.first, "ceil");
+        xIndexes.second = getNumInXLim(xLimit.second, "floor");
+        for (int xIndex = xIndexes.first; xIndex <= xIndexes.second; xIndex++) {
+            double x = getXPositionInXLimit(xIndex);
+            yLimit = poly.get_y_lim_at_certain_x(x);
+            yIndexes.first = getNumInYLim(yLimit.first, "ceil");
+            yIndexes.second = getNumInYLim(yLimit.second, "floor");
+            for (int y_ind = yIndexes.first; y_ind <= yIndexes.second; y_ind++) {
+                res += (getValue(xIndex, y_ind) == true) ? trueWeight : falseWeight;
             }
         }
         return res;
     }
 
-    json set_res_in_polygon(Polygon _p, bool _res, bool _update_json = false) {
+    json setValueInPolygon(Polygon poly, bool value, bool updateJson = false) {
         json ret = json::array();
-        pd x_lim_pd = _p.get_x_limit(1.0), y_lim_pd;
-        pd x_ind_pd, y_ind_pd;
-        x_ind_pd.first = get_num_in_xlim(x_lim_pd.first, "ceil");
-        x_ind_pd.second = get_num_in_xlim(x_lim_pd.second, "floor");
+        pd xLimit = poly.get_x_limit(1.0), yLimit;
+        pd xIndexes, yIndexes;
+        xIndexes.first = getNumInXLim(xLimit.first, "ceil");
+        xIndexes.second = getNumInXLim(xLimit.second, "floor");
 //    printf("x_lim: (%.12lf, %.12lf)\tx_ind: (%lf, %lf)\n", x_lim_pd.first, x_lim_pd.second, x_ind_pd.first, x_ind_pd.second);
-        for (int x_ind = x_ind_pd.first; x_ind <= x_ind_pd.second; x_ind++) {
-            double x_pos = get_xpos_in_xlim(x_ind);
-            if (x_pos > x_lim_pd.second || x_pos < x_lim_pd.first) continue;
+        for (int xIndex = xIndexes.first; xIndex <= xIndexes.second; xIndex++) {
+            double x = getXPositionInXLimit(xIndex);
+            if (x > xLimit.second || x < xLimit.first) continue;
 //        printf("x_ind = %d, x_pos = %.12lf\n", x_ind, x_pos);
-            y_lim_pd = _p.get_y_lim_at_certain_x(x_pos);
-            y_ind_pd.first = get_num_in_ylim(y_lim_pd.first, "ceil");
-            y_ind_pd.second = get_num_in_ylim(y_lim_pd.second, "floor");
-            for (int y_ind = y_ind_pd.first; y_ind <= y_ind_pd.second; y_ind++) {
-                if (_update_json && get_result(x_ind, y_ind) != _res) {
-                    ret.push_back({{"x", x_ind},
-                                   {"y", y_ind}});
+            yLimit = poly.get_y_lim_at_certain_x(x);
+            yIndexes.first = getNumInYLim(yLimit.first, "ceil");
+            yIndexes.second = getNumInYLim(yLimit.second, "floor");
+            for (int yIndex = yIndexes.first; yIndex <= yIndexes.second; yIndex++) {
+                if (updateJson && getValue(xIndex, yIndex) != value) {
+                    ret.push_back({{"x", xIndex},
+                                   {"y", yIndex}});
                 }
-                set_result(x_ind, y_ind, _res);
+                setValue(xIndex, yIndex, value);
             }
         }
         return ret;
     }
 
-    json set_res_in_radii(Point _pt, double _r, bool _res, bool _update_json = false) {
-        Point p[4] = {{_pt.x - _r, _pt.y - _r},
-                      {_pt.x + _r, _pt.y - _r},
-                      {_pt.x + _r, _pt.y + _r},
-                      {_pt.x - _r, _pt.y + _r}};
-        Polygon _p = Polygon(4, p);
+    json setValueInCircle(Point center, double radii, bool value, bool updateJson = false) {
+        Point outerSquare[4] = {{center.x - radii, center.y - radii},
+                                {center.x + radii, center.y - radii},
+                                {center.x + radii, center.y + radii},
+                                {center.x - radii, center.y + radii}};
+        Polygon poly = Polygon(4, outerSquare);
         json ret = json::array();
-        pd x_lim_pd = _p.get_x_limit(1.0), y_lim_pd;
-        pd x_ind_pd, y_ind_pd;
-        x_ind_pd.first = get_num_in_xlim(x_lim_pd.first, "ceil");
-        x_ind_pd.second = get_num_in_xlim(x_lim_pd.second, "floor");
-//    printf("x_lim: (%.12lf, %.12lf)\tx_ind: (%lf, %lf)\n", x_lim_pd.first, x_lim_pd.second, x_ind_pd.first, x_ind_pd.second);
-        for (int x_ind = x_ind_pd.first; x_ind <= x_ind_pd.second; x_ind++) {
-            double x_pos = get_xpos_in_xlim(x_ind);
-            if (x_pos > x_lim_pd.second || x_pos < x_lim_pd.first) continue;
-//        printf("x_ind = %d, x_pos = %.12lf\n", x_ind, x_pos);
-            y_lim_pd = _p.get_y_lim_at_certain_x(x_pos);
-            y_ind_pd.first = get_num_in_ylim(y_lim_pd.first, "ceil");
-            y_ind_pd.second = get_num_in_ylim(y_lim_pd.second, "floor");
-            for (int y_ind = y_ind_pd.first; y_ind <= y_ind_pd.second; y_ind++) {
-                Point set_point = get_point_in_area(x_ind, y_ind);
-                if (set_point.distance_to(_pt) > _r) continue;
-                if (_update_json && get_result(x_ind, y_ind) != _res) {
-                    ret.push_back({{"x", x_ind},
-                                   {"y", y_ind}});
+        pd xLimit = poly.get_x_limit(1.0), yLimit;
+        pd xIndexes, yIndexes;
+        xIndexes.first = getNumInXLim(xLimit.first, "ceil");
+        xIndexes.second = getNumInXLim(xLimit.second, "floor");
+        for (int i = xIndexes.first; i <= xIndexes.second; i++) {
+            double x = getXPositionInXLimit(i);
+            if (x > xLimit.second || x < xLimit.first) continue;
+            yLimit = poly.get_y_lim_at_certain_x(x);
+            yIndexes.first = getNumInYLim(yLimit.first, "ceil");
+            yIndexes.second = getNumInYLim(yLimit.second, "floor");
+            for (int j = yIndexes.first; j <= yIndexes.second; j++) {
+                Point p = getPointInArea(i, j);
+                if (p.distance_to(center) > radii) continue;
+                if (updateJson && getValue(i, j) != value) {
+                    ret.push_back({{"x", i},
+                                   {"y", j}});
                 }
-                set_result(x_ind, y_ind, _res);
+                setValue(i, j, value);
             }
         }
         return ret;
     }
 
-    Point get_centroid_in_polygon(Polygon _p) {
-        int total_cnt = 0, true_cnt = 0;
-        double total_x_sum = 0.0, total_y_sum = 0.0, total_weight = get_res_in_polygon(_p);
-        double x_sum = 0.0, y_sum = 0.0;
-        pd x_lim_pd = _p.get_x_limit(1.0), y_lim_pd;
-        pd x_ind_pd, y_ind_pd;
-        x_ind_pd.first = get_num_in_xlim(x_lim_pd.first, "ceil");
-        x_ind_pd.second = get_num_in_xlim(x_lim_pd.second, "floor");
-        for (int x_ind = x_ind_pd.first; x_ind <= x_ind_pd.second; x_ind++) {
-            double x_pos = get_xpos_in_xlim(x_ind);
-            y_lim_pd = _p.get_y_lim_at_certain_x(x_pos);
-            y_ind_pd.first = get_num_in_ylim(y_lim_pd.first, "ceil");
-            y_ind_pd.second = get_num_in_ylim(y_lim_pd.second, "floor");
-            for (int y_ind = y_ind_pd.first; y_ind <= y_ind_pd.second; y_ind++) {
-                double y_pos = get_ypos_in_ylim(y_ind);
-#ifdef GRIDWORLD_DEBUG
-                printf("(%d, %d) -> (%.2lf, %.2lf) = %d\n", x_ind, y_ind, x_pos, y_pos, get_result(x_ind, y_ind));
-#endif
-                total_cnt++;
-                total_x_sum += x_pos;
-                total_y_sum += y_pos;
-                if (get_result(x_ind, y_ind)) {
-#ifdef GRIDWORLD_DEBUG
-                    printf("true\n");
-#endif
-                    true_cnt++;
-                    x_sum += x_pos * true_weight;
-                    y_sum += y_pos * true_weight;
+    Point getCentroidInPolygon(Polygon poly) {
+        int cntTotal = 0, cntTrue = 0;
+        double sumX = 0.0, sumY = 0.0, totalWeight = getValueInPolygon(poly);
+        double sumWeightedX = 0.0, sumWeightedY = 0.0;
+        pd xLimit = poly.get_x_limit(1.0), yLimit;
+        pd xIndexes, yIndexes;
+        xIndexes.first = getNumInXLim(xLimit.first, "ceil");
+        xIndexes.second = getNumInXLim(xLimit.second, "floor");
+        for (int i = xIndexes.first; i <= xIndexes.second; i++) {
+            double x = getXPositionInXLimit(i);
+            yLimit = poly.get_y_lim_at_certain_x(x);
+            yIndexes.first = getNumInYLim(yLimit.first, "ceil");
+            yIndexes.second = getNumInYLim(yLimit.second, "floor");
+            for (int j = yIndexes.first; j <= yIndexes.second; j++) {
+                double y = getYPositionInYLimit(j);
+                cntTotal++;
+                sumX += x;
+                sumY += y;
+                if (getValue(i, j)) {
+                    cntTrue++;
+                    sumWeightedX += x * trueWeight;
+                    sumWeightedY += y * trueWeight;
                 } else {
-#ifdef GRIDWORLD_DEBUG
-                    printf("false\n");
-#endif
-                    x_sum += x_pos * false_weight;
-                    y_sum += y_pos * false_weight;
+                    sumWeightedX += x * falseWeight;
+                    sumWeightedY += y * falseWeight;
                 }
-#ifdef GRIDWORLD_DEBUG
-                printf("x/y sum = (%.2lf, %.2lf) x/y total sum = (%.2lf, %.2lf)\n",
-                   x_sum, y_sum, total_x_sum, total_y_sum);
-#endif
             }
         }
-#ifdef GRIDWORLD_DEBUG
-        printf("total weight = %.2lf x/y sum = (%.2lf, %.2lf)\n", total_weight, x_sum, y_sum);
-#endif
-        if (total_weight > 0) {
-            return Point(x_sum / total_weight, y_sum / total_weight);
+        if (totalWeight > 0) {
+            return Point(sumWeightedX / totalWeight, sumWeightedY / totalWeight);
         } else {
-            return Point(total_x_sum / total_cnt, total_y_sum / total_cnt);
+            return Point(sumX / cntTotal, sumY / cntTotal);
         }
     }
 
-    void output_centroid_in_polygon(Polygon _p) {
-#ifdef GRIDWORLD_DEBUG
-        printf("<");
-    for (int x_ind = 0; x_ind < x_num; x_ind++){
-        printf("-");
-    }
-    printf("\n");
-    _p.output();
-#endif
-        auto vis_temp = vis;
-        for (auto a: vis_temp) {
+    void outputCentroidInPolygon(Polygon poly) {
+        auto tempVis = vis;
+        for (auto a: tempVis) {
             a = false;
         }
-        pd x_lim_pd = _p.get_x_limit(1.0), y_lim_pd;
-        pd x_ind_pd, y_ind_pd;
-        x_ind_pd.first = get_num_in_xlim(x_lim_pd.first, "ceil");
-        x_ind_pd.second = get_num_in_xlim(x_lim_pd.second, "floor");
-        for (int x_ind = x_ind_pd.first; x_ind <= x_ind_pd.second; x_ind++) {
-            double x_pos = get_xpos_in_xlim(x_ind);
-            y_lim_pd = _p.get_y_lim_at_certain_x(x_pos);
-            y_ind_pd.first = get_num_in_ylim(y_lim_pd.first, "ceil");
-            y_ind_pd.second = get_num_in_ylim(y_lim_pd.second, "floor");
-            for (int y_ind = y_ind_pd.first; y_ind <= y_ind_pd.second; y_ind++) {
-                vis_temp[get_ind(x_ind, y_ind)] = true;
+        pd xLimit = poly.get_x_limit(1.0), yLimit;
+        pd iLimit, jLimit;
+        iLimit.first = getNumInXLim(xLimit.first, "ceil");
+        iLimit.second = getNumInXLim(xLimit.second, "floor");
+        for (int i = iLimit.first; i <= iLimit.second; i++) {
+            double x = getXPositionInXLimit(i);
+            yLimit = poly.get_y_lim_at_certain_x(x);
+            jLimit.first = getNumInYLim(yLimit.first, "ceil");
+            jLimit.second = getNumInYLim(yLimit.second, "floor");
+            for (int j = jLimit.first; j <= jLimit.second; j++) {
+                tempVis[getIndex(i, j)] = true;
             }
         }
-#ifdef GRIDWORLD_DEBUG
-        for (int y_ind = y_num - 1; y_ind >= 0; y_ind--){
-        for (int x_ind = 0; x_ind < x_num; x_ind++){
-            printf("%c", (vis_temp[get_ind(x_ind, y_ind)] == true)? 'x': '.');
-        }
-        printf("\n");
-    }
-    for (int x_ind = 0; x_ind < x_num; x_ind++){
-        printf("-");
-    }
-    printf(">\n");
-#endif
     }
 
 };

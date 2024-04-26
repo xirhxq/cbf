@@ -7,11 +7,11 @@
 #include "CBF.hpp"
 #include "World.hpp"
 
-class Robot{
+class Robot {
 public:
     int id = 0;
-    int x_ord = 0, y_ord = 1, batt_ord = 2, camera_ord = 3;
-    std::map<std::string, CBF> cbf_no_slack, cbf_slack;
+    int xIndex = 0, yIndex = 1, batteryIndex = 2, cameraIndex = 3;
+    std::map<std::string, CBF> cbfNoSlack, cbfSlack;
     MatrixXd G;
     VectorXd F, X;
 
@@ -19,66 +19,66 @@ public:
 
     Robot() = default;
 
-    Robot(int _d) {
-        G = MatrixXd::Identity(_d, _d);
-        X.resize(_d);
-        F.resize(_d);
+    Robot(int dimension) {
+        G = MatrixXd::Identity(dimension, dimension);
+        X.resize(dimension);
+        F.resize(dimension);
     }
 
-    void set_position(Point _p) {
-        X(x_ord) = _p.x;
-        X(y_ord) = _p.y;
+    void setPosition(Point position) {
+        X(xIndex) = position.x;
+        X(yIndex) = position.y;
     }
 
-    void set_battery(double _b) {
+    void setBattery(double battery) {
         if (X.size() > 2) {
-            X(batt_ord) = _b;
+            X(batteryIndex) = battery;
         }
     }
 
-    void set_xy_order(int _x_ord, int _y_ord) {
-        x_ord = _x_ord;
-        y_ord = _y_ord;
+    void setXYIndex(int xIndex, int yIndex) {
+        xIndex = xIndex;
+        yIndex = yIndex;
     }
 
     double x() {
-        return X(x_ord);
+        return X(xIndex);
     }
 
     double y() {
-        return X(y_ord);
+        return X(yIndex);
     }
 
     double batt() {
-        return X(batt_ord);
+        return X(batteryIndex);
     }
 
     double camera() {
-        return X(camera_ord);
+        return X(cameraIndex);
     }
 
 
     Point xy() {
-        return Point(X(x_ord), X(y_ord));
+        return Point(X(xIndex), X(yIndex));
     }
 
-    json time_forward(VectorXd &_v, double runtime, double _dt, World _w) {
-        json robot_j = {
+    json stepTimeForward(VectorXd &nominalControlInput, double runtime, double dt, World world) {
+        json jsonRobot = {
                 {"nominal", {
-                        {"x", _v(x_ord)},
-                        {"y", _v(y_ord)}
+                        {"x", nominalControlInput(xIndex)},
+                        {"y", nominalControlInput(yIndex)}
                 }}
         };
-        json cbf_no_slack_json = json::array(), cbf_slack_json = json::array();
-        if (_w.is_charging(X) && X(batt_ord) <= 100.0) {
-            X(batt_ord) += _dt * (10);
-            robot_j["result"] = {{"x", 0.0},
-                                 {"y", 0.0}};
-            robot_j["cbf_no_slack"] = cbf_no_slack_json;
-            robot_j["cbf_slack"] = cbf_slack_json;
-            return robot_j;
+        json jsonCBFNoSlack = json::array(), jsonCBFSlack = json::array();
+        if (world.isCharging(X) && X(batteryIndex) <= 100.0) {
+            X(batteryIndex) += dt * (10);
+            jsonRobot["result"] = {{"x", 0.0},
+                                   {"y", 0.0}};
+            jsonRobot["cbf_no_slack"] = jsonCBFNoSlack;
+            jsonRobot["cbf_slack"] = jsonCBFSlack;
+            return jsonRobot;
         } else {
-            VectorXd opt_res = _v;
+            VectorXd optimalControlInput = nominalControlInput;
             try {
                 // Create an environment
                 GRBEnv env = GRBEnv(true);
@@ -90,109 +90,81 @@ public:
                 GRBModel model = GRBModel(env);
 
                 // Create variables
-                std::vector<GRBVar> var_v;
+                std::vector<GRBVar> vars;
                 char s[10];
                 for (int i = 0; i < X.size(); i++) {
                     snprintf(s, 10, "var_%d", i);
-                    var_v.push_back(model.addVar(-GRB_INFINITY, GRB_INFINITY, 0.0, GRB_CONTINUOUS, s));
+                    vars.push_back(model.addVar(-GRB_INFINITY, GRB_INFINITY, 0.0, GRB_CONTINUOUS, s));
                 }
 
-                std::vector<GRBVar> var_slack;
-                for (int i = 0; i < cbf_slack.size(); i++) {
+                std::vector<GRBVar> slackVars;
+                for (int i = 0; i < cbfSlack.size(); i++) {
                     snprintf(s, 10, "slack_%d", i);
-                    var_slack.push_back(model.addVar(-GRB_INFINITY, GRB_INFINITY, 0.0, GRB_CONTINUOUS, s));
+                    slackVars.push_back(model.addVar(-GRB_INFINITY, GRB_INFINITY, 0.0, GRB_CONTINUOUS, s));
                 }
 
                 // Set objective:
                 GRBQuadExpr obj = 0.0;
                 for (int i = 0; i < X.size(); i++) {
-                    obj += (var_v[i] - _v[i]) * (var_v[i] - _v[i]);
+                    obj += (vars[i] - nominalControlInput[i]) * (vars[i] - nominalControlInput[i]);
                 }
-                for (int i = 0; i < cbf_slack.size(); i++) {
-                    obj += 0.1 * var_slack[i] * var_slack[i];
+                for (int i = 0; i < cbfSlack.size(); i++) {
+                    obj += 0.1 * slackVars[i] * slackVars[i];
                 }
                 model.setObjective(obj, GRB_MINIMIZE);
 
                 // Add constraint:
-                for (auto &i: cbf_no_slack) {
+                for (auto &i: cbfNoSlack) {
                     GRBLinExpr ln = 0.0;
-                    VectorXd u_coe = i.second.constraint_u_coe(F, G, X, runtime);
-#ifdef OPT_DEBUG
-                    std::cout << "cbf_no_slack_u_coe: " << std::endl << u_coe << std::endl;
-#endif
+                    VectorXd uCoe = i.second.constraintUCoe(F, G, X, runtime);
                     for (int j = 0; j < X.size(); j++) {
-                        ln += u_coe(j) * var_v[j];
+                        ln += uCoe(j) * vars[j];
                     }
-                    double constraint_const = i.second.constraint_const_with_time(F, G, X, runtime);
-                    cbf_no_slack_json.push_back({
-                                                        {"name", i.first},
-                                                        {"x",     u_coe(x_ord)},
-                                                        {"y",     u_coe(y_ord)},
-                                                        {"const", constraint_const}
-                                                });
-#ifdef OPT_DEBUG
-                    std::cout << "cbf_no_slack_const: " << -constraint_const << std::endl;
-#endif
-                    model.addConstr(ln, '>', -constraint_const);
+                    double constraintConstWithTime = i.second.constraintConstWithTime(F, G, X, runtime);
+                    jsonCBFNoSlack.push_back({
+                                                     {"name",  i.first},
+                                                     {"x",     uCoe(xIndex)},
+                                                     {"y",     uCoe(yIndex)},
+                                                     {"const", constraintConstWithTime}
+                                             });
+                    model.addConstr(ln, '>', -constraintConstWithTime);
                 }
-                robot_j["cbf_no_slack"] = cbf_no_slack_json;
+                jsonRobot["cbf_no_slack"] = jsonCBFNoSlack;
 
                 int cnt = 0;
-                for (auto &i: cbf_slack) {
+                for (auto &i: cbfSlack) {
                     GRBLinExpr ln = 0.0;
-                    VectorXd u_coe = i.second.constraint_u_coe(F, G, X, runtime);
-#ifdef OPT_DEBUG
-                    std::cout << "cbf_slack_u_coe: " << std::endl << u_coe << std::endl;
-#endif
+                    VectorXd uCoe = i.second.constraintUCoe(F, G, X, runtime);
                     for (int j = 0; j < X.size(); j++) {
-                        ln += u_coe(j) * var_v[j];
+                        ln += uCoe(j) * vars[j];
                     }
 //                ln += u_coe(3) * var_v[3];
-                    ln += var_slack[cnt];
-                    double constraint_const = i.second.constraint_const_without_time(
+                    ln += slackVars[cnt];
+                    double constraintConst = i.second.constraintConstWithoutTime(
                             F, G, X, runtime);
 
-                    cbf_slack_json.push_back({
-                                                     {"name", i.first},
-                                                     {"x",     u_coe(x_ord)},
-                                                     {"y",     u_coe(y_ord)},
-                                                     {"const", constraint_const}
-                                             });
-#ifdef OPT_DEBUG
-                    std::cout << "cbf_slack_const: " << -constraint_const << std::endl;
-#endif
-                    model.addConstr(ln, '>', -constraint_const);
+                    jsonCBFSlack.push_back({
+                                                   {"name",  i.first},
+                                                   {"x",     uCoe(xIndex)},
+                                                   {"y",     uCoe(yIndex)},
+                                                   {"const", constraintConst}
+                                           });
+                    model.addConstr(ln, '>', -constraintConst);
                     ++cnt;
                 }
-                robot_j["cbf_slack"] = cbf_slack_json;
-
-#ifdef OPT_DEBUG
-                std::cout << "Now State" << std::endl << X << std::endl;
-
-            std::cout << "Model contains: " << std::endl;
-            std::cout << "_v" << std::endl <<  _v << std::endl;
-#endif
+                jsonRobot["cbf_slack"] = jsonCBFSlack;
 
                 // Optimize model
-//            model.set(GRB_IntParam_OutputFlag, 0);
+//                model.set(GRB_IntParam_OutputFlag, 0);
                 model.optimize();
 
-                for (int i = 0; i < X.size(); i++) opt_res(i) = var_v[i].get(GRB_DoubleAttr_X);
-                robot_j["result"] = {{"x", opt_res(x_ord)},
-                                     {"y", opt_res(y_ord)}};
-                VectorXd sl(var_slack.size());
-                for (int i = 0; i < var_slack.size(); i++) sl(i) = var_slack[i].get(GRB_DoubleAttr_X);
-#ifdef OPT_DEBUG
-                std::cout << "opt_res " << std::endl << opt_res << std::endl;
-            std::cout << "slack_res" << std::endl << sl << std::endl;
-#endif
-
-//            for (int i = 0; i < X.size(); i++){
-//                std::cout << var_v[i].get(GRB_StringAttr_VarName) << " "
-//                    << var_v[i].get(GRB_DoubleAttr_X) << std::endl;
-//            }
-//
-//            std::cout << "Obj: " << model.get(GRB_DoubleAttr_ObjVal) << std::endl;
+                for (int i = 0; i < X.size(); i++) optimalControlInput(i) = vars[i].get(GRB_DoubleAttr_X);
+                jsonRobot["result"] = {
+                        {"x", optimalControlInput(xIndex)},
+                        {"y", optimalControlInput(yIndex)}
+                };
+                VectorXd slacks(slackVars.size());
+                for (int i = 0; i < slackVars.size(); i++) slacks(i) = slackVars[i].get(GRB_DoubleAttr_X);
 
             } catch (GRBException e) {
                 std::cout << "Error code = " << e.getErrorCode() << std::endl;
@@ -205,15 +177,15 @@ public:
                 assert(0);
             }
 
-            X += (F + G * opt_res) * _dt;
-            return robot_j;
+            X += (F + G * optimalControlInput) * dt;
+            return jsonRobot;
         }
     }
 
     void output() {
         std::cout << "A UGV @ (" << x() << ", " << y() << ")";
         if (X.size() > 2) {
-            std::cout << " with Battery " << X(batt_ord);
+            std::cout << " with Battery " << X(batteryIndex);
         }
         std::cout << std::endl;
     }

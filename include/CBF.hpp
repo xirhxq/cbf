@@ -10,56 +10,43 @@ class CBF{
 public:
     std::string name;
     double delta = 0.001;
-    std::function<double(double)> alpha = [](double _h) {return 0.1 * pow(_h, 3);};
+    std::function<double(double)> alpha = [](double h) {return 0.1 * pow(h, 3);};
     std::function<double(VectorXd, double)> h;
-    VectorXd ctrl_var;
+    VectorXd controlVariable;
 
 public:
     CBF(){}
 
-    double dh(VectorXd _x, double _t, int _i){
-        VectorXd x_plus_dx = _x, x_minus_dx = _x;
-        x_plus_dx(_i) += delta;
-        x_minus_dx(_i) -= delta;
-        return (h(x_plus_dx, _t) - h(x_minus_dx, _t)) / 2.0 / delta;
+    double dh(VectorXd x, double t, int i){
+        VectorXd nxt = x, pre = x;
+        nxt(i) += delta;
+        pre(i) -= delta;
+        return (h(nxt, t) - h(pre, t)) / 2.0 / delta;
     }
 
-    double dhdt(VectorXd _x, double _t) {
-        return (h(_x, _t + delta) - h(_x, _t - delta)) / 2.0 / delta;
+    double dhdt(VectorXd x, double t) {
+        return (h(x, t + delta) - h(x, t - delta)) / 2.0 / delta;
     }
 
-    VectorXd dhdx(VectorXd _x, double _t) {
-        VectorXd res = _x;
-        for (int i = 0; i < _x.size(); i++){
-            res(i) = dh(_x, _t, i);
+    VectorXd dhdx(VectorXd x, double t) {
+        VectorXd res = x;
+        for (int i = 0; i < x.size(); i++){
+            res(i) = dh(x, t, i);
         }
         return res;
     }
 
-    VectorXd constraint_u_coe(VectorXd& _f, MatrixXd& _g, VectorXd& _x, double _t) {
-        VectorXd v = dhdx(_x, _t).transpose() * _g;
-#ifdef CBF_DEBUG
-        std::cout << "dhdx = " << std::endl << dhdx(_x, _t) << std::endl;
-    std::cout << "v = " << v << std::endl;
-    std::cout << "ret = " << v.cwiseProduct(ctrl_var) << std::endl;
-#endif
-        return v.cwiseProduct(ctrl_var);
+    VectorXd constraintUCoe(VectorXd& f, MatrixXd& g, VectorXd& x, double t) {
+        VectorXd v = dhdx(x, t).transpose() * g;
+        return v.cwiseProduct(controlVariable);
     }
 
-    double constraint_const_with_time(VectorXd & _f, MatrixXd & _g, VectorXd & _x, double _t) {
-#ifdef CBF_DEBUG
-        printf("h: %lf\tdhdt: %lf\t dhdx.dot(_f): %lf\talpha(h): %lf\n", h(_x, _t),
-           dhdt(_x, _t), dhdx(_x, _t).dot(_f), alpha(h(_x, _t)));
-#endif
-        return dhdt(_x, _t) + dhdx(_x, _t).dot(_f) + alpha(h(_x, _t));
+    double constraintConstWithTime(VectorXd & f, MatrixXd & g, VectorXd & x, double t) {
+        return dhdt(x, t) + dhdx(x, t).dot(f) + alpha(h(x, t));
     }
 
-    double constraint_const_without_time(VectorXd & _f, MatrixXd & _g, VectorXd & _x, double _t) {
-#ifdef CBF_DEBUG
-        printf("h: %lf\tdhdx.dot(_f): %lf\talpha(h): %lf\n", h(_x, _t),
-           dhdx(_x, _t).dot(_f), alpha(h(_x, _t)));
-#endif
-        return dhdx(_x, _t).dot(_f) + alpha(h(_x, _t));
+    double constraintConstWithoutTime(VectorXd & f, MatrixXd & g, VectorXd & x, double t) {
+        return dhdx(x, t).dot(f) + alpha(h(x, t));
     }
 };
 
