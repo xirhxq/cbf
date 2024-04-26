@@ -39,7 +39,7 @@ public:
         return res;
     }
 
-    Target makeStaticTarget(Point point) {
+    static Target makeStaticTarget(Point point) {
         Target res;
         res.pos = [point](double t){
             return Point(point.x, point.y);
@@ -51,33 +51,27 @@ public:
         return res;
     }
 
-    Point loopInRectangle(double xMin, double xMax, double yMin, double yMax, double t, double velocity, double bias = 0.0){
-        t += bias;
-        double dxt = (xMax - xMin) / velocity, dyt = (yMax - yMin) / velocity;
-        double dt = 2 * dxt + 2 * dyt;
-        t += dt;
-        while (t >= dt) t -= dt;
-        if (t < dxt){
-            return {xMin + velocity * t, yMin};
-        }
-        else if (t < dxt + dyt){
-            return {xMax, yMin + (t - dxt) * velocity};
-        }
-        else if (t < 2 * dxt + dyt){
-            return {xMax - (t - dxt - dyt) * velocity, yMax};
-        }
-        else {
-            return {xMin, yMax - (t - 2 * dxt - dyt) * velocity};
-        }
-    }
-
-    Target makeLoopRectangleTarget(Point minPoint, Point maxPoint, double velocity, double bias = 0.0) {
+    static Target makeLoopRectangleTarget(Point minPoint, Point maxPoint, double velocity, double bias = 0.0) {
         Target res;
         res.type = TargetType::LoopRect;
-        res.pos = [=] (double t_) {
-            return loopInRectangle(minPoint.x, maxPoint.x,
-                                   minPoint.y, maxPoint.y,
-                                   t_, velocity, bias);
+        res.pos = [=] (double t) {
+            t += bias;
+            double dxt = (maxPoint.x - minPoint.x) / velocity, dyt = (maxPoint.y - minPoint.y) / velocity;
+            double dt = 2 * dxt + 2 * dyt;
+            t += dt;
+            while (t >= dt) t -= dt;
+            if (t < dxt){
+                return Point(minPoint.x + velocity * t, minPoint.y);
+            }
+            else if (t < dxt + dyt){
+                return Point(maxPoint.x, minPoint.y + (t - dxt) * velocity);
+            }
+            else if (t < 2 * dxt + dyt){
+                return Point(maxPoint.x - (t - dxt - dyt) * velocity, maxPoint.y);
+            }
+            else {
+                return Point(minPoint.x, maxPoint.y - (t - 2 * dxt - dyt) * velocity);
+            }
         };
         res.densityParams = {
                 {"k", 10},

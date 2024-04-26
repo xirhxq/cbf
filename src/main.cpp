@@ -1,10 +1,12 @@
 #include "utils.h"
+//#define TIMER_ON
 #include "Swarm.hpp"
 
 #include <fstream>
 #include <ctime>
 
-std::vector<Point> get_point_vector_from_json(json j) {
+
+std::vector<Point> getPointVectorFromJson(json j) {
     std::vector<Point> res;
     for (auto a: j) {
         res.emplace_back(Point(a["x"], a["y"]));
@@ -37,40 +39,35 @@ int main() {
     snprintf(fileName, 256, R"(%s/%s)", folderName, "data.json");
 
 
-    Polygon world_poly(Polygon(get_point_vector_from_json(data["world"])));
-    auto c = get_point_vector_from_json(data["charge"]);
+    Polygon worldBoundary(Polygon(getPointVectorFromJson(data["world"])));
+    auto c = getPointVectorFromJson(data["charge"]);
 
 
-    World wd(world_poly, c);
-//    wd.charge_place[0].second = 101.0;
-//    wd.target.emplace_back(
-//            Target::make_static_target(
-//                    {10, 5}
-//                    )
-//    );
-//    wd.target[0].vis_time = {{0, 15}, {30, 40}};
-//    wd.target.emplace_back(
-//            Target::make_loop_rectangle_target(
+    World world(worldBoundary, c);
+//    world.targets.emplace_back(Target::makeStaticTarget({10, 5}));
+//    world.targets[0].visibleTimeRanges = {{0, 15}, {30, 40}};
+//    world.targets.emplace_back(
+//            Target::makeLoopRectangleTarget(
 //                    {4, 3},
 //                    {16, 7},
 //                    0.5, 32
 //            )
 //    );
-//    wd.target[1].vis_time = {{10, 22}};
-//    wd.target.emplace_back(
-//            Target::make_loop_rectangle_target(
+//    world.targets[1].visibleTimeRanges = {{10, 22}};
+//    world.targets.emplace_back(
+//            Target::makeLoopRectangleTarget(
 //                    {4, 3},
 //                    {16, 7},
 //                    0.5
 //            )
 //    );
 
-    Swarm s = Swarm(data["swarm"]["num"], wd);
+    Swarm s = Swarm(data["swarm"]["num"], world);
 
     if (data["swarm"]["initial_position"] == "random_in_poly") {
-        s.randomInitialPosition(Polygon(get_point_vector_from_json(data["swarm"]["random_poly"])));
+        s.randomInitialPosition(Polygon(getPointVectorFromJson(data["swarm"]["random_poly"])));
     } else if (data["swarm"]["initial_position"] == "specified") {
-        auto v = get_point_vector_from_json(data["swarm"]["specified_pos"]);
+        auto v = getPointVectorFromJson(data["swarm"]["specified_pos"]);
         s.setInitialPosition(v);
     }
     else if (data["swarm"]["initial_position"] == "random_all"){
@@ -88,33 +85,73 @@ int main() {
     s.logParams();
 
     s.output();
+#ifdef TIMER_ON
+    clock_t begin, end;
+#endif
 
-    double t_total = data["execute"]["time_total"], t_gap = data["execute"]["step_time"];
-    for (int iter = 1; iter <= t_total / t_gap; iter++) {
+    double tTotal = data["execute"]["time_total"], tStep = data["execute"]["step_time"];
+    for (int iter = 1; iter <= tTotal / tStep; iter++) {
+#ifdef TIMER_ON
+        double gridWorldUpdatedTime, cvtForwardTime, logTime, setCVTTime = 0.0, calCVTTime = 0.0;
+#endif
         if (data["execute"]["output_grid"] == "off") {
-            printf("\r%.2lf seconds elapsed...", t_gap * (iter - 1));
+            printf("\r%.2lf seconds elapsed...", tStep * (iter - 1));
         } else {
-            printf("%.2lf seconds elapsed...\n", t_gap * (iter - 1));
+            printf("%.2lf seconds elapsed...\n", tStep * (iter - 1));
         }
         if (data["cbfs"]["comm_cbf"] == "on"){
             s.setCommCBF();
         }
+#ifdef TIMER_ON
+        begin = clock();
+#endif
         s.updateGridWorld();
+#ifdef TIMER_ON
+        end = clock();
+        gridWorldUpdatedTime = (double) (end - begin) / CLOCKS_PER_SEC;
+#endif
         if (data["cbfs"]["cvt_cbf"] == "on") {
+#ifdef TIMER_ON
+            begin = clock();
+#endif
             s.calCVT();
+#ifdef TIMER_ON
+            end = clock();
+            calCVTTime += (double) (end - begin) / CLOCKS_PER_SEC;
+            begin = clock();
+#endif
             s.setCVTCBF();
+//            s.set_cvt_cbf();
+#ifdef TIMER_ON
+            end = clock();
+            setCVTTime += (double) (end - begin) / CLOCKS_PER_SEC;
+#endif
         }
         if (data["cbfs"]["safety_cbf"] == "on") {
             s.setSafetyCBF();
         }
+#ifdef TIMER_ON
+        begin = clock();
+#endif
         s.logOnce();
-        s.cvtForward(t_gap);
+#ifdef TIMER_ON
+        end = clock();
+        logTime = (double) (end - begin) / CLOCKS_PER_SEC;
+        begin = clock();
+#endif
+        s.cvtForward(tStep);
+#ifdef TIMER_ON
+        end = clock();
+        cvtForwardTime = (double) (end - begin) / CLOCKS_PER_SEC;
+        printf("GridWorldUpdatedTime: %.4lf, CVTForwardTime: %.4lf, LogTime: %.4lf, SetCVTTime: %.4lf, CalCVTTime: %.4lf\n",
+               gridWorldUpdatedTime, cvtForwardTime, logTime, setCVTTime, calCVTTime);
+#endif
         if (data["execute"]["output_grid"] == "on") {
             s.gridWorldOutput();
         }
     }
 
-    printf("\nAfter %.4lf seconds\n", t_total);
+    printf("\nAfter %.4lf seconds\n", tTotal);
 //    s.gw.output();
     s.output();
     s.endLog();

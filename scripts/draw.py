@@ -125,14 +125,14 @@ class Drawer:
         'default': {
             'plotEnergyCBF': False,
             'plotCvtCBF': False,
-            'plotCameraCBF': False,
+            'plotYawCBF': False,
             'plotSafeCBF': False,
             'plotCommCBF': False,
             'plotOpt': False,
             'robotAnnotation': True,
             'bigTimeText': False,
             'useTex': False,
-            'showCamera': False,
+            'showYaw': False,
             'showCVT': True,
             'showBar': False,
             'showAxis': False,
@@ -269,19 +269,19 @@ class Drawer:
 
         runtime = [dt["runtime"] for dt in self.data["state"]]
         if self.plotEnergyCBF:
-            energyCBFPlot = [MyBarPlot(runtime, [dt["robot"][i]["energy_cbf"] for dt in self.data["state"]],
+            energyCBFPlot = [MyBarPlot(runtime, [dt["robot"][i]["energyCBF"] for dt in self.data["state"]],
                                        plt.subplot(gs[-1 - i // halfNum, i % halfNum]),
                                        "#{}".format(i + 1), color='mediumblue')
                              for i in range(robotNum)]
         if self.plotCvtCBF:
-            cvtCBFPlot = [MyBarPlot(runtime, [dt["robot"][i]["cvt_cbf"] for dt in self.data["state"]],
+            cvtCBFPlot = [MyBarPlot(runtime, [dt["robot"][i]["cvtCBF"] for dt in self.data["state"]],
                                     plt.subplot(gs[-1 - i // halfNum, i % halfNum]),
                                     "#{}".format(i + 1), color='orangered')
                           for i in range(robotNum)]
-        if self.plotCameraCBF:
-            cameraCBFPlot = [MyBarPlot(runtime, [dt["robot"][i]["camera_cbf"] for dt in self.data["state"]],
+        if self.plotYawCBF:
+            yawCBFPlot = [MyBarPlot(runtime, [dt["robot"][i]["yawCBF"] for dt in self.data["state"]],
                                        plt.subplot(gs[-2, i]),
-                                       "Robot #{}: Camera CBF Value".format(i + 1))
+                                       "Robot #{}: Yaw CBF Value".format(i + 1))
                              for i in range(robotNum)]
 
         if self.plotCommCBF:
@@ -342,8 +342,8 @@ class Drawer:
 
             robotX = [dataNow["robot"][i]["x"] for i in range(robotNum)]
             robotY = [dataNow["robot"][i]["y"] for i in range(robotNum)]
-            robotBattery = [dataNow["robot"][i]["batt"] for i in range(robotNum)]
-            robotCamera = [math.degrees(dataNow["robot"][i]["camera"]) for i in range(robotNum)]
+            robotBattery = [dataNow["robot"][i]["battery"] for i in range(robotNum)]
+            robotYawDeg = [math.degrees(dataNow["robot"][i]["yawRad"]) for i in range(robotNum)]
 
             if "cvt" in dataNow and self.showCVT:
                 cvtPolygonX = [[dataNow["cvt"][i]["pos"][j]["x"]
@@ -362,18 +362,18 @@ class Drawer:
             )
 
             for i in range(robotNum):
-                if self.showCamera:
+                if self.showYaw:
                     ax.add_patch(Wedge(
                         center=[robotX[i], robotY[i]],
                         r=0.5,
-                        theta1=robotCamera[i] - 15, theta2=robotCamera[i] + 15,
+                        theta1=robotYawDeg[i] - 15, theta2=robotYawDeg[i] + 15,
                         alpha=0.3
                     ))
 
                 if self.robotAnnotation:
                     # ax.annotate((f'    Robot #{i + 1}:' + '\n'
                     #              + rf'$\quadE = {robotBattery[i]:.2f}$' + '\n'
-                    #              + rf'$\quad\theta = {robotCamera[i]:.2f}$'
+                    #              + rf'$\quad\theta = {robotYawDeg[i]:.2f}$'
                     #              ),
                     #             xy=(robotX[i], robotY[i]))
                     ax.annotate(f'    #{i + 1}' + '\n' + f'  E: {robotBattery[i]:.2f} ', xy=(robotX[i], robotY[i]),
@@ -410,8 +410,8 @@ class Drawer:
             for i in range(robotNum):
                 if self.plotEnergyCBF:
                     energyCBFPlot[i].update(num)
-                if self.plotCameraCBF:
-                    cameraCBFPlot[i].update(num)
+                if self.plotYawCBF:
+                    yawCBFPlot[i].update(num)
                 if self.plotOpt:
                     optPlot[i].update(num)
                 if self.plotCvtCBF:
@@ -420,7 +420,7 @@ class Drawer:
                 for cbf in safeCBFPlot:
                     cbf.update(num)
             if num in shotList:
-                plt.savefig(self.folderName + f'-{int(num / fps)}-second.png', bbox_inches='tight')
+                plt.savefig(os.path.join(self.folderName , f'-{int(num / fps)}-second.png'), bbox_inches='tight')
                 print('Shot!', end='')
             return
 
@@ -454,7 +454,7 @@ class Drawer:
             plt.subplot(211).clear()
             plt.subplot(212).clear()
             plt.subplot(211).plot(
-                runtime, [dt["robot"][i]["batt"] for dt in self.data["state"]],
+                runtime, [dt["robot"][i]["battery"] for dt in self.data["state"]],
                 color='C0'
             )
             plt.subplot(211).set_title('Energy Level' + f' of UAV #{i + 1}')
@@ -462,7 +462,7 @@ class Drawer:
             plt.subplot(211).set_ylabel('Energy Level')
 
             plt.subplot(212).plot(
-                runtime, [max(dt["robot"][i]["energy_cbf"], 0) for dt in self.data["state"]],
+                runtime, [max(dt["robot"][i]["energyCBF"], 0) for dt in self.data["state"]],
                 color='C0'
             )
             plt.subplot(212).set_title(r'CBF Value $min(h_{energy}, h_{l10n})$' + f' of UAV #{i + 1}')
@@ -470,7 +470,7 @@ class Drawer:
             plt.subplot(212).set_ylabel('$min(h_{energy}, h_{l10n})$')
             plt.subplots_adjust(hspace=0.7)
             # leg = ax.legend()
-            figureFilename = self.folderName + f'/{i + 1}_energy&cbfval.png'
+            figureFilename = self.folderName + f'/{i + 1}-Energy&CBFValue.png'
             plt.savefig(figureFilename, bbox_inches='tight')
             pb.update(i + 1)
 
@@ -494,19 +494,19 @@ class Drawer:
         for i in range(robotNum):
             plt.subplot(211).clear()
             plt.subplot(212).clear()
-            plt.subplot(211).plot(runtime, [dt["robot"][i]["cvt_cbf"] for dt in self.data["state"]], color='C0')
+            plt.subplot(211).plot(runtime, [dt["robot"][i]["cvtCBF"] for dt in self.data["state"]], color='C0')
             plt.subplot(211).set_title(r'CBF Value $h_{task}$' + f' of UAV #{i + 1}')
             plt.subplot(211).set_xlabel('Time / s')
             plt.subplot(211).set_ylabel('$h_{task}$')
 
-            plt.subplot(212).plot(runtime, [max(dt["robot"][i]["energy_cbf"], 0) for dt in self.data["state"]],
+            plt.subplot(212).plot(runtime, [max(dt["robot"][i]["energyCBF"], 0) for dt in self.data["state"]],
                                   color='C0')
             plt.subplot(212).set_title(r'CBF Value $h_{constraint}$' + f' of UAV #{i + 1}')
             plt.subplot(212).set_xlabel('Time / s')
             plt.subplot(212).set_ylabel('$h_{constraint}$')
             plt.subplots_adjust(hspace=0.7)
             # leg = ax.legend()
-            figureFilename = self.folderName + f'/{i + 1}_cbfs.png'
+            figureFilename = self.folderName + f'/{i + 1}-CBFs.png'
             plt.savefig(figureFilename, bbox_inches='tight')
             pb.update(i + 1)
 
@@ -526,13 +526,13 @@ class Drawer:
         runtime = [dt["runtime"] for dt in self.data["state"]]
 
         for i in range(robotNum):
-            plt.subplot(111).plot(runtime, [dt["robot"][i]["batt"] for dt in self.data["state"]], label=f'UAV #{i + 1}')
+            plt.subplot(111).plot(runtime, [dt["robot"][i]["battery"] for dt in self.data["state"]], label=f'UAV #{i + 1}')
 
         leg = plt.subplot(111).legend(bbox_to_anchor=(1.0, -0.15), ncol=5)
         plt.subplot(111).set_xlabel('Time / s')
         plt.subplot(111).set_ylabel('Energy Level')
         plt.subplot(111).set_title('Energy Level' + f' of all UAVs')
-        figureFilename = self.folderName + f'/energy_all.png'
+        figureFilename = self.folderName + f'/energyAll.png'
         plt.savefig(figureFilename, bbox_inches='tight')
 
     @multipleFiles
@@ -546,7 +546,7 @@ class Drawer:
 
         for i, data in enumerate(self.datas):
             runtime = [dt["runtime"] for dt in data["state"]]
-            plt.subplot(111).plot(runtime, [dt["robot"][1]["batt"] * 0.005 + 3.7 for dt in data["state"]],
+            plt.subplot(111).plot(runtime, [dt["robot"][1]["yawRad"] * 0.005 + 3.7 for dt in data["state"]],
                                   label=f'{self.folderNames[i]}')
 
         leg = plt.subplot(111).legend(loc='best')
@@ -555,7 +555,7 @@ class Drawer:
         plt.subplot(111).set_title('Energy Level of UAV #2 in different approaches')
         plt.axhspan(3.7, 4.2, facecolor='gray', alpha=0.5)
 
-        figureFilename = self.folderName + f'/energy_2_contrast.png'
+        figureFilename = self.folderName + f'/energy2Contrast.png'
         plt.savefig(figureFilename, bbox_inches='tight')
 
     @multipleFiles
@@ -601,7 +601,7 @@ class Drawer:
 
         runtime = [dt["runtime"] for dt in self.data["state"]]
 
-        cvt_cbf_plot = [MyBarPlot(runtime, [dt["robot"][i]["cvt_cbf"] for dt in self.data["state"]],
+        cvt_cbf_plot = [MyBarPlot(runtime, [dt["robot"][i]["cvtCBF"] for dt in self.data["state"]],
                                   plt.subplot(gs[i % halfNum, i // halfNum]),
                                   "#{}".format(i + 1), color='orangered', markerOn=False)
                         for i in range(robotNum)]

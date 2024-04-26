@@ -10,7 +10,7 @@
 class Robot {
 public:
     int id = 0;
-    int xIndex = 0, yIndex = 1, batteryIndex = 2, cameraIndex = 3;
+    int xIndex = 0, yIndex = 1, batteryIndex = 2, yawIndex = 3;
     std::map<std::string, CBF> cbfNoSlack, cbfSlack;
     MatrixXd G;
     VectorXd F, X;
@@ -49,17 +49,17 @@ public:
         return X(yIndex);
     }
 
-    double batt() {
+    double battery() {
         return X(batteryIndex);
     }
 
-    double camera() {
-        return X(cameraIndex);
+    double yaw() {
+        return X(yawIndex);
     }
 
 
-    Point xy() {
-        return Point(X(xIndex), X(yIndex));
+    Point xy() const {
+        return {X(xIndex), X(yIndex)};
     }
 
     json stepTimeForward(VectorXd &nominalControlInput, double runtime, double dt, World world) {
@@ -138,7 +138,6 @@ public:
                     for (int j = 0; j < X.size(); j++) {
                         ln += uCoe(j) * vars[j];
                     }
-//                ln += u_coe(3) * var_v[3];
                     ln += slackVars[cnt];
                     double constraintConst = i.second.constraintConstWithoutTime(
                             F, G, X, runtime);
