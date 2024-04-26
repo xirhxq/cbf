@@ -139,9 +139,9 @@ class Drawer:
             'figureSize': (7, 7),
             'shotList': [],
             'barFormat': (
-                "\033[1;31m"
-                + "{percentage:3.0f}%|{bar:50}| {n_fmt}/{total_fmt} [elap: {elapsed}s eta: {remaining}s]"
-                + "\033[0m"
+                    "\033[1;31m"
+                    + "{percentage:3.0f}%|{bar:50}| {n_fmt}/{total_fmt} [elap: {elapsed}s eta: {remaining}s]"
+                    + "\033[0m"
             ),
         },
         'paper': {
@@ -199,7 +199,7 @@ class Drawer:
     @singleFile
     def drawAnimation(self):
         if self.useTex:
-            matplotlib.rc('text', useTex=True)
+            matplotlib.rc('text', usetex=True)
 
         matplotlib.use('agg')
 
@@ -278,7 +278,6 @@ class Drawer:
                                     plt.subplot(gs[-1 - i // halfNum, i % halfNum]),
                                     "#{}".format(i + 1), color='orangered')
                           for i in range(robotNum)]
-
         if self.plotCameraCBF:
             cameraCBFPlot = [MyBarPlot(runtime, [dt["robot"][i]["camera_cbf"] for dt in self.data["state"]],
                                        plt.subplot(gs[-2, i]),
@@ -298,7 +297,6 @@ class Drawer:
                                      "Robot #{}: Safe CBF Value".format(i + 1))
                            for i in range(robotNum) for j in range(robotNum) if
                            "safe_to_" + str(j) in self.data["state"][0]["robot"][i]]
-
         if self.plotOpt:
             optPlot = [MyOptPlot(plt.subplot(gs[-1, i]),
                                  [dt["opt"][i] for dt in self.data["state"]],
@@ -314,7 +312,6 @@ class Drawer:
             # cax.clear()
 
             dataNow = self.data["state"][num]
-            runtime = dataNow["runtime"]
 
             # gridWorldNow = np.array(dataNow["grid_world"]).transpose()
             # print(gridWorldNow)
@@ -332,13 +329,16 @@ class Drawer:
             c_min, c_max = np.min(Z), np.max(Z)
             if self.showBar:
                 F.set_clim(0, 1)
-            # print("{} to {}".format(c_min, c_max), end="")
             # cbar = fig.colorbar(F, cax=cax, alpha=0.2)
 
             for i in range(self.data["para"]["charge"]["num"]):
                 ax.add_patch(
-                    Circle(xy=(self.data["para"]["charge"]["pos"][i]["x"], self.data["para"]["charge"]["pos"][i]["y"]),
-                           radius=self.data["para"]["charge"]["dist"][i], alpha=0.5))
+                    Circle(
+                        xy=(self.data["para"]["charge"]["pos"][i]["x"], self.data["para"]["charge"]["pos"][i]["y"]),
+                        radius=self.data["para"]["charge"]["dist"][i],
+                        alpha=0.5
+                    )
+                )
 
             robotX = [dataNow["robot"][i]["x"] for i in range(robotNum)]
             robotY = [dataNow["robot"][i]["y"] for i in range(robotNum)]
@@ -352,12 +352,23 @@ class Drawer:
                                 for j in range(dataNow["cvt"][i]["num"])] for i in range(robotNum)]
                 cvtPolygonCenter = [dataNow["cvt"][i]["center"] for i in range(robotNum)]
 
-            ax.plot(robotX, robotY, 'b*')
+            # ax.plot(robotX, robotY, 'b*')
+            ax.scatter(
+                robotX, robotY,
+                c=robotBattery,
+                cmap='RdYlGn',
+                s=100,
+                alpha=0.5
+            )
 
             for i in range(robotNum):
                 if self.showCamera:
-                    ax.add_patch(Wedge(center=[robotX[i], robotY[i]], r=0.5, alpha=0.3,
-                                       theta1=robotCamera[i] - 15, theta2=robotCamera[i] + 15))
+                    ax.add_patch(Wedge(
+                        center=[robotX[i], robotY[i]],
+                        r=0.5,
+                        theta1=robotCamera[i] - 15, theta2=robotCamera[i] + 15,
+                        alpha=0.3
+                    ))
 
                 if self.robotAnnotation:
                     # ax.annotate((f'    Robot #{i + 1}:' + '\n'
@@ -370,13 +381,23 @@ class Drawer:
 
                 if "cvt" in dataNow and self.showCVT:
                     ax.plot(cvtPolygonX[i], cvtPolygonY[i], 'k')
-                    ax.plot([ct["x"] for ct in cvtPolygonCenter], [ct["y"] for ct in cvtPolygonCenter], '*',
-                            color='lime')
+                    ax.plot(
+                        [ct["x"] for ct in cvtPolygonCenter], [ct["y"] for ct in cvtPolygonCenter],
+                        '*',
+                        color='lime'
+                    )
 
             if self.bigTimeText:
-                ax.set_title(r'$\mathrm{Time}$' + f' $=$ ${dataNow["runtime"]:.2f}$' + r'$\mathrm{s}$', fontsize=25,
-                             y=0.95)
-                # ax.text(0.38, 0.95, r'$\mathrm{Time}$' + f' $=$ ${dataNow["runtime"]:.2f}$' + r'$\mathrm{s}$', transform=ax.transAxes, fontsize=40)
+                ax.set_title(
+                    r'$\mathrm{Time}$' + f' $=$ ${dataNow["runtime"]:.2f}$' + r'$\mathrm{s}$',
+                    fontsize=25,
+                    y=0.95
+                )
+                # ax.text(
+                #     0.38, 0.95,
+                #     r'$\mathrm{Time}$' + f' $=$ ${dataNow["runtime"]:.2f}$' + r'$\mathrm{s}$',
+                #     transform=ax.transAxes, fontsize=40
+                # )
             else:
                 ax.text(0.05, 0.95, 'Time = {:.2f}s'.format(dataNow["runtime"]), transform=ax.transAxes)
             ax.set_xlim(self.data["para"]["lim"]["x"])
@@ -399,7 +420,7 @@ class Drawer:
                 for cbf in safeCBFPlot:
                     cbf.update(num)
             if num in shotList:
-                plt.savefig(self.file + f'-{int(num / fps)}-second.png', bbox_inches='tight')
+                plt.savefig(self.folderName + f'-{int(num / fps)}-second.png', bbox_inches='tight')
                 print('Shot!', end='')
             return
 
@@ -414,11 +435,10 @@ class Drawer:
 
         pbar.close()
 
-
     @singleFile
     def drawStatistics(self):
         if self.useTex:
-            matplotlib.rc('text', useTex=True)
+            matplotlib.rc('text', usetex=True)
 
         matplotlib.use('agg')
 
@@ -433,12 +453,18 @@ class Drawer:
         for i in range(robotNum):
             plt.subplot(211).clear()
             plt.subplot(212).clear()
-            plt.subplot(211).plot(runtime, [dt["robot"][i]["batt"] for dt in self.data["state"]], color='C0')
+            plt.subplot(211).plot(
+                runtime, [dt["robot"][i]["batt"] for dt in self.data["state"]],
+                color='C0'
+            )
             plt.subplot(211).set_title('Energy Level' + f' of UAV #{i + 1}')
             plt.subplot(211).set_xlabel('Time / s')
             plt.subplot(211).set_ylabel('Energy Level')
 
-            plt.subplot(212).plot(runtime, [max(dt["robot"][i]["energy_cbf"], 0) for dt in self.data["state"]], color='C0')
+            plt.subplot(212).plot(
+                runtime, [max(dt["robot"][i]["energy_cbf"], 0) for dt in self.data["state"]],
+                color='C0'
+            )
             plt.subplot(212).set_title(r'CBF Value $min(h_{energy}, h_{l10n})$' + f' of UAV #{i + 1}')
             plt.subplot(212).set_xlabel('Time / s')
             plt.subplot(212).set_ylabel('$min(h_{energy}, h_{l10n})$')
@@ -450,11 +476,10 @@ class Drawer:
 
         pb.close()
 
-
     @singleFile
     def drawCBFs(self):
         if self.useTex:
-            matplotlib.rc('text', useTex=True)
+            matplotlib.rc('text', usetex=True)
 
         matplotlib.use('agg')
 
@@ -474,7 +499,8 @@ class Drawer:
             plt.subplot(211).set_xlabel('Time / s')
             plt.subplot(211).set_ylabel('$h_{task}$')
 
-            plt.subplot(212).plot(runtime, [max(dt["robot"][i]["energy_cbf"], 0) for dt in self.data["state"]], color='C0')
+            plt.subplot(212).plot(runtime, [max(dt["robot"][i]["energy_cbf"], 0) for dt in self.data["state"]],
+                                  color='C0')
             plt.subplot(212).set_title(r'CBF Value $h_{constraint}$' + f' of UAV #{i + 1}')
             plt.subplot(212).set_xlabel('Time / s')
             plt.subplot(212).set_ylabel('$h_{constraint}$')
@@ -486,11 +512,10 @@ class Drawer:
 
         pb.close()
 
-
     @singleFile
     def drawAllEnergy(self):
         if self.useTex:
-            matplotlib.rc('text', useTex=True)
+            matplotlib.rc('text', usetex=True)
 
         matplotlib.use('agg')
 
@@ -510,11 +535,10 @@ class Drawer:
         figureFilename = self.folderName + f'/energy_all.png'
         plt.savefig(figureFilename, bbox_inches='tight')
 
-
     @multipleFiles
     def drawEnergy2(self):
         if self.useTex:
-            matplotlib.rc('text', useTex=True)
+            matplotlib.rc('text', usetex=True)
 
         matplotlib.use('agg')
 
@@ -534,11 +558,10 @@ class Drawer:
         figureFilename = self.folderName + f'/energy_2_contrast.png'
         plt.savefig(figureFilename, bbox_inches='tight')
 
-
     @multipleFiles
     def drawDistance1To2ForAll(self):
         if self.useTex:
-            matplotlib.rc('text', useTex=True)
+            matplotlib.rc('text', usetex=True)
 
         matplotlib.use('agg')
 
@@ -565,7 +588,7 @@ class Drawer:
     @singleFile
     def drawAllCvtCBF(self):
         if self.useTex:
-            matplotlib.rc('text', useTex=True)
+            matplotlib.rc('text', usetex=True)
 
         matplotlib.use('agg')
 
@@ -585,11 +608,10 @@ class Drawer:
         figureFilename = self.folderName + f'/all_cvt_cbf.png'
         plt.savefig(figureFilename, bbox_inches='tight')
 
-
     @singleFile
     def drawHeatmap(self):
         if self.useTex:
-            matplotlib.rc('text', useTex=True)
+            matplotlib.rc('text', usetex=True)
 
         matplotlib.use('agg')
 
@@ -634,11 +656,10 @@ class Drawer:
 
         pb.close()
 
-
     @singleFile
     def drawSearchHeatmap(self):
         if self.useTex:
-            matplotlib.rc('text', useTex=True)
+            matplotlib.rc('text', usetex=True)
 
         matplotlib.use('agg')
 
@@ -683,7 +704,6 @@ class Drawer:
 
         figureFilename = self.folderName + f'/SearchHeatmap.png'
         plt.savefig(figureFilename, bbox_inches='tight')
-
 
     @singleFile
     def makeScreenshotFromVideo(self):
@@ -762,4 +782,4 @@ class Drawer:
 if __name__ == '__main__':
     filenames = [findNewestFile('*')]
     print(f'{filenames = }')
-    drawer = Drawer(filenames, settings='paper')
+    drawer = Drawer(filenames, settings='paper', config={'figSize': (20, 15)})
