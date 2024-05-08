@@ -34,7 +34,7 @@
     "camera_cbf": "off"
   },
   "execute": {
-    "time_total": 300,
+    "time_total": 50,
     "step_time": 0.02,
     "output_grid": "off"
   }
