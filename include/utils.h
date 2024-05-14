@@ -17,7 +17,7 @@ typedef std::pair<double, double> pd;
 std::vector<Point> getPointsFromJson(const json &j) {
     std::vector<Point> points;
     for (auto &point : j) {
-        points.emplace_back(point["x"], point["y"]);
+        points.emplace_back(point[0], point[1]);
     }
     return points;
 }

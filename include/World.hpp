@@ -29,7 +29,7 @@ public:
         boundary = Polygon(getPointsFromJson(settings["boundary"]));
         for (auto &c: settings["charge"]) {
             chargingStations.emplace_back(
-                    Point(c["x"], c["y"]),
+                    Point(c[0], c[1]),
                     c.contains("r") ? double(c["r"]) : 0.3
             );
         }

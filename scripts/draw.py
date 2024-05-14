@@ -80,12 +80,12 @@ class MyOptPlot:
         self.xgrid, self.ygrid = np.meshgrid(xVec, yVec)
         self.cbfList = []
         now_data = self.data[0]
-        if "cbf_no_slack" in now_data:
+        if "cbfNoSlack" in now_data:
             self.cbfList += [self.xgrid * cbf["x"] + self.ygrid * cbf["y"] + cbf["const"] for cbf in
-                             now_data["cbf_no_slack"]]
-        if "cbf_slack" in now_data:
+                             now_data["cbfNoSlack"]]
+        if "cbfSlack" in now_data:
             self.cbfList += [self.xgrid * cbf["x"] + self.ygrid * cbf["y"] + cbf["const"] for cbf in
-                             now_data["cbf_slack"]]
+                             now_data["cbfSlack"]]
         self.cbf_ct = [self.ax.contour(self.xgrid, self.ygrid, cbf, [0],
                                        colors='orangered')
                        for cbf in self.cbfList]
@@ -99,14 +99,14 @@ class MyOptPlot:
         now_data = self.data[_num]
         self.cbfList = []
         self.cbfName = []
-        # if "cbf_no_slack" in now_data:
+        # if "cbfNoSlack" in now_data:
         self.cbfList += [self.xgrid * cbf["x"] + self.ygrid * cbf["y"] + cbf["const"] for cbf in
-                         now_data["cbf_no_slack"]]
-        self.cbfName += [cbf["name"] for cbf in now_data["cbf_no_slack"]]
-        # if "cbf_slack" in now_data:
+                         now_data["cbfNoSlack"]]
+        self.cbfName += [cbf["name"] for cbf in now_data["cbfNoSlack"]]
+        # if "cbfSlack" in now_data:
         self.cbfList += [self.xgrid * cbf["x"] + self.ygrid * cbf["y"] + cbf["const"] for cbf in
-                         now_data["cbf_slack"]]
-        self.cbfName += [cbf["name"] for cbf in now_data["cbf_slack"]]
+                         now_data["cbfSlack"]]
+        self.cbfName += [cbf["name"] for cbf in now_data["cbfSlack"]]
 
         if len(self.cbfList) > 0:
             self.txt.set_text('')
@@ -203,7 +203,7 @@ class Drawer:
 
         matplotlib.use('agg')
 
-        robotNum = self.data["para"]["number"]
+        robotNum = self.data["para"]["swarm"]["num"]
         halfNum = math.ceil(robotNum / 2)
         row, col = 8, halfNum
 
@@ -224,43 +224,18 @@ class Drawer:
         shotList = [ind * fps for ind in self.shotList]
         totalLength = len(self.data["state"])
 
-        worldX = [data["x"] for data in self.data["para"]["world"]]
-        worldY = [data["y"] for data in self.data["para"]["world"]]
+        worldX = [data[0] for data in self.data["para"]["world"]["boundary"]]
+        worldY = [data[1] for data in self.data["para"]["world"]["boundary"]]
 
-        xNum, yNum = self.data["para"]["grid_world"]["x_num"], self.data["para"]["grid_world"]["y_num"]
-        x = np.linspace(self.data["para"]["grid_world"]["x_lim"][0],
-                        self.data["para"]["grid_world"]["x_lim"][1], xNum)
-        y = np.linspace(self.data["para"]["grid_world"]["y_lim"][0],
-                        self.data["para"]["grid_world"]["y_lim"][1], yNum)
+        gridWorldJson = self.data["para"]["gridWorld"]
+
+        x = np.linspace(gridWorldJson["xLim"][0], gridWorldJson["xLim"][1], gridWorldJson["xNum"])
+        y = np.linspace(gridWorldJson["yLim"][0], gridWorldJson["yLim"][1], gridWorldJson["yNum"])
         X, Y = np.meshgrid(x, y)
 
-        def getDensity(data):
-            Z = 1e-8 * X / X
-            if "target" not in data:
-                return Z
-            for tar in data["target"]:
-                centerX, centerY = tar["x"], tar["y"]
-                L = np.sqrt((X - centerX) ** 2 + (Y - centerY) ** 2)
-                # Z += np.exp(-np.power(np.fabs(L - tar["r"]), 3) * tar["k"]) * tar["k"]
-                # Z += np.exp(-np.fabs(L - tar["r"]) + tar["k"])
-                Z += np.exp(
-                    (
-                            np.power(-np.fabs(L - tar["r"]), 3)
-                            + 2
-                    )
-                    * 10
-                )
-                ax.add_patch(Circle(xy=(centerX, centerY), radius=0.1, color='r', alpha=0.2))
-                ax.annotate('Target', xy=(centerX, centerY))
-            return Z
-
-        # Z = np.array(self.data["state"][0]["grid_world"]).transpose()
-        Z = np.zeros((self.data["para"]["grid_world"]["y_num"],
-                      self.data["para"]["grid_world"]["x_num"]))
-        F = ax.imshow(Z, alpha=0.2, extent=(self.data["para"]["grid_world"]["x_lim"][0],
-                                            self.data["para"]["grid_world"]["x_lim"][1],
-                                            self.data["para"]["grid_world"]["y_lim"][0],
-                                            self.data["para"]["grid_world"]["y_lim"][1]), origin='lower')
+        Z = np.zeros((gridWorldJson["yNum"], gridWorldJson["xNum"]))
+        zExtent = gridWorldJson["xLim"] + gridWorldJson["yLim"]
+        F = ax.imshow(Z, alpha=0.2, extent=zExtent, origin='lower')
 
         if self.showBar:
             div = make_axes_locatable(ax)
@@ -280,12 +255,12 @@ class Drawer:
                           for i in range(robotNum)]
         if self.plotYawCBF:
             yawCBFPlot = [MyBarPlot(runtime, [dt["robot"][i]["yawCBF"] for dt in self.data["state"]],
-                                       plt.subplot(gs[-2, i]),
-                                       "Robot #{}: Yaw CBF Value".format(i + 1))
-                             for i in range(robotNum)]
+                                    plt.subplot(gs[-2, i]),
+                                    "Robot #{}: Yaw CBF Value".format(i + 1))
+                          for i in range(robotNum)]
 
         if self.plotCommCBF:
-            commCBFPlot = [MyBarPlot(runtime, [dt["robot"][i]["comm_to_" + str(j)] for dt in self.data["state"]],
+            commCBFPlot = [MyBarPlot(runtime, [dt["robot"][i]["commTo" + str(j)] for dt in self.data["state"]],
                                      plt.subplot(gs[-2, i]),
                                      "Robot #{}: Comm CBF Value".format(i + 1))
                            for i in range(robotNum) for j in range(robotNum) if
@@ -313,42 +288,39 @@ class Drawer:
 
             dataNow = self.data["state"][num]
 
-            # gridWorldNow = np.array(dataNow["grid_world"]).transpose()
+            # gridWorldNow = np.array(dataNow["gridWorld"]).transpose()
             # print(gridWorldNow)
             # Z = gridWorldNow
             # Z = getDensity(dataNow)
             for i in range(robotNum):
                 updatedGrids = dataNow["update"][i]
                 for grid in updatedGrids:
-                    Z[grid["y"], grid["x"]] = 1
+                    Z[grid[1], grid[0]] = 1
 
-            ax.imshow(Z, alpha=0.2, extent=(self.data["para"]["grid_world"]["x_lim"][0],
-                                            self.data["para"]["grid_world"]["x_lim"][1],
-                                            self.data["para"]["grid_world"]["y_lim"][0],
-                                            self.data["para"]["grid_world"]["y_lim"][1]), origin='lower')
+            ax.imshow(Z, alpha=0.2, extent=zExtent, origin='lower')
             c_min, c_max = np.min(Z), np.max(Z)
             if self.showBar:
                 F.set_clim(0, 1)
             # cbar = fig.colorbar(F, cax=cax, alpha=0.2)
 
-            for i in range(self.data["para"]["charge"]["num"]):
+            for i in range(self.data["para"]["world"]["charge"]["num"]):
                 ax.add_patch(
                     Circle(
-                        xy=(self.data["para"]["charge"]["pos"][i]["x"], self.data["para"]["charge"]["pos"][i]["y"]),
-                        radius=self.data["para"]["charge"]["dist"][i],
+                        xy=(self.data["para"]["world"]["charge"]["pos"][i][0], self.data["para"]["world"]["charge"]["pos"][i][1]),
+                        radius=self.data["para"]["world"]["charge"]["dist"][i],
                         alpha=0.5
                     )
                 )
 
-            robotX = [dataNow["robot"][i]["x"] for i in range(robotNum)]
-            robotY = [dataNow["robot"][i]["y"] for i in range(robotNum)]
-            robotBattery = [dataNow["robot"][i]["battery"] for i in range(robotNum)]
-            robotYawDeg = [math.degrees(dataNow["robot"][i]["yawRad"]) for i in range(robotNum)]
+            robotX = [dataNow["robot"][i]["state"]["x"] for i in range(robotNum)]
+            robotY = [dataNow["robot"][i]["state"]["y"] for i in range(robotNum)]
+            robotBattery = [dataNow["robot"][i]["state"]["battery"] for i in range(robotNum)]
+            robotYawDeg = [math.degrees(dataNow["robot"][i]["state"]["yawRad"]) for i in range(robotNum)]
 
             if "cvt" in dataNow and self.showCVT:
-                cvtPolygonX = [[dataNow["cvt"][i]["pos"][j]["x"]
+                cvtPolygonX = [[dataNow["cvt"][i]["pos"][j][0]
                                 for j in range(dataNow["cvt"][i]["num"])] for i in range(robotNum)]
-                cvtPolygonY = [[dataNow["cvt"][i]["pos"][j]["y"]
+                cvtPolygonY = [[dataNow["cvt"][i]["pos"][j][1]
                                 for j in range(dataNow["cvt"][i]["num"])] for i in range(robotNum)]
                 cvtPolygonCenter = [dataNow["cvt"][i]["center"] for i in range(robotNum)]
 
@@ -382,7 +354,7 @@ class Drawer:
                 if "cvt" in dataNow and self.showCVT:
                     ax.plot(cvtPolygonX[i], cvtPolygonY[i], 'k')
                     ax.plot(
-                        [ct["x"] for ct in cvtPolygonCenter], [ct["y"] for ct in cvtPolygonCenter],
+                        [ct[0] for ct in cvtPolygonCenter], [ct[0] for ct in cvtPolygonCenter],
                         '*',
                         color='lime'
                     )
@@ -400,8 +372,8 @@ class Drawer:
                 # )
             else:
                 ax.text(0.05, 0.95, 'Time = {:.2f}s'.format(dataNow["runtime"]), transform=ax.transAxes)
-            ax.set_xlim(self.data["para"]["lim"]["x"])
-            ax.set_ylim(self.data["para"]["lim"]["y"])
+            ax.set_xlim(self.data["para"]["world"]["lim"][0])
+            ax.set_ylim(self.data["para"]["world"]["lim"][1])
 
             ax.plot(worldX, worldY, 'k')
             if not self.showAxis:
@@ -420,7 +392,7 @@ class Drawer:
                 for cbf in safeCBFPlot:
                     cbf.update(num)
             if num in shotList:
-                plt.savefig(os.path.join(self.folderName , f'-{int(num / fps)}-second.png'), bbox_inches='tight')
+                plt.savefig(os.path.join(self.folderName, f'-{int(num / fps)}-second.png'), bbox_inches='tight')
                 print('Shot!', end='')
             return
 
@@ -526,7 +498,8 @@ class Drawer:
         runtime = [dt["runtime"] for dt in self.data["state"]]
 
         for i in range(robotNum):
-            plt.subplot(111).plot(runtime, [dt["robot"][i]["battery"] for dt in self.data["state"]], label=f'UAV #{i + 1}')
+            plt.subplot(111).plot(runtime, [dt["robot"][i]["battery"] for dt in self.data["state"]],
+                                  label=f'UAV #{i + 1}')
 
         leg = plt.subplot(111).legend(bbox_to_anchor=(1.0, -0.15), ncol=5)
         plt.subplot(111).set_xlabel('Time / s')
@@ -669,7 +642,7 @@ class Drawer:
 
         runtime = [dt["runtime"] for dt in self.data["state"]]
 
-        xnum, ynum = self.data["para"]["grid_world"]["x_num"], self.data["para"]["grid_world"]["y_num"]
+        xnum, ynum = self.data["para"]["gridWorld"]["x_num"], self.data["para"]["gridWorld"]["y_num"]
         Z = np.zeros((ynum, xnum))
         Z -= 1
 

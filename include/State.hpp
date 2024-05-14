@@ -67,6 +67,25 @@ public:
     Point xy() const {
         return {X(xIndex), X(yIndex)};
     }
+
+    json toJson() {
+        json j;
+        j["x"] = X(xIndex);
+        j["y"] = X(yIndex);
+        j["battery"] = X(batteryIndex);
+        j["yawRad"] = X(yawIndex);
+        j["raw"] = X;
+        return j;
+    }
+
+    json stateEncodeJson() {
+        json j;
+        j["x"] = xIndex;
+        j["y"] = yIndex;
+        j["battery"] = batteryIndex;
+        j["yawRad"] = yawIndex;
+        return j;
+    }
 };
 
 #endif //CBF_STATE_H

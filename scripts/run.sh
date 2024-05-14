@@ -1,4 +1,4 @@
 cd cmake-build-release || exit
-./cbf_main
+./main
 cd ..
-python3 draw.py
+python3 scripts/draw.py

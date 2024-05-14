@@ -305,54 +305,61 @@ public:
     }
 
     void logParams() {
-        data["para"]["number"] = n;
-        double x_lim[2], y_lim[2];
-        getXLimit(x_lim), getYLimit(y_lim);
-        data["para"]["lim"]["x"] = {x_lim[0], x_lim[1]};
-        data["para"]["lim"]["y"] = {y_lim[0], y_lim[1]};
-        getXLimit(x_lim, 1.0), getYLimit(y_lim, 1.0);
-        for (int i = 1; i <= world.boundary.n; i++) {
-            data["para"]["world"].push_back({
-                                                    {"x", world.boundary.p[i].x},
-                                                    {"y", world.boundary.p[i].y}
-                                            });
+        json paraJson;
+        {
+            json worldJson;
+            double xLim[2], yLim[2];
+            getXLimit(xLim), getYLimit(yLim);
+            worldJson["lim"] = {{xLim[0], xLim[1]},
+                                   {yLim[0], yLim[1]}};
+            getXLimit(xLim, 1.0), getYLimit(yLim, 1.0);
+            for (int i = 1; i <= world.boundary.n; i++) {
+                worldJson["boundary"].push_back({world.boundary.p[i].x, world.boundary.p[i].y});
+            }
+            worldJson["boundary"].push_back({world.boundary.p[1].x, world.boundary.p[1].y});
+            worldJson["charge"]["num"] = world.chargingStations.size();
+            for (auto &i: world.chargingStations) {
+                worldJson["charge"]["pos"].push_back({i.first.x, i.first.y});
+                worldJson["charge"]["dist"].push_back(i.second);
+            }
+            paraJson["world"] = worldJson;
         }
-        data["para"]["world"].push_back({
-                                                {"x", world.boundary.p[1].x},
-                                                {"y", world.boundary.p[1].y}
-                                        });
-        data["para"]["charge"]["num"] = world.chargingStations.size();
-        for (auto &i: world.chargingStations) {
-            data["para"]["charge"]["pos"].push_back({
-                                                            {"x", i.first.x},
-                                                            {"y", i.first.y}
-                                                    });
-            data["para"]["charge"]["dist"].push_back(i.second);
+        {
+            json swarmJson;
+            swarmJson["num"] = n;
+            for (auto &robot: robots) {
+                json robotJson;
+                robotJson["stateEncode"] = robot.state.stateEncodeJson();
+                swarmJson["robots"].push_back(robotJson);
+            }
+            paraJson["swarm"] = swarmJson;
         }
-        for (auto &i: world.targets) {
-            data["para"]["target"].push_back({
-                                                     {"k", i.densityParams["k"]},
-                                                     {"r", i.densityParams["r"]}
-                                             });
+        {
+            json targetsJson;
+            for (auto &i: world.targets) {
+                targetsJson.push_back({
+                                                          {"k", i.densityParams["k"]},
+                                                          {"r", i.densityParams["r"]}
+                                                  });
+            }
+            paraJson["targets"] = targetsJson;
         }
-        data["para"]["grid_world"] = {
-                {"x_num", gridWorld.xNum},
-                {"y_num", gridWorld.yNum},
-                {"x_lim", {gridWorld.xLim.first, gridWorld.xLim.second}},
-                {"y_lim", {gridWorld.yLim.first, gridWorld.yLim.second}}
-        };
+        {
+            json gridWorldJson;
+            gridWorldJson["xNum"] = gridWorld.xNum;
+            gridWorldJson["yNum"] = gridWorld.yNum;
+            gridWorldJson["xLim"] = {gridWorld.xLim.first, gridWorld.xLim.second};
+            gridWorldJson["yLim"] = {gridWorld.yLim.first, gridWorld.yLim.second};
+            paraJson["gridWorld"] = gridWorldJson;
+        }
+        data["para"] = paraJson;
     }
 
     void logOnce() {
         json stepData;
         stepData["runtime"] = runtime;
         for (auto &robot: robots) {
-            stepData["robot"].push_back({
-                                                {"x",       robot.state.x()},
-                                                {"y",       robot.state.y()},
-                                                {"battery", robot.state.battery()},
-                                                {"yawRad",  robot.state.yawRad()}
-                                        });
+            stepData["robot"].push_back({{"state", robot.state.toJson()}});
             for (auto &cbf: robot.cbfNoSlack) {
                 stepData["robot"].back()[cbf.first] = cbf.second.h(robot.state.X, runtime);
             }
@@ -363,23 +370,14 @@ public:
                                               {"num", cvt.pl[robot.id].n + 1}
                                       });
             for (int i = 1; i <= cvt.pl[robot.id].n; i++) {
-                stepData["cvt"].back()["pos"].push_back({
-                                                                {"x", cvt.pl[robot.id].p[i].x},
-                                                                {"y", cvt.pl[robot.id].p[i].y}
-                                                        });
+                stepData["cvt"].back()["pos"].push_back({cvt.pl[robot.id].p[i].x, cvt.pl[robot.id].p[i].y});
             }
-            stepData["cvt"].back()["pos"].push_back({
-                                                            {"x", cvt.pl[robot.id].p[1].x},
-                                                            {"y", cvt.pl[robot.id].p[1].y}
-                                                    });
-            stepData["cvt"].back()["center"] = {
-                    {"x", cvt.ct[robot.id].x},
-                    {"y", cvt.ct[robot.id].y}
-            };
+            stepData["cvt"].back()["pos"].push_back({cvt.pl[robot.id].p[1].x, cvt.pl[robot.id].p[1].y});
+            stepData["cvt"].back()["center"] = {cvt.ct[robot.id].x, cvt.ct[robot.id].y};
         }
         for (auto i: world.targets) {
             if (i.visibleAtTime(runtime)) {
-                stepData["target"].push_back({
+                stepData["targets"].push_back({
                                                      {"x", i.pos(runtime).x},
                                                      {"y", i.pos(runtime).y},
                                                      {"k", i.densityParams["k"]},
@@ -439,8 +437,7 @@ public:
             json robotData = robot.stepTimeForward(u, runtime, dt, world);
             optimisationData.push_back(robotData);
         }
-        auto sz = data["state"].size();
-        data["state"][sz - 1]["opt"] = optimisationData;
+        data["state"].back()["opt"] = optimisationData;
         runtime += dt;
     }
 

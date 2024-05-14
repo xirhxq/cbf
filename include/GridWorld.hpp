@@ -166,8 +166,7 @@ public:
             yIndexes.second = getNumInYLim(yLimit.second, "floor");
             for (int yIndex = yIndexes.first; yIndex <= yIndexes.second; yIndex++) {
                 if (updateJson && getValue(xIndex, yIndex) != value) {
-                    ret.push_back({{"x", xIndex},
-                                   {"y", yIndex}});
+                    ret.push_back({xIndex, yIndex});
                 }
                 setValue(xIndex, yIndex, value);
             }
@@ -196,8 +195,7 @@ public:
                 Point p = getPointInArea(i, j);
                 if (p.distance_to(center) > radii) continue;
                 if (updateJson && getValue(i, j) != value) {
-                    ret.push_back({{"x", i},
-                                   {"y", j}});
+                    ret.push_back({i, j});
                 }
                 setValue(i, j, value);
             }
