@@ -15,33 +15,22 @@ public:
     double runtime = 0.0;
     std::vector<Robot> robots;
     World world;
-    double spacing = 0.1;
     std::ofstream ofstream;
     json data;
     CVT cvt;
     GridWorld gridWorld;
     json updatedGridWorld;
+    json config;
+    std::string folderName;
+    std::string filename;
 public:
-    Swarm(int n, Point *initialPosition, World world) : n(n), world(world), robots(n, Robot(3)) {
-        for (int i = 0; i < n; i++) {
-            robots[i].id = i + 1;
-            robots[i].state.setPosition(initialPosition[i]);
-            robots[i].state.setBattery(1.0 * (rand() % 40) / 40 + 10);
-            robots[i].F << 0, 0, -1;
-        }
-        auto worldXLimit = world.boundary.get_x_limit(1.0), worldYLimit = world.boundary.get_y_limit(1.0);
-        int xNum = (worldXLimit.second - worldXLimit.first) / spacing;
-        int yNum = (worldYLimit.second - worldYLimit.first) / spacing;
-        gridWorld = GridWorld(worldXLimit, xNum, worldYLimit, yNum);
-        runtime = 0.0;
-    }
-
-    Swarm(int n, World world) : n(n), world(world), robots(n, Robot(4)) {
-        auto worldXLimit = world.boundary.get_x_limit(1.0), worldYLimit = world.boundary.get_y_limit(1.0);
-        int xNum = (worldXLimit.second - worldXLimit.first) / spacing;
-        int yNum = (worldYLimit.second - worldYLimit.first) / spacing;
-        gridWorld = GridWorld(worldXLimit, xNum, worldYLimit, yNum);
-        runtime = 0.0;
+    Swarm(const json &settings)
+            : config(settings),
+              n(settings["swarm"]["num"]),
+              world(settings["world"]),
+              robots(n, Robot(settings["swarm"]["dim"])),
+              gridWorld(computeGridWorld(settings["world"])),
+              runtime(0.0) {
         for (int i = 0; i < n; i++) {
             robots[i].id = i + 1;
             robots[i].G(2, 2) = 0;
@@ -52,7 +41,15 @@ public:
             robots[i].cbfSlack.clear();
             robots[i].cbfNoSlack.clear();
         }
-        randomInitialPosition();
+        setupInitialPosition();
+    }
+
+    GridWorld computeGridWorld(const json &worldSettings) {
+        World tmpWorld(worldSettings);
+        auto worldXLimit = tmpWorld.boundary.get_x_limit(1.0), worldYLimit = tmpWorld.boundary.get_y_limit(1.0);
+        int xNum = (worldXLimit.second - worldXLimit.first) / double(worldSettings["spacing"]);
+        int yNum = (worldYLimit.second - worldYLimit.first) / double(worldSettings["spacing"]);
+        return {worldXLimit, xNum, worldYLimit, yNum};
     }
 
     void output() {
@@ -77,8 +74,24 @@ public:
     }
 
     void setInitialPosition(std::vector<Point> initialPositions) {
-        for (int i = 0; i < n; i++) {
-            robots[i].state.setPosition(initialPositions[i]);
+        auto pointIt = initialPositions.begin();
+        for (Robot &robot: robots) {
+            robot.state.setPosition(*pointIt);
+            ++pointIt;
+        }
+    }
+
+    void setupInitialPosition() {
+        auto settings = config["swarm"]["initialPosition"];
+        std::string method = settings["method"];
+        if (method == "randomAll") {
+            randomInitialPosition();
+        } else if (method == "randomInPolygon") {
+            randomInitialPosition(Polygon(getPointsFromJson(settings["polygon"])));
+        } else if (method == "specified") {
+            setInitialPosition(getPointsFromJson(settings["positions"]));
+        } else {
+            throw std::invalid_argument("Invalid method for setting initial position");
         }
     }
 
@@ -150,7 +163,7 @@ public:
         }
     }
 
-    void setCommCBF() {
+    void setCommunicationAutoCBF() {
         for (auto &robot: robots) {
             auto autoFormationCommH = [&](VectorXd x, double t) {
                 State state(x);
@@ -201,6 +214,18 @@ public:
                 }
                 return h;
             };
+
+            CBF commCBF;
+            commCBF.name = "commCBF";
+            commCBF.h = autoFormationCommH;
+            commCBF.controlVariable.resize(robot.state.X.size());
+            commCBF.controlVariable << 1, 1, 1, 1;
+            robot.cbfNoSlack["commCBF"] = commCBF;
+        }
+    }
+
+    void setCommunicationFixedCBF() {
+        for (auto &robot: robots) {
             auto fixedFormationCommH = [&](VectorXd x, double t) {
                 State state(x);
                 auto partId = [&](int id) { return (id - 1) % (n / 2) + 1; };
@@ -274,10 +299,6 @@ public:
         }
     }
 
-    void initLogPath(char *_p) {
-        ofstream.open(_p, std::ios::app);
-    }
-
     void endLog() {
         ofstream << std::fixed << std::setprecision(6) << data;
         ofstream.close();
@@ -327,11 +348,11 @@ public:
         stepData["runtime"] = runtime;
         for (auto &robot: robots) {
             stepData["robot"].push_back({
-                                                 {"x",    robot.state.x()},
-                                                 {"y",    robot.state.y()},
-                                                 {"battery", robot.state.battery()},
-                                                 {"yawRad",  robot.state.yawRad()}
-                                         });
+                                                {"x",       robot.state.x()},
+                                                {"y",       robot.state.y()},
+                                                {"battery", robot.state.battery()},
+                                                {"yawRad",  robot.state.yawRad()}
+                                        });
             for (auto &cbf: robot.cbfNoSlack) {
                 stepData["robot"].back()[cbf.first] = cbf.second.h(robot.state.X, runtime);
             }
@@ -386,19 +407,12 @@ public:
             cvt.pt[robot.id] = robot.state.xy();
         }
         cvt.cal_poly();
-//        cvt.cal_centroid([&](const Point &_p) {
-//            return world.getDensity(runtime)(_p);
-//        }, spacing);
         for (int i = 1; i <= cvt.n; i++) {
             cvt.ct[i] = gridWorld.getCentroidInPolygon(cvt.pl[i]);
         }
     }
 
     void setCVTCBF() {
-#ifdef TIMER_ON
-        clock_t begin, end;
-        double cvtCBFTime = 0.0;
-#endif
         for (auto &robot: robots) {
             double kp = 5.0;
             CBF cvtCBF;
@@ -406,24 +420,14 @@ public:
             cvtCBF.controlVariable << 1, 1, 1, 1;
             cvtCBF.name = "cvtCBF";
             Point cvtCenter = cvt.ct[robot.id];
-#ifdef TIMER_ON
-            begin = clock();
-#endif
             cvtCBF.h = [cvtCenter, kp](VectorXd x, double t) {
                 State state(x);
                 Point myPosition = state.xy();
                 return -kp * cvtCenter.distance_to(myPosition);
             };
-#ifdef TIMER_ON
-            end = clock();
-            cvtCBFTime += double(end - begin) / CLOCKS_PER_SEC;
-#endif
             cvtCBF.alpha = [](double h) { return h; };
             robot.cbfSlack[cvtCBF.name] = cvtCBF;
         }
-#ifdef TIMER_ON
-        printf("cvtCBFTime: %f ", cvtCBFTime);
-#endif
     }
 
     void cvtForward(double dt) {
@@ -502,6 +506,68 @@ public:
             }
             printf("\n");
         }
+    }
+
+    void presetCBF() {
+        auto cbfConfig = config["cbfs"];
+        if (cbfConfig["energy"] == "on") setEnergyCBF();
+        if (cbfConfig["yaw"] == "on") setYawCBF();
+    }
+
+    void initLog() {
+        mkdir("../data", 0777);
+        time_t now = time(nullptr);
+        tm *t = localtime(&now);
+        std::ostringstream oss;
+        oss << std::setfill('0')
+            << std::setw(2) << t->tm_mon + 1 << "-"
+            << std::setw(2) << t->tm_mday << "_"
+            << std::setw(2) << t->tm_hour << "-"
+            << std::setw(2) << t->tm_min;
+        folderName = oss.str();
+        if (mkdir(("../data/" + folderName).c_str(), 0777) == -1) {
+            std::cerr << "Error :  " << strerror(errno) << std::endl;
+        }
+        filename = "../data/" + folderName + "/data.json";
+        ofstream.open(filename, std::ios::app);
+    }
+
+    void postsetCBF() {
+        auto cbfConfig = config["cbfs"];
+        if (cbfConfig["communicationFixed"] == "on") setCommunicationFixedCBF();
+        if (cbfConfig["communicationAuto"] == "on") setCommunicationAutoCBF();
+        if (cbfConfig["cvt"] == "on") calCVT(), setCVTCBF();
+        if (cbfConfig["safety"] == "on") setSafetyCBF();
+    }
+
+    void run() {
+        initLog();
+        logParams();
+        output();
+        presetCBF();
+
+        auto settings = config["execute"];
+
+        double tTotal = settings["tTotal"], tStep = settings["tStep"];
+        while (runtime < tTotal) {
+            if (settings["gridInTerminal"] == "off") {
+                printf("\r%.2lf seconds elapsed...", runtime);
+            } else {
+                printf("%.2lf seconds elapsed...\n", runtime);
+            }
+            updateGridWorld();
+            postsetCBF();
+            logOnce();
+            cvtForward(tStep);
+            if (settings["gridInTerminal"] == "on") gridWorldOutput();
+        }
+
+        printf("\nAfter %.4lf seconds\n", tTotal);
+        output();
+        endLog();
+
+        printf("Data saved in %s\n", filename.c_str());
+
     }
 };
 

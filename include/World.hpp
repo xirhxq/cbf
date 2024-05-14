@@ -25,6 +25,16 @@ public:
         }
     }
 
+    explicit World(json settings) {
+        boundary = Polygon(getPointsFromJson(settings["boundary"]));
+        for (auto &c: settings["charge"]) {
+            chargingStations.emplace_back(
+                    Point(c["x"], c["y"]),
+                    c.contains("r") ? double(c["r"]) : 0.3
+            );
+        }
+    }
+
     Point getRandomPoint() {
         return boundary.get_random_point();
     }

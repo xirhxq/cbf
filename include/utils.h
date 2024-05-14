@@ -14,6 +14,14 @@ using json = nlohmann::json;
 
 typedef std::pair<double, double> pd;
 
+std::vector<Point> getPointsFromJson(const json &j) {
+    std::vector<Point> points;
+    for (auto &point : j) {
+        points.emplace_back(point["x"], point["y"]);
+    }
+    return points;
+}
+
 #define RESET   "\033[0m"
 #define BLACK   "\033[30m"
 #define RED     "\033[31m"
