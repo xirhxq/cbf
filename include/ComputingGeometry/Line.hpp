@@ -1,5 +1,5 @@
-#ifndef CBF_MAIN_LINE_HPP
-#define CBF_MAIN_LINE_HPP
+#ifndef COMPUTING_GEOMETRY_LINE_HPP
+#define COMPUTING_GEOMETRY_LINE_HPP
 
 #include "Point.hpp"
 
@@ -21,31 +21,28 @@ public:
 
     Line(const Point &_s, double a) {
         s = _s;
-        if (sgn(a - pi / 2) == 0){
+        if (sgn(a - pi / 2) == 0) {
             e = s + Point(0, 1);
-        }
-        else{
+        } else {
             e = s + Point(1, tan(a));
         }
     }
 
     Line(double _a, double _b, double _c) {
-        if (sgn(_a) == 0){
+        if (sgn(_a) == 0) {
             s = Point(0, -_c / _b);
             e = Point(1, -_c / _b);
-        }
-        else if (sgn(_b) == 0){
+        } else if (sgn(_b) == 0) {
             s = Point(-_c / _a, 0);
             e = Point(-_c / _a, 1);
-        }
-        else{
+        } else {
             s = Point(0, -_c / _b);
             e = Point(1, -(_c + _a) / _b);
         }
         adjust();
     }
 
-    void input(){
+    void input() {
         s.input();
         e.input();
     }
@@ -55,7 +52,7 @@ public:
     }
 
     void adjust() {
-        if (s > e){
+        if (s > e) {
             Point tmp_point = s;
             s = e;
             e = tmp_point;
@@ -127,7 +124,7 @@ public:
     }
 
     double dis_seg_to_point(const Point &p) {
-        if (sgn((p - s) * (e - s)) < 0 || sgn((p - e) * (s - e) < 0)){
+        if (sgn((p - s) * (e - s)) < 0 || sgn((p - e) * (s - e) < 0)) {
             return fmin(s.distance_to(p), e.distance_to(p));
         }
         return dis_line_to_point(p);
@@ -139,7 +136,7 @@ public:
     }
 
     Point project_point(const Point &p) {
-        return s + (((e - s) * ((e - s) * (p - s))) / (e - s).len2() );
+        return s + (((e - s) * ((e - s) * (p - s))) / (e - s).len2());
     }
 
     Point symmetry_point(const Point &p) {
@@ -149,7 +146,8 @@ public:
 
 };
 
-Line median_line(Point &p, Point &q){
+Line median_line(Point &p, Point &q) {
     return Line((p + q) / 2.0, p.angle_to(q) + pi / 2);
 }
-#endif //CBF_MAIN_LINE_HPP
+
+#endif //COMPUTING_GEOMETRY_LINE_HPP
