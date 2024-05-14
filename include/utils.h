@@ -1,5 +1,5 @@
-#ifndef CBF_MAIN_UTILS_H
-#define CBF_MAIN_UTILS_H
+#ifndef CBF_UTILS_H
+#define CBF_UTILS_H
 
 #include <iostream>
 #include <cmath>
@@ -32,4 +32,4 @@ typedef std::pair<double, double> pd;
 #define BOLDCYAN    "\033[1m\033[36m"
 #define BOLDWHITE   "\033[1m\033[37m"
 
-#endif //CBF_MAIN_UTILS_H
+#endif //CBF_UTILS_H

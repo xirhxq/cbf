@@ -1,5 +1,5 @@
-#ifndef CBF_MAIN_TARGET_HPP
-#define CBF_MAIN_TARGET_HPP
+#ifndef CBF_TARGET_HPP
+#define CBF_TARGET_HPP
 
 #include "utils.h"
 
@@ -82,4 +82,4 @@ public:
 };
 
 
-#endif //CBF_MAIN_TARGET_HPP
+#endif //CBF_TARGET_HPP

@@ -1,7 +1,5 @@
-#ifndef CBF_MAIN_GRIDWORLD_HPP
-#define CBF_MAIN_GRIDWORLD_HPP
-
-//#define GRIDWORLD_DEBUG
+#ifndef CBF_GRIDWORLD_HPP
+#define CBF_GRIDWORLD_HPP
 
 #include "utils.h"
 
@@ -265,4 +263,4 @@ public:
 };
 
 
-#endif //CBF_MAIN_GRIDWORLD_HPP
+#endif //CBF_GRIDWORLD_HPP

@@ -1,7 +1,5 @@
-#ifndef CBF_MAIN_CBF_HPP
-#define CBF_MAIN_CBF_HPP
-
-//#define CBF_DEBUG
+#ifndef CBF_CBF_HPP
+#define CBF_CBF_HPP
 
 #include "utils.h"
 #include <utility>
@@ -50,4 +48,4 @@ public:
     }
 };
 
-#endif //CBF_MAIN_CBF_HPP
+#endif //CBF_CBF_HPP

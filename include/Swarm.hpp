@@ -1,5 +1,5 @@
-#ifndef CBF_MAIN_SWARM_HPP
-#define CBF_MAIN_SWARM_HPP
+#ifndef CBF_SWARM_HPP
+#define CBF_SWARM_HPP
 
 #include "utils.h"
 #include "World.hpp"
@@ -506,4 +506,4 @@ public:
 };
 
 
-#endif //CBF_MAIN_SWARM_HPP
+#endif //CBF_SWARM_HPP

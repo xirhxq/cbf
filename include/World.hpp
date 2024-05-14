@@ -1,5 +1,5 @@
-#ifndef CBF_MAIN_WORLD_HPP
-#define CBF_MAIN_WORLD_HPP
+#ifndef CBF_WORLD_HPP
+#define CBF_WORLD_HPP
 
 #include <utility>
 
@@ -89,4 +89,4 @@ public:
 };
 
 
-#endif //CBF_MAIN_WORLD_HPP
+#endif //CBF_WORLD_HPP

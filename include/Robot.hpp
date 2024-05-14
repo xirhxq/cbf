@@ -1,5 +1,5 @@
-#ifndef CBF_MAIN_ROBOT_HPP
-#define CBF_MAIN_ROBOT_HPP
+#ifndef CBF_ROBOT_HPP
+#define CBF_ROBOT_HPP
 
 //#define OPT_DEBUG
 
@@ -156,4 +156,4 @@ public:
 };
 
 
-#endif //CBF_MAIN_ROBOT_HPP
+#endif //CBF_ROBOT_HPP
