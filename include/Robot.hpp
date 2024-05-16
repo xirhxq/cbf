@@ -5,13 +5,15 @@
 
 #include "utils.h"
 #include "CBF.hpp"
+#include "MultiCBF.hpp"
 #include "World.hpp"
 #include "State.hpp"
 
 class Robot {
 public:
     int id = 0;
-    std::map<std::string, CBF> cbfNoSlack, cbfSlack;
+    MultiCBF cbfNoSlack;
+    std::unordered_map<std::string, CBF> cbfSlack;
     MatrixXd G;
     VectorXd F;
     State state;
@@ -23,6 +25,7 @@ public:
     Robot(int dimension) : state(dimension) {
         G = MatrixXd::Identity(dimension, dimension);
         F.resize(dimension);
+        cbfNoSlack.controlVariable = VectorXd::Ones(dimension);
     }
 
     json stepTimeForward(VectorXd &nominalControlInput, double runtime, double dt, World world) {
@@ -68,15 +71,15 @@ public:
                 }
                 model.setObjective(obj, GRB_MINIMIZE);
 
-                for (auto &i: cbfNoSlack) {
+                if (!cbfNoSlack.cbfs.empty()) {
                     GRBLinExpr ln = 0.0;
-                    VectorXd uCoe = i.second.constraintUCoe(F, G, state.X, runtime);
+                    VectorXd uCoe = cbfNoSlack.constraintUCoe(F, G, state.X, runtime);
                     for (int j = 0; j < state.X.size(); j++) {
                         ln += uCoe(j) * vars[j];
                     }
-                    double constraintConstWithTime = i.second.constraintConstWithTime(F, G, state.X, runtime);
+                    double constraintConstWithTime = cbfNoSlack.constraintConstWithTime(F, G, state.X, runtime);
                     jsonCBFNoSlack.push_back({
-                                                     {"name",  i.first},
+                                                     {"name",  cbfNoSlack.getName()},
                                                      {"coe",   State(uCoe).toJson()},
                                                      {"const", constraintConstWithTime}
                                              });
@@ -85,18 +88,18 @@ public:
                 jsonRobot["cbfNoSlack"] = jsonCBFNoSlack;
 
                 int cnt = 0;
-                for (auto &i: cbfSlack) {
+                for (auto &[name, cbf]: cbfSlack) {
                     GRBLinExpr ln = 0.0;
-                    VectorXd uCoe = i.second.constraintUCoe(F, G, state.X, runtime);
+                    VectorXd uCoe = cbf.constraintUCoe(F, G, state.X, runtime);
                     for (int j = 0; j < state.X.size(); j++) {
                         ln += uCoe(j) * vars[j];
                     }
                     ln += slackVars[cnt];
-                    double constraintConst = i.second.constraintConstWithoutTime(
+                    double constraintConst = cbf.constraintConstWithoutTime(
                             F, G, state.X, runtime);
 
                     jsonCBFSlack.push_back({
-                                                   {"name",  i.first},
+                                                   {"name",  cbf.name},
                                                    {"coe",   State(uCoe).toJson()},
                                                    {"const", constraintConst}
                                            });

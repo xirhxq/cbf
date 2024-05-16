@@ -39,7 +39,7 @@ public:
             robots[i].state.setYawDeg(180);
             robots[i].F << 0, 0, -1, 0;
             robots[i].cbfSlack.clear();
-            robots[i].cbfNoSlack.clear();
+            robots[i].cbfNoSlack.cbfs.clear();
         }
         setupInitialPosition();
     }
@@ -122,7 +122,7 @@ public:
             energyCBF.alpha = [](double _h) { return _h; };
             energyCBF.controlVariable.resize(robot.state.X.size());
             energyCBF.controlVariable << 1, 1, 1, 1;
-            robot.cbfNoSlack["energyCBF"] = energyCBF;
+            robot.cbfNoSlack.cbfs[energyCBF.name] = energyCBF;
         }
     }
 
@@ -159,7 +159,7 @@ public:
             };
             yawCBF.controlVariable.resize(robot.state.X.size());
             yawCBF.controlVariable << 0, 0, 0, 1;
-            robot.cbfNoSlack["yawCBF"] = yawCBF;
+            robot.cbfSlack[yawCBF.name] = yawCBF;
         }
     }
 
@@ -194,7 +194,7 @@ public:
                         robotsInCommRange.end()
                 );
 
-                std::vector<Point> formationPoints;
+                std::vector<Point> formationPoints(formationRobots.size());
                 for (auto &otherRobot: formationRobots) {
                     formationPoints.push_back(otherRobot.state.xy());
                 }
@@ -220,7 +220,7 @@ public:
             commCBF.h = autoFormationCommH;
             commCBF.controlVariable.resize(robot.state.X.size());
             commCBF.controlVariable << 1, 1, 1, 1;
-            robot.cbfNoSlack["commCBF"] = commCBF;
+            robot.cbfNoSlack.cbfs[commCBF.name] = commCBF;
         }
     }
 
@@ -267,7 +267,7 @@ public:
             commCBF.h = fixedFormationCommH;
             commCBF.controlVariable.resize(robot.state.X.size());
             commCBF.controlVariable << 1, 1, 1, 1;
-            robot.cbfNoSlack["commCBF"] = commCBF;
+            robot.cbfNoSlack.cbfs[commCBF.name] = commCBF;
         }
     }
 
@@ -295,7 +295,7 @@ public:
             safetyCBF.h = safetyH;
             safetyCBF.controlVariable.resize(robot.state.X.size());
             safetyCBF.controlVariable << 1, 1, 1, 1;
-            robot.cbfNoSlack["safetyCBF"] = safetyCBF;
+            robot.cbfNoSlack.cbfs[safetyCBF.name] = safetyCBF;
         }
     }
 
