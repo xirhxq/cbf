@@ -33,16 +33,20 @@
     }
   },
   "cbfs": {
-    "energy": "on",
-    "safety": "off",
-    "cvt": "on",
-    "communicationFixed": "off",
-    "communicationAuto": "off",
-    "yaw": "off"
+    "with-slack": {
+      "cvt": true,
+      "yaw": false
+    },
+    "without-slack": {
+      "energy": true,
+      "safety": false,
+      "communicationFixed": true,
+      "communicationAuto": false
+    }
   },
   "execute": {
-    "tTotal": 10,
+    "tTotal": 20,
     "tStep": 0.02,
-    "gridInTerminal": "off"
+    "gridInTerminal": false
   }
 }

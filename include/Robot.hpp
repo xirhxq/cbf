@@ -31,10 +31,10 @@ public:
     json stepTimeForward(VectorXd &nominalControlInput, double runtime, double dt, World world) {
         State inputState(nominalControlInput);
         json jsonRobot = {
-                {"nominal",    inputState.toJson()},
-                {"result",     State(nominalControlInput.size()).toJson()},
+                {"nominal", inputState.toJson()},
+                {"result", State(nominalControlInput.size()).toJson()},
                 {"cbfNoSlack", json::array()},
-                {"cbfSlack",   json::array()}
+                {"cbfSlack", json::array()}
         };
         json jsonCBFNoSlack = json::array(), jsonCBFSlack = json::array();
         if (world.isCharging(state.xy()) && state.battery() <= 100.0) {
@@ -128,7 +128,7 @@ public:
             }
 
             state.X += (F + G * optimalControlInput) * dt;
-            return jsonRobot;
+            return {"id", jsonRobot};
         }
     }
 

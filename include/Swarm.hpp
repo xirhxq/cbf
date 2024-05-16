@@ -17,6 +17,7 @@ public:
     World world;
     std::ofstream ofstream;
     json data;
+    json stepData;
     CVT cvt;
     GridWorld gridWorld;
     json updatedGridWorld;
@@ -44,7 +45,7 @@ public:
         setupInitialPosition();
     }
 
-    GridWorld computeGridWorld(const json &worldSettings) {
+    static GridWorld computeGridWorld(const json &worldSettings) {
         World tmpWorld(worldSettings);
         auto worldXLimit = tmpWorld.boundary.get_x_limit(1.0), worldYLimit = tmpWorld.boundary.get_y_limit(1.0);
         int xNum = (worldXLimit.second - worldXLimit.first) / double(worldSettings["spacing"]);
@@ -61,35 +62,25 @@ public:
         printf("--------------\n");
     }
 
-    void randomInitialPosition() {
-        for (auto &robot: robots) {
-            robot.state.setPosition(world.getRandomPoint());
-        }
-    }
-
-    void randomInitialPosition(Polygon poly) {
-        for (auto &robot: robots) {
-            robot.state.setPosition(poly.get_random_point());
-        }
-    }
-
-    void setInitialPosition(std::vector<Point> initialPositions) {
-        auto pointIt = initialPositions.begin();
-        for (Robot &robot: robots) {
-            robot.state.setPosition(*pointIt);
-            ++pointIt;
-        }
-    }
-
     void setupInitialPosition() {
         auto settings = config["swarm"]["initialPosition"];
         std::string method = settings["method"];
         if (method == "randomAll") {
-            randomInitialPosition();
+            for (auto &robot: robots) {
+                robot.state.setPosition(world.getRandomPoint());
+            }
         } else if (method == "randomInPolygon") {
-            randomInitialPosition(Polygon(getPointsFromJson(settings["polygon"])));
+            Polygon poly = Polygon(getPointsFromJson(settings["polygon"]));
+            for (auto &robot: robots) {
+                robot.state.setPosition(poly.get_random_point());
+            }
         } else if (method == "specified") {
-            setInitialPosition(getPointsFromJson(settings["positions"]));
+            std::vector<Point> initialPositions = getPointsFromJson(settings["positions"]);
+            auto pointIt = initialPositions.begin();
+            for (Robot &robot: robots) {
+                robot.state.setPosition(*pointIt);
+                ++pointIt;
+            }
         } else {
             throw std::invalid_argument("Invalid method for setting initial position");
         }
@@ -311,7 +302,7 @@ public:
             double xLim[2], yLim[2];
             getXLimit(xLim), getYLimit(yLim);
             worldJson["lim"] = {{xLim[0], xLim[1]},
-                                   {yLim[0], yLim[1]}};
+                                {yLim[0], yLim[1]}};
             getXLimit(xLim, 1.0), getYLimit(yLim, 1.0);
             for (int i = 1; i <= world.boundary.n; i++) {
                 worldJson["boundary"].push_back({world.boundary.p[i].x, world.boundary.p[i].y});
@@ -329,18 +320,19 @@ public:
             swarmJson["num"] = n;
             for (auto &robot: robots) {
                 json robotJson;
+                robotJson["id"] = robot.id;
                 robotJson["stateEncode"] = robot.state.stateEncodeJson();
                 swarmJson["robots"].push_back(robotJson);
             }
             paraJson["swarm"] = swarmJson;
         }
         {
-            json targetsJson;
+            json targetsJson = json::array();
             for (auto &i: world.targets) {
                 targetsJson.push_back({
-                                                          {"k", i.densityParams["k"]},
-                                                          {"r", i.densityParams["r"]}
-                                                  });
+                                              {"k", i.densityParams["k"]},
+                                              {"r", i.densityParams["r"]}
+                                      });
             }
             paraJson["targets"] = targetsJson;
         }
@@ -353,41 +345,60 @@ public:
             paraJson["gridWorld"] = gridWorldJson;
         }
         data["para"] = paraJson;
+        data["config"] = config;
     }
 
     void logOnce() {
-        json stepData;
         stepData["runtime"] = runtime;
-        for (auto &robot: robots) {
-            stepData["robot"].push_back({{"state", robot.state.toJson()}});
-            for (auto &cbf: robot.cbfNoSlack) {
-                stepData["robot"].back()[cbf.first] = cbf.second.h(robot.state.X, runtime);
+        {
+            json robotsJson = json::array();
+            for (auto &robot: robots) {
+                json robotJson = {{"state", robot.state.toJson()}, {"id", robot.id}};
+                if (!robot.cbfNoSlack.cbfs.empty()) {
+                    json cbfNoSlackJson;
+                    for (auto &[name, cbf]: robot.cbfNoSlack.cbfs) {
+                        cbfNoSlackJson[cbf.name] = cbf.h(robot.state.X, runtime);
+                    }
+                    cbfNoSlackJson[robot.cbfNoSlack.getName()] = robot.cbfNoSlack.h(robot.state.X, runtime);
+                    robotJson["cbfNoSlack"] = cbfNoSlackJson;
+                }
+                {
+                    json cbfSlackJson;
+                    for (auto &[name, cbf]: robot.cbfSlack) {
+                        cbfSlackJson[cbf.name] = cbf.h(robot.state.X, runtime);
+                    }
+                    robotJson["cbfSlack"] = cbfSlackJson;
+                }
+
+                if (config["cbfs"]["with-slack"]["cvt"]) {
+                    json cvtJson = {{"num", cvt.pl[robot.id].n + 1}};
+                    for (int i = 1; i <= cvt.pl[robot.id].n; i++) {
+                        cvtJson["pos"].push_back({cvt.pl[robot.id].p[i].x, cvt.pl[robot.id].p[i].y});
+                    }
+                    cvtJson["pos"].push_back({cvt.pl[robot.id].p[1].x, cvt.pl[robot.id].p[1].y});
+                    cvtJson["center"] = {cvt.ct[robot.id].x, cvt.ct[robot.id].y};
+                    robotJson["cvt"] = cvtJson;
+                }
+
+                robotsJson.emplace_back(robotJson);
             }
-            for (auto &cbf: robot.cbfSlack) {
-                stepData["robot"].back()[cbf.first] = cbf.second.h(robot.state.X, runtime);
-            }
-            stepData["cvt"].push_back({
-                                              {"num", cvt.pl[robot.id].n + 1}
-                                      });
-            for (int i = 1; i <= cvt.pl[robot.id].n; i++) {
-                stepData["cvt"].back()["pos"].push_back({cvt.pl[robot.id].p[i].x, cvt.pl[robot.id].p[i].y});
-            }
-            stepData["cvt"].back()["pos"].push_back({cvt.pl[robot.id].p[1].x, cvt.pl[robot.id].p[1].y});
-            stepData["cvt"].back()["center"] = {cvt.ct[robot.id].x, cvt.ct[robot.id].y};
+
+            stepData["robots"] = robotsJson;
         }
         for (auto i: world.targets) {
             if (i.visibleAtTime(runtime)) {
                 stepData["targets"].push_back({
-                                                     {"x", i.pos(runtime).x},
-                                                     {"y", i.pos(runtime).y},
-                                                     {"k", i.densityParams["k"]},
-                                                     {"r", i.densityParams["r"]}
-                                             });
+                                                      {"x", i.pos(runtime).x},
+                                                      {"y", i.pos(runtime).y},
+                                                      {"k", i.densityParams["k"]},
+                                                      {"r", i.densityParams["r"]}
+                                              });
             }
         }
         stepData["update"] = updatedGridWorld;
-        updatedGridWorld = false;
+        updatedGridWorld.clear();
         data["state"].push_back(stepData);
+        stepData.clear();
     }
 
     void stepTimeForward(double dt) {
@@ -429,15 +440,17 @@ public:
     }
 
     void cvtForward(double dt) {
-        json optimisationData;
+        json optimisationData = {};
         for (auto &robot: robots) {
             VectorXd u;
             u.resize(robot.state.X.size());
             u.setZero();
             json robotData = robot.stepTimeForward(u, runtime, dt, world);
-            optimisationData.push_back(robotData);
+            optimisationData += robotData;
         }
-        data["state"].back()["opt"] = optimisationData;
+        for (auto &j: stepData["robots"]) {
+            j["opt"] = optimisationData[j["id"]];
+        }
         runtime += dt;
     }
 
@@ -507,8 +520,8 @@ public:
 
     void presetCBF() {
         auto cbfConfig = config["cbfs"];
-        if (cbfConfig["energy"] == "on") setEnergyCBF();
-        if (cbfConfig["yaw"] == "on") setYawCBF();
+        if (cbfConfig["without-slack"]["energy"]) setEnergyCBF();
+        if (cbfConfig["with-slack"]["yaw"]) setYawCBF();
     }
 
     void initLog() {
@@ -531,10 +544,10 @@ public:
 
     void postsetCBF() {
         auto cbfConfig = config["cbfs"];
-        if (cbfConfig["communicationFixed"] == "on") setCommunicationFixedCBF();
-        if (cbfConfig["communicationAuto"] == "on") setCommunicationAutoCBF();
-        if (cbfConfig["cvt"] == "on") calCVT(), setCVTCBF();
-        if (cbfConfig["safety"] == "on") setSafetyCBF();
+        if (cbfConfig["without-slack"]["communicationFixed"]) setCommunicationFixedCBF();
+        if (cbfConfig["without-slack"]["communicationAuto"]) setCommunicationAutoCBF();
+        if (cbfConfig["with-slack"]["cvt"]) calCVT(), setCVTCBF();
+        if (cbfConfig["without-slack"]["safety"]) setSafetyCBF();
     }
 
     void run() {
@@ -547,7 +560,7 @@ public:
 
         double tTotal = settings["tTotal"], tStep = settings["tStep"];
         while (runtime < tTotal) {
-            if (settings["gridInTerminal"] == "off") {
+            if (!settings["gridInTerminal"]) {
                 printf("\r%.2lf seconds elapsed...", runtime);
             } else {
                 printf("%.2lf seconds elapsed...\n", runtime);
@@ -556,7 +569,7 @@ public:
             postsetCBF();
             logOnce();
             cvtForward(tStep);
-            if (settings["gridInTerminal"] == "on") gridWorldOutput();
+            if (settings["gridInTerminal"]) gridWorldOutput();
         }
 
         printf("\nAfter %.4lf seconds\n", tTotal);

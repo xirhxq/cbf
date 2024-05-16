@@ -23,15 +23,15 @@
     ]
   },
   "cbfs": {
-    "energy": "on",
-    "safety": "off",
-    "cvt": "on",
-    "communication": "off",
-    "yaw": "off"
+    "energy": true,
+    "safety": false,
+    "cvt": true,
+    "communication": false,
+    "yaw": false
   },
   "execute": {
     "tTotal": 60,
     "tStep": 0.02,
-    "gridInTerminal": "off"
+    "gridInTerminal": false
   }
 }

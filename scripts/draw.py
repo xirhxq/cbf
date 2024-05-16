@@ -312,17 +312,15 @@ class Drawer:
                     )
                 )
 
-            robotX = [dataNow["robot"][i]["state"]["x"] for i in range(robotNum)]
-            robotY = [dataNow["robot"][i]["state"]["y"] for i in range(robotNum)]
-            robotBattery = [dataNow["robot"][i]["state"]["battery"] for i in range(robotNum)]
-            robotYawDeg = [math.degrees(dataNow["robot"][i]["state"]["yawRad"]) for i in range(robotNum)]
+            robotX = [dataNow["robots"][i]["state"]["x"] for i in range(robotNum)]
+            robotY = [dataNow["robots"][i]["state"]["y"] for i in range(robotNum)]
+            robotBattery = [dataNow["robots"][i]["state"]["battery"] for i in range(robotNum)]
+            robotYawDeg = [math.degrees(dataNow["robots"][i]["state"]["yawRad"]) for i in range(robotNum)]
 
-            if "cvt" in dataNow and self.showCVT:
-                cvtPolygonX = [[dataNow["cvt"][i]["pos"][j][0]
-                                for j in range(dataNow["cvt"][i]["num"])] for i in range(robotNum)]
-                cvtPolygonY = [[dataNow["cvt"][i]["pos"][j][1]
-                                for j in range(dataNow["cvt"][i]["num"])] for i in range(robotNum)]
-                cvtPolygonCenter = [dataNow["cvt"][i]["center"] for i in range(robotNum)]
+            if self.data["config"]["cbfs"]["with-slack"]["cvt"] and self.showCVT:
+                cvtPolygonX = [[pos[0] for pos in dataRobot["cvt"]["pos"]] for dataRobot in dataNow["robots"]]
+                cvtPolygonY = [[pos[1] for pos in dataRobot["cvt"]["pos"]] for dataRobot in dataNow["robots"]]
+                cvtPolygonCenter = [dataRobot["cvt"]["center"] for dataRobot in dataNow["robots"]]
 
             # ax.plot(robotX, robotY, 'b*')
             ax.scatter(
@@ -351,10 +349,10 @@ class Drawer:
                     ax.annotate(f'    #{i + 1}' + '\n' + f'  E: {robotBattery[i]:.2f} ', xy=(robotX[i], robotY[i]),
                                 fontsize=8)
 
-                if "cvt" in dataNow and self.showCVT:
+                if self.data["config"]["cbfs"]["with-slack"]["cvt"] and self.showCVT:
                     ax.plot(cvtPolygonX[i], cvtPolygonY[i], 'k')
                     ax.plot(
-                        [ct[0] for ct in cvtPolygonCenter], [ct[0] for ct in cvtPolygonCenter],
+                        [ct[0] for ct in cvtPolygonCenter], [ct[1] for ct in cvtPolygonCenter],
                         '*',
                         color='lime'
                     )
@@ -755,4 +753,4 @@ class Drawer:
 if __name__ == '__main__':
     filenames = [findNewestFile('*')]
     print(f'{filenames = }')
-    drawer = Drawer(filenames, settings='paper', config={'figSize': (20, 15)})
+    drawer = Drawer(filenames, settings='paper', config={'figSize': (20, 15), 'robotAnnotation': True})
