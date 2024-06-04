@@ -112,7 +112,7 @@ public:
             energyCBF.h = batteryH;
             energyCBF.alpha = [](double _h) { return _h; };
             energyCBF.controlVariable.resize(robot.state.X.size());
-            energyCBF.controlVariable << 1, 1, 1, 1;
+            energyCBF.controlVariable << 1, 1, 0, 0;
             robot.cbfNoSlack.cbfs[energyCBF.name] = energyCBF;
         }
     }
@@ -155,43 +155,59 @@ public:
     }
 
     void setCommunicationAutoCBF() {
+        auto partId = [&](int id) { return (id - 1) % (n / 2) + 1; };
+        auto isSecondPart = [&](int id) { return id > (n / 2); };
+
+        json commJson;
         for (auto &robot: robots) {
-            auto autoFormationCommH = [&](VectorXd x, double t) {
+            Point origin(0, 0);
+            double maxCommRange = 8;
+
+            auto robotDistanceToOrigin = [&](const Robot& r) {
+                return r.state.xy().distance_to(origin);
+            };
+
+            std::vector<Robot> robotsInCommRange;
+            for (auto &otherRobot: robots) {
+                if (robot.id == otherRobot.id) continue;
+//                if (robot.state.xy().distance_to(otherRobot.state.xy()) > maxCommRange) continue;
+                if (robotDistanceToOrigin(otherRobot) < robotDistanceToOrigin(robot)) continue;
+                robotsInCommRange.push_back(otherRobot);
+            }
+
+            std::sort(
+                    robotsInCommRange.begin(), robotsInCommRange.end(),
+                    [&](Robot a, Robot b) {
+                        return robotDistanceToOrigin(a) < robotDistanceToOrigin(b);
+                    }
+            );
+
+            auto formationRobots = std::vector<Robot>(
+                    robotsInCommRange.begin(),
+                    robotsInCommRange.begin() + std::min(2, (int) robotsInCommRange.size())
+//                    robotsInCommRange.end() - std::min(2, (int) robotsInCommRange.size()),
+//                    robotsInCommRange.end()
+            );
+
+            std::vector<Point> formationPoints;
+            json myJson = {{"id",           robot.id},
+                           {"anchorPoints", json::array()},
+                           {"anchorIds",    json::array()}};
+
+            for (auto &otherRobot: formationRobots) {
+                myJson["anchorIds"].push_back(otherRobot.id);
+                formationPoints.push_back(otherRobot.state.xy());
+            }
+//            if (formationRobots.size() < 2) {
+//                myJson["anchorPoints"].push_back({origin.x, origin.y});
+//                formationPoints.push_back(origin);
+//            }
+
+            commJson.emplace_back(myJson);
+
+            auto autoFormationCommH = [=](VectorXd x, double t) {
                 State state(x);
-                double maxCommRange = 8;
                 Point myPosition = state.xy();
-                Point origin(0, 0);
-
-                auto robotDistanceToOrigin = [&](Robot r) {
-                    return r.state.xy().distance_to(origin);
-                };
-
-                std::vector<Robot> robotsInCommRange;
-                for (auto &otherRobot: robots) {
-                    if (robot.id == otherRobot.id) continue;
-                    if (robot.state.xy().distance_to(otherRobot.state.xy()) > maxCommRange) continue;
-                    if (robotDistanceToOrigin(otherRobot) > robotDistanceToOrigin(robot)) continue;
-                    robotsInCommRange.push_back(otherRobot);
-                }
-                std::sort(
-                        robotsInCommRange.begin(), robotsInCommRange.end(),
-                        [&](Robot a, Robot b) {
-                            return robotDistanceToOrigin(a) < robotDistanceToOrigin(b);
-                        }
-                );
-
-                auto formationRobots = std::vector<Robot>(
-                        robotsInCommRange.end() - std::min(2, (int) robotsInCommRange.size()),
-                        robotsInCommRange.end()
-                );
-
-                std::vector<Point> formationPoints(formationRobots.size());
-                for (auto &otherRobot: formationRobots) {
-                    formationPoints.push_back(otherRobot.state.xy());
-                }
-                if (formationPoints.size() < 2) {
-                    formationPoints.push_back(origin);
-                }
 
                 double h = inf;
                 for (auto &point: formationPoints) {
@@ -203,7 +219,7 @@ public:
                             )
                     );
                 }
-                return h;
+                return h == inf ? 0 : h;
             };
 
             CBF commCBF;
@@ -213,10 +229,36 @@ public:
             commCBF.controlVariable << 1, 1, 1, 1;
             robot.cbfNoSlack.cbfs[commCBF.name] = commCBF;
         }
+
+        stepData["cbfs"]["commAuto"] = commJson;
     }
 
     void setCommunicationFixedCBF() {
+        auto partId = [&](int id) { return (id - 1) % (n / 2) + 1; };
+        auto isSecondPart = [&](int id) { return id > (n / 2); };
+
+        json commJson;
+
         for (auto &robot: robots) {
+            Point origin(0, 0);
+            Point baseOfMyPart = Point(-3 + 6 * isSecondPart(robot.id), 0);
+            int idInPart = partId(robot.id);
+
+            json myJson = {{"id",           robot.id},
+                           {"anchorPoints", json::array()},
+                           {"anchorIds",    json::array()}};
+
+            if (idInPart == 1) myJson["anchorPoints"].push_back({baseOfMyPart.x, baseOfMyPart.y});
+            if (idInPart <= 2) myJson["anchorPoints"].push_back({origin.x, origin.y});
+
+            for (auto &other: robots) {
+                if (isSecondPart(robot.id) != isSecondPart(other.id)) continue;
+                if (partId(other.id) <= idInPart) continue;
+                if (partId(other.id) > idInPart + 2) continue;
+                myJson["anchorIds"].push_back(other.id);
+            }
+            commJson.emplace_back(myJson);
+
             auto fixedFormationCommH = [&](VectorXd x, double t) {
                 State state(x);
                 auto partId = [&](int id) { return (id - 1) % (n / 2) + 1; };
@@ -244,9 +286,9 @@ public:
                 for (auto &point: formationPoints) {
                     h = std::min(
                             h,
-                            0.5 * (
-                                    maxCommDistance -
-                                    myPosition.distance_to(point)
+                            (
+                                    maxCommDistance * maxCommDistance -
+                                    myPosition.distance_to(point) * myPosition.distance_to(point)
                             )
                     );
                 }
@@ -257,9 +299,11 @@ public:
             commCBF.name = "commCBF";
             commCBF.h = fixedFormationCommH;
             commCBF.controlVariable.resize(robot.state.X.size());
-            commCBF.controlVariable << 1, 1, 1, 1;
+            commCBF.controlVariable << 1, 1, 0, 0;
             robot.cbfNoSlack.cbfs[commCBF.name] = commCBF;
         }
+
+        stepData["cbfs"]["commFixed"] = commJson;
     }
 
     void setSafetyCBF() {
