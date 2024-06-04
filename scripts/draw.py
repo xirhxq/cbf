@@ -492,30 +492,59 @@ class Drawer:
 
         plt.figure(figsize=(8, 4))
 
-        robotNum = self.data["para"]["number"]
+        robotNum = self.data["para"]["swarm"]["num"]
 
         runtime = [dt["runtime"] for dt in self.data["state"]]
 
         pb = tqdm.tqdm(total=robotNum, bar_format=self.barFormat)
 
-        for i in range(robotNum):
-            plt.subplot(211).clear()
-            plt.subplot(212).clear()
-            plt.subplot(211).plot(runtime, [dt["robot"][i]["cvtCBF"] for dt in self.data["state"]], color='C0')
-            plt.subplot(211).set_title(r'CBF Value $h_{task}$' + f' of UAV #{i + 1}')
-            plt.subplot(211).set_xlabel('Time / s')
-            plt.subplot(211).set_ylabel('$h_{task}$')
+        id2Names = {}
+        keys = ["cbfNoSlack", "cbfSlack"]
+        for r in self.data["state"][0]["robots"]:
+            id2Names[r["id"]] = {k: [p for p in r[k]] for k in keys}
 
-            plt.subplot(212).plot(runtime, [max(dt["robot"][i]["energyCBF"], 0) for dt in self.data["state"]],
-                                  color='C0')
-            plt.subplot(212).set_title(r'CBF Value $h_{constraint}$' + f' of UAV #{i + 1}')
-            plt.subplot(212).set_xlabel('Time / s')
-            plt.subplot(212).set_ylabel('$h_{constraint}$')
-            plt.subplots_adjust(hspace=0.7)
-            # leg = ax.legend()
-            figureFilename = self.folderName + f'/{i + 1}-CBFs.png'
-            plt.savefig(figureFilename, bbox_inches='tight')
-            pb.update(i + 1)
+        values = {}
+        for frame in self.data["state"]:
+            for r in frame["robots"]:
+                if r["id"] not in values:
+                    values[r["id"]] = {k: {} for k in keys}
+                for k in keys:
+                    for cbf in r[k]:
+                        if cbf not in values[r["id"]][k]:
+                            values[r["id"]][k][cbf] = []
+                        values[r["id"]][k][cbf].append({"value": r[k][cbf], "time": frame["runtime"]})
+
+        def getJsonStructure(data, level=0, max=2):
+            structure = {}
+            if level > max:
+                return structure
+
+            if isinstance(data, dict):
+                for key, value in data.items():
+                    structure[key] = getJsonStructure(value, level + 1, max)
+            elif isinstance(data, list):
+                structure["list"] = getJsonStructure(data[0], level + 1, max) if data else "empty list"
+            else:
+                structure = type(data).__name__
+
+            return structure
+
+        for id in values:
+            for ind, key in enumerate(keys):
+                figID = 211 + ind
+                plt.subplot(figID).clear()
+                for cbf in values[id][key]:
+                    plt.subplot(figID).plot(
+                        [dt["time"] for dt in values[id][key][cbf]],
+                        [dt["value"] for dt in values[id][key][cbf]],
+                        label=cbf
+                    )
+                plt.subplot(figID).set_xlabel('Time / s')
+                plt.subplot(figID).set_ylabel(key)
+                plt.subplot(figID).legend()
+            filename = f'{id}-CBFs.png'
+            plt.savefig(os.path.join(self.folderName, filename))
+
 
         pb.close()
 
@@ -528,12 +557,12 @@ class Drawer:
 
         plt.figure(figsize=(8, 4))
 
-        robotNum = self.data["para"]["number"]
+        robotNum = self.data["para"]["swarm"]["num"]
 
         runtime = [dt["runtime"] for dt in self.data["state"]]
 
         for i in range(robotNum):
-            plt.subplot(111).plot(runtime, [dt["robot"][i]["battery"] for dt in self.data["state"]],
+            plt.subplot(111).plot(runtime, [dt["robots"][i]["battery"] for dt in self.data["state"]],
                                   label=f'UAV #{i + 1}')
 
         leg = plt.subplot(111).legend(bbox_to_anchor=(1.0, -0.15), ncol=5)
@@ -673,11 +702,11 @@ class Drawer:
 
         plt.figure(figsize=(8, 8))
 
-        robotNum = self.data["para"]["number"]
+        robotNum = self.data["para"]["swarm"]["num"]
 
         runtime = [dt["runtime"] for dt in self.data["state"]]
 
-        xnum, ynum = self.data["para"]["gridWorld"]["x_num"], self.data["para"]["gridWorld"]["y_num"]
+        xnum, ynum = self.data["para"]["gridWorld"]["xNum"], self.data["para"]["gridWorld"]["yNum"]
         Z = np.zeros((ynum, xnum))
         Z -= 1
 
@@ -687,8 +716,8 @@ class Drawer:
             for i in range(robotNum):
                 update_grids = data_now["update"][i]
                 for grid in update_grids:
-                    if Z[grid["y"], grid["x"]] == -1:
-                        Z[grid["y"], grid["x"]] = l
+                    if Z[grid[1], grid[0]] == -1:
+                        Z[grid[1], grid[0]] = l
 
         plt.subplot(111).clear()
         plt.subplot(111).set_aspect(1)
@@ -790,4 +819,12 @@ class Drawer:
 if __name__ == '__main__':
     filenames = [findNewestFile('*')]
     print(f'{filenames = }')
-    drawer = Drawer(filenames, settings='paper', config={'figSize': (20, 15), 'robotAnnotation': True})
+    drawer = Drawer(
+        filenames,
+        settings='paper',
+        config={
+            # 'figureSize': (20, 15),
+            'robotAnnotation': True,
+            # 'plotOpt': True
+        }
+    )
