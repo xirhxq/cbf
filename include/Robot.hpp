@@ -1,8 +1,6 @@
 #ifndef CBF_ROBOT_HPP
 #define CBF_ROBOT_HPP
 
-//#define OPT_DEBUG
-
 #include "utils.h"
 #include "CBF.hpp"
 #include "MultiCBF.hpp"
@@ -17,20 +15,25 @@ public:
     MatrixXd G;
     VectorXd F;
     State state;
-
+    State u;
+    json opt;
 public:
 
     Robot() = default;
 
-    Robot(int dimension) : state(dimension) {
+    Robot(int dimension) : state(dimension), u(dimension) {
         G = MatrixXd::Identity(dimension, dimension);
         F.resize(dimension);
         cbfNoSlack.controlVariable = VectorXd::Ones(dimension);
+        cbfNoSlack.controlVariable(0) = 1;
+        cbfNoSlack.controlVariable(1) = 1;
+        cbfNoSlack.controlVariable(2) = 0;
+        cbfNoSlack.controlVariable(3) = 0;
     }
 
-    json stepTimeForward(VectorXd &nominalControlInput, double runtime, double dt, World world) {
+    void optimise(VectorXd &nominalControlInput, double runtime, double dt, World world) {
         State inputState(nominalControlInput);
-        json jsonRobot = {
+        opt = {
                 {"nominal", inputState.toJson()},
                 {"result", State(nominalControlInput.size()).toJson()},
                 {"cbfNoSlack", json::array()},
@@ -39,9 +42,7 @@ public:
         json jsonCBFNoSlack = json::array(), jsonCBFSlack = json::array();
         if (world.isCharging(state.xy()) && state.battery() <= 100.0) {
             state.setBattery(state.battery() + dt * (10));
-            return jsonRobot;
         } else {
-            VectorXd optimalControlInput = nominalControlInput;
             try {
                 GRBEnv env = GRBEnv(true);
                 env.set("OutputFlag", "0");
@@ -85,7 +86,7 @@ public:
                                              });
                     model.addConstr(ln, '>', -constraintConstWithTime);
                 }
-                jsonRobot["cbfNoSlack"] = jsonCBFNoSlack;
+                opt["cbfNoSlack"] = jsonCBFNoSlack;
 
                 int cnt = 0;
                 for (auto &[name, cbf]: cbfSlack) {
@@ -106,13 +107,13 @@ public:
                     model.addConstr(ln, '>', -constraintConst);
                     ++cnt;
                 }
-                jsonRobot["cbfSlack"] = jsonCBFSlack;
+                opt["cbfSlack"] = jsonCBFSlack;
 
 //                model.set(GRB_IntParam_OutputFlag, 0);
                 model.optimize();
 
-                for (int i = 0; i < state.X.size(); i++) optimalControlInput(i) = vars[i].get(GRB_DoubleAttr_X);
-                jsonRobot["result"] = State(optimalControlInput).toJson();
+                for (int i = 0; i < state.X.size(); i++) u.X(i) = vars[i].get(GRB_DoubleAttr_X);
+                opt["result"] = State(u).toJson();
                 VectorXd slacks(slackVars.size());
                 for (int i = 0; i < slackVars.size(); i++) slacks(i) = slackVars[i].get(GRB_DoubleAttr_X);
 
@@ -126,14 +127,15 @@ public:
                 printf("...................\n");
                 assert(0);
             }
-
-            state.X += (F + G * optimalControlInput) * dt;
-            return {"id", jsonRobot};
         }
     }
 
+    void stepTimeForward(double dt) {
+        state.X += (F + G * u.X) * dt;
+    }
+
     void output() {
-        std::cout << "A UGV @ (" << state.x() << ", " << state.y() << ")";
+        std::cout << "UAV #" << id << " @ (" << state.x() << ", " << state.y() << ")";
         if (state.X.size() > 2) {
             std::cout << " with Battery " << state.battery();
         }

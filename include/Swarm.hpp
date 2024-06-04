@@ -353,7 +353,8 @@ public:
         {
             json robotsJson = json::array();
             for (auto &robot: robots) {
-                json robotJson = {{"state", robot.state.toJson()}, {"id", robot.id}};
+                json robotJson = {{"state", robot.state.toJson()},
+                                  {"id",    robot.id}};
                 if (!robot.cbfNoSlack.cbfs.empty()) {
                     json cbfNoSlackJson;
                     for (auto &[name, cbf]: robot.cbfNoSlack.cbfs) {
@@ -380,6 +381,10 @@ public:
                     robotJson["cvt"] = cvtJson;
                 }
 
+                {
+                    robotJson["opt"] = robot.opt;
+                }
+
                 robotsJson.emplace_back(robotJson);
             }
 
@@ -399,15 +404,6 @@ public:
         updatedGridWorld.clear();
         data["state"].push_back(stepData);
         stepData.clear();
-    }
-
-    void stepTimeForward(double dt) {
-        for (auto &robot: robots) {
-            VectorXd u{3};
-            u << 0, 0, 0;
-            robot.stepTimeForward(u, runtime, dt, world);
-        }
-        runtime += dt;
     }
 
     void calCVT() {
@@ -439,17 +435,18 @@ public:
         }
     }
 
-    void cvtForward(double dt) {
-        json optimisationData = {};
+    void optimize(double dt) {
         for (auto &robot: robots) {
             VectorXd u;
             u.resize(robot.state.X.size());
             u.setZero();
-            json robotData = robot.stepTimeForward(u, runtime, dt, world);
-            optimisationData += robotData;
+            robot.optimise(u, runtime, dt, world);
         }
-        for (auto &j: stepData["robots"]) {
-            j["opt"] = optimisationData[j["id"]];
+    }
+
+    void stepTimeForward(double dt) {
+        for (auto &robot: robots) {
+            robot.stepTimeForward(dt);
         }
         runtime += dt;
     }
@@ -482,6 +479,18 @@ public:
             };
 //            updatedGridWorld.push_back(gridWorld.setValueInPolygon(Polygon(4, visibleBoundary), true, true));
             updatedGridWorld.push_back(gridWorld.setValueInCircle(robot.state.xy(), tol, true, true));
+        }
+    }
+
+    void checkRobotsInsideWorld() {
+        auto xLim = world.boundary.get_x_limit(1), yLim = world.boundary.get_y_limit(1);
+        for (auto &robot: robots) {
+            if (!(
+                    robot.state.x() >= xLim.first && robot.state.x() <= xLim.second &&
+                    robot.state.y() >= yLim.first && robot.state.y() <= yLim.second
+            )) {
+                throw std::runtime_error("Robot is outside the world");
+            }
         }
     }
 
@@ -560,16 +569,35 @@ public:
 
         double tTotal = settings["tTotal"], tStep = settings["tStep"];
         while (runtime < tTotal) {
-            if (!settings["gridInTerminal"]) {
-                printf("\r%.2lf seconds elapsed...", runtime);
-            } else {
-                printf("%.2lf seconds elapsed...\n", runtime);
+            try {
+                checkRobotsInsideWorld();
+                if (!settings["gridInTerminal"]) {
+                    printf("\r%.2lf seconds elapsed...", runtime);
+                } else {
+                    printf("%.2lf seconds elapsed...\n", runtime);
+                }
+                updateGridWorld();
+                postsetCBF();
+                optimize(tStep);
+                logOnce();
+                stepTimeForward(tStep);
+                if (settings["gridInTerminal"]) gridWorldOutput();
             }
-            updateGridWorld();
-            postsetCBF();
-            logOnce();
-            cvtForward(tStep);
-            if (settings["gridInTerminal"]) gridWorldOutput();
+            catch (...) {
+                logOnce();
+                endLog();
+                printf("Data so far has been saved in %s\n", filename.c_str());
+                try {
+                    throw;
+                }
+                catch (std::exception &e) {
+                    std::cerr << e.what() << std::endl;
+                }
+                catch (...) {
+                    std::cerr << "Unknown error" << std::endl;
+                }
+                break;
+            }
         }
 
         printf("\nAfter %.4lf seconds\n", tTotal);
