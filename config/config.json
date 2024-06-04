@@ -16,16 +16,16 @@
   "swarm": {
     "num": 14,
     "dim": 4,
-    "initialPosition": {
-      "//method": ["specified", "randomInPolygon", "randomAll"],
-      "method": "randomInPolygon",
+    "initial-position": {
+      "//method": ["specified", "random-in-polygon", "random-in-world"],
+      "method": "random-in-polygon",
       "polygon": [
         [-1, 0],
         [-1, 1],
         [1, 1],
         [1, 0]
       ],
-      "position": [
+      "positions": [
         [10, 4],
         [10, 5],
         [10, 6]
@@ -40,13 +40,13 @@
     "without-slack": {
       "energy": true,
       "safety": false,
-      "communicationFixed": true,
-      "communicationAuto": false
+      "comm-fixed": false,
+      "comm-auto": true
     }
   },
   "execute": {
-    "tTotal": 20,
-    "tStep": 0.02,
-    "gridInTerminal": false
+    "time-total": 150,
+    "time-step": 0.02,
+    "grid-in-terminal": false
   }
 }

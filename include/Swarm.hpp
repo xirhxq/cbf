@@ -63,13 +63,13 @@ public:
     }
 
     void setupInitialPosition() {
-        auto settings = config["swarm"]["initialPosition"];
+        auto settings = config["swarm"]["initial-position"];
         std::string method = settings["method"];
-        if (method == "randomAll") {
+        if (method == "random-in-world") {
             for (auto &robot: robots) {
                 robot.state.setPosition(world.getRandomPoint());
             }
-        } else if (method == "randomInPolygon") {
+        } else if (method == "random-in-polygon") {
             Polygon poly = Polygon(getPointsFromJson(settings["polygon"]));
             for (auto &robot: robots) {
                 robot.state.setPosition(poly.get_random_point());
@@ -597,8 +597,8 @@ public:
 
     void postsetCBF() {
         auto cbfConfig = config["cbfs"];
-        if (cbfConfig["without-slack"]["communicationFixed"]) setCommunicationFixedCBF();
-        if (cbfConfig["without-slack"]["communicationAuto"]) setCommunicationAutoCBF();
+        if (cbfConfig["without-slack"]["comm-fixed"]) setCommunicationFixedCBF();
+        if (cbfConfig["without-slack"]["comm-auto"]) setCommunicationAutoCBF();
         if (cbfConfig["with-slack"]["cvt"]) calCVT(), setCVTCBF();
         if (cbfConfig["without-slack"]["safety"]) setSafetyCBF();
     }
@@ -611,11 +611,11 @@ public:
 
         auto settings = config["execute"];
 
-        double tTotal = settings["tTotal"], tStep = settings["tStep"];
+        double tTotal = settings["time-total"], tStep = settings["time-step"];
         while (runtime < tTotal) {
             try {
                 checkRobotsInsideWorld();
-                if (!settings["gridInTerminal"]) {
+                if (!settings["grid-in-terminal"]) {
                     printf("\r%.2lf seconds elapsed...", runtime);
                 } else {
                     printf("%.2lf seconds elapsed...\n", runtime);
@@ -625,7 +625,7 @@ public:
                 optimize(tStep);
                 logOnce();
                 stepTimeForward(tStep);
-                if (settings["gridInTerminal"]) gridWorldOutput();
+                if (settings["grid-in-terminal"]) gridWorldOutput();
             }
             catch (...) {
                 logOnce();

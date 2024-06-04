@@ -8,7 +8,7 @@
 int main() {
     clock_t start = clock();
 
-    json settings = json::parse(std::ifstream ("../launch/main.json"));
+    json settings = json::parse(std::ifstream("../config/config.json"));
 
     Swarm(settings).run();
 
