@@ -81,10 +81,10 @@ class MyOptPlot:
         self.cbfList = []
         now_data = self.data[0]
         if "cbfNoSlack" in now_data:
-            self.cbfList += [self.xgrid * cbf["x"] + self.ygrid * cbf["y"] + cbf["const"] for cbf in
+            self.cbfList += [self.xgrid * cbf["coe"]["x"] + self.ygrid * cbf["coe"]["y"] + cbf["const"] for cbf in
                              now_data["cbfNoSlack"]]
         if "cbfSlack" in now_data:
-            self.cbfList += [self.xgrid * cbf["x"] + self.ygrid * cbf["y"] + cbf["const"] for cbf in
+            self.cbfList += [self.xgrid * cbf["coe"]["x"] + self.ygrid * cbf["coe"]["y"] + cbf["const"] for cbf in
                              now_data["cbfSlack"]]
         self.cbf_ct = [self.ax.contour(self.xgrid, self.ygrid, cbf, [0],
                                        colors='orangered')
@@ -100,11 +100,11 @@ class MyOptPlot:
         self.cbfList = []
         self.cbfName = []
         # if "cbfNoSlack" in now_data:
-        self.cbfList += [self.xgrid * cbf["x"] + self.ygrid * cbf["y"] + cbf["const"] for cbf in
+        self.cbfList += [self.xgrid * cbf["coe"]["x"] + self.ygrid * cbf["coe"]["y"] + cbf["const"] for cbf in
                          now_data["cbfNoSlack"]]
         self.cbfName += [cbf["name"] for cbf in now_data["cbfNoSlack"]]
         # if "cbfSlack" in now_data:
-        self.cbfList += [self.xgrid * cbf["x"] + self.ygrid * cbf["y"] + cbf["const"] for cbf in
+        self.cbfList += [self.xgrid * cbf["coe"]["x"] + self.ygrid * cbf["coe"]["y"] + cbf["const"] for cbf in
                          now_data["cbfSlack"]]
         self.cbfName += [cbf["name"] for cbf in now_data["cbfSlack"]]
 
@@ -273,8 +273,8 @@ class Drawer:
                            for i in range(robotNum) for j in range(robotNum) if
                            "safe_to_" + str(j) in self.data["state"][0]["robot"][i]]
         if self.plotOpt:
-            optPlot = [MyOptPlot(plt.subplot(gs[-1, i]),
-                                 [dt["opt"][i] for dt in self.data["state"]],
+            optPlot = [MyOptPlot(plt.subplot(gs[-1 - i // halfNum, i % halfNum]),
+                                 [dt["robots"][i]["opt"] for dt in self.data["state"]],
                                  "Robot #{}: Opt Result".format(i + 1))
                        for i in range(robotNum)]
 
@@ -293,9 +293,10 @@ class Drawer:
             # Z = gridWorldNow
             # Z = getDensity(dataNow)
             for i in range(robotNum):
-                updatedGrids = dataNow["update"][i]
-                for grid in updatedGrids:
-                    Z[grid[1], grid[0]] = 1
+                if "update" in dataNow and len(dataNow["update"]):
+                    updatedGrids = dataNow["update"][i]
+                    for grid in updatedGrids:
+                        Z[grid[1], grid[0]] = 1
 
             ax.imshow(Z, alpha=0.2, extent=zExtent, origin='lower')
             c_min, c_max = np.min(Z), np.max(Z)
