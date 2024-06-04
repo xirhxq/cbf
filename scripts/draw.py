@@ -332,6 +332,35 @@ class Drawer:
                 alpha=0.5
             )
 
+            if "cbfs" in dataNow:
+                names = ["commFixed", "commAuto"]
+                for name in names:
+                    if name in dataNow["cbfs"]:
+                        commJson = dataNow["cbfs"][name]
+                        id2Position = {dataRobot["id"]: (dataRobot["state"]["x"], dataRobot["state"]["y"]) for dataRobot in dataNow["robots"]}
+                        for myJson in commJson:
+                            myPosition = id2Position[myJson["id"]]
+                            for anchorPoint in myJson["anchorPoints"]:
+                                # ax.plot([myPosition[0], anchorPoint[0]], [myPosition[1], anchorPoint[1]], 'k--', alpha=0.5)
+                                ax.arrow(
+                                    myPosition[0], myPosition[1],
+                                    anchorPoint[0] - myPosition[0], anchorPoint[1] - myPosition[1],
+                                    head_width=0.5, head_length=0.5,
+                                    fc='k', ec='k',
+                                    alpha=0.2
+                                )
+                            for id in myJson["anchorIds"]:
+                                anchorPosition = id2Position[id]
+                                # ax.plot([myPosition[0], anchorPosition[0]], [myPosition[1], anchorPosition[1]], 'k--', alpha=0.5)
+                                ax.arrow(
+                                    myPosition[0], myPosition[1],
+                                    anchorPosition[0] - myPosition[0], anchorPosition[1] - myPosition[1],
+                                    head_width=0.5, head_length=0.5,
+                                    fc='k', ec='k',
+                                    alpha=0.2
+                                )
+
+
             for i in range(robotNum):
                 if self.showYaw:
                     ax.add_patch(Wedge(
@@ -347,8 +376,15 @@ class Drawer:
                     #              + rf'$\quad\theta = {robotYawDeg[i]:.2f}$'
                     #              ),
                     #             xy=(robotX[i], robotY[i]))
-                    ax.annotate(f'    #{i + 1}' + '\n' + f'  E: {robotBattery[i]:.2f} ', xy=(robotX[i], robotY[i]),
-                                fontsize=8)
+                    annoText = f'    #{i + 1}[{robotBattery[i]:.2f}]'
+                    names = ["commFixed", "commAuto"]
+                    for name in names:
+                        if "cbfs" in dataNow and name in dataNow["cbfs"]:
+                            for comm in dataNow["cbfs"][name]:
+                                if comm["id"] == i + 1:
+                                    annoText += '->' + ', '.join([f'{id}' for id in comm["anchorIds"]])
+                                    annoText += '-->' + ', '.join([f'o' for p in comm["anchorPoints"]])
+                    ax.annotate(annoText, xy=(robotX[i], robotY[i]), fontsize=8)
 
                 if self.data["config"]["cbfs"]["with-slack"]["cvt"] and self.showCVT:
                     ax.plot(cvtPolygonX[i], cvtPolygonY[i], 'k')
