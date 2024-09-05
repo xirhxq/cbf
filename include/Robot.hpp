@@ -42,6 +42,7 @@ public:
         json jsonCBFNoSlack = json::array(), jsonCBFSlack = json::array();
         if (world.isCharging(state.xy()) && state.battery() <= 100.0) {
             state.setBattery(state.battery() + dt * (10));
+            u.X.setZero();
         } else {
             try {
                 GRBEnv env = GRBEnv(true);
