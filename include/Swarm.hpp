@@ -170,7 +170,7 @@ public:
             std::vector<Robot> robotsInCommRange;
             for (auto &otherRobot: robots) {
                 if (robot.id == otherRobot.id) continue;
-//                if (robot.state.xy().distance_to(otherRobot.state.xy()) > maxCommRange) continue;
+                if (robot.state.xy().distance_to(otherRobot.state.xy()) > 1.5 * maxCommRange) continue;
                 if (robotDistanceToOrigin(otherRobot) < robotDistanceToOrigin(robot)) continue;
                 robotsInCommRange.push_back(otherRobot);
             }
