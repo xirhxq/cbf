@@ -213,7 +213,7 @@ public:
                 for (auto &point: formationPoints) {
                     h = std::min(
                             h,
-                            0.5 * (
+                            100 / maxCommRange * (
                                     maxCommRange -
                                     myPosition.distance_to(point)
                             )
