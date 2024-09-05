@@ -562,7 +562,7 @@ class Drawer:
         runtime = [dt["runtime"] for dt in self.data["state"]]
 
         for i in range(robotNum):
-            plt.subplot(111).plot(runtime, [dt["robots"][i]["battery"] for dt in self.data["state"]],
+            plt.subplot(111).plot(runtime, [dt["robots"][i]["state"]["battery"] for dt in self.data["state"]],
                                   label=f'UAV #{i + 1}')
 
         leg = plt.subplot(111).legend(bbox_to_anchor=(1.0, -0.15), ncol=5)
