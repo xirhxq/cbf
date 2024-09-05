@@ -298,7 +298,7 @@ class Drawer:
                     for grid in updatedGrids:
                         Z[grid[1], grid[0]] = 1
 
-            ax.imshow(Z, alpha=0.2, extent=zExtent, origin='lower')
+            ax.imshow(Z, alpha=0.2, extent=zExtent, origin='lower', cmap='coolwarm', vmin=0, vmax=1)
             c_min, c_max = np.min(Z), np.max(Z)
             if self.showBar:
                 F.set_clim(0, 1)
