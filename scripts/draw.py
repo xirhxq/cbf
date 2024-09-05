@@ -25,7 +25,7 @@ def findNewestFile(ptn: str):
     assert len(directories) > 0, "No directory found with pattern {}".format(ptn)
     directories = [d for d in directories if len(glob.glob(d + '/data.json')) > 0]
     assert len(directories) > 0, "No directory found with 'data.json' in it"
-    newestFile = max(directories, key=os.path.getctime)
+    newestFile = max(directories)
     return os.path.join(newestFile, 'data.json')
 
 
