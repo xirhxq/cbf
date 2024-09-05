@@ -40,12 +40,12 @@
     "without-slack": {
       "energy": true,
       "safety": false,
-      "comm-fixed": false,
-      "comm-auto": true
+      "comm-fixed": true,
+      "comm-auto": false
     }
   },
   "execute": {
-    "time-total": 150,
+    "time-total": 300,
     "time-step": 0.02,
     "grid-in-terminal": false
   }
