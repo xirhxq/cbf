@@ -39,6 +39,7 @@ public:
         if (world.isCharging(model->xy()) && model->getStateVariable("battery") < 100.0) {
             model->startCharge();
             uNominal.setZero();
+            model->setControlInput(uNominal);
         } else {
             try {
                 GRBEnv env = GRBEnv(true);
