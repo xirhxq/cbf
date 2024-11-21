@@ -171,7 +171,7 @@ public:
             int batteryIndex = it->second;
             double rate = isCharge ? getMiscVariable("chargeRate") : -getMiscVariable("dischargeRate");
             X[batteryIndex] += rate * dt;
-            X[batteryIndex] = std::clamp(X[batteryIndex], getMiscVariable("batteryLowerLimit"), getMiscVariable("batteryUpperLimit"));
+//            X[batteryIndex] = std::clamp(X[batteryIndex], getMiscVariable("batteryLowerLimit"), getMiscVariable("batteryUpperLimit"));
             if (X[batteryIndex] >= getMiscVariable("batteryUpperLimit")) {
                 stopCharge();
             }
