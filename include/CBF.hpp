@@ -34,16 +34,16 @@ public:
         return res;
     }
 
-    VectorXd constraintUCoe(VectorXd& f, MatrixXd& g, VectorXd& x, double t) {
+    VectorXd constraintUCoe(const VectorXd& f, const MatrixXd& g, const VectorXd& x, double t) {
         VectorXd v = dhdx(x, t).transpose() * g;
         return v.cwiseProduct(controlVariable);
     }
 
-    double constraintConstWithTime(VectorXd & f, MatrixXd & g, VectorXd & x, double t) {
+    double constraintConstWithTime(const VectorXd & f, const MatrixXd & g, const VectorXd & x, double t) {
         return dhdt(x, t) + dhdx(x, t).dot(f) + alpha(h(x, t));
     }
 
-    double constraintConstWithoutTime(VectorXd & f, MatrixXd & g, VectorXd & x, double t) {
+    double constraintConstWithoutTime(const VectorXd & f, const MatrixXd & g, const VectorXd & x, double t) {
         return dhdx(x, t).dot(f) + alpha(h(x, t));
     }
 };
