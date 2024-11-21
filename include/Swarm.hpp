@@ -569,10 +569,12 @@ public:
         tm *t = localtime(&now);
         std::ostringstream oss;
         oss << std::setfill('0')
+            << std::setw(4) << t->tm_year + 1900 << "-"
             << std::setw(2) << t->tm_mon + 1 << "-"
             << std::setw(2) << t->tm_mday << "_"
             << std::setw(2) << t->tm_hour << "-"
-            << std::setw(2) << t->tm_min;
+            << std::setw(2) << t->tm_min << "-"
+            << std::setw(2) << t->tm_sec;
         folderName = oss.str();
         if (mkdir(("../data/" + folderName).c_str(), 0777) == -1) {
             std::cerr << "Error :  " << strerror(errno) << std::endl;
