@@ -10,7 +10,6 @@ public:
     double delta = 0.001;
     std::function<double(double)> alpha = [](double h) {return 0.1 * pow(h, 3);};
     std::function<double(VectorXd, double)> h;
-    VectorXd controlVariable;
 
 public:
     CBF(){}
@@ -36,7 +35,7 @@ public:
 
     VectorXd constraintUCoe(const VectorXd& f, const MatrixXd& g, const VectorXd& x, double t) {
         VectorXd v = dhdx(x, t).transpose() * g;
-        return v.cwiseProduct(controlVariable);
+        return v;
     }
 
     double constraintConstWithTime(const VectorXd & f, const MatrixXd & g, const VectorXd & x, double t) {

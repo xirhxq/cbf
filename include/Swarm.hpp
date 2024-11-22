@@ -106,8 +106,6 @@ public:
             energyCBF.name = "energyCBF";
             energyCBF.h = batteryH;
             energyCBF.alpha = [](double _h) { return _h; };
-            energyCBF.controlVariable.resize(robot->model->getStateSize());
-            energyCBF.controlVariable << 1, 1, 0, 0;
             robot->cbfNoSlack.cbfs[energyCBF.name] = energyCBF;
         }
     }
@@ -140,8 +138,6 @@ public:
                 h = std::min(h, kp * deltaHeadingRad);
                 return h;
             };
-            yawCBF.controlVariable.resize(robot->model->getStateSize());
-            yawCBF.controlVariable << 0, 0, 0, 1;
             robot->cbfSlack[yawCBF.name] = yawCBF;
         }
     }
@@ -216,8 +212,6 @@ public:
             CBF commCBF;
             commCBF.name = "commCBF";
             commCBF.h = autoFormationCommH;
-            commCBF.controlVariable.resize(robot->model->getStateSize());
-            commCBF.controlVariable << 1, 1, 1, 1;
             robot->cbfNoSlack.cbfs[commCBF.name] = commCBF;
         }
 
@@ -288,8 +282,6 @@ public:
             CBF commCBF;
             commCBF.name = "commCBF";
             commCBF.h = fixedFormationCommH;
-            commCBF.controlVariable.resize(robot->model->getStateSize());
-            commCBF.controlVariable << 1, 1, 0, 0;
             robot->cbfNoSlack.cbfs[commCBF.name] = commCBF;
         }
 
@@ -317,8 +309,6 @@ public:
             CBF safetyCBF;
             safetyCBF.name = "safetyCBF";
             safetyCBF.h = safetyH;
-            safetyCBF.controlVariable.resize(robot->model->getStateSize());
-            safetyCBF.controlVariable << 1, 1, 1, 1;
             robot->cbfNoSlack.cbfs[safetyCBF.name] = safetyCBF;
         }
     }
@@ -354,7 +344,7 @@ public:
             for (auto &robot: robots) {
                 json robotJson;
                 robotJson["id"] = robot->id;
-                robotJson["stateEncode"] = robot->model->toJson();
+                robotJson["stateEncode"] = robot->model->state2Json();
                 swarmJson["robots"].push_back(robotJson);
             }
             paraJson["swarm"] = swarmJson;
@@ -386,7 +376,7 @@ public:
         {
             json robotsJson = json::array();
             for (auto &robot: robots) {
-                json robotJson = {{"state", robot->model->toJson()},
+                json robotJson = {{"state", robot->model->state2Json()},
                                   {"id",    robot->id}};
                 if (!robot->cbfNoSlack.cbfs.empty()) {
                     json cbfNoSlackJson;
@@ -454,8 +444,6 @@ public:
         for (auto &robot: robots) {
             double kp = 5.0;
             CBF cvtCBF;
-            cvtCBF.controlVariable.resize(robot->model->getStateSize());
-            cvtCBF.controlVariable << 1, 1, 1, 1;
             cvtCBF.name = "cvtCBF";
             Point cvtCenter = cvt.ct[robot->id];
             cvtCBF.h = [cvtCenter, kp, &robot](VectorXd x, double t) {
