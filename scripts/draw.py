@@ -149,6 +149,9 @@ class Drawer:
             'bigTimeText': True,
             'figureSize': (8, 8),
             'shotList': [0, 10, 25, 80, 140, 220, 275]
+        },
+        'foxy': {
+            'bigTimeText': True,
         }
     }
 
@@ -786,6 +789,8 @@ class Drawer:
                     self.shotList = []
                     self.drawAnimation()
                 elif op == 2:
+                    self.plotOpt = True
+                    self.figureSize = (20, 15)
                     self.drawAnimation()
                 else:
                     if op == 3:
@@ -821,10 +826,6 @@ if __name__ == '__main__':
     print(f'{filenames = }')
     drawer = Drawer(
         filenames,
-        settings='paper',
-        config={
-            # 'figureSize': (20, 15),
-            'robotAnnotation': True,
-            # 'plotOpt': True
-        }
+        settings='foxy',
+        config={}
     )
