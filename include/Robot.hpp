@@ -79,7 +79,7 @@ public:
 
                 obj = 0.0;
                 for (int i = 0; i < model->uSize(); i++) {
-                    obj += (vars[i] - uNominal[i]) * (vars[i] - uNominal[i]);
+                    obj += 20 * (vars[i] - uNominal[i]) * (vars[i] - uNominal[i]);
                 }
                 for (int i = 0; i < cbfSlack.size(); i++) {
                     obj += 0.1 * slackVars[i] * slackVars[i];
