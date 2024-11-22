@@ -15,6 +15,7 @@ public:
     std::unique_ptr<BaseModel> model;
     json opt;
     GRBEnv env;
+    GRBModel* grbModel;
 public:
 
     Robot() = default;
@@ -29,6 +30,11 @@ public:
         }
         env.set("OutputFlag", "0");
         env.start();
+        grbModel = new GRBModel(env);
+    }
+    
+    ~Robot() {
+        delete grbModel;
     }
 
     void optimise(VectorXd &uNominal, double runtime, double dt, World world) {
@@ -45,19 +51,18 @@ public:
             model->setControlInput(uNominal);
         } else {
             try {
-                GRBModel grbModel = GRBModel(env);
-
+                grbModel->reset();
                 std::vector<GRBVar> vars;
                 char s[10];
                 for (int i = 0; i < model->uSize(); i++) {
                     snprintf(s, 10, "var-%d", i);
-                    vars.push_back(grbModel.addVar(-GRB_INFINITY, GRB_INFINITY, 0.0, GRB_CONTINUOUS, s));
+                    vars.push_back(grbModel->addVar(-GRB_INFINITY, GRB_INFINITY, 0.0, GRB_CONTINUOUS, s));
                 }
 
                 std::vector<GRBVar> slackVars;
                 for (int i = 0; i < cbfSlack.size(); i++) {
                     snprintf(s, 10, "slack-%d", i);
-                    slackVars.push_back(grbModel.addVar(-GRB_INFINITY, GRB_INFINITY, 0.0, GRB_CONTINUOUS, s));
+                    slackVars.push_back(grbModel->addVar(-GRB_INFINITY, GRB_INFINITY, 0.0, GRB_CONTINUOUS, s));
                 }
 
                 GRBQuadExpr obj = 0.0;
@@ -67,7 +72,7 @@ public:
                 for (int i = 0; i < cbfSlack.size(); i++) {
                     obj += 0.1 * slackVars[i] * slackVars[i];
                 }
-                grbModel.setObjective(obj, GRB_MINIMIZE);
+                grbModel->setObjective(obj, GRB_MINIMIZE);
 
                 if (!cbfNoSlack.cbfs.empty()) {
                     GRBLinExpr ln = 0.0;
@@ -81,7 +86,7 @@ public:
                                                      {"coe",   model->control2Json(uCoe)},
                                                      {"const", constraintConstWithTime}
                                              });
-                    grbModel.addConstr(ln, '>', -constraintConstWithTime);
+                    grbModel->addConstr(ln, '>', -constraintConstWithTime);
                 }
                 opt["cbfNoSlack"] = jsonCBFNoSlack;
 
@@ -101,12 +106,12 @@ public:
                                                    {"coe",   model->control2Json(uCoe)},
                                                    {"const", constraintConst}
                                            });
-                    grbModel.addConstr(ln, '>', -constraintConst);
+                    grbModel->addConstr(ln, '>', -constraintConst);
                     ++cnt;
                 }
                 opt["cbfSlack"] = jsonCBFSlack;
 
-                grbModel.optimize();
+                grbModel->optimize();
 
                 Eigen::VectorXd  u(model->uSize());
                 for (int i = 0; i < model->uSize(); i++) u(i) = vars[i].get(GRB_DoubleAttr_X);
