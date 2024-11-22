@@ -178,7 +178,7 @@ public:
         }
     }
 
-    json toJson() const {
+    json state2Json() const {
         json j;
         for (const auto &[name, index] : stateIndexMap) {
             j[name] = X[index];
@@ -186,10 +186,26 @@ public:
         return j;
     }
 
-    json toJson(VectorXd x) {
+    json state2Json(VectorXd x) {
         json j;
         for (const auto &[name, index] : stateIndexMap) {
             j[name] = x[index];
+        }
+        return j;
+    }
+
+    json control2Json() const {
+        json j;
+        for (const auto &[name, index] : controlIndexMap) {
+            j[name] = u[index];
+        }
+        return j;
+    }
+
+    json control2Json(VectorXd u) {
+        json j;
+        for (const auto &[name, index] : controlIndexMap) {
+            j[name] = u[index];
         }
         return j;
     }

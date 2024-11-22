@@ -30,8 +30,8 @@ public:
 
     void optimise(VectorXd &uNominal, double runtime, double dt, World world) {
         opt = {
-                {"nominal", model->toJson(uNominal)},
-                {"result", model->toJson(uNominal)},
+                {"nominal", model->control2Json(uNominal)},
+                {"result", model->control2Json(uNominal)},
                 {"cbfNoSlack", json::array()},
                 {"cbfSlack", json::array()}
         };
@@ -79,7 +79,7 @@ public:
                     double constraintConstWithTime = cbfNoSlack.constraintConstWithTime(model->f(), model->g(), model->getX(), runtime);
                     jsonCBFNoSlack.push_back({
                                                      {"name",  cbfNoSlack.getName()},
-                                                     {"coe",   model->toJson(uCoe)},
+                                                     {"coe",   model->control2Json(uCoe)},
                                                      {"const", constraintConstWithTime}
                                              });
                     grbModel.addConstr(ln, '>', -constraintConstWithTime);
@@ -99,7 +99,7 @@ public:
 
                     jsonCBFSlack.push_back({
                                                    {"name",  cbf.name},
-                                                   {"coe",   model->toJson(uCoe)},
+                                                   {"coe",   model->control2Json(uCoe)},
                                                    {"const", constraintConst}
                                            });
                     grbModel.addConstr(ln, '>', -constraintConst);
@@ -113,7 +113,7 @@ public:
                 Eigen::VectorXd  u(model->uSize());
                 for (int i = 0; i < model->uSize(); i++) u(i) = vars[i].get(GRB_DoubleAttr_X);
                 model->setControlInput(u);
-                opt["result"] = model->toJson(u);
+                opt["result"] = model->control2Json(u);
                 VectorXd slacks(slackVars.size());
                 for (int i = 0; i < slackVars.size(); i++) slacks(i) = slackVars[i].get(GRB_DoubleAttr_X);
             } catch (GRBException e) {
