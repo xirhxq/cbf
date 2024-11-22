@@ -15,7 +15,6 @@ public:
     std::unique_ptr<BaseModel> model;
     json opt;
     GRBEnv env;
-    GRBModel *grbModel;
     std::vector<GRBVar> vars;
     std::vector<GRBVar> slackVars;
     GRBQuadExpr obj = 0.0;
@@ -33,11 +32,6 @@ public:
         }
         env.set("OutputFlag", "0");
         env.start();
-        grbModel = new GRBModel(env);
-    }
-
-    ~Robot() {
-        delete grbModel;
     }
 
     void optimise(VectorXd &uNominal, double runtime, double dt, World world) {
@@ -54,7 +48,7 @@ public:
             model->setControlInput(uNominal);
         } else {
             try {
-                grbModel->reset();
+                GRBModel *grbModel = new GRBModel(env);
                 vars.clear();
                 slackVars.clear();
 
