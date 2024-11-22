@@ -604,6 +604,7 @@ public:
                 if (settings["grid-in-terminal"]) gridWorldOutput();
             }
             catch (...) {
+                updateGridWorld();
                 logOnce();
                 endLog();
                 printf("Data so far has been saved in %s\n", filename.c_str());
