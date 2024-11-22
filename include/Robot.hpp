@@ -14,11 +14,12 @@ public:
     std::unordered_map<std::string, CBF> cbfSlack;
     std::unique_ptr<BaseModel> model;
     json opt;
+    GRBEnv env;
 public:
 
     Robot() = default;
 
-    Robot(int id, const std::string &modelType): id(id) {
+    Robot(int id, const std::string &modelType): id(id), env(true) {
         if (modelType == "SingleIntegrate2D") {
             model = std::make_unique<SingleIntegrate2D>();
         } else if (modelType == "DoubleIntegrate2D") {
@@ -26,6 +27,8 @@ public:
         } else {
             throw std::invalid_argument("Invalid model type");
         }
+        env.set("OutputFlag", "0");
+        env.start();
     }
 
     void optimise(VectorXd &uNominal, double runtime, double dt, World world) {
@@ -42,10 +45,6 @@ public:
             model->setControlInput(uNominal);
         } else {
             try {
-                GRBEnv env = GRBEnv(true);
-                env.set("OutputFlag", "0");
-                env.start();
-
                 GRBModel grbModel = GRBModel(env);
 
                 std::vector<GRBVar> vars;
@@ -107,7 +106,6 @@ public:
                 }
                 opt["cbfSlack"] = jsonCBFSlack;
 
-//                model.set(GRB_IntParam_OutputFlag, 0);
                 grbModel.optimize();
 
                 Eigen::VectorXd  u(model->uSize());
