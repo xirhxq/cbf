@@ -67,8 +67,8 @@ class MyOptPlot:
         self.ax = ax
         self.ax.set_title(self.name)
         self.txt = self.ax.text(0.05, 0.85, '', color='red', transform=self.ax.transAxes, fontsize=20)
-        self.markerNominal, = self.ax.plot([self.data[0]["nominal"]["x"]], [self.data[0]["nominal"]["y"]], "b*")
-        self.markerResult, = self.ax.plot([0, self.data[0]["result"]["x"]], [0, self.data[0]["result"]["y"]], "r")
+        self.markerNominal, = self.ax.plot([self.data[0]["nominal"]["vx"]], [self.data[0]["nominal"]["vy"]], "b*")
+        self.markerResult, = self.ax.plot([0, self.data[0]["result"]["vx"]], [0, self.data[0]["result"]["vy"]], "r")
         self.xLimit = [-5, 5]
         self.yLimit = [-5, 5]
         self.ax.plot(self.xLimit, [0, 0], '--k')
@@ -81,18 +81,18 @@ class MyOptPlot:
         self.cbfList = []
         now_data = self.data[0]
         if "cbfNoSlack" in now_data:
-            self.cbfList += [self.xgrid * cbf["coe"]["x"] + self.ygrid * cbf["coe"]["y"] + cbf["const"] for cbf in
+            self.cbfList += [self.xgrid * cbf["coe"]["vx"] + self.ygrid * cbf["coe"]["vy"] + cbf["const"] for cbf in
                              now_data["cbfNoSlack"]]
         if "cbfSlack" in now_data:
-            self.cbfList += [self.xgrid * cbf["coe"]["x"] + self.ygrid * cbf["coe"]["y"] + cbf["const"] for cbf in
+            self.cbfList += [self.xgrid * cbf["coe"]["vx"] + self.ygrid * cbf["coe"]["vy"] + cbf["const"] for cbf in
                              now_data["cbfSlack"]]
         self.cbf_ct = [self.ax.contour(self.xgrid, self.ygrid, cbf, [0],
                                        colors='orangered')
                        for cbf in self.cbfList]
 
     def update(self, _num):
-        self.markerNominal.set_data([self.data[_num]["nominal"]["x"]], [self.data[_num]["nominal"]["y"]])
-        self.markerResult.set_data([0, self.data[_num]["result"]["x"]], [0, self.data[_num]["result"]["y"]])
+        self.markerNominal.set_data([self.data[_num]["nominal"]["vx"]], [self.data[_num]["nominal"]["vy"]])
+        self.markerResult.set_data([0, self.data[_num]["result"]["vx"]], [0, self.data[_num]["result"]["vy"]])
         for ct in self.cbf_ct:
             for cl in ct.collections:
                 cl.remove()
@@ -100,11 +100,11 @@ class MyOptPlot:
         self.cbfList = []
         self.cbfName = []
         # if "cbfNoSlack" in now_data:
-        self.cbfList += [self.xgrid * cbf["coe"]["x"] + self.ygrid * cbf["coe"]["y"] + cbf["const"] for cbf in
+        self.cbfList += [self.xgrid * cbf["coe"]["vx"] + self.ygrid * cbf["coe"]["vy"] + cbf["const"] for cbf in
                          now_data["cbfNoSlack"]]
         self.cbfName += [cbf["name"] for cbf in now_data["cbfNoSlack"]]
         # if "cbfSlack" in now_data:
-        self.cbfList += [self.xgrid * cbf["coe"]["x"] + self.ygrid * cbf["coe"]["y"] + cbf["const"] for cbf in
+        self.cbfList += [self.xgrid * cbf["coe"]["vx"] + self.ygrid * cbf["coe"]["vy"] + cbf["const"] for cbf in
                          now_data["cbfSlack"]]
         self.cbfName += [cbf["name"] for cbf in now_data["cbfSlack"]]
 
@@ -771,7 +771,7 @@ class Drawer:
                 print('-' * 10 + 'Choose which drawing you want:' + '-' * 10)
                 print('[0]: Quit')
                 print('[1]: Draw whole map video')
-                print('[2]: Draw map video with shots')
+                print('[2]: Draw whole map video with optimisation')
                 print('[3]: Draw stats')
                 print('[4]: Draw all energy')
                 print('[5]: Draw cbf values')
