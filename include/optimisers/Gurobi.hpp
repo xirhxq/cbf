@@ -6,7 +6,7 @@
 
 class Gurobi : public OptimiserBase{
     GRBEnv env;
-    GRBModel *model;
+    GRBModel *model{};
     std::vector<GRBVar> vars;
     GRBQuadExpr obj = 0.0;
 
@@ -16,12 +16,12 @@ public:
         env.start();
     }
 
-    void clear() {
+    void clear() override {
         vars.clear();
         delete model;
     }
 
-    void start(int size) {
+    void start(int size) override {
         model = new GRBModel(env);
         std::vector<double> lowerBounds(size, -GRB_INFINITY);
         std::vector<double> upperBounds(size, GRB_INFINITY);
@@ -38,7 +38,7 @@ public:
         vars.assign(allVars, allVars + size);
     }
 
-    void setObjective(Eigen::VectorXd &uNominal) {
+    void setObjective(Eigen::VectorXd &uNominal) override {
         obj = 0.0;
         for (int i = 0; i < uNominal.size(); i++) {
             obj += (vars[i] - uNominal[i]) * (vars[i] - uNominal[i]);
@@ -49,7 +49,7 @@ public:
         model->setObjective(obj, GRB_MINIMIZE);
     }
 
-    void addLinearConstraint(Eigen::VectorXd coe, double rhs) {
+    void addLinearConstraint(Eigen::VectorXd coe, double rhs) override {
         GRBLinExpr ln = 0.0;
         for (int i = 0; i < coe.size(); i++) {
             ln += coe[i] * vars[i];
@@ -57,7 +57,7 @@ public:
         model->addConstr(ln, '>', rhs);
     }
 
-    Eigen::VectorXd solve() {
+    Eigen::VectorXd solve() override {
         try {
             model->optimize();
             Eigen::VectorXd u(vars.size());
