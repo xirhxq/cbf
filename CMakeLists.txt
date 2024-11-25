@@ -3,20 +3,15 @@ project(cbf)
 
 set(CMAKE_CXX_STANDARD 17)
 link_directories(/Library/gurobi1200/macos_universal2/lib)
-include_directories(/Library/gurobi1200/macos_universal2/include)
-include_directories(include)
-include_directories(external)
+include_directories(
+        /Library/gurobi1200/macos_universal2/include
+        include
+        external
+)
 
 file(GLOB SOURCES "src/*.cpp")
-foreach(SOURCE ${SOURCES})
+foreach (SOURCE ${SOURCES})
     get_filename_component(EXECUTABLE ${SOURCE} NAME_WE)
     add_executable(${EXECUTABLE} ${SOURCE})
     target_link_libraries(${EXECUTABLE} libgurobi_c++.a libgurobi120.dylib)
-endforeach()
-
-file(GLOB TESTS "tests/*.cpp")
-foreach(TEST ${TESTS})
-    get_filename_component(EXECUTABLE ${TEST} NAME_WE)
-    add_executable(${EXECUTABLE} ${TEST})
-    target_link_libraries(${EXECUTABLE} libgurobi_c++.a libgurobi120.dylib)
-endforeach()
+endforeach ()
