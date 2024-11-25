@@ -30,6 +30,9 @@ public:
         }
         if (settings["optimiser"] == "Gurobi") {
             optimiser = std::make_unique<Gurobi>();
+        }
+        else if (settings["optimiser"] == "HiGHS") {
+            optimiser = std::make_unique<HiGHS>();
         } else {
             throw std::invalid_argument("Invalid optimiser type");
         }

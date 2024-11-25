@@ -33,7 +33,7 @@
     },
     "launch": {
       "model": "SingleIntegrate2D",
-      "optimiser": "Gurobi"
+      "optimiser": "HiGHS"
     }
   },
   "cbfs": {
