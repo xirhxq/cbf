@@ -15,7 +15,7 @@ public:
         F = Eigen::VectorXd::Zero(6);
         F(stateIndexMap["battery"]) = -1.0;
 
-        A = Eigen::VectorXd::Zero(6, 6);
+        A = Eigen::MatrixXd ::Zero(6, 6);
         A(0, 2) = 1.0; // x <- vx
         A(1, 3) = 1.0; // y <- vy
 
