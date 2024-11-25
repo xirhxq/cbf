@@ -30,6 +30,10 @@
         [10, 5],
         [10, 6]
       ]
+    },
+    "launch": {
+      "model": "SingleIntegrate2D",
+      "optimiser": "Gurobi"
     }
   },
   "cbfs": {

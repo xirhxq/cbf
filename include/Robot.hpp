@@ -6,6 +6,7 @@
 #include "MultiCBF.hpp"
 #include "World.hpp"
 #include "models/models"
+#include "optimisers/optimiser"
 
 class Robot {
 public:
@@ -14,24 +15,28 @@ public:
     std::unordered_map<std::string, CBF> cbfSlack;
     std::unique_ptr<BaseModel> model;
     json opt;
-    GRBEnv env;
-    std::vector<GRBVar> vars;
-    std::vector<GRBVar> slackVars;
-    GRBQuadExpr obj = 0.0;
+    std::unique_ptr<OptimiserBase> optimiser;
 public:
 
     Robot() = default;
 
-    Robot(int id, const std::string &modelType) : id(id), env(true) {
-        if (modelType == "SingleIntegrate2D") {
+    Robot(int id, const json &settings) : id(id) {
+        if (settings["model"] == "SingleIntegrate2D") {
             model = std::make_unique<SingleIntegrate2D>();
-        } else if (modelType == "DoubleIntegrate2D") {
+        } else if (settings["model"] == "DoubleIntegrate2D") {
             model = std::make_unique<DoubleIntegrate2D>();
         } else {
             throw std::invalid_argument("Invalid model type");
         }
-        env.set("OutputFlag", "0");
-        env.start();
+        if (settings["optimiser"] == "Gurobi") {
+            optimiser = std::make_unique<Gurobi>();
+        } else {
+            throw std::invalid_argument("Invalid optimiser type");
+        }
+        model->setStateVariable("battery", 20.0 * (rand() % 100) / 100 + 10);
+        model->setYawDeg(180);
+        cbfSlack.clear();
+        cbfNoSlack.cbfs.clear();
     }
 
     void optimise(VectorXd &uNominal, double runtime, double dt, World world) {
@@ -47,102 +52,60 @@ public:
             uNominal.setZero();
             model->setControlInput(uNominal);
         } else {
-            try {
-                GRBModel *grbModel = new GRBModel(env);
-                vars.clear();
-                slackVars.clear();
+            optimiser->clear();
 
-                auto f = model->f();
-                auto g = model->g();
-                auto x = model->getX();
+            auto f = model->f();
+            auto g = model->g();
+            auto x = model->getX();
 
-                int uSize = model->uSize();
-                int slackSize = cbfSlack.size();
-                int totalSize = uSize + slackSize;
+            int uSize = model->uSize();
+            int slackSize = cbfSlack.size();
+            int totalSize = uSize + slackSize;
 
-                std::vector<double> lowerBounds(totalSize, -GRB_INFINITY);
-                std::vector<double> upperBounds(totalSize, GRB_INFINITY);
-                std::vector<double> objCoeffs(totalSize, 0.0);
-                std::vector<char> varTypes(totalSize, GRB_CONTINUOUS);
+            optimiser->start(totalSize);
 
-                GRBVar *allVars = grbModel->addVars(
-                        lowerBounds.data(),
-                        upperBounds.data(),
-                        objCoeffs.data(),
-                        varTypes.data(),
-                        nullptr,
-                        totalSize
-                );
+            optimiser->setObjective(uNominal);
 
-                vars.assign(allVars, allVars + uSize);
-                slackVars.assign(allVars + uSize, allVars + totalSize);
+            if (!cbfNoSlack.cbfs.empty()) {
+                VectorXd uCoe = cbfNoSlack.constraintUCoe(f, g, x, runtime);
+                double constraintConstWithTime = cbfNoSlack.constraintConstWithTime(f, g, x, runtime);
 
-                obj = 0.0;
-                for (int i = 0; i < model->uSize(); i++) {
-                    obj += (vars[i] - uNominal[i]) * (vars[i] - uNominal[i]);
-                }
-                for (int i = 0; i < cbfSlack.size(); i++) {
-                    obj += 0.1 * slackVars[i] * slackVars[i];
-                }
-                grbModel->setObjective(obj, GRB_MINIMIZE);
+                optimiser->addLinearConstraint(uCoe, -constraintConstWithTime);
 
-                if (!cbfNoSlack.cbfs.empty()) {
-                    GRBLinExpr ln = 0.0;
-                    VectorXd uCoe = cbfNoSlack.constraintUCoe(f, g, x, runtime);
-                    for (int j = 0; j < model->uSize(); j++) {
-                        ln += uCoe(j) * vars[j];
-                    }
-                    double constraintConstWithTime = cbfNoSlack.constraintConstWithTime(f, g, x, runtime);
-                    jsonCBFNoSlack.emplace_back(json{
-                                                     {"name",  cbfNoSlack.getName()},
-                                                     {"coe",   model->control2Json(uCoe)},
-                                                     {"const", constraintConstWithTime}
-                                             });
-                    grbModel->addConstr(ln, '>', -constraintConstWithTime);
-                }
-                opt["cbfNoSlack"] = jsonCBFNoSlack;
-
-                int cnt = 0;
-                for (auto &[name, cbf]: cbfSlack) {
-                    GRBLinExpr ln = 0.0;
-                    VectorXd uCoe = cbf.constraintUCoe(f, g, x, runtime);
-                    for (int j = 0; j < model->uSize(); j++) {
-                        ln += uCoe(j) * vars[j];
-                    }
-                    ln += slackVars[cnt];
-                    double constraintConst = cbf.constraintConstWithoutTime(f, g, x, runtime);
-
-                    jsonCBFSlack.emplace_back(json{
-                                                   {"name",  cbf.name},
-                                                   {"coe",   model->control2Json(uCoe)},
-                                                   {"const", constraintConst}
-                                           });
-                    grbModel->addConstr(ln, '>', -constraintConst);
-                    ++cnt;
-                }
-                opt["cbfSlack"] = jsonCBFSlack;
-
-                grbModel->optimize();
-
-                Eigen::VectorXd u = Eigen::VectorXd::NullaryExpr(model->uSize(), [&](int i) {
-                    return vars[i].get(GRB_DoubleAttr_X);
-                });
-                model->setControlInput(u);
-                opt["result"] = model->control2Json(u);
-                Eigen::VectorXd  slacks = Eigen::VectorXd::NullaryExpr(slackVars.size(), [&](int i) {
-                    return slackVars[i].get(GRB_DoubleAttr_X);
-                });
-            } catch (GRBException& e) {
-                std::cerr << "Gurobi Exception: Code = " << e.getErrorCode()
-                          << ", Message = " << e.getMessage() << std::endl;
-                throw;
-            } catch (std::exception& e) {
-                std::cerr << "Standard Exception: " << e.what() << std::endl;
-                throw;
-            } catch (...) {
-                std::cerr << "Unknown Exception occurred during optimization." << std::endl;
-                throw;
+                jsonCBFNoSlack.emplace_back(json{
+                                                 {"name",  cbfNoSlack.getName()},
+                                                 {"coe",   model->control2Json(uCoe)},
+                                                 {"const", constraintConstWithTime}
+                                         });
             }
+            opt["cbfNoSlack"] = jsonCBFNoSlack;
+
+            int cnt = 0;
+            for (auto &[name, cbf]: cbfSlack) {
+                VectorXd uCoe = cbf.constraintUCoe(f, g, x, runtime);
+                Eigen::VectorXd sCoe = Eigen::VectorXd::Zero(slackSize);
+                sCoe(cnt) = 1.0;
+                Eigen::VectorXd coe(totalSize);
+                coe << uCoe, sCoe;
+                double constraintConst = cbf.constraintConstWithoutTime(f, g, x, runtime);
+
+                optimiser->addLinearConstraint(coe, -constraintConst);
+
+                jsonCBFSlack.emplace_back(json{
+                                               {"name",  cbf.name},
+                                               {"coe",   model->control2Json(uCoe)},
+                                               {"const", constraintConst}
+                                       });
+                ++cnt;
+            }
+            opt["cbfSlack"] = jsonCBFSlack;
+
+            auto result = optimiser->solve();
+
+            auto u = result.head(uSize);
+            model->setControlInput(u);
+            opt["result"] = model->control2Json(u);
+            opt["slacks"] = result.tail(slackSize);
         }
     }
 

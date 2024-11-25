@@ -32,11 +32,7 @@ public:
               gridWorld(computeGridWorld(settings["world"])),
               runtime(0.0) {
         for (int i = 0; i < n; i++) {
-            auto robot = std::make_unique<Robot>(i + 1, "SingleIntegrate2D");
-            robot->model->setStateVariable("battery", 20.0 * (rand() % 100) / 100 + 10);
-            robot->model->setYawDeg(180);
-            robot->cbfSlack.clear();
-            robot->cbfNoSlack.cbfs.clear();
+            auto robot = std::make_unique<Robot>(i + 1, settings["swarm"]["launch"]);
             robots.push_back(std::move(robot));
         }
         setupInitialPosition();
