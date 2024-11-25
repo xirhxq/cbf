@@ -3,6 +3,7 @@
 
 #include "utils.h"
 #include "OptimiserBase.hpp"
+#include "gurobi_c++.h"
 
 class Gurobi : public OptimiserBase{
     GRBEnv env;
