@@ -6,20 +6,24 @@
 class DoubleIntegrate2D : public BaseModel {
 public:
     DoubleIntegrate2D() {
+        stateIndexMap = {{"x", 0}, {"y", 1}, {"vx", 2}, {"vy", 3}, {"battery", 4}, {"yawRad", 5}};
+        controlIndexMap = {{"ax", 0}, {"ay", 1}, {"yawRateRad", 2}};
+
         X = Eigen::VectorXd::Zero(6);
         u = Eigen::VectorXd::Zero(3);
-        A = Eigen::VectorXd::Zero(6, 6);
-        B = Eigen::MatrixXd::Zero(6, 3);
 
+        F = Eigen::VectorXd::Zero(6);
+        F(stateIndexMap["battery"]) = -1.0;
+
+        A = Eigen::VectorXd::Zero(6, 6);
         A(0, 2) = 1.0; // x <- vx
         A(1, 3) = 1.0; // y <- vy
 
+        B = Eigen::MatrixXd::Zero(6, 3);
         B(2, 0) = 1.0; // vx <- ax
         B(3, 1) = 1.0; // vy <- ay
-        B(5, 2) = 1.0; // yaw <- yaw_rate
+        B(5, 2) = 1.0; // yaw <- yawRateRad
 
-        stateIndexMap = {{"x", 0}, {"y", 1}, {"vx", 2}, {"vy", 3}, {"battery", 4}, {"yawRad", 5}};
-        controlIndexMap = {{"ax", 0}, {"ay", 1}, {"yaw_rate", 2}};
     }
 
     void output() const override {

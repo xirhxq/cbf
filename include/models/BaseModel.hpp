@@ -8,17 +8,10 @@ using json = nlohmann::json;
 class BaseModel {
 protected:
     Eigen::VectorXd X, u;
+    Eigen::VectorXd F;
     Eigen::MatrixXd A, B;
     std::unordered_map<std::string, int> stateIndexMap;
     std::unordered_map<std::string, int> controlIndexMap;
-    std::unordered_map<std::string, double> miscVariables = {
-            {"chargeRate", 10.0},
-            {"dischargeRate", 1.0},
-            {"batteryUpperLimit", 100.0},
-            {"batteryLowerLimit", 0.0}
-    };
-    bool isCharge = false;
-
 public:
     virtual ~BaseModel() = default;
 
@@ -26,15 +19,17 @@ public:
         return X;
     }
 
-    auto f() const {
-        if (A.rows() != X.size() || A.cols() != X.size()) {
+    Eigen::MatrixXd f() const {
+        if (F.size() != X.size() || A.cols() != X.size() || A.rows() != F.size()) {
             throw std::logic_error("State or matrix dimensions do not match");
         }
-        Eigen::VectorXd ret = A * X;
-        return ret;
+        return A * X + F;
     }
 
-    auto g() const {
+    Eigen::MatrixXd g() const {
+        if (B.rows() != X.size() || B.cols() != u.size()) {
+            throw std::logic_error("State or control dimensions do not match");
+        }
         return B;
     }
 
@@ -108,13 +103,6 @@ public:
         throw std::invalid_argument("Invalid state variable name or index out of bounds: " + name);
     }
 
-    double extractFromVector(const Eigen::VectorXd &input, int index) const {
-        if (index >= 0 && index < input.size()) {
-            return input[index];
-        }
-        throw std::out_of_range("Index out of bounds in extractFromVector");
-    }
-
     Point extractXYFromVector(const Eigen::VectorXd &input) {
         return Point(extractFromVector(input, "x"), extractFromVector(input, "y"));
     }
@@ -127,55 +115,33 @@ public:
         throw std::invalid_argument("Invalid control variable name or index out of bounds: " + name);
     }
 
-    double extractFromControl(const Eigen::VectorXd &controlInput, int index) const {
-        if (index >= 0 && index < controlInput.size()) {
-            return controlInput[index];
-        }
-        throw std::out_of_range("Index out of bounds in extractFromControl");
-    }
-
-    double getMiscVariable(const std::string &name) const {
-        auto it = miscVariables.find(name);
-        if (it != miscVariables.end()) {
-            return it->second;
-        }
-        throw std::invalid_argument("Invalid misc variable name: " + name);
-    }
-
-    void setMiscVariable(const std::string &name, double value) {
-        auto it = miscVariables.find(name);
-        if (it != miscVariables.end()) {
-            miscVariables[name] = value;
-            return;
-        }
-        throw std::invalid_argument("Invalid misc variable name: " + name);
-    }
-
     void startCharge() {
-        isCharge = true;
+        if (stateIndexMap.find("battery") == stateIndexMap.end()) {
+            throw std::invalid_argument("Invalid state variable name: battery");
+        }
+        F[stateIndexMap["battery"]] = 10.0;
     }
 
-    void stopCharge(){
-        isCharge = false;
+    void stopCharge() {
+        if (stateIndexMap.find("battery") == stateIndexMap.end()) {
+            throw std::invalid_argument("Invalid state variable name: battery");
+        }
+        F[stateIndexMap["battery"]] = -1.0;
+    }
+
+    void checkCharge() {
+        if (stateIndexMap.find("battery") == stateIndexMap.end()) {
+            throw std::invalid_argument("Invalid state variable name: battery");
+        }
+        if (X[stateIndexMap["battery"]] >= 100.0) {
+            stopCharge();
+        }
     }
 
     void stepTimeForward(double dt) {
-        if (A.rows() != X.size() || A.cols() != X.size() || X.size() != B.rows() || u.size() != B.cols()) {
-            throw std::logic_error("State, control input, or matrix dimensions do not match");
-        }
+        checkCharge();
 
-        X += (A * X + B * u) * dt;
-
-        auto it = stateIndexMap.find("battery");
-        if (it != stateIndexMap.end()) {
-            int batteryIndex = it->second;
-            double rate = isCharge ? getMiscVariable("chargeRate") : -getMiscVariable("dischargeRate");
-            X[batteryIndex] += rate * dt;
-//            X[batteryIndex] = std::clamp(X[batteryIndex], getMiscVariable("batteryLowerLimit"), getMiscVariable("batteryUpperLimit"));
-            if (X[batteryIndex] >= getMiscVariable("batteryUpperLimit")) {
-                stopCharge();
-            }
-        }
+        X += (f() + g() * u) * dt;
     }
 
     json state2Json() const {
