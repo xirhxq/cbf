@@ -10,7 +10,7 @@ class MultiCBF{
 public:
     std::unordered_map<std::string, CBF> cbfs;
     double delta = 0.001;
-    std::function<double(double)> alpha = [](double h) {return 0.1 * pow(h, 3);};
+    std::function<double(double)> alpha = [](double h) {return h;};
 
 public:
     MultiCBF(){}
