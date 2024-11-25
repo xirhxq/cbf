@@ -587,11 +587,10 @@ public:
         while (runtime < tTotal) {
             try {
                 checkRobotsInsideWorld();
-                if (!settings["grid-in-terminal"]) {
-                    printf("\r%.2lf seconds elapsed...", runtime);
-                } else {
-                    printf("%.2lf seconds elapsed...\n", runtime);
-                }
+                double percentage = gridWorld.getPercentage();
+                if (settings["grid-in-terminal"]) printf("\n");
+                printf("\r%.2lf seconds elapsed... %.2lf%%", runtime, percentage * 100);
+                if (settings["grid-in-terminal"]) printf("\n");
                 updateGridWorld();
                 postsetCBF();
                 optimize(tStep);
