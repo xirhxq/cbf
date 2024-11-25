@@ -2,6 +2,7 @@
 #define COMPUTING_GEOMETRY_UTILS_H
 
 #include <cmath>
+#include <functional>
 
 typedef std::pair<double, double> pd;
 

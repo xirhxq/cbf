@@ -2,8 +2,6 @@
 #define CBF_MULTICBF_HPP
 
 #include "utils.h"
-#include <utility>
-
 #include "CBF.hpp"
 
 class MultiCBF{

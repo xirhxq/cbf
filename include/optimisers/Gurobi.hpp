@@ -1,8 +1,8 @@
 #ifndef CBF_OPTIMISER_GUROBI_HPP
 #define CBF_OPTIMISER_GUROBI_HPP
 
-#include "OptimiserBase.hpp"
 #include "utils.h"
+#include "OptimiserBase.hpp"
 
 class Gurobi : public OptimiserBase{
     GRBEnv env;

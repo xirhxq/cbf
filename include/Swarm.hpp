@@ -6,8 +6,6 @@
 #include "Robot.hpp"
 #include "GridWorld.hpp"
 
-#include <fstream>
-#include <iomanip>
 
 class Swarm {
 public:
