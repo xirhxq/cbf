@@ -206,18 +206,24 @@ class Drawer:
 
         matplotlib.use('agg')
 
+        outputFilename = 'res'
+
         robotNum = self.data["para"]["swarm"]["num"]
-        halfNum = math.ceil(robotNum / 2)
-        row, col = 8, halfNum
+        divider = 3
+        halfNum = math.ceil(robotNum / divider)
+        row, col = 5, halfNum
 
         fig = plt.figure(figsize=self.figureSize)
+        if self.plotOpt:
+            fig.set_tight_layout(True)
+            outputFilename += '-opt'
         gs = GridSpec(row, col)
 
         barPlotOn = self.plotEnergyCBF or self.plotCvtCBF
         optPlotOn = self.plotOpt
 
         if barPlotOn or optPlotOn:
-            ax = plt.subplot(gs[:-2 * (int(barPlotOn) + int(optPlotOn)), :])
+            ax = plt.subplot(gs[:, :-divider * (int(barPlotOn) + int(optPlotOn))])
         else:
             ax = plt.subplot(gs[:, :])
         ax.set_aspect(1)
@@ -271,12 +277,12 @@ class Drawer:
 
         if self.plotSafeCBF:
             safeCBFPlot = [MyBarPlot(runtime, [dt["robot"][i]["safe_to_" + str(j)] for dt in self.data["state"]],
-                                     plt.subplot(gs[-2, i]),
+                                     plt.subplot(gs[-divider, i]),
                                      "Robot #{}: Safe CBF Value".format(i + 1))
                            for i in range(robotNum) for j in range(robotNum) if
                            "safe_to_" + str(j) in self.data["state"][0]["robot"][i]]
         if self.plotOpt:
-            optPlot = [MyOptPlot(plt.subplot(gs[-1 - i // halfNum, i % halfNum]),
+            optPlot = [MyOptPlot(plt.subplot(gs[i % halfNum, -divider + i // halfNum]),
                                  [dt["robots"][i]["opt"] for dt in self.data["state"]],
                                  "Robot #{}: Opt Result".format(i + 1))
                        for i in range(robotNum)]
@@ -439,7 +445,7 @@ class Drawer:
         # ani.save(filename + 'res.gif')
         # print("\ngif saved in {}".format(filename + 'res.gif'))
 
-        filename = os.path.join(self.folderName, 'res.mp4')
+        filename = os.path.join(self.folderName, outputFilename + '.mp4')
         ani.save(filename, writer='ffmpeg', fps=int(1 / interval))
         print("\nmp4 saved in {}".format(filename))
 
@@ -790,7 +796,7 @@ class Drawer:
                     self.drawAnimation()
                 elif op == 2:
                     self.plotOpt = True
-                    self.figureSize = (20, 15)
+                    self.figureSize = (16, 9)
                     self.drawAnimation()
                 else:
                     if op == 3:
