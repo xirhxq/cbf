@@ -46,11 +46,17 @@ public:
         } else {
             throw std::invalid_argument("Invalid model type");
         }
+#ifdef ENABLE_GUROBI
         if (settings["optimiser"] == "Gurobi") {
             optimiser = std::make_unique<Gurobi>();
-        } else if (settings["optimiser"] == "HiGHS") {
+        } else
+#endif
+#ifdef ENABLE_HIGHS
+        if (settings["optimiser"] == "HiGHS") {
             optimiser = std::make_unique<HiGHS>();
-        } else {
+        } else
+#endif
+        {
             throw std::invalid_argument("Invalid optimiser type");
         }
         model->setStateVariable("battery", 20.0 * (rand() % 100) / 100 + 10);
