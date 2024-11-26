@@ -6,7 +6,7 @@
 #include "MultiCBF.hpp"
 #include "World.hpp"
 #include "models/models"
-#include "optimisers/optimiser"
+#include "optimisers/optimisers"
 
 class Robot {
 public:

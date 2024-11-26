@@ -1,4 +1,4 @@
-#include "optimisers/optimiser"
+#include "optimisers/optimisers"
 #include <iostream>
 #include <Eigen/Dense>
 #include <cassert>
