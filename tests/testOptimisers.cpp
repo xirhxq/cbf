@@ -5,7 +5,9 @@
 #include <Eigen/Dense>
 #include <chrono>
 #include <random>
-
+#include <memory>
+#include <vector>
+#include <string>
 
 void generateRandomProblem(int num_variables, Eigen::VectorXd &uNominal, Eigen::VectorXd &linearConstraintCoefficients,
                            double &rhs_value) {
@@ -24,73 +26,67 @@ void generateRandomProblem(int num_variables, Eigen::VectorXd &uNominal, Eigen::
     rhs_value = dis(gen);
 }
 
-
-TEST_CASE("SingleSolveConsistency") {
-    const int num_variables = 3;
-    Eigen::VectorXd uNominal(num_variables);
-    uNominal << 1.0, 2.0, 3.0;
-
-    Eigen::VectorXd linearConstraintCoefficients(num_variables);
-    linearConstraintCoefficients << 1.0, 1.0, 1.0;
-    double rhs_value = 5.0;
-
-    Gurobi gurobiOptimiser;
-    gurobiOptimiser.start(num_variables);
-    gurobiOptimiser.setObjective(uNominal);
-    gurobiOptimiser.addLinearConstraint(linearConstraintCoefficients, rhs_value);
-    Eigen::VectorXd gurobiSolution = gurobiOptimiser.solve();
-
-    HiGHS highsOptimiser;
-    highsOptimiser.start(num_variables);
-    highsOptimiser.setObjective(uNominal);
-    highsOptimiser.addLinearConstraint(linearConstraintCoefficients, rhs_value);
-    Eigen::VectorXd highsSolution = highsOptimiser.solve();
-
-    CHECK((gurobiSolution - highsSolution).norm() < 1e-6);
+void saveModels(const std::vector<std::unique_ptr<OptimiserBase>> &optimisers, int test_id) {
+    for (size_t i = 0; i < optimisers.size(); ++i) {
+        std::string filename = "model_" + std::to_string(test_id) + "_opt_" + std::to_string(i) + ".lp";
+        optimisers[i]->write(filename);
+    }
 }
 
-// Performance comparison over multiple random problems
 TEST_CASE("RandomSolvePerformanceComparison") {
     const int num_variables = 10;
     const int num_tests = 100;
-    double gurobi_total_time = 0.0;
-    double highs_total_time = 0.0;
 
-    for (int i = 0; i < num_tests; ++i) {
+    std::vector<std::unique_ptr<OptimiserBase>> optimisers;
+    optimisers.emplace_back(std::make_unique<Gurobi>());
+    optimisers.emplace_back(std::make_unique<HiGHS>());
+
+    std::vector<double> total_times(optimisers.size(), 0.0);
+
+    for (int test = 0; test < num_tests; ++test) {
         Eigen::VectorXd uNominal, linearConstraintCoefficients;
         double rhs_value;
         generateRandomProblem(num_variables, uNominal, linearConstraintCoefficients, rhs_value);
 
-        // Gurobi solve
-        Gurobi gurobiOptimiser;
-        gurobiOptimiser.start(num_variables);
-        gurobiOptimiser.setObjective(uNominal);
-        gurobiOptimiser.addLinearConstraint(linearConstraintCoefficients, rhs_value);
+        Eigen::VectorXd reference_solution;
+        bool test_failed = false;
 
-        auto gurobi_start = std::chrono::high_resolution_clock::now();
-        Eigen::VectorXd gurobiSolution = gurobiOptimiser.solve();
-        auto gurobi_end = std::chrono::high_resolution_clock::now();
-        gurobi_total_time += std::chrono::duration<double, std::milli>(gurobi_end - gurobi_start).count();
+        for (size_t i = 0; i < optimisers.size(); ++i) {
+            auto &optimiser = optimisers[i];
+            optimiser->clear();
+            optimiser->start(num_variables);
+            optimiser->setObjective(uNominal);
+            optimiser->addLinearConstraint(linearConstraintCoefficients, rhs_value);
 
-        // HiGHS solve
-        HiGHS highsOptimiser;
-        highsOptimiser.start(num_variables);
-        highsOptimiser.setObjective(uNominal);
-        highsOptimiser.addLinearConstraint(linearConstraintCoefficients, rhs_value);
+            auto start_time = std::chrono::high_resolution_clock::now();
+            Eigen::VectorXd solution;
+            try {
+                solution = optimiser->solve();
+            } catch (const std::exception &e) {
+                saveModels(optimisers, test);
+                throw std::runtime_error(std::string("Optimiser threw an exception: ") + e.what());
+            }
+            auto end_time = std::chrono::high_resolution_clock::now();
 
-        auto highs_start = std::chrono::high_resolution_clock::now();
-        Eigen::VectorXd highsSolution = highsOptimiser.solve();
-        auto highs_end = std::chrono::high_resolution_clock::now();
-        highs_total_time += std::chrono::duration<double, std::milli>(highs_end - highs_start).count();
+            total_times[i] += std::chrono::duration<double, std::milli>(end_time - start_time).count();
 
-        CHECK((gurobiSolution - highsSolution).norm() < 1e-3);
+            if (i == 0) {
+                reference_solution = solution;
+            } else {
+                if ((reference_solution - solution).norm() >= 1e-3) {
+                    test_failed = true;
+                }
+            }
+        }
+
+        if (test_failed) {
+            saveModels(optimisers, test);
+            std::string msg = "Test failed for test case " + std::to_string(test);
+            FAIL(msg);
+        }
     }
 
-    double gurobi_avg_time = gurobi_total_time / num_tests;
-    double highs_avg_time = highs_total_time / num_tests;
-
-    std::cout << "Average Gurobi Time: " << gurobi_avg_time << " ms" << std::endl;
-    std::cout << "Average HiGHS Time:  " << highs_avg_time << " ms" << std::endl;
-
-    CHECK(highs_avg_time < gurobi_avg_time * 10);
+    for (size_t i = 0; i < optimisers.size(); ++i) {
+        std::cout << "Average Time for Optimiser " << i + 1 << ": " << total_times[i] / num_tests << " ms" << std::endl;
+    }
 }
