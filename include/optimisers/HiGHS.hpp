@@ -63,7 +63,7 @@ public:
         }
 
         for (int i = uNominal.size(); i < var_count; i++) {
-            Q.insert(i, i) = 2;
+            Q.insert(i, i) = 0.2;
         }
 
         Q.makeCompressed();
