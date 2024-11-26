@@ -41,6 +41,15 @@ public:
         printf(">\n");
     }
 
+    double getPercentage() {
+        // count the number of true values
+        int num = 0;
+        for (auto a: vis) {
+            num += a;
+        }
+        return 1.0 * num / vis.size();
+    }
+
     int getNumInLim(double coordinate, pd lim, int size, std::string mode = "round") {
         double ratio = (coordinate - lim.first) / (lim.second - lim.first);
         int ret = lround(ratio * size);

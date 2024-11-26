@@ -6,14 +6,12 @@
 #include "Robot.hpp"
 #include "GridWorld.hpp"
 
-#include <fstream>
-#include <iomanip>
 
 class Swarm {
 public:
     int n;
     double runtime = 0.0;
-    std::vector<Robot> robots;
+    std::vector<std::unique_ptr<Robot>> robots;
     World world;
     std::ofstream ofstream;
     json data;
@@ -29,18 +27,11 @@ public:
             : config(settings),
               n(settings["swarm"]["num"]),
               world(settings["world"]),
-              robots(n, Robot(settings["swarm"]["dim"])),
               gridWorld(computeGridWorld(settings["world"])),
               runtime(0.0) {
         for (int i = 0; i < n; i++) {
-            robots[i].id = i + 1;
-            robots[i].G(2, 2) = 0;
-            robots[i].G(3, 3) = 1;
-            robots[i].state.setBattery(20.0 * (rand() % 100) / 100 + 10);
-            robots[i].state.setYawDeg(180);
-            robots[i].F << 0, 0, -1, 0;
-            robots[i].cbfSlack.clear();
-            robots[i].cbfNoSlack.cbfs.clear();
+            auto robot = std::make_unique<Robot>(i + 1, settings["swarm"]["launch"]);
+            robots.push_back(std::move(robot));
         }
         setupInitialPosition();
     }
@@ -56,8 +47,7 @@ public:
     void output() {
         printf("An Swarm with %d robots @ time %.4lf: ---------\n", n, runtime);
         for (auto &robot: robots) {
-            printf("Robot %d: (%.4lf, %.4lf, %.4lf, %.4lf)\n", robot.id, robot.state.x(), robot.state.y(),
-                   robot.state.battery(), robot.state.yawDeg());
+            robot->output();
         }
         printf("--------------\n");
     }
@@ -67,18 +57,18 @@ public:
         std::string method = settings["method"];
         if (method == "random-in-world") {
             for (auto &robot: robots) {
-                robot.state.setPosition(world.getRandomPoint());
+                robot->model->setPosition2D(world.getRandomPoint());
             }
         } else if (method == "random-in-polygon") {
             Polygon poly = Polygon(getPointsFromJson(settings["polygon"]));
             for (auto &robot: robots) {
-                robot.state.setPosition(poly.get_random_point());
+                robot->model->setPosition2D(poly.get_random_point());
             }
         } else if (method == "specified") {
             std::vector<Point> initialPositions = getPointsFromJson(settings["positions"]);
             auto pointIt = initialPositions.begin();
-            for (Robot &robot: robots) {
-                robot.state.setPosition(*pointIt);
+            for (auto &robot: robots) {
+                robot->model->setPosition2D(*pointIt);
                 ++pointIt;
             }
         } else {
@@ -89,7 +79,6 @@ public:
     void setEnergyCBF() {
         for (auto &robot: robots) {
             auto batteryH = [&](VectorXd x, double t) {
-                State state(x);
                 std::function<double(Point, World)> minDistanceToChargingStations = [&](Point myPosition, World world) {
                     return (
                             world.distanceToChargingStations(myPosition)
@@ -97,12 +86,12 @@ public:
                     );
                 };
 
-                Point myPosition = state.xy();
+                Point myPosition = robot->model->extractXYFromVector(x);
 
                 double h = inf;
                 h = std::min(
                         h,
-                        state.battery() - log(minDistanceToChargingStations(myPosition, world))
+                        robot->model->extractFromVector(x, "battery") - log(minDistanceToChargingStations(myPosition, world))
                 );
                 return h;
             };
@@ -111,9 +100,7 @@ public:
             energyCBF.name = "energyCBF";
             energyCBF.h = batteryH;
             energyCBF.alpha = [](double _h) { return _h; };
-            energyCBF.controlVariable.resize(robot.state.X.size());
-            energyCBF.controlVariable << 1, 1, 0, 0;
-            robot.cbfNoSlack.cbfs[energyCBF.name] = energyCBF;
+            robot->cbfNoSlack.cbfs[energyCBF.name] = energyCBF;
         }
     }
 
@@ -130,27 +117,22 @@ public:
             }
             return headingRad;
         };
+
         for (auto &robot: robots) {
             CBF yawCBF;
             yawCBF.name = "yawCBF";
             yawCBF.h = [&](VectorXd x, double t) {
-                State state(x);
-                Point myPosition = state.xy();
+                Point myPosition = robot->model->extractXYFromVector(x);
                 double headingRad = headingToNearestTarget(myPosition, t);
-                double deltaHeadingRad = headingRad - state.yawRad();
+                double deltaHeadingRad = headingRad - robot->model->extractFromVector(x, "yawRad");
                 deltaHeadingRad = atan2(sin(deltaHeadingRad), cos(deltaHeadingRad));
                 double kp = 5;
 
                 double h = inf;
-                h = std::min(
-                        h,
-                        kp * deltaHeadingRad
-                );
+                h = std::min(h, kp * deltaHeadingRad);
                 return h;
             };
-            yawCBF.controlVariable.resize(robot.state.X.size());
-            yawCBF.controlVariable << 0, 0, 0, 1;
-            robot.cbfSlack[yawCBF.name] = yawCBF;
+            robot->cbfSlack[yawCBF.name] = yawCBF;
         }
     }
 
@@ -163,26 +145,26 @@ public:
             Point origin(0, 0);
             double maxCommRange = 8;
 
-            auto robotDistanceToOrigin = [&](const Robot& r) {
-                return r.state.xy().distance_to(origin);
+            auto robotDistanceToOrigin = [&](const Robot *r) {
+                return r->model->xy().distance_to(origin);
             };
 
-            std::vector<Robot> robotsInCommRange;
-            for (auto &otherRobot: robots) {
-                if (robot.id == otherRobot.id) continue;
-                if (robot.state.xy().distance_to(otherRobot.state.xy()) > 1.5 * maxCommRange) continue;
-                if (robotDistanceToOrigin(otherRobot) < robotDistanceToOrigin(robot)) continue;
-                robotsInCommRange.push_back(otherRobot);
+            std::vector<Robot*> robotsInCommRange;
+            for (auto &other: robots) {
+                if (robot->id == other->id) continue;
+                if (robot->model->xy().distance_to(other->model->xy()) > 1.5 * maxCommRange) continue;
+                if (robotDistanceToOrigin(other.get()) < robotDistanceToOrigin(robot.get())) continue;
+                robotsInCommRange.push_back(other.get());
             }
 
             std::sort(
                     robotsInCommRange.begin(), robotsInCommRange.end(),
-                    [&](Robot a, Robot b) {
+                    [&](Robot *a, Robot *b) {
                         return robotDistanceToOrigin(a) < robotDistanceToOrigin(b);
                     }
             );
 
-            auto formationRobots = std::vector<Robot>(
+            auto formationRobots = std::vector<Robot *>(
                     robotsInCommRange.begin(),
                     robotsInCommRange.begin() + std::min(2, (int) robotsInCommRange.size())
 //                    robotsInCommRange.end() - std::min(2, (int) robotsInCommRange.size()),
@@ -190,13 +172,13 @@ public:
             );
 
             std::vector<Point> formationPoints;
-            json myJson = {{"id",           robot.id},
+            json myJson = {{"id",           robot->id},
                            {"anchorPoints", json::array()},
                            {"anchorIds",    json::array()}};
 
-            for (auto &otherRobot: formationRobots) {
-                myJson["anchorIds"].push_back(otherRobot.id);
-                formationPoints.push_back(otherRobot.state.xy());
+            for (auto &other: formationRobots) {
+                myJson["anchorIds"].push_back(other->id);
+                formationPoints.push_back(other->model->xy());
             }
 //            if (formationRobots.size() < 2) {
 //                myJson["anchorPoints"].push_back({origin.x, origin.y});
@@ -205,9 +187,8 @@ public:
 
             commJson.emplace_back(myJson);
 
-            auto autoFormationCommH = [=](VectorXd x, double t) {
-                State state(x);
-                Point myPosition = state.xy();
+            auto autoFormationCommH = [&](VectorXd x, double t) {
+                Point myPosition = robot->model->extractXYFromVector(x);
 
                 double h = inf;
                 for (auto &point: formationPoints) {
@@ -225,9 +206,7 @@ public:
             CBF commCBF;
             commCBF.name = "commCBF";
             commCBF.h = autoFormationCommH;
-            commCBF.controlVariable.resize(robot.state.X.size());
-            commCBF.controlVariable << 1, 1, 1, 1;
-            robot.cbfNoSlack.cbfs[commCBF.name] = commCBF;
+            robot->cbfNoSlack.cbfs[commCBF.name] = commCBF;
         }
 
         stepData["cbfs"]["commAuto"] = commJson;
@@ -241,10 +220,10 @@ public:
 
         for (auto &robot: robots) {
             Point origin(0, 0);
-            Point baseOfMyPart = Point(-3 + 6 * isSecondPart(robot.id), 0);
-            int idInPart = partId(robot.id);
+            Point baseOfMyPart = Point(-3 + 6 * isSecondPart(robot->id), 0);
+            int idInPart = partId(robot->id);
 
-            json myJson = {{"id",           robot.id},
+            json myJson = {{"id",           robot->id},
                            {"anchorPoints", json::array()},
                            {"anchorIds",    json::array()}};
 
@@ -252,34 +231,33 @@ public:
             if (idInPart <= 2) myJson["anchorPoints"].push_back({origin.x, origin.y});
 
             for (auto &other: robots) {
-                if (isSecondPart(robot.id) != isSecondPart(other.id)) continue;
-                if (partId(other.id) <= idInPart) continue;
-                if (partId(other.id) > idInPart + 2) continue;
-                myJson["anchorIds"].push_back(other.id);
+                if (isSecondPart(robot->id) != isSecondPart(other->id)) continue;
+                if (partId(other->id) <= idInPart) continue;
+                if (partId(other->id) > idInPart + 2) continue;
+                myJson["anchorIds"].push_back(other->id);
             }
             commJson.emplace_back(myJson);
 
             auto fixedFormationCommH = [&](VectorXd x, double t) {
-                State state(x);
                 auto partId = [&](int id) { return (id - 1) % (n / 2) + 1; };
                 auto isSecondPart = [&](int id) { return id > (n / 2); };
 
                 double maxCommDistance = 8.5;
-                Point myPosition = state.xy();
-                Point baseOfMyPart = Point(-3 + 6 * isSecondPart(robot.id), 0);
+                Point myPosition = robot->model->extractXYFromVector(x);
+                Point baseOfMyPart = Point(-3 + 6 * isSecondPart(robot->id), 0);
                 Point origin(0, 0);
 
 
-                int idInPart = partId(robot.id);
+                int idInPart = partId(robot->id);
 
                 std::vector<Point> formationPoints;
                 if (idInPart == 1) formationPoints.push_back(baseOfMyPart);
                 if (idInPart <= 2) formationPoints.push_back(origin);
                 for (auto &other: robots) {
-                    if (isSecondPart(robot.id) != isSecondPart(other.id)) continue;
-                    if (partId(other.id) <= idInPart) continue;
-                    if (partId(other.id) > idInPart + 2) continue;
-                    formationPoints.push_back(other.state.xy());
+                    if (isSecondPart(robot->id) != isSecondPart(other->id)) continue;
+                    if (partId(other->id) <= idInPart) continue;
+                    if (partId(other->id) > idInPart + 2) continue;
+                    formationPoints.push_back(other->model->xy());
                 }
 
                 double h = inf;
@@ -298,9 +276,7 @@ public:
             CBF commCBF;
             commCBF.name = "commCBF";
             commCBF.h = fixedFormationCommH;
-            commCBF.controlVariable.resize(robot.state.X.size());
-            commCBF.controlVariable << 1, 1, 0, 0;
-            robot.cbfNoSlack.cbfs[commCBF.name] = commCBF;
+            robot->cbfNoSlack.cbfs[commCBF.name] = commCBF;
         }
 
         stepData["cbfs"]["commFixed"] = commJson;
@@ -309,17 +285,16 @@ public:
     void setSafetyCBF() {
         for (auto &robot: robots) {
             auto safetyH = [&](VectorXd x, double t) {
-                State state(x);
-                Point myPosition = state.xy();
+                Point myPosition = robot->model->xy();
 
                 double safeDistance = 3;
 
                 double h = inf;
-                for (auto &otherRobot: robots) {
-                    if (robot.id == otherRobot.id) continue;
+                for (auto &other: robots) {
+                    if (robot->id == other->id) continue;
                     h = std::min(
                             h,
-                            0.5 * (myPosition.distance_to(otherRobot.state.xy()) - safeDistance)
+                            0.5 * (myPosition.distance_to(other->model->xy()) - safeDistance)
                     );
                 }
                 return h;
@@ -328,9 +303,7 @@ public:
             CBF safetyCBF;
             safetyCBF.name = "safetyCBF";
             safetyCBF.h = safetyH;
-            safetyCBF.controlVariable.resize(robot.state.X.size());
-            safetyCBF.controlVariable << 1, 1, 1, 1;
-            robot.cbfNoSlack.cbfs[safetyCBF.name] = safetyCBF;
+            robot->cbfNoSlack.cbfs[safetyCBF.name] = safetyCBF;
         }
     }
 
@@ -364,8 +337,8 @@ public:
             swarmJson["num"] = n;
             for (auto &robot: robots) {
                 json robotJson;
-                robotJson["id"] = robot.id;
-                robotJson["stateEncode"] = robot.state.stateEncodeJson();
+                robotJson["id"] = robot->id;
+                robotJson["stateEncode"] = robot->model->state2Json();
                 swarmJson["robots"].push_back(robotJson);
             }
             paraJson["swarm"] = swarmJson;
@@ -397,36 +370,36 @@ public:
         {
             json robotsJson = json::array();
             for (auto &robot: robots) {
-                json robotJson = {{"state", robot.state.toJson()},
-                                  {"id",    robot.id}};
-                if (!robot.cbfNoSlack.cbfs.empty()) {
+                json robotJson = {{"state", robot->model->state2Json()},
+                                  {"id",    robot->id}};
+                if (!robot->cbfNoSlack.cbfs.empty()) {
                     json cbfNoSlackJson;
-                    for (auto &[name, cbf]: robot.cbfNoSlack.cbfs) {
-                        cbfNoSlackJson[cbf.name] = cbf.h(robot.state.X, runtime);
+                    for (auto &[name, cbf]: robot->cbfNoSlack.cbfs) {
+                        cbfNoSlackJson[cbf.name] = cbf.h(robot->model->getX(), runtime);
                     }
-                    cbfNoSlackJson[robot.cbfNoSlack.getName()] = robot.cbfNoSlack.h(robot.state.X, runtime);
+                    cbfNoSlackJson[robot->cbfNoSlack.getName()] = robot->cbfNoSlack.h(robot->model->getX(), runtime);
                     robotJson["cbfNoSlack"] = cbfNoSlackJson;
                 }
                 {
                     json cbfSlackJson;
-                    for (auto &[name, cbf]: robot.cbfSlack) {
-                        cbfSlackJson[cbf.name] = cbf.h(robot.state.X, runtime);
+                    for (auto &[name, cbf]: robot->cbfSlack) {
+                        cbfSlackJson[cbf.name] = cbf.h(robot->model->getX(), runtime);
                     }
                     robotJson["cbfSlack"] = cbfSlackJson;
                 }
 
                 if (config["cbfs"]["with-slack"]["cvt"]) {
-                    json cvtJson = {{"num", cvt.pl[robot.id].n + 1}};
-                    for (int i = 1; i <= cvt.pl[robot.id].n; i++) {
-                        cvtJson["pos"].push_back({cvt.pl[robot.id].p[i].x, cvt.pl[robot.id].p[i].y});
+                    json cvtJson = {{"num", cvt.pl[robot->id].n + 1}};
+                    for (int i = 1; i <= cvt.pl[robot->id].n; i++) {
+                        cvtJson["pos"].push_back({cvt.pl[robot->id].p[i].x, cvt.pl[robot->id].p[i].y});
                     }
-                    cvtJson["pos"].push_back({cvt.pl[robot.id].p[1].x, cvt.pl[robot.id].p[1].y});
-                    cvtJson["center"] = {cvt.ct[robot.id].x, cvt.ct[robot.id].y};
+                    cvtJson["pos"].push_back({cvt.pl[robot->id].p[1].x, cvt.pl[robot->id].p[1].y});
+                    cvtJson["center"] = {cvt.ct[robot->id].x, cvt.ct[robot->id].y};
                     robotJson["cvt"] = cvtJson;
                 }
 
                 {
-                    robotJson["opt"] = robot.opt;
+                    robotJson["opt"] = robot->opt;
                 }
 
                 robotsJson.emplace_back(robotJson);
@@ -453,7 +426,7 @@ public:
     void calCVT() {
         cvt = CVT(n, world.boundary);
         for (auto &robot: robots) {
-            cvt.pt[robot.id] = robot.state.xy();
+            cvt.pt[robot->id] = robot->model->xy();
         }
         cvt.cal_poly();
         for (int i = 1; i <= cvt.n; i++) {
@@ -465,32 +438,28 @@ public:
         for (auto &robot: robots) {
             double kp = 5.0;
             CBF cvtCBF;
-            cvtCBF.controlVariable.resize(robot.state.X.size());
-            cvtCBF.controlVariable << 1, 1, 1, 1;
             cvtCBF.name = "cvtCBF";
-            Point cvtCenter = cvt.ct[robot.id];
-            cvtCBF.h = [cvtCenter, kp](VectorXd x, double t) {
-                State state(x);
-                Point myPosition = state.xy();
+            Point cvtCenter = cvt.ct[robot->id];
+            cvtCBF.h = [cvtCenter, kp, &robot](VectorXd x, double t) {
+                Point myPosition = robot->model->extractXYFromVector(x);
                 return -kp * cvtCenter.distance_to(myPosition);
             };
             cvtCBF.alpha = [](double h) { return h; };
-            robot.cbfSlack[cvtCBF.name] = cvtCBF;
+            robot->cbfSlack[cvtCBF.name] = cvtCBF;
         }
     }
 
     void optimize(double dt) {
         for (auto &robot: robots) {
             VectorXd u;
-            u.resize(robot.state.X.size());
-            u.setZero();
-            robot.optimise(u, runtime, dt, world);
+            u.resize(robot->model->uSize());
+            robot->optimise(u, runtime, dt, world);
         }
     }
 
     void stepTimeForward(double dt) {
         for (auto &robot: robots) {
-            robot.stepTimeForward(dt);
+            robot->stepTimeForward(dt);
         }
         runtime += dt;
     }
@@ -498,7 +467,7 @@ public:
     std::vector<Point> getPositions() {
         std::vector<Point> positions;
         for (auto &robot: robots) {
-            positions.push_back(robot.state.xy());
+            positions.push_back(robot->model->xy());
         }
         return positions;
     }
@@ -516,23 +485,22 @@ public:
         for (auto &robot: robots) {
             double tol = 2;
             Point visibleBoundary[4] = {
-                    {robot.state.x() - tol, robot.state.y() - tol},
-                    {robot.state.x() + tol, robot.state.y() - tol},
-                    {robot.state.x() + tol, robot.state.y() + tol},
-                    {robot.state.x() - tol, robot.state.y() + tol}
+                    {robot->model->getStateVariable("x") - tol, robot->model->getStateVariable("y") - tol},
+                    {robot->model->getStateVariable("x") + tol, robot->model->getStateVariable("y") - tol},
+                    {robot->model->getStateVariable("x") + tol, robot->model->getStateVariable("y") + tol},
+                    {robot->model->getStateVariable("x") - tol, robot->model->getStateVariable("y") + tol}
             };
 //            updatedGridWorld.push_back(gridWorld.setValueInPolygon(Polygon(4, visibleBoundary), true, true));
-            updatedGridWorld.push_back(gridWorld.setValueInCircle(robot.state.xy(), tol, true, true));
+            updatedGridWorld.push_back(gridWorld.setValueInCircle(robot->model->xy(), tol, true, true));
         }
     }
 
     void checkRobotsInsideWorld() {
         auto xLim = world.boundary.get_x_limit(1), yLim = world.boundary.get_y_limit(1);
         for (auto &robot: robots) {
-            if (!(
-                    robot.state.x() >= xLim.first && robot.state.x() <= xLim.second &&
-                    robot.state.y() >= yLim.first && robot.state.y() <= yLim.second
-            )) {
+            auto robotPosition = robot->model->xy();
+            if (robotPosition.x < xLim.first || robotPosition.x > xLim.second ||
+                robotPosition.y < yLim.first || robotPosition.y > yLim.second ) {
                 throw std::runtime_error("Robot is outside the world");
             }
         }
@@ -554,8 +522,8 @@ public:
             }
         }
         for (auto &robot: robots) {
-            charMap[gridWorld.getNumInYLim(robot.state.y()) * yNum / gridWorld.yNum]
-            [gridWorld.getNumInXLim(robot.state.x()) * xNum / gridWorld.xNum] = 'a' + robot.id - 1;
+            charMap[gridWorld.getNumInYLim(robot->model->getStateVariable("y")) * yNum / gridWorld.yNum]
+            [gridWorld.getNumInXLim(robot->model->getStateVariable("x")) * xNum / gridWorld.xNum] = 'a' + robot->id - 1;
         }
         for (int j = yNum - 1; j >= 0; j--) {
             for (int i = 0; i < xNum; i++) {
@@ -583,10 +551,12 @@ public:
         tm *t = localtime(&now);
         std::ostringstream oss;
         oss << std::setfill('0')
+            << std::setw(4) << t->tm_year + 1900 << "-"
             << std::setw(2) << t->tm_mon + 1 << "-"
             << std::setw(2) << t->tm_mday << "_"
             << std::setw(2) << t->tm_hour << "-"
-            << std::setw(2) << t->tm_min;
+            << std::setw(2) << t->tm_min << "-"
+            << std::setw(2) << t->tm_sec;
         folderName = oss.str();
         if (mkdir(("../data/" + folderName).c_str(), 0777) == -1) {
             std::cerr << "Error :  " << strerror(errno) << std::endl;
@@ -615,11 +585,10 @@ public:
         while (runtime < tTotal) {
             try {
                 checkRobotsInsideWorld();
-                if (!settings["grid-in-terminal"]) {
-                    printf("\r%.2lf seconds elapsed...", runtime);
-                } else {
-                    printf("%.2lf seconds elapsed...\n", runtime);
-                }
+                double percentage = gridWorld.getPercentage();
+                if (settings["grid-in-terminal"]) printf("\n");
+                printf("\r%.2lf seconds elapsed... %.2lf%%", runtime, percentage * 100);
+                if (settings["grid-in-terminal"]) printf("\n");
                 updateGridWorld();
                 postsetCBF();
                 optimize(tStep);
@@ -628,6 +597,7 @@ public:
                 if (settings["grid-in-terminal"]) gridWorldOutput();
             }
             catch (...) {
+                updateGridWorld();
                 logOnce();
                 endLog();
                 printf("Data so far has been saved in %s\n", filename.c_str());

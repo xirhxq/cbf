@@ -2,8 +2,6 @@
 #define CBF_MULTICBF_HPP
 
 #include "utils.h"
-#include <utility>
-
 #include "CBF.hpp"
 
 class MultiCBF{
@@ -11,7 +9,6 @@ public:
     std::unordered_map<std::string, CBF> cbfs;
     double delta = 0.001;
     std::function<double(double)> alpha = [](double h) {return h;};
-    VectorXd controlVariable;
 
 public:
     MultiCBF(){}
@@ -58,16 +55,16 @@ public:
         return res;
     }
 
-    VectorXd constraintUCoe(VectorXd& f, MatrixXd& g, VectorXd& x, double t) {
+    VectorXd constraintUCoe(const VectorXd& f, const MatrixXd& g, const VectorXd& x, double t) {
         VectorXd v = dhdx(x, t).transpose() * g;
-        return v.cwiseProduct(controlVariable);
+        return v;
     }
 
-    double constraintConstWithTime(VectorXd & f, MatrixXd & g, VectorXd & x, double t) {
+    double constraintConstWithTime(const VectorXd & f, const MatrixXd & g, const VectorXd & x, double t) {
         return dhdt(x, t) + dhdx(x, t).dot(f) + alpha(h(x, t));
     }
 
-    double constraintConstWithoutTime(VectorXd & f, MatrixXd & g, VectorXd & x, double t) {
+    double constraintConstWithoutTime(const VectorXd & f, const MatrixXd & g, const VectorXd & x, double t) {
         return dhdx(x, t).dot(f) + alpha(h(x, t));
     }
 };

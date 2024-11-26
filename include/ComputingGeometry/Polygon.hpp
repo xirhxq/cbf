@@ -4,8 +4,6 @@
 #include "Utils.h"
 #include "Line.hpp"
 
-#include <functional>
-
 class Polygon {
 public:
     int n;

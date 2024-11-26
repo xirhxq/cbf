@@ -1,13 +1,18 @@
 #ifndef CBF_UTILS_H
 #define CBF_UTILS_H
 
-#include <iostream>
 #include <cmath>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <utility>
 #include <sys/stat.h>
+
 #include "nlohmann/json.hpp"
 #include "Eigen/Dense"
-#include "gurobi_c++.h"
+
 #include "ComputingGeometry/ComputingGeometry"
+
 
 using namespace Eigen;
 using json = nlohmann::json;

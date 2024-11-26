@@ -1,8 +1,6 @@
 #ifndef CBF_WORLD_HPP
 #define CBF_WORLD_HPP
 
-#include <utility>
-
 #include "utils.h"
 #include "Target.hpp"
 

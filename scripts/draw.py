@@ -67,8 +67,8 @@ class MyOptPlot:
         self.ax = ax
         self.ax.set_title(self.name)
         self.txt = self.ax.text(0.05, 0.85, '', color='red', transform=self.ax.transAxes, fontsize=20)
-        self.markerNominal, = self.ax.plot([self.data[0]["nominal"]["x"]], [self.data[0]["nominal"]["y"]], "b*")
-        self.markerResult, = self.ax.plot([0, self.data[0]["result"]["x"]], [0, self.data[0]["result"]["y"]], "r")
+        self.markerNominal, = self.ax.plot([self.data[0]["nominal"]["vx"]], [self.data[0]["nominal"]["vy"]], "b*")
+        self.markerResult, = self.ax.plot([0, self.data[0]["result"]["vx"]], [0, self.data[0]["result"]["vy"]], "r")
         self.xLimit = [-5, 5]
         self.yLimit = [-5, 5]
         self.ax.plot(self.xLimit, [0, 0], '--k')
@@ -81,18 +81,18 @@ class MyOptPlot:
         self.cbfList = []
         now_data = self.data[0]
         if "cbfNoSlack" in now_data:
-            self.cbfList += [self.xgrid * cbf["coe"]["x"] + self.ygrid * cbf["coe"]["y"] + cbf["const"] for cbf in
+            self.cbfList += [self.xgrid * cbf["coe"]["vx"] + self.ygrid * cbf["coe"]["vy"] + cbf["const"] for cbf in
                              now_data["cbfNoSlack"]]
         if "cbfSlack" in now_data:
-            self.cbfList += [self.xgrid * cbf["coe"]["x"] + self.ygrid * cbf["coe"]["y"] + cbf["const"] for cbf in
+            self.cbfList += [self.xgrid * cbf["coe"]["vx"] + self.ygrid * cbf["coe"]["vy"] + cbf["const"] for cbf in
                              now_data["cbfSlack"]]
         self.cbf_ct = [self.ax.contour(self.xgrid, self.ygrid, cbf, [0],
                                        colors='orangered')
                        for cbf in self.cbfList]
 
     def update(self, _num):
-        self.markerNominal.set_data([self.data[_num]["nominal"]["x"]], [self.data[_num]["nominal"]["y"]])
-        self.markerResult.set_data([0, self.data[_num]["result"]["x"]], [0, self.data[_num]["result"]["y"]])
+        self.markerNominal.set_data([self.data[_num]["nominal"]["vx"]], [self.data[_num]["nominal"]["vy"]])
+        self.markerResult.set_data([0, self.data[_num]["result"]["vx"]], [0, self.data[_num]["result"]["vy"]])
         for ct in self.cbf_ct:
             for cl in ct.collections:
                 cl.remove()
@@ -100,11 +100,11 @@ class MyOptPlot:
         self.cbfList = []
         self.cbfName = []
         # if "cbfNoSlack" in now_data:
-        self.cbfList += [self.xgrid * cbf["coe"]["x"] + self.ygrid * cbf["coe"]["y"] + cbf["const"] for cbf in
+        self.cbfList += [self.xgrid * cbf["coe"]["vx"] + self.ygrid * cbf["coe"]["vy"] + cbf["const"] for cbf in
                          now_data["cbfNoSlack"]]
         self.cbfName += [cbf["name"] for cbf in now_data["cbfNoSlack"]]
         # if "cbfSlack" in now_data:
-        self.cbfList += [self.xgrid * cbf["coe"]["x"] + self.ygrid * cbf["coe"]["y"] + cbf["const"] for cbf in
+        self.cbfList += [self.xgrid * cbf["coe"]["vx"] + self.ygrid * cbf["coe"]["vy"] + cbf["const"] for cbf in
                          now_data["cbfSlack"]]
         self.cbfName += [cbf["name"] for cbf in now_data["cbfSlack"]]
 
@@ -149,6 +149,9 @@ class Drawer:
             'bigTimeText': True,
             'figureSize': (8, 8),
             'shotList': [0, 10, 25, 80, 140, 220, 275]
+        },
+        'foxy': {
+            'bigTimeText': True,
         }
     }
 
@@ -203,18 +206,24 @@ class Drawer:
 
         matplotlib.use('agg')
 
+        outputFilename = 'res'
+
         robotNum = self.data["para"]["swarm"]["num"]
-        halfNum = math.ceil(robotNum / 2)
-        row, col = 8, halfNum
+        divider = 3
+        halfNum = math.ceil(robotNum / divider)
+        row, col = 5, halfNum
 
         fig = plt.figure(figsize=self.figureSize)
+        if self.plotOpt:
+            fig.set_tight_layout(True)
+            outputFilename += '-opt'
         gs = GridSpec(row, col)
 
         barPlotOn = self.plotEnergyCBF or self.plotCvtCBF
         optPlotOn = self.plotOpt
 
         if barPlotOn or optPlotOn:
-            ax = plt.subplot(gs[:-2 * (int(barPlotOn) + int(optPlotOn)), :])
+            ax = plt.subplot(gs[:, :-divider * (int(barPlotOn) + int(optPlotOn))])
         else:
             ax = plt.subplot(gs[:, :])
         ax.set_aspect(1)
@@ -268,12 +277,12 @@ class Drawer:
 
         if self.plotSafeCBF:
             safeCBFPlot = [MyBarPlot(runtime, [dt["robot"][i]["safe_to_" + str(j)] for dt in self.data["state"]],
-                                     plt.subplot(gs[-2, i]),
+                                     plt.subplot(gs[-divider, i]),
                                      "Robot #{}: Safe CBF Value".format(i + 1))
                            for i in range(robotNum) for j in range(robotNum) if
                            "safe_to_" + str(j) in self.data["state"][0]["robot"][i]]
         if self.plotOpt:
-            optPlot = [MyOptPlot(plt.subplot(gs[-1 - i // halfNum, i % halfNum]),
+            optPlot = [MyOptPlot(plt.subplot(gs[i % halfNum, -divider + i // halfNum]),
                                  [dt["robots"][i]["opt"] for dt in self.data["state"]],
                                  "Robot #{}: Opt Result".format(i + 1))
                        for i in range(robotNum)]
@@ -436,7 +445,7 @@ class Drawer:
         # ani.save(filename + 'res.gif')
         # print("\ngif saved in {}".format(filename + 'res.gif'))
 
-        filename = os.path.join(self.folderName, 'res.mp4')
+        filename = os.path.join(self.folderName, outputFilename + '.mp4')
         ani.save(filename, writer='ffmpeg', fps=int(1 / interval))
         print("\nmp4 saved in {}".format(filename))
 
@@ -771,7 +780,7 @@ class Drawer:
                 print('-' * 10 + 'Choose which drawing you want:' + '-' * 10)
                 print('[0]: Quit')
                 print('[1]: Draw whole map video')
-                print('[2]: Draw map video with shots')
+                print('[2]: Draw whole map video with optimisation')
                 print('[3]: Draw stats')
                 print('[4]: Draw all energy')
                 print('[5]: Draw cbf values')
@@ -786,6 +795,8 @@ class Drawer:
                     self.shotList = []
                     self.drawAnimation()
                 elif op == 2:
+                    self.plotOpt = True
+                    self.figureSize = (16, 9)
                     self.drawAnimation()
                 else:
                     if op == 3:
@@ -821,10 +832,6 @@ if __name__ == '__main__':
     print(f'{filenames = }')
     drawer = Drawer(
         filenames,
-        settings='paper',
-        config={
-            # 'figureSize': (20, 15),
-            'robotAnnotation': True,
-            # 'plotOpt': True
-        }
+        settings='foxy',
+        config={}
     )
