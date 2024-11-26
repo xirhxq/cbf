@@ -58,8 +58,8 @@ public:
         model->addConstr(ln, '>', rhs);
     }
 
-    void write() override {
-        model->write("model_gurobi.lp");
+    void write(std::string filename) override {
+        model->write(filename);
     }
 
     Eigen::VectorXd solve() override {

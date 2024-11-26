@@ -91,8 +91,8 @@ public:
         constraint_count++;
     }
 
-    void write() override {
-        highs.writeModel("model_highs.lp");
+    void write(std::string filename) override {
+        highs.writeModel(filename);
     }
 
     Eigen::VectorXd solve() override {

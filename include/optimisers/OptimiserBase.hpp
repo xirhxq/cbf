@@ -13,7 +13,7 @@ public:
 
     virtual Eigen::VectorXd solve() = 0;
 
-    virtual void write() = 0;
+    virtual void write(std::string filename) = 0;
 
     virtual ~OptimiserBase() = default;
 };
