@@ -31,6 +31,7 @@ public:
                   << ", y: " << X[1]
                   << ", battery: " << X[2]
                   << ", yawDeg: " << X[3] * 180 / M_PI << ")" << std::endl;
+        std::cout << std::fixed << std::setprecision(6);
     }
 };
 
