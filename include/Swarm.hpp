@@ -1,7 +1,6 @@
 #ifndef CBF_SWARM_HPP
 #define CBF_SWARM_HPP
 
-#include "utils.h"
 #include "Robot.hpp"
 
 
@@ -121,9 +120,7 @@ public:
                 exchangeData();
                 checkInformationExchange();
                 for (auto &robot: robots) robot->checkRobotsInsideWorld();
-                double percentage = robots[0]->gridWorld.getPercentage();
-                printf("\r%.2lf seconds elapsed... ", robots[0]->runtime);
-                for (auto &robot: robots) printf("%.2lf%% ", percentage * 100);
+                printf("\r%.2lf seconds elapsed... %.2lf%%", robots[0]->runtime, robots[0]->gridWorld.getPercentage() * 100);
                 for (auto &robot: robots) robot->updateGridWorld();
                 for (auto &robot: robots) robot->postsetCBF();
                 for (auto &robot: robots) robot->optimise();
