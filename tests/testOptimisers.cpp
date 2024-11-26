@@ -1,11 +1,14 @@
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+
+#include "doctest/doctest.h"
 #include "optimisers/optimisers"
-#include <gtest/gtest.h>
 #include <Eigen/Dense>
 #include <chrono>
 #include <random>
 
 
-void generateRandomProblem(int num_variables, Eigen::VectorXd &uNominal, Eigen::VectorXd &linearConstraintCoefficients, double &rhs_value) {
+void generateRandomProblem(int num_variables, Eigen::VectorXd &uNominal, Eigen::VectorXd &linearConstraintCoefficients,
+                           double &rhs_value) {
     static std::random_device rd;
     static std::mt19937 gen(rd());
     static std::uniform_real_distribution<> dis(-10.0, 10.0);
@@ -22,7 +25,7 @@ void generateRandomProblem(int num_variables, Eigen::VectorXd &uNominal, Eigen::
 }
 
 
-TEST(OptimiserTest, SingleSolveConsistency) {
+TEST_CASE("SingleSolveConsistency") {
     const int num_variables = 3;
     Eigen::VectorXd uNominal(num_variables);
     uNominal << 1.0, 2.0, 3.0;
@@ -43,13 +46,11 @@ TEST(OptimiserTest, SingleSolveConsistency) {
     highsOptimiser.addLinearConstraint(linearConstraintCoefficients, rhs_value);
     Eigen::VectorXd highsSolution = highsOptimiser.solve();
 
-    ASSERT_NEAR((gurobiSolution - highsSolution).norm(), 0.0, 1e-6)
-                                << "Gurobi Solution: " << gurobiSolution.transpose()
-                                << ", HiGHS Solution: " << highsSolution.transpose();
+    CHECK((gurobiSolution - highsSolution).norm() < 1e-6);
 }
 
-
-TEST(PerformanceTest, RandomSolvePerformanceComparison) {
+// Performance comparison over multiple random problems
+TEST_CASE("RandomSolvePerformanceComparison") {
     const int num_variables = 10;
     const int num_tests = 100;
     double gurobi_total_time = 0.0;
@@ -60,6 +61,7 @@ TEST(PerformanceTest, RandomSolvePerformanceComparison) {
         double rhs_value;
         generateRandomProblem(num_variables, uNominal, linearConstraintCoefficients, rhs_value);
 
+        // Gurobi solve
         Gurobi gurobiOptimiser;
         gurobiOptimiser.start(num_variables);
         gurobiOptimiser.setObjective(uNominal);
@@ -70,6 +72,7 @@ TEST(PerformanceTest, RandomSolvePerformanceComparison) {
         auto gurobi_end = std::chrono::high_resolution_clock::now();
         gurobi_total_time += std::chrono::duration<double, std::milli>(gurobi_end - gurobi_start).count();
 
+        // HiGHS solve
         HiGHS highsOptimiser;
         highsOptimiser.start(num_variables);
         highsOptimiser.setObjective(uNominal);
@@ -80,10 +83,7 @@ TEST(PerformanceTest, RandomSolvePerformanceComparison) {
         auto highs_end = std::chrono::high_resolution_clock::now();
         highs_total_time += std::chrono::duration<double, std::milli>(highs_end - highs_start).count();
 
-        ASSERT_NEAR((gurobiSolution - highsSolution).norm(), 0.0, 1e-3)
-                                    << "Random Test " << i + 1 << " failed. " << std::endl
-                                    << "Gurobi Solution: " << gurobiSolution.transpose() << std::endl
-                                    << ", HiGHS Solution: " << highsSolution.transpose() << std::endl;
+        CHECK((gurobiSolution - highsSolution).norm() < 1e-3);
     }
 
     double gurobi_avg_time = gurobi_total_time / num_tests;
@@ -92,11 +92,5 @@ TEST(PerformanceTest, RandomSolvePerformanceComparison) {
     std::cout << "Average Gurobi Time: " << gurobi_avg_time << " ms" << std::endl;
     std::cout << "Average HiGHS Time:  " << highs_avg_time << " ms" << std::endl;
 
-    EXPECT_LT(highs_avg_time, gurobi_avg_time * 10)
-                        << "HiGHS is significantly slower than Gurobi.";
-}
-
-int main(int argc, char **argv) {
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
+    CHECK(highs_avg_time < gurobi_avg_time * 10);
 }
