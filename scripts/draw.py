@@ -139,9 +139,7 @@ class Drawer:
             'figureSize': (7, 7),
             'shotList': [],
             'barFormat': (
-                    "\033[1;31m"
-                    + "{percentage:3.0f}%|{bar:50}| {n_fmt}/{total_fmt} [elap: {elapsed}s eta: {remaining}s]"
-                    + "\033[0m"
+                    "{percentage:3.0f}%|{bar:50}| {n_fmt}/{total_fmt} [elap: {elapsed}s eta: {remaining}s]"
             ),
         },
         'paper': {
@@ -301,9 +299,8 @@ class Drawer:
             # print(gridWorldNow)
             # Z = gridWorldNow
             # Z = getDensity(dataNow)
-            for i in range(robotNum):
-                if "update" in dataNow and len(dataNow["update"]):
-                    updatedGrids = dataNow["update"][i]
+            if "update" in dataNow and len(dataNow["update"]):
+                for updatedGrids in dataNow["update"]:
                     for grid in updatedGrids:
                         Z[grid[1], grid[0]] = 1
 
@@ -316,7 +313,8 @@ class Drawer:
             for i in range(self.data["para"]["world"]["charge"]["num"]):
                 ax.add_patch(
                     Circle(
-                        xy=(self.data["para"]["world"]["charge"]["pos"][i][0], self.data["para"]["world"]["charge"]["pos"][i][1]),
+                        xy=(self.data["para"]["world"]["charge"]["pos"][i][0],
+                            self.data["para"]["world"]["charge"]["pos"][i][1]),
                         radius=self.data["para"]["world"]["charge"]["dist"][i],
                         alpha=0.5
                     )
@@ -346,7 +344,8 @@ class Drawer:
                 for name in names:
                     if name in dataNow["cbfs"]:
                         commJson = dataNow["cbfs"][name]
-                        id2Position = {dataRobot["id"]: (dataRobot["state"]["x"], dataRobot["state"]["y"]) for dataRobot in dataNow["robots"]}
+                        id2Position = {dataRobot["id"]: (dataRobot["state"]["x"], dataRobot["state"]["y"]) for dataRobot
+                                       in dataNow["robots"]}
                         for myJson in commJson:
                             myPosition = id2Position[myJson["id"]]
                             for anchorPoint in myJson["anchorPoints"]:
@@ -368,7 +367,6 @@ class Drawer:
                                     fc='k', ec='k',
                                     alpha=0.2
                                 )
-
 
             for i in range(robotNum):
                 if self.showYaw:
@@ -460,7 +458,7 @@ class Drawer:
 
         plt.figure(figsize=(8, 4))
 
-        robotNum = self.data["para"]["number"]
+        robotNum = self.data["para"]["swarm"]["num"]
 
         runtime = [dt["runtime"] for dt in self.data["state"]]
 
@@ -470,7 +468,7 @@ class Drawer:
             plt.subplot(211).clear()
             plt.subplot(212).clear()
             plt.subplot(211).plot(
-                runtime, [dt["robot"][i]["battery"] for dt in self.data["state"]],
+                runtime, [dt["robots"][i]["state"]["battery"] for dt in self.data["state"]],
                 color='C0'
             )
             plt.subplot(211).set_title('Energy Level' + f' of UAV #{i + 1}')
@@ -478,7 +476,7 @@ class Drawer:
             plt.subplot(211).set_ylabel('Energy Level')
 
             plt.subplot(212).plot(
-                runtime, [max(dt["robot"][i]["energyCBF"], 0) for dt in self.data["state"]],
+                runtime, [max(dt["robots"][i]["cbfNoSlack"]["energyCBF"], 0) for dt in self.data["state"]],
                 color='C0'
             )
             plt.subplot(212).set_title(r'CBF Value $min(h_{energy}, h_{l10n})$' + f' of UAV #{i + 1}')
@@ -553,7 +551,6 @@ class Drawer:
                 plt.subplot(figID).legend()
             filename = f'{id}-CBFs.png'
             plt.savefig(os.path.join(self.folderName, filename))
-
 
         pb.close()
 
@@ -638,7 +635,7 @@ class Drawer:
 
         matplotlib.use('agg')
 
-        robotNum = self.data["para"]["number"]
+        robotNum = self.data["para"]["swarm"]["num"]
         halfNum = math.ceil(robotNum / 2)
         row, col = halfNum, 2
 
@@ -647,7 +644,7 @@ class Drawer:
 
         runtime = [dt["runtime"] for dt in self.data["state"]]
 
-        cvt_cbf_plot = [MyBarPlot(runtime, [dt["robot"][i]["cvtCBF"] for dt in self.data["state"]],
+        cvt_cbf_plot = [MyBarPlot(runtime, [dt["robots"][i]["cbfSlack"]["cvtCBF"] for dt in self.data["state"]],
                                   plt.subplot(gs[i % halfNum, i // halfNum]),
                                   "#{}".format(i + 1), color='orangered', markerOn=False)
                         for i in range(robotNum)]
@@ -663,7 +660,7 @@ class Drawer:
 
         plt.figure(figsize=(8, 8))
 
-        robotNum = self.data["para"]["number"]
+        robotNum = self.data["para"]["swarm"]["num"]
 
         runtime = [dt["runtime"] for dt in self.data["state"]]
 
@@ -676,8 +673,8 @@ class Drawer:
             plt.subplot(111).set_ylabel('y')
             plt.subplot(111).set_title('Heatmap of' + f' UAV {i + 1}')
 
-            robotX = [dt["robot"][i]["x"] for dt in self.data["state"]]
-            robotY = [dt["robot"][i]["y"] for dt in self.data["state"]]
+            robotX = [dt["robots"][i]["state"]["x"] for dt in self.data["state"]]
+            robotY = [dt["robots"][i]["state"]["y"] for dt in self.data["state"]]
 
             heatmap, xedges, yedges = np.histogram2d(robotX, robotY, bins=20, range=[[-10, 10], [0, 20]])
 
@@ -722,11 +719,11 @@ class Drawer:
         length = len(self.data["state"])
         for l in range(length):
             data_now = self.data["state"][l]
-            for i in range(robotNum):
-                update_grids = data_now["update"][i]
-                for grid in update_grids:
-                    if Z[grid[1], grid[0]] == -1:
-                        Z[grid[1], grid[0]] = l
+            if "update" in data_now and len(data_now["update"]):
+                for updatedGrids in data_now["update"]:
+                    for grid in updatedGrids:
+                        if Z[grid[1], grid[0]] == -1:
+                            Z[grid[1], grid[0]] = l
 
         plt.subplot(111).clear()
         plt.subplot(111).set_aspect(1)
