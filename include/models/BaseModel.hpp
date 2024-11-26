@@ -3,8 +3,6 @@
 
 #include "utils.h"
 
-using json = nlohmann::json;
-
 class BaseModel {
 protected:
     Eigen::VectorXd X, u;
