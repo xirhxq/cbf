@@ -18,3 +18,21 @@ foreach (SOURCE ${SOURCES})
     add_executable(${EXECUTABLE} ${SOURCE})
     target_link_libraries(${EXECUTABLE} libgurobi_c++.a libgurobi120.dylib highs::highs)
 endforeach ()
+
+include(FetchContent)
+FetchContent_Declare(
+        googletest
+        URL https://github.com/google/googletest/archive/refs/tags/release-1.12.1.zip
+        DOWNLOAD_EXTRACT_TIMESTAMP true
+)
+FetchContent_MakeAvailable(googletest)
+
+enable_testing()
+
+
+file(GLOB SOURCES "tests/*.cpp")
+foreach (SOURCE ${SOURCES})
+    get_filename_component(EXECUTABLE ${SOURCE} NAME_WE)
+    add_executable(${EXECUTABLE} ${SOURCE})
+    target_link_libraries(${EXECUTABLE} libgurobi_c++.a libgurobi120.dylib highs::highs gtest gtest_main)
+endforeach ()
