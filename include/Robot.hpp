@@ -2,10 +2,8 @@
 #define CBF_ROBOT_HPP
 
 #include "utils.h"
-#include "CBF.hpp"
-#include "MultiCBF.hpp"
-#include "World.hpp"
-#include "GridWorld.hpp"
+#include "cbf/cbf"
+#include "world/world"
 #include "models/models"
 #include "optimisers/optimisers"
 #include "communicators/communicators"

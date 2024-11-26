@@ -2,9 +2,7 @@
 #define CBF_SWARM_HPP
 
 #include "utils.h"
-#include "World.hpp"
 #include "Robot.hpp"
-#include "GridWorld.hpp"
 
 
 class Swarm {
