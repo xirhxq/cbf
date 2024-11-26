@@ -91,6 +91,10 @@ public:
         constraint_count++;
     }
 
+    void write() override {
+        highs.writeModel("model_highs.lp");
+    }
+
     Eigen::VectorXd solve() override {
 
         A.makeCompressed();

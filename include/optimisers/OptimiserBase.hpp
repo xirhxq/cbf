@@ -12,6 +12,9 @@ public:
     virtual void addLinearConstraint(Eigen::VectorXd coe, double rhs) = 0;
 
     virtual Eigen::VectorXd solve() = 0;
+
+    virtual void write() = 0;
+
     virtual ~OptimiserBase() = default;
 };
 

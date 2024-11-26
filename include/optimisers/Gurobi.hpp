@@ -58,6 +58,10 @@ public:
         model->addConstr(ln, '>', rhs);
     }
 
+    void write() override {
+        model->write("model_gurobi.lp");
+    }
+
     Eigen::VectorXd solve() override {
         try {
             model->optimize();
