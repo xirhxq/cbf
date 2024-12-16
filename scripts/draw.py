@@ -296,15 +296,9 @@ class Drawer:
 
             ax.imshow(Z.T, alpha=0.2, extent=zExtent, origin='lower', cmap='coolwarm', vmin=0, vmax=1)
 
-            for i in range(self.data["para"]["world"]["charge"]["num"]):
-                ax.add_patch(
-                    Circle(
-                        xy=(self.data["para"]["world"]["charge"]["pos"][i][0],
-                            self.data["para"]["world"]["charge"]["pos"][i][1]),
-                        radius=self.data["para"]["world"]["charge"]["dist"][i],
-                        alpha=0.5
-                    )
-                )
+            pos = self.data["para"]["world"]["charge"]["pos"]
+            dist = self.data["para"]["world"]["charge"]["dist"]
+            [ax.add_patch(Circle(xy=(pos[i][0], pos[i][1]), radius=dist[i], alpha=0.5)) for i in range(len(pos))]
 
             robotX = [dataNow["robots"][i]["state"]["x"] for i in range(robotNum)]
             robotY = [dataNow["robots"][i]["state"]["y"] for i in range(robotNum)]
