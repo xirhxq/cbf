@@ -12,13 +12,16 @@ public:
     json data;
     json stepData;
     json config;
+    GridWorld gridWorldGroundTruth;
+    json updatedGridWorldGroundTruth;
     std::string folderName;
     std::string filename;
     std::vector<int> all_ids;
 public:
     Swarm(json &settings)
             : config(settings),
-              n(settings["num"]) {
+              n(settings["num"]),
+              gridWorldGroundTruth(settings["world"]){
         std::generate_n(std::back_inserter(all_ids), n, [i = 1]() mutable {
             return i++;
         });
@@ -59,9 +62,9 @@ public:
         }
         stepData["formation"] = json::array();
         for (auto &robot: robots) {
-            stepData["update"] = robot->updatedGridWorld;
             stepData["formation"].push_back(robot->myFormation);
         }
+        stepData["update"] = updatedGridWorldGroundTruth;
         data["state"].push_back(stepData);
         stepData.clear();
     }
@@ -105,6 +108,14 @@ public:
         }
     }
 
+    void updateGridWorld() {
+        updatedGridWorldGroundTruth.clear();
+        double tol = 2;
+        for (auto &robot: robots) {
+            updatedGridWorldGroundTruth.push_back(gridWorldGroundTruth.setValueInCircle(robot->model->xy(), tol, true, true));
+        }
+    }
+
     void run() {
         exchangeData();
         checkInformationExchange();
@@ -124,6 +135,7 @@ public:
                 for (auto &robot: robots) robot->checkRobotsInsideWorld();
                 printf("\r%.2lf seconds elapsed... %.2lf%%", robots[0]->runtime, robots[0]->gridWorld.getPercentage() * 100);
                 for (auto &robot: robots) robot->updateGridWorld();
+                updateGridWorld();
                 for (auto &robot: robots) robot->postsetCBF();
                 for (auto &robot: robots) robot->optimise();
                 logOnce();

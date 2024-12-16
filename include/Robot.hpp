@@ -35,7 +35,7 @@ public:
     Robot(int id, json &settings)
             : id(id),
               world(settings["world"]),
-              gridWorld(computeGridWorld(settings["world"])),
+              gridWorld(settings["world"]),
               settings(settings),
               runtime(0.0) {
         settings["id"] = id;
@@ -64,14 +64,6 @@ public:
         cbfSlack.clear();
         cbfNoSlack.cbfs.clear();
         comm = std::make_unique<CommunicatorCentral>(settings);
-    }
-
-    static GridWorld computeGridWorld(const json &worldSettings) {
-        World tmpWorld(worldSettings);
-        auto worldXLimit = tmpWorld.boundary.get_x_limit(1.0), worldYLimit = tmpWorld.boundary.get_y_limit(1.0);
-        int xNum = (worldXLimit.second - worldXLimit.first) / double(worldSettings["spacing"]);
-        int yNum = (worldYLimit.second - worldYLimit.first) / double(worldSettings["spacing"]);
-        return {worldXLimit, xNum, worldYLimit, yNum};
     }
 
     void setupInitialPosition() {
