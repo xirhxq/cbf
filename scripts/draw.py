@@ -339,34 +339,31 @@ class Drawer:
                 alpha=0.5
             )
 
-            if "cbfs" in dataNow:
-                names = ["commFixed", "commAuto"]
-                for name in names:
-                    if name in dataNow["cbfs"]:
-                        commJson = dataNow["cbfs"][name]
-                        id2Position = {dataRobot["id"]: (dataRobot["state"]["x"], dataRobot["state"]["y"]) for dataRobot
-                                       in dataNow["robots"]}
-                        for myJson in commJson:
-                            myPosition = id2Position[myJson["id"]]
-                            for anchorPoint in myJson["anchorPoints"]:
-                                # ax.plot([myPosition[0], anchorPoint[0]], [myPosition[1], anchorPoint[1]], 'k--', alpha=0.5)
-                                ax.arrow(
-                                    myPosition[0], myPosition[1],
-                                    anchorPoint[0] - myPosition[0], anchorPoint[1] - myPosition[1],
-                                    head_width=0.5, head_length=0.5,
-                                    fc='k', ec='k',
-                                    alpha=0.2
-                                )
-                            for id in myJson["anchorIds"]:
-                                anchorPosition = id2Position[id]
-                                # ax.plot([myPosition[0], anchorPosition[0]], [myPosition[1], anchorPosition[1]], 'k--', alpha=0.5)
-                                ax.arrow(
-                                    myPosition[0], myPosition[1],
-                                    anchorPosition[0] - myPosition[0], anchorPosition[1] - myPosition[1],
-                                    head_width=0.5, head_length=0.5,
-                                    fc='k', ec='k',
-                                    alpha=0.2
-                                )
+            if "formation" in dataNow:
+                commJson = dataNow["formation"]
+                id2Position = {dataRobot["id"]: (dataRobot["state"]["x"], dataRobot["state"]["y"]) for dataRobot
+                               in dataNow["robots"]}
+                for myJson in commJson:
+                    myPosition = id2Position[myJson["id"]]
+                    for anchorPoint in myJson["anchorPoints"]:
+                        # ax.plot([myPosition[0], anchorPoint[0]], [myPosition[1], anchorPoint[1]], 'k--', alpha=0.5)
+                        ax.arrow(
+                            myPosition[0], myPosition[1],
+                            anchorPoint[0] - myPosition[0], anchorPoint[1] - myPosition[1],
+                            head_width=0.5, head_length=0.5,
+                            fc='k', ec='k',
+                            alpha=0.2
+                        )
+                    for id in myJson["anchorIds"]:
+                        anchorPosition = id2Position[id]
+                        # ax.plot([myPosition[0], anchorPosition[0]], [myPosition[1], anchorPosition[1]], 'k--', alpha=0.5)
+                        ax.arrow(
+                            myPosition[0], myPosition[1],
+                            anchorPosition[0] - myPosition[0], anchorPosition[1] - myPosition[1],
+                            head_width=0.5, head_length=0.5,
+                            fc='k', ec='k',
+                            alpha=0.2
+                        )
 
             for i in range(robotNum):
                 if self.showYaw:

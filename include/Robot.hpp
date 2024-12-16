@@ -22,7 +22,7 @@ public:
     World world;
     GridWorld gridWorld;
     json settings;
-    json stepData;
+    json myFormation;
     json updatedGridWorld;
     std::string folderName;
     std::string filename;
@@ -159,7 +159,6 @@ public:
     }
 
     void setCommunicationAutoCBF() {
-        json commJson;
         Point origin(0, 0);
         double maxCommRange = 8;
 
@@ -186,16 +185,16 @@ public:
         );
 
         std::vector<Point> formationPoints;
-        json myJson = {{"id",           id},
-                       {"anchorPoints", json::array()},
-                       {"anchorIds",    json::array()}};
+        myFormation = {
+            {"id",           id},
+            {"anchorPoints", json::array()},
+            {"anchorIds",    json::array()}
+        };
 
         for (auto &[id, pos]: closeNeighbours) {
-            myJson["anchorIds"].push_back(id);
+            myFormation["anchorIds"].push_back(id);
             formationPoints.push_back(pos);
         }
-
-        commJson.emplace_back(myJson);
 
         auto autoFormationCommH = [this, formationPoints, maxCommRange](VectorXd x, double t) {
             Point myPosition = model->extractXYFromVector(x);
@@ -217,8 +216,6 @@ public:
         commCBF.name = "commCBF";
         commCBF.h = autoFormationCommH;
         cbfNoSlack.cbfs[commCBF.name] = commCBF;
-
-        stepData["cbfs"]["commAuto"] = commJson;
     }
 
     void setCommunicationFixedCBF() {
@@ -226,23 +223,23 @@ public:
         auto partId = [&](int id) { return (id - 1) % (n / 2) + 1; };
         auto isSecondPart = [&](int id) { return id > (n / 2); };
 
-        json commJson;
-
         Point origin(0, 0);
         Point baseOfMyPart = Point(-3 + 6 * isSecondPart(id), 0);
         int idInPart = partId(id);
 
-        json myJson = {{"id",           id},
-                       {"anchorPoints", json::array()},
-                       {"anchorIds",    json::array()}};
+        myFormation = {
+            {"id",           id},
+            {"anchorPoints", json::array()},
+            {"anchorIds",    json::array()}
+        };
         std::vector<Point> formationPoints;
 
         if (idInPart == 1) {
-            myJson["anchorPoints"].push_back({baseOfMyPart.x, baseOfMyPart.y});
+            myFormation["anchorPoints"].push_back({baseOfMyPart.x, baseOfMyPart.y});
             formationPoints.push_back(baseOfMyPart);
         }
         if (idInPart <= 2) {
-            myJson["anchorPoints"].push_back({origin.x, origin.y});
+            myFormation["anchorPoints"].push_back({origin.x, origin.y});
             formationPoints.push_back(origin);
         }
 
@@ -250,10 +247,9 @@ public:
             if (isSecondPart(id) != isSecondPart(this->id)) continue;
             if (partId(id) <= idInPart) continue;
             if (partId(id) > idInPart + 2) continue;
-            myJson["anchorIds"].push_back(id);
+            myFormation["anchorIds"].push_back(id);
             formationPoints.push_back(pos2d);
         }
-        commJson.emplace_back(myJson);
 
         auto fixedFormationCommH = [this, formationPoints](VectorXd x, double t) {
             double maxCommDistance = 8.5;
@@ -276,8 +272,6 @@ public:
         commCBF.name = "commCBF";
         commCBF.h = fixedFormationCommH;
         cbfNoSlack.cbfs[commCBF.name] = commCBF;
-
-        stepData["cbfs"]["commFixed"] = commJson;
     }
 
     void setSafetyCBF() {
@@ -477,7 +471,7 @@ public:
         }
         return paraJson;
     }
-    
+
     json getState() {
         json robotJson = {{"state", model->state2Json()},
                           {"id",    id}};
@@ -509,18 +503,6 @@ public:
 
         {
             robotJson["opt"] = opt;
-        }
-
-
-        for (auto i: world.targets) {
-            if (i.visibleAtTime(runtime)) {
-                stepData["targets"].push_back({
-                                                      {"x", i.pos(runtime).x},
-                                                      {"y", i.pos(runtime).y},
-                                                      {"k", i.densityParams["k"]},
-                                                      {"r", i.densityParams["r"]}
-                                              });
-            }
         }
         return robotJson;
     }

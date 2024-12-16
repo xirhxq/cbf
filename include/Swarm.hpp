@@ -57,8 +57,10 @@ public:
             }
             stepData["robots"] = robotsJson;
         }
+        stepData["formation"] = json::array();
         for (auto &robot: robots) {
             stepData["update"] = robot->updatedGridWorld;
+            stepData["formation"].push_back(robot->myFormation);
         }
         data["state"].push_back(stepData);
         stepData.clear();
