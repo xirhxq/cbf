@@ -403,10 +403,11 @@ public:
     }
 
     void updateGridWorld() {
-        updatedGridWorld.clear();
+        updatedGridWorld = json::array();
         double tol = 2;
         for (auto &[id, position2D]: comm->position2D) {
-            updatedGridWorld.push_back(gridWorld.setValueInCircle(position2D, tol, true, true));
+            auto updatedFor1 = gridWorld.setValueInCircle(position2D, tol, true, true);
+            updatedGridWorld.insert(updatedGridWorld.end(), updatedFor1.begin(), updatedFor1.end());
         }
     }
 

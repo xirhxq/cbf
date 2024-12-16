@@ -109,10 +109,11 @@ public:
     }
 
     void updateGridWorld() {
-        updatedGridWorldGroundTruth.clear();
+        updatedGridWorldGroundTruth = json::array();
         double tol = 2;
         for (auto &robot: robots) {
-            updatedGridWorldGroundTruth.push_back(gridWorldGroundTruth.setValueInCircle(robot->model->xy(), tol, true, true));
+            auto updatedFor1 = gridWorldGroundTruth.setValueInCircle(robot->model->xy(), tol, true, true);
+            updatedGridWorldGroundTruth.insert(updatedGridWorldGroundTruth.end(), updatedFor1.begin(), updatedFor1.end());
         }
     }
 

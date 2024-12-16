@@ -204,8 +204,6 @@ class Drawer:
 
         matplotlib.use('agg')
 
-        outputFilename = 'res'
-
         robotNum = self.data["para"]["swarm"]["num"]
         divider = 3
         halfNum = math.ceil(robotNum / divider)
@@ -214,7 +212,6 @@ class Drawer:
         fig = plt.figure(figsize=self.figureSize)
         if self.plotOpt:
             fig.set_tight_layout(True)
-            outputFilename += '-opt'
         gs = GridSpec(row, col)
 
         barPlotOn = self.plotEnergyCBF or self.plotCvtCBF
@@ -240,9 +237,9 @@ class Drawer:
         y = np.linspace(gridWorldJson["yLim"][0], gridWorldJson["yLim"][1], gridWorldJson["yNum"])
         X, Y = np.meshgrid(x, y)
 
-        Z = np.zeros((gridWorldJson["yNum"], gridWorldJson["xNum"]))
+        Z = np.zeros((gridWorldJson["xNum"], gridWorldJson["yNum"]))
         zExtent = gridWorldJson["xLim"] + gridWorldJson["yLim"]
-        F = ax.imshow(Z, alpha=0.2, extent=zExtent, origin='lower')
+        F = ax.imshow(Z.T, alpha=0.2, extent=zExtent, origin='lower')
 
         if self.showBar:
             div = make_axes_locatable(ax)
@@ -291,24 +288,13 @@ class Drawer:
             pbar.update(1)
 
             ax.clear()
-            # cax.clear()
 
             dataNow = self.data["state"][num]
 
-            # gridWorldNow = np.array(dataNow["gridWorld"]).transpose()
-            # print(gridWorldNow)
-            # Z = gridWorldNow
-            # Z = getDensity(dataNow)
             if "update" in dataNow and len(dataNow["update"]):
-                for updatedGrids in dataNow["update"]:
-                    for grid in updatedGrids:
-                        Z[grid[1], grid[0]] = 1
+                Z[*zip(*dataNow["update"])] = 1
 
-            ax.imshow(Z, alpha=0.2, extent=zExtent, origin='lower', cmap='coolwarm', vmin=0, vmax=1)
-            c_min, c_max = np.min(Z), np.max(Z)
-            if self.showBar:
-                F.set_clim(0, 1)
-            # cbar = fig.colorbar(F, cax=cax, alpha=0.2)
+            ax.imshow(Z.T, alpha=0.2, extent=zExtent, origin='lower', cmap='coolwarm', vmin=0, vmax=1)
 
             for i in range(self.data["para"]["world"]["charge"]["num"]):
                 ax.add_patch(
@@ -437,9 +423,7 @@ class Drawer:
 
         ani = animation.FuncAnimation(fig, update, totalLength, interval=int(1000 * interval), blit=False)
 
-        # ani.save(filename + 'res.gif')
-        # print("\ngif saved in {}".format(filename + 'res.gif'))
-
+        outputFilename = 'animation-opt' if self.plotOpt else 'animation'
         filename = os.path.join(self.folderName, outputFilename + '.mp4')
         ani.save(filename, writer='ffmpeg', fps=int(1 / interval))
         print("\nmp4 saved in {}".format(filename))
