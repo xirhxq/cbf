@@ -6,14 +6,14 @@
 class DoubleIntegrate2D : public BaseModel {
 public:
     DoubleIntegrate2D() {
-        stateIndexMap = {{"x", 0}, {"y", 1}, {"vx", 2}, {"vy", 3}, {"battery", 4}, {"yawRad", 5}};
-        controlIndexMap = {{"ax", 0}, {"ay", 1}, {"yawRateRad", 2}};
+        xMap = {{"x", 0}, {"y", 1}, {"vx", 2}, {"vy", 3}, {"battery", 4}, {"yawRad", 5}};
+        uMap = {{"ax", 0}, {"ay", 1}, {"yawRateRad", 2}};
 
         X = Eigen::VectorXd::Zero(6);
         u = Eigen::VectorXd::Zero(3);
 
         F = Eigen::VectorXd::Zero(6);
-        F(stateIndexMap["battery"]) = -1.0;
+        F(xMap["battery"]) = -1.0;
 
         A = Eigen::MatrixXd ::Zero(6, 6);
         A(0, 2) = 1.0; // x <- vx

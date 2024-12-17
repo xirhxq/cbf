@@ -8,14 +8,14 @@ private:
 
 public:
     SingleIntegrate2D() {
-        stateIndexMap = {{"x", 0}, {"y", 1}, {"battery", 2}, {"yawRad", 3}};
-        controlIndexMap = {{"vx", 0}, {"vy", 1}, {"yawRateRad", 2}};
+        xMap = {{"x", 0}, {"y", 1}, {"battery", 2}, {"yawRad", 3}};
+        uMap = {{"vx", 0}, {"vy", 1}, {"yawRateRad", 2}};
 
         X = Eigen::VectorXd::Zero(4);
         u = Eigen::VectorXd::Zero(3);
 
         F = Eigen::VectorXd::Zero(4);
-        F[stateIndexMap["battery"]] = -1.0;
+        F[xMap["battery"]] = -1.0;
 
         A = Eigen::MatrixXd::Zero(4, 4);
 
