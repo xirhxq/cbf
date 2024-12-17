@@ -134,7 +134,7 @@ public:
                 exchangeData();
                 checkInformationExchange();
                 for (auto &robot: robots) robot->checkRobotsInsideWorld();
-                printf("\r%.2lf seconds elapsed... %.2lf%%", robots[0]->runtime, robots[0]->gridWorld.getPercentage() * 100);
+                printf("\r%.2lf seconds elapsed... %.2lf%%", robots[0]->runtime, gridWorldGroundTruth.getPercentage() * 100);
                 for (auto &robot: robots) robot->updateGridWorld();
                 updateGridWorld();
                 for (auto &robot: robots) robot->postsetCBF();
