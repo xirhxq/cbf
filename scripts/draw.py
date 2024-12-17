@@ -683,22 +683,27 @@ class Drawer:
 
         plt.figure(figsize=(8, 8))
 
-        robotNum = self.data["para"]["swarm"]["num"]
-
-        runtime = [dt["runtime"] for dt in self.data["state"]]
-
         xnum, ynum = self.data["para"]["gridWorld"]["xNum"], self.data["para"]["gridWorld"]["yNum"]
         Z = np.zeros((ynum, xnum))
-        Z -= 1
 
-        length = len(self.data["state"])
-        for l in range(length):
-            data_now = self.data["state"][l]
+        all_rows = []
+        all_cols = []
+        all_runtimes = []
+
+        data_state = self.data["state"][::-1]
+
+        for data_now in data_state:
             if "update" in data_now and len(data_now["update"]):
-                for updatedGrids in data_now["update"]:
-                    for grid in updatedGrids:
-                        if Z[grid[1], grid[0]] == -1:
-                            Z[grid[1], grid[0]] = l
+                updates = data_now["update"]
+                all_rows.extend([grid[1] for grid in updates])
+                all_cols.extend([grid[0] for grid in updates])
+                all_runtimes.extend([data_now["runtime"]] * len(updates))
+
+        rows = np.array(all_rows)
+        cols = np.array(all_cols)
+        runtimes = np.array(all_runtimes)
+
+        Z[rows, cols] = runtimes
 
         plt.subplot(111).clear()
         plt.subplot(111).set_aspect(1)
