@@ -59,26 +59,29 @@ public:
         {
             throw std::invalid_argument("Invalid optimiser type");
         }
-        model->setStateVariable("battery", 20.0 * (rand() % 100) / 100 + 10);
-        model->setYawDeg(180);
+        setup();
         cbfSlack.clear();
         cbfNoSlack.cbfs.clear();
         comm = std::make_unique<CommunicatorCentral>(settings);
     }
 
-    void setupInitialPosition() {
-        std::string method = settings["initial-position"]["method"];
+    void setup() {
+        std::string method = settings["initial"]["position"]["method"];
         if (method == "random-in-world") {
              model->setPosition2D(world.getRandomPoint());
         } else if (method == "random-in-polygon") {
-            Polygon poly = Polygon(getPointsFromJson(settings["initial-position"]["polygon"]));
+            Polygon poly = Polygon(getPointsFromJson(settings["initial"]["position"]["polygon"]));
             model->setPosition2D(poly.get_random_point());
         } else if (method == "specified") {
-            std::vector<Point> initialPositions = getPointsFromJson(settings["initial-position"]["positions"]);
+            std::vector<Point> initialPositions = getPointsFromJson(settings["initial"]["position"]["positions"]);
             model->setPosition2D(initialPositions[id - 1]);
         } else {
             throw std::invalid_argument("Invalid method for setting initial position");
         }
+
+        double bMin = settings["initial"]["battery"]["min"], bMax = settings["initial"]["battery"]["max"];
+        model->setStateVariable("battery", bMin + (bMax - bMin) * rand() / RAND_MAX);
+        model->setYawDeg(settings["initial"]["yawDeg"]);
     }
 
     void checkRobotsInsideWorld() {

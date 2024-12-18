@@ -30,7 +30,6 @@ public:
             auto robot = std::make_unique<Robot>(i + 1, settings);
             robots.push_back(std::move(robot));
         }
-        for (auto &robot: robots) robot->setupInitialPosition();
     }
 
     void output() {

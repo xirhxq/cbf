@@ -15,20 +15,27 @@
   },
   "num": 14,
   "dim": 4,
-  "initial-position": {
-    "//method": ["specified", "random-in-polygon", "random-in-world"],
-    "method": "random-in-polygon",
-    "polygon": [
-      [-1, 0],
-      [-1, 1],
-      [1, 1],
-      [1, 0]
-    ],
-    "positions": [
-      [10, 4],
-      [10, 5],
-      [10, 6]
-    ]
+  "initial": {
+    "position": {
+      "//method": ["specified", "random-in-polygon", "random-in-world"],
+      "method": "random-in-polygon",
+      "polygon": [
+        [-1, 0],
+        [-1, 1],
+        [1, 1],
+        [1, 0]
+      ],
+      "positions": [
+        [10, 4],
+        [10, 5],
+        [10, 6]
+      ]
+    },
+    "battery": {
+      "min": 60,
+      "max": 80
+    },
+    "yawDeg": 180
   },
   "model": "SingleIntegrate2D",
   "optimiser": "Gurobi",
