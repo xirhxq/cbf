@@ -99,12 +99,14 @@ public:
                 );
             };
 
-            Point myPosition = model->extractXYFromVector(x);
+            std::function rho = [&](Point p) {
+                return 15 * log(minDistanceToChargingStations(p));
+            };
 
             double h = inf;
             h = std::min(
                     h,
-                    model->extractFromVector(x, "battery") - log(minDistanceToChargingStations(myPosition))
+                    model->extractFromVector(x, "battery") - rho(model->extractXYFromVector(x))
             );
             return h;
         };
