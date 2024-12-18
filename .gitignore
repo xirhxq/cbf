@@ -1,5 +1,6 @@
 cmake-build-release
 cmake-build-debug
 data/
+plot/
 .*
 !.gitignore
