@@ -95,8 +95,7 @@ public:
 
     void setEnergyCBF() {
         auto config = settings["cbfs"]["without-slack"]["energy"];
-        double k = config["k"];
-        auto batteryH = [&](VectorXd x, double t) {
+        auto batteryH = [&, config](VectorXd x, double t) {
             std::function<double(Point)> minDistanceToChargingStations = [&](Point myPosition) {
                 return (
                         world.distanceToChargingStations(myPosition)
@@ -104,7 +103,8 @@ public:
                 );
             };
 
-            std::function rho = [&](Point p) {
+            std::function rho = [&, config](Point p) {
+                double k = config["k"];
                 return k * log(minDistanceToChargingStations(p));
             };
 
@@ -120,7 +120,6 @@ public:
 
     void setYawCBF() {
         auto config = settings["cbfs"]["with-slack"]["yaw"];
-        double kp = config["kp"];
         std::function<double(Point, double)> headingToNearestTarget = [&](Point myPosition, double t) {
             double res = -1, headingRad = 0.0;
             for (auto target: world.targets) {
@@ -135,11 +134,12 @@ public:
         };
         CBF yawCBF;
         yawCBF.name = config["name"];
-        yawCBF.h = [&](VectorXd x, double t) {
+        yawCBF.h = [&, config](VectorXd x, double t) {
             Point myPosition = model->extractXYFromVector(x);
             double headingRad = headingToNearestTarget(myPosition, t);
             double deltaHeadingRad = headingRad - model->extractFromVector(x, "yawRad");
             deltaHeadingRad = atan2(sin(deltaHeadingRad), cos(deltaHeadingRad));
+            double kp = config["kp"];
             return kp * deltaHeadingRad;
         };
         cbfSlack[yawCBF.name] = yawCBF;
@@ -154,7 +154,6 @@ public:
         auto config = settings["cbfs"]["without-slack"]["comm-auto"];
         double maxRange = config["max-range"];
         double maxConsiderRange = config["max-consider-range"];
-        double k = config["k"];
         Point origin(0, 0);
 
         std::vector<intPoint> neighbours;
@@ -193,8 +192,10 @@ public:
 
         if (formationPoints.size() == 0) return;
 
-        auto autoFormationCommH = [this, formationPoints, maxRange, k](VectorXd x, double t) {
+        auto autoFormationCommH = [this, formationPoints, maxRange, config](VectorXd x, double t) {
             Point myPosition = model->extractXYFromVector(x);
+
+            double k = config["k"];
 
             double h = inf;
             for (auto &point: formationPoints) {
@@ -219,7 +220,6 @@ public:
         int n = settings["num"];
         auto config = settings["cbfs"]["without-slack"]["comm-fixed"];
         double maxRange = config["max-range"];
-        double k = config["k"];
         int minNeighbourIdOffset = config["min-neighbour-id-offset"];
         int maxNeighbourIdOffset = config["max-neighbour-id-offset"];
         auto partId = [&](int id) { return (id - 1) % (n / 2) + 1; };
@@ -255,8 +255,10 @@ public:
 
         if (formationPoints.size() == 0) return;
 
-        auto fixedFormationCommH = [this, formationPoints, maxRange, k](VectorXd x, double t) {
+        auto fixedFormationCommH = [this, formationPoints, maxRange, config](VectorXd x, double t) {
             Point myPosition = model->extractXYFromVector(x);
+
+            double k = config["k"];
 
             double h = inf;
             for (auto &point: formationPoints) {
@@ -280,11 +282,11 @@ public:
     void setSafetyCBF() {
         if (settings["num"] == 1) return;
         auto config = settings["cbfs"]["without-slack"]["safety"];
-        double k = config["k"];
-        auto safetyH = [&](VectorXd x, double t) {
+        auto safetyH = [&, config](VectorXd x, double t) {
             Point myPosition = model->xy();
 
             double safeDistance = 3;
+            double k = config["k"];
 
             double h = inf;
             for (auto &[id, pos2d]: comm->position2D) {
@@ -305,7 +307,6 @@ public:
 
     void setCVTCBF() {
         auto config = settings["cbfs"]["with-slack"]["cvt"];
-        double kp = config["kp"];
         cvt = CVT(settings["num"], world.boundary);
         for (auto &[id, pos2d]: comm->position2D) {
             if (id == this->id) continue;
@@ -320,8 +321,9 @@ public:
         CBF cvtCBF;
         cvtCBF.name = "cvtCBF";
         Point cvtCenter = cvt.ct[this->id];
-        cvtCBF.h = [cvtCenter, kp, this](VectorXd x, double t) {
+        cvtCBF.h = [cvtCenter, config, this](VectorXd x, double t) {
             Point myPosition = this->model->extractXYFromVector(x);
+            double kp = config["kp"];
             return -kp * cvtCenter.distance_to(myPosition);
         };
         cvtCBF.alpha = [](double h) { return h; };
