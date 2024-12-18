@@ -60,9 +60,11 @@ public:
             }
             stepData["robots"] = robotsJson;
         }
-        stepData["formation"] = json::array();
-        for (auto &robot: robots) {
-            stepData["formation"].push_back(robot->myFormation);
+        if (config["cbfs"]["without-slack"]["comm-fixed"] || config["cbfs"]["without-slack"]["comm-auto"]) {
+            stepData["formation"] = json::array();
+            for (auto &robot: robots) {
+                stepData["formation"].push_back(robot->myFormation);
+            }
         }
         stepData["update"] = updatedGridWorldGroundTruth;
         data["state"].push_back(stepData);
