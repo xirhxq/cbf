@@ -216,6 +216,8 @@ public:
         int n = settings["num"];
         double maxRange = settings["cbfs"]["without-slack"]["comm-fixed"]["max-range"];
         double k = settings["cbfs"]["without-slack"]["comm-fixed"]["k"];
+        int minNeighbourIdOffset = settings["cbfs"]["without-slack"]["comm-fixed"]["min-neighbour-id-offset"];
+        int maxNeighbourIdOffset = settings["cbfs"]["without-slack"]["comm-fixed"]["max-neighbour-id-offset"];
         auto partId = [&](int id) { return (id - 1) % (n / 2) + 1; };
         auto isSecondPart = [&](int id) { return id > (n / 2); };
 
@@ -241,8 +243,8 @@ public:
 
         for (auto &[id, pos2d]: comm->position2D) {
             if (isSecondPart(id) != isSecondPart(this->id)) continue;
-            if (partId(id) <= idInPart) continue;
-            if (partId(id) > idInPart + 2) continue;
+            if (partId(id) < idInPart + minNeighbourIdOffset) continue;
+            if (partId(id) > idInPart + maxNeighbourIdOffset) continue;
             myFormation["anchorIds"].push_back(id);
             formationPoints.push_back(pos2d);
         }
