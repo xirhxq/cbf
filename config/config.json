@@ -41,14 +41,35 @@
   "optimiser": "Gurobi",
   "cbfs": {
     "with-slack": {
-      "cvt": true,
-      "yaw": false
+      "cvt": {
+        "on": true,
+        "kp": 5.0
+      },
+      "yaw": {
+        "on": false,
+        "kp": 5.0
+      }
     },
     "without-slack": {
-      "energy": true,
-      "safety": false,
-      "comm-fixed": true,
-      "comm-auto": false
+      "energy": {
+        "on": true,
+        "k": 15.0
+      },
+      "safety": {
+        "on": false,
+        "k": 0.5
+      },
+      "comm-fixed": {
+        "on": true,
+        "max-range": 8.5,
+        "k": 10.0
+      },
+      "comm-auto": {
+        "on": false,
+        "max-range": 8,
+        "max-consider-range": 12,
+        "k": 10.0
+      }
     }
   },
   "execute": {

@@ -94,6 +94,7 @@ public:
     }
 
     void setEnergyCBF() {
+        double k = settings["cbfs"]["without-slack"]["energy"]["k"];
         auto batteryH = [&](VectorXd x, double t) {
             std::function<double(Point)> minDistanceToChargingStations = [&](Point myPosition) {
                 return (
@@ -103,15 +104,10 @@ public:
             };
 
             std::function rho = [&](Point p) {
-                return 15 * log(minDistanceToChargingStations(p));
+                return k * log(minDistanceToChargingStations(p));
             };
 
-            double h = inf;
-            h = std::min(
-                    h,
-                    model->extractFromVector(x, "battery") - rho(model->extractXYFromVector(x))
-            );
-            return h;
+            return model->extractFromVector(x, "battery") - rho(model->extractXYFromVector(x));
         };
 
         CBF energyCBF;
@@ -122,6 +118,7 @@ public:
     }
 
     void setYawCBF() {
+        double kp = settings["cbfs"]["with-slack"]["yaw"]["kp"];
         std::function<double(Point, double)> headingToNearestTarget = [&](Point myPosition, double t) {
             double res = -1, headingRad = 0.0;
             for (auto target: world.targets) {
@@ -141,30 +138,28 @@ public:
             double headingRad = headingToNearestTarget(myPosition, t);
             double deltaHeadingRad = headingRad - model->extractFromVector(x, "yawRad");
             deltaHeadingRad = atan2(sin(deltaHeadingRad), cos(deltaHeadingRad));
-            double kp = 5;
-
-            double h = inf;
-            h = std::min(h, kp * deltaHeadingRad);
-            return h;
+            return kp * deltaHeadingRad;
         };
         cbfSlack[yawCBF.name] = yawCBF;
     }
 
     void presetCBF() {
-        if (settings["cbfs"]["without-slack"]["energy"]) setEnergyCBF();
-        if (settings["cbfs"]["with-slack"]["yaw"]) setYawCBF();
+        if (settings["cbfs"]["without-slack"]["energy"]["on"]) setEnergyCBF();
+        if (settings["cbfs"]["with-slack"]["yaw"]["on"]) setYawCBF();
     }
 
     void setCommunicationAutoCBF() {
+        double maxRange = settings["cbfs"]["without-slack"]["comm-auto"]["max-range"];
+        double maxConsiderRange = settings["cbfs"]["without-slack"]["comm-auto"]["max-consider-range"];
+        double k = settings["cbfs"]["without-slack"]["comm-auto"]["k"];
         Point origin(0, 0);
-        double maxCommRange = 8;
 
         std::vector<intPoint> neighbours;
         neighbours.clear();
 
         for (auto &[id, pos2d]: comm->position2D) {
             if (id == this->id) continue;
-            if (model->xy().distance_to(pos2d) > 1.5 * maxCommRange) continue;
+            if (model->xy().distance_to(pos2d) > maxConsiderRange) continue;
             if (pos2d.distance_to(origin) < model->xy().distance_to(origin)) continue;
             neighbours.push_back({id, pos2d});
         }
@@ -193,15 +188,17 @@ public:
             formationPoints.push_back(pos);
         }
 
-        auto autoFormationCommH = [this, formationPoints, maxCommRange](VectorXd x, double t) {
+        if (formationPoints.size() == 0) return;
+
+        auto autoFormationCommH = [this, formationPoints, maxRange, k](VectorXd x, double t) {
             Point myPosition = model->extractXYFromVector(x);
 
             double h = inf;
             for (auto &point: formationPoints) {
                 h = std::min(
                         h,
-                        100 / maxCommRange * (
-                                maxCommRange -
+                        k * (
+                                maxRange -
                                 myPosition.distance_to(point)
                         )
                 );
@@ -217,6 +214,8 @@ public:
 
     void setCommunicationFixedCBF() {
         int n = settings["num"];
+        double maxRange = settings["cbfs"]["without-slack"]["comm-fixed"]["max-range"];
+        double k = settings["cbfs"]["without-slack"]["comm-fixed"]["k"];
         auto partId = [&](int id) { return (id - 1) % (n / 2) + 1; };
         auto isSecondPart = [&](int id) { return id > (n / 2); };
 
@@ -248,17 +247,18 @@ public:
             formationPoints.push_back(pos2d);
         }
 
-        auto fixedFormationCommH = [this, formationPoints](VectorXd x, double t) {
-            double maxCommDistance = 8.5;
+        if (formationPoints.size() == 0) return;
+
+        auto fixedFormationCommH = [this, formationPoints, maxRange, k](VectorXd x, double t) {
             Point myPosition = model->extractXYFromVector(x);
 
             double h = inf;
             for (auto &point: formationPoints) {
                 h = std::min(
                         h,
-                        (
-                                maxCommDistance * maxCommDistance -
-                                myPosition.distance_to(point) * myPosition.distance_to(point)
+                        k * (
+                                maxRange -
+                                myPosition.distance_to(point)
                         )
                 );
             }
@@ -272,6 +272,8 @@ public:
     }
 
     void setSafetyCBF() {
+        if (settings["num"] == 1) return;
+        double k = settings["cbfs"]["without-slack"]["safety"]["k"];
         auto safetyH = [&](VectorXd x, double t) {
             Point myPosition = model->xy();
 
@@ -282,7 +284,7 @@ public:
                 if (this->id == id) continue;
                 h = std::min(
                         h,
-                        0.5 * (myPosition.distance_to(pos2d) - safeDistance)
+                        k * (myPosition.distance_to(pos2d) - safeDistance)
                 );
             }
             return h;
@@ -295,6 +297,7 @@ public:
     }
 
     void setCVTCBF() {
+        double kp = settings["cbfs"]["with-slack"]["cvt"]["kp"];
         cvt = CVT(settings["num"], world.boundary);
         for (auto &[id, pos2d]: comm->position2D) {
             if (id == this->id) continue;
@@ -306,7 +309,6 @@ public:
             cvt.ct[i] = gridWorld.getCentroidInPolygon(cvt.pl[i]);
         }
 
-        double kp = 5.0;
         CBF cvtCBF;
         cvtCBF.name = "cvtCBF";
         Point cvtCenter = cvt.ct[this->id];
@@ -320,10 +322,10 @@ public:
 
     void postsetCBF() {
         auto cbfConfig = settings["cbfs"];
-        if (cbfConfig["without-slack"]["comm-fixed"]) setCommunicationFixedCBF();
-        if (cbfConfig["without-slack"]["comm-auto"]) setCommunicationAutoCBF();
-        if (cbfConfig["with-slack"]["cvt"]) setCVTCBF();
-        if (cbfConfig["without-slack"]["safety"]) setSafetyCBF();
+        if (cbfConfig["without-slack"]["comm-fixed"]["on"]) setCommunicationFixedCBF();
+        if (cbfConfig["without-slack"]["comm-auto"]["on"]) setCommunicationAutoCBF();
+        if (cbfConfig["with-slack"]["cvt"]["on"]) setCVTCBF();
+        if (cbfConfig["without-slack"]["safety"]["on"]) setSafetyCBF();
     }
 
     void optimise() {
@@ -489,7 +491,7 @@ public:
             robotJson["cbfSlack"] = cbfSlackJson;
         }
 
-        if (settings["cbfs"]["with-slack"]["cvt"]) {
+        if (settings["cbfs"]["with-slack"]["cvt"]["on"]) {
             json cvtJson = {{"num", cvt.pl[id].n + 1}};
             for (int i = 1; i <= cvt.pl[id].n; i++) {
                 cvtJson["pos"].push_back({cvt.pl[id].p[i].x, cvt.pl[id].p[i].y});
