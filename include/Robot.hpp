@@ -94,7 +94,8 @@ public:
     }
 
     void setEnergyCBF() {
-        double k = settings["cbfs"]["without-slack"]["energy"]["k"];
+        auto config = settings["cbfs"]["without-slack"]["energy"];
+        double k = config["k"];
         auto batteryH = [&](VectorXd x, double t) {
             std::function<double(Point)> minDistanceToChargingStations = [&](Point myPosition) {
                 return (
@@ -111,14 +112,15 @@ public:
         };
 
         CBF energyCBF;
-        energyCBF.name = "energyCBF";
+        energyCBF.name = config["name"];
         energyCBF.h = batteryH;
         energyCBF.alpha = [](double _h) { return _h; };
         cbfNoSlack.cbfs[energyCBF.name] = energyCBF;
     }
 
     void setYawCBF() {
-        double kp = settings["cbfs"]["with-slack"]["yaw"]["kp"];
+        auto config = settings["cbfs"]["with-slack"]["yaw"];
+        double kp = config["kp"];
         std::function<double(Point, double)> headingToNearestTarget = [&](Point myPosition, double t) {
             double res = -1, headingRad = 0.0;
             for (auto target: world.targets) {
@@ -132,7 +134,7 @@ public:
             return headingRad;
         };
         CBF yawCBF;
-        yawCBF.name = "yawCBF";
+        yawCBF.name = config["name"];
         yawCBF.h = [&](VectorXd x, double t) {
             Point myPosition = model->extractXYFromVector(x);
             double headingRad = headingToNearestTarget(myPosition, t);
@@ -149,9 +151,10 @@ public:
     }
 
     void setCommunicationAutoCBF() {
-        double maxRange = settings["cbfs"]["without-slack"]["comm-auto"]["max-range"];
-        double maxConsiderRange = settings["cbfs"]["without-slack"]["comm-auto"]["max-consider-range"];
-        double k = settings["cbfs"]["without-slack"]["comm-auto"]["k"];
+        auto config = settings["cbfs"]["without-slack"]["comm-auto"];
+        double maxRange = config["max-range"];
+        double maxConsiderRange = config["max-consider-range"];
+        double k = config["k"];
         Point origin(0, 0);
 
         std::vector<intPoint> neighbours;
@@ -214,10 +217,11 @@ public:
 
     void setCommunicationFixedCBF() {
         int n = settings["num"];
-        double maxRange = settings["cbfs"]["without-slack"]["comm-fixed"]["max-range"];
-        double k = settings["cbfs"]["without-slack"]["comm-fixed"]["k"];
-        int minNeighbourIdOffset = settings["cbfs"]["without-slack"]["comm-fixed"]["min-neighbour-id-offset"];
-        int maxNeighbourIdOffset = settings["cbfs"]["without-slack"]["comm-fixed"]["max-neighbour-id-offset"];
+        auto config = settings["cbfs"]["without-slack"]["comm-fixed"];
+        double maxRange = config["max-range"];
+        double k = config["k"];
+        int minNeighbourIdOffset = config["min-neighbour-id-offset"];
+        int maxNeighbourIdOffset = config["max-neighbour-id-offset"];
         auto partId = [&](int id) { return (id - 1) % (n / 2) + 1; };
         auto isSecondPart = [&](int id) { return id > (n / 2); };
 
@@ -275,7 +279,8 @@ public:
 
     void setSafetyCBF() {
         if (settings["num"] == 1) return;
-        double k = settings["cbfs"]["without-slack"]["safety"]["k"];
+        auto config = settings["cbfs"]["without-slack"]["safety"];
+        double k = config["k"];
         auto safetyH = [&](VectorXd x, double t) {
             Point myPosition = model->xy();
 
@@ -299,7 +304,8 @@ public:
     }
 
     void setCVTCBF() {
-        double kp = settings["cbfs"]["with-slack"]["cvt"]["kp"];
+        auto config = settings["cbfs"]["with-slack"]["cvt"];
+        double kp = config["kp"];
         cvt = CVT(settings["num"], world.boundary);
         for (auto &[id, pos2d]: comm->position2D) {
             if (id == this->id) continue;

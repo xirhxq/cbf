@@ -42,24 +42,29 @@
   "cbfs": {
     "with-slack": {
       "cvt": {
+        "name": "cvtCBF",
         "on": true,
         "kp": 5.0
       },
       "yaw": {
+        "name": "yawCBF",
         "on": false,
         "kp": 5.0
       }
     },
     "without-slack": {
       "energy": {
+        "name": "energyCBF",
         "on": true,
         "k": 15.0
       },
       "safety": {
+        "name": "safetyCBF",
         "on": false,
         "k": 0.5
       },
       "comm-fixed": {
+        "name": "commFixedCBF",
         "on": true,
         "max-range": 8.5,
         "k": 10.0,
@@ -67,6 +72,7 @@
         "max-neighbour-id-offset": 2
       },
       "comm-auto": {
+        "name": "commAutoCBF",
         "on": false,
         "max-range": 8,
         "max-consider-range": 12,
