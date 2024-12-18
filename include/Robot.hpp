@@ -285,7 +285,7 @@ public:
         auto safetyH = [&, config](VectorXd x, double t) {
             Point myPosition = model->xy();
 
-            double safeDistance = 3;
+            double safeDistance = config["safe-distance"];
             double k = config["k"];
 
             double h = inf;

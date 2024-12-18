@@ -61,6 +61,7 @@
       "safety": {
         "name": "safetyCBF",
         "on": false,
+        "safe-distance": 3.0,
         "k": 0.5
       },
       "comm-fixed": {
