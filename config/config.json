@@ -70,7 +70,7 @@
         "max-range": 8.5,
         "k": 10.0,
         "min-neighbour-id-offset": -2,
-        "max-neighbour-id-offset": 2
+        "max-neighbour-id-offset": 0
       },
       "comm-auto": {
         "name": "commAutoCBF",
