@@ -1,27 +1,71 @@
 cmake_minimum_required(VERSION 3.21)
 project(cbf)
 
-set(HIGHS_DIR /usr/local/lib/cmake/highs)
-find_package(HIGHS REQUIRED)
-
 set(CMAKE_CXX_STANDARD 17)
-link_directories(/Library/gurobi1200/macos_universal2/lib)
-include_directories(
-        /Library/gurobi1200/macos_universal2/include
-        include
-        external
-)
 
+unset(ENABLE_GUROBI CACHE)
+unset(ENABLE_HIGHS CACHE)
+
+option(ENABLE_GUROBI "Enable Gurobi Optimizer" ON)
+option(ENABLE_HIGHS "Enable HiGHS Optimizer" ON)
+
+if (ENABLE_GUROBI)
+    message(STATUS "Looking for Gurobi...")
+    find_library(GUROBI_LIBRARY libgurobi_c++.a HINTS /Library/gurobi1200/macos_universal2/lib)
+    find_library(GUROBI_CORE_LIBRARY libgurobi120.dylib HINTS /Library/gurobi1200/macos_universal2/lib)
+    if (GUROBI_LIBRARY AND GUROBI_CORE_LIBRARY)
+        message(STATUS "Found Gurobi: ${GUROBI_LIBRARY}, ${GUROBI_CORE_LIBRARY}")
+        include_directories(/Library/gurobi1200/macos_universal2/include)
+        set(GUROBI_FOUND TRUE)
+    else ()
+        message(WARNING "Gurobi not found. Disabling ENABLE_GUROBI.")
+        set(ENABLE_GUROBI OFF)
+    endif ()
+endif ()
+
+if (ENABLE_HIGHS)
+    message(STATUS "Looking for HiGHS...")
+    find_package(HIGHS)
+    if (HIGHS_FOUND)
+        message(STATUS "Found HiGHS: ${HIGHS_DIR}")
+    else ()
+        message(WARNING "HiGHS not found. Disabling ENABLE_HIGHS.")
+        set(ENABLE_HIGHS OFF)
+    endif ()
+endif ()
+
+if (ENABLE_GUROBI AND GUROBI_FOUND)
+    add_definitions(-DENABLE_GUROBI)
+endif ()
+
+if (ENABLE_HIGHS AND HIGHS_FOUND)
+    add_definitions(-DENABLE_HIGHS)
+endif ()
+
+include_directories(include external)
 file(GLOB SOURCES "src/*.cpp")
+
 foreach (SOURCE ${SOURCES})
     get_filename_component(EXECUTABLE ${SOURCE} NAME_WE)
     add_executable(${EXECUTABLE} ${SOURCE})
-    target_link_libraries(${EXECUTABLE} libgurobi_c++.a libgurobi120.dylib highs::highs)
+
+    if (ENABLE_GUROBI AND GUROBI_FOUND)
+        target_link_libraries(${EXECUTABLE} ${GUROBI_LIBRARY} ${GUROBI_CORE_LIBRARY})
+    endif ()
+    if (ENABLE_HIGHS AND HIGHS_FOUND)
+        target_link_libraries(${EXECUTABLE} highs::highs)
+    endif ()
 endforeach ()
 
-file(GLOB SOURCES "tests/*.cpp")
-foreach (SOURCE ${SOURCES})
-    get_filename_component(EXECUTABLE ${SOURCE} NAME_WE)
-    add_executable(${EXECUTABLE} ${SOURCE})
-    target_link_libraries(${EXECUTABLE} libgurobi_c++.a libgurobi120.dylib highs::highs)
+file(GLOB TEST_SOURCES "tests/*.cpp")
+foreach (TEST_SOURCE ${TEST_SOURCES})
+    get_filename_component(TEST_EXECUTABLE ${TEST_SOURCE} NAME_WE)
+    add_executable(${TEST_EXECUTABLE} ${TEST_SOURCE})
+
+    if (ENABLE_GUROBI AND GUROBI_FOUND)
+        target_link_libraries(${TEST_EXECUTABLE} ${GUROBI_LIBRARY} ${GUROBI_CORE_LIBRARY})
+    endif ()
+    if (ENABLE_HIGHS AND HIGHS_FOUND)
+        target_link_libraries(${TEST_EXECUTABLE} highs::highs)
+    endif ()
 endforeach ()

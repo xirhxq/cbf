@@ -1,3 +1,13 @@
 #include "OptimiserBase.hpp"
+
+#ifdef ENABLE_GUROBI
+
 #include "Gurobi.hpp"
+
+#endif
+
+#ifdef ENABLE_HIGHS
+
 #include "HiGHS.hpp"
+
+#endif

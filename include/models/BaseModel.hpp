@@ -3,15 +3,13 @@
 
 #include "utils.h"
 
-using json = nlohmann::json;
-
 class BaseModel {
 protected:
     Eigen::VectorXd X, u;
     Eigen::VectorXd F;
     Eigen::MatrixXd A, B;
-    std::unordered_map<std::string, int> stateIndexMap;
-    std::unordered_map<std::string, int> controlIndexMap;
+    std::unordered_map<std::string, int> xMap;
+    std::unordered_map<std::string, int> uMap;
 public:
     virtual ~BaseModel() = default;
 
@@ -49,26 +47,26 @@ public:
     }
 
     double getStateVariable(const std::string &name) const {
-        auto it = stateIndexMap.find(name);
-        if (it != stateIndexMap.end()) {
+        auto it = xMap.find(name);
+        if (it != xMap.end()) {
             return X[it->second];
         }
         throw std::invalid_argument("Invalid state variable name: " + name);
     }
 
     Point xy() {
-        if (stateIndexMap.find("x") == stateIndexMap.end()) {
+        if (xMap.find("x") == xMap.end()) {
             throw std::invalid_argument("Invalid state variable name: x");
-        } else if (stateIndexMap.find("y") == stateIndexMap.end()) {
+        } else if (xMap.find("y") == xMap.end()) {
             throw std::invalid_argument("Invalid state variable name: y");
         } else {
-            return Point(X[stateIndexMap["x"]], X[stateIndexMap["y"]]);
+            return Point(X[xMap["x"]], X[xMap["y"]]);
         }
     }
 
     void setStateVariable(const std::string &name, double value) {
-        auto it = stateIndexMap.find(name);
-        if (it != stateIndexMap.end()) {
+        auto it = xMap.find(name);
+        if (it != xMap.end()) {
             X[it->second] = value;
             return;
         }
@@ -96,8 +94,8 @@ public:
     }
 
     double extractFromVector(const Eigen::VectorXd &input, const std::string &name) const {
-        auto it = stateIndexMap.find(name);
-        if (it != stateIndexMap.end() && it->second < input.size()) {
+        auto it = xMap.find(name);
+        if (it != xMap.end() && it->second < input.size()) {
             return input[it->second];
         }
         throw std::invalid_argument("Invalid state variable name or index out of bounds: " + name);
@@ -108,32 +106,32 @@ public:
     }
 
     double extractFromControl(const Eigen::VectorXd &controlInput, const std::string &name) const {
-        auto it = controlIndexMap.find(name);
-        if (it != controlIndexMap.end() && it->second < controlInput.size()) {
+        auto it = uMap.find(name);
+        if (it != uMap.end() && it->second < controlInput.size()) {
             return controlInput[it->second];
         }
         throw std::invalid_argument("Invalid control variable name or index out of bounds: " + name);
     }
 
     void startCharge() {
-        if (stateIndexMap.find("battery") == stateIndexMap.end()) {
+        if (xMap.find("battery") == xMap.end()) {
             throw std::invalid_argument("Invalid state variable name: battery");
         }
-        F[stateIndexMap["battery"]] = 10.0;
+        F[xMap["battery"]] = 10.0;
     }
 
     void stopCharge() {
-        if (stateIndexMap.find("battery") == stateIndexMap.end()) {
+        if (xMap.find("battery") == xMap.end()) {
             throw std::invalid_argument("Invalid state variable name: battery");
         }
-        F[stateIndexMap["battery"]] = -1.0;
+        F[xMap["battery"]] = -1.0;
     }
 
     void checkCharge() {
-        if (stateIndexMap.find("battery") == stateIndexMap.end()) {
+        if (xMap.find("battery") == xMap.end()) {
             throw std::invalid_argument("Invalid state variable name: battery");
         }
-        if (X[stateIndexMap["battery"]] >= 100.0) {
+        if (X[xMap["battery"]] >= 100.0) {
             stopCharge();
         }
     }
@@ -146,7 +144,7 @@ public:
 
     json state2Json() const {
         json j;
-        for (const auto &[name, index] : stateIndexMap) {
+        for (const auto &[name, index] : xMap) {
             j[name] = X[index];
         }
         return j;
@@ -154,7 +152,7 @@ public:
 
     json state2Json(VectorXd x) {
         json j;
-        for (const auto &[name, index] : stateIndexMap) {
+        for (const auto &[name, index] : xMap) {
             j[name] = x[index];
         }
         return j;
@@ -162,7 +160,7 @@ public:
 
     json control2Json() const {
         json j;
-        for (const auto &[name, index] : controlIndexMap) {
+        for (const auto &[name, index] : uMap) {
             j[name] = u[index];
         }
         return j;
@@ -170,7 +168,7 @@ public:
 
     json control2Json(VectorXd u) {
         json j;
-        for (const auto &[name, index] : controlIndexMap) {
+        for (const auto &[name, index] : uMap) {
             j[name] = u[index];
         }
         return j;

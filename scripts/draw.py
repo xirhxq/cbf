@@ -139,9 +139,7 @@ class Drawer:
             'figureSize': (7, 7),
             'shotList': [],
             'barFormat': (
-                    "\033[1;31m"
-                    + "{percentage:3.0f}%|{bar:50}| {n_fmt}/{total_fmt} [elap: {elapsed}s eta: {remaining}s]"
-                    + "\033[0m"
+                    "{percentage:3.0f}%|{bar:50}| {n_fmt}/{total_fmt} [elap: {elapsed}s eta: {remaining}s]"
             ),
         },
         'paper': {
@@ -206,8 +204,6 @@ class Drawer:
 
         matplotlib.use('agg')
 
-        outputFilename = 'res'
-
         robotNum = self.data["para"]["swarm"]["num"]
         divider = 3
         halfNum = math.ceil(robotNum / divider)
@@ -216,7 +212,6 @@ class Drawer:
         fig = plt.figure(figsize=self.figureSize)
         if self.plotOpt:
             fig.set_tight_layout(True)
-            outputFilename += '-opt'
         gs = GridSpec(row, col)
 
         barPlotOn = self.plotEnergyCBF or self.plotCvtCBF
@@ -242,9 +237,9 @@ class Drawer:
         y = np.linspace(gridWorldJson["yLim"][0], gridWorldJson["yLim"][1], gridWorldJson["yNum"])
         X, Y = np.meshgrid(x, y)
 
-        Z = np.zeros((gridWorldJson["yNum"], gridWorldJson["xNum"]))
+        Z = np.zeros((gridWorldJson["xNum"], gridWorldJson["yNum"]))
         zExtent = gridWorldJson["xLim"] + gridWorldJson["yLim"]
-        F = ax.imshow(Z, alpha=0.2, extent=zExtent, origin='lower')
+        F = ax.imshow(Z.T, alpha=0.2, extent=zExtent, origin='lower')
 
         if self.showBar:
             div = make_axes_locatable(ax)
@@ -293,34 +288,17 @@ class Drawer:
             pbar.update(1)
 
             ax.clear()
-            # cax.clear()
 
             dataNow = self.data["state"][num]
 
-            # gridWorldNow = np.array(dataNow["gridWorld"]).transpose()
-            # print(gridWorldNow)
-            # Z = gridWorldNow
-            # Z = getDensity(dataNow)
-            for i in range(robotNum):
-                if "update" in dataNow and len(dataNow["update"]):
-                    updatedGrids = dataNow["update"][i]
-                    for grid in updatedGrids:
-                        Z[grid[1], grid[0]] = 1
+            if "update" in dataNow and len(dataNow["update"]):
+                Z[*zip(*dataNow["update"])] = 1
 
-            ax.imshow(Z, alpha=0.2, extent=zExtent, origin='lower', cmap='coolwarm', vmin=0, vmax=1)
-            c_min, c_max = np.min(Z), np.max(Z)
-            if self.showBar:
-                F.set_clim(0, 1)
-            # cbar = fig.colorbar(F, cax=cax, alpha=0.2)
+            ax.imshow(Z.T, alpha=0.2, extent=zExtent, origin='lower', cmap='coolwarm', vmin=0, vmax=1)
 
-            for i in range(self.data["para"]["world"]["charge"]["num"]):
-                ax.add_patch(
-                    Circle(
-                        xy=(self.data["para"]["world"]["charge"]["pos"][i][0], self.data["para"]["world"]["charge"]["pos"][i][1]),
-                        radius=self.data["para"]["world"]["charge"]["dist"][i],
-                        alpha=0.5
-                    )
-                )
+            pos = self.data["para"]["world"]["charge"]["pos"]
+            dist = self.data["para"]["world"]["charge"]["dist"]
+            [ax.add_patch(Circle(xy=(pos[i][0], pos[i][1]), radius=dist[i], alpha=0.5)) for i in range(len(pos))]
 
             robotX = [dataNow["robots"][i]["state"]["x"] for i in range(robotNum)]
             robotY = [dataNow["robots"][i]["state"]["y"] for i in range(robotNum)]
@@ -341,34 +319,31 @@ class Drawer:
                 alpha=0.5
             )
 
-            if "cbfs" in dataNow:
-                names = ["commFixed", "commAuto"]
-                for name in names:
-                    if name in dataNow["cbfs"]:
-                        commJson = dataNow["cbfs"][name]
-                        id2Position = {dataRobot["id"]: (dataRobot["state"]["x"], dataRobot["state"]["y"]) for dataRobot in dataNow["robots"]}
-                        for myJson in commJson:
-                            myPosition = id2Position[myJson["id"]]
-                            for anchorPoint in myJson["anchorPoints"]:
-                                # ax.plot([myPosition[0], anchorPoint[0]], [myPosition[1], anchorPoint[1]], 'k--', alpha=0.5)
-                                ax.arrow(
-                                    myPosition[0], myPosition[1],
-                                    anchorPoint[0] - myPosition[0], anchorPoint[1] - myPosition[1],
-                                    head_width=0.5, head_length=0.5,
-                                    fc='k', ec='k',
-                                    alpha=0.2
-                                )
-                            for id in myJson["anchorIds"]:
-                                anchorPosition = id2Position[id]
-                                # ax.plot([myPosition[0], anchorPosition[0]], [myPosition[1], anchorPosition[1]], 'k--', alpha=0.5)
-                                ax.arrow(
-                                    myPosition[0], myPosition[1],
-                                    anchorPosition[0] - myPosition[0], anchorPosition[1] - myPosition[1],
-                                    head_width=0.5, head_length=0.5,
-                                    fc='k', ec='k',
-                                    alpha=0.2
-                                )
-
+            if "formation" in dataNow:
+                commJson = dataNow["formation"]
+                id2Position = {dataRobot["id"]: (dataRobot["state"]["x"], dataRobot["state"]["y"]) for dataRobot
+                               in dataNow["robots"]}
+                for myJson in commJson:
+                    myPosition = id2Position[myJson["id"]]
+                    for anchorPoint in myJson["anchorPoints"]:
+                        # ax.plot([myPosition[0], anchorPoint[0]], [myPosition[1], anchorPoint[1]], 'k--', alpha=0.5)
+                        ax.arrow(
+                            myPosition[0], myPosition[1],
+                            anchorPoint[0] - myPosition[0], anchorPoint[1] - myPosition[1],
+                            head_width=0.5, head_length=0.5,
+                            fc='k', ec='k',
+                            alpha=0.2
+                        )
+                    for id in myJson["anchorIds"]:
+                        anchorPosition = id2Position[id]
+                        # ax.plot([myPosition[0], anchorPosition[0]], [myPosition[1], anchorPosition[1]], 'k--', alpha=0.5)
+                        ax.arrow(
+                            myPosition[0], myPosition[1],
+                            anchorPosition[0] - myPosition[0], anchorPosition[1] - myPosition[1],
+                            head_width=0.5, head_length=0.5,
+                            fc='k', ec='k',
+                            alpha=0.2
+                        )
 
             for i in range(robotNum):
                 if self.showYaw:
@@ -442,9 +417,7 @@ class Drawer:
 
         ani = animation.FuncAnimation(fig, update, totalLength, interval=int(1000 * interval), blit=False)
 
-        # ani.save(filename + 'res.gif')
-        # print("\ngif saved in {}".format(filename + 'res.gif'))
-
+        outputFilename = 'animation-opt' if self.plotOpt else 'animation'
         filename = os.path.join(self.folderName, outputFilename + '.mp4')
         ani.save(filename, writer='ffmpeg', fps=int(1 / interval))
         print("\nmp4 saved in {}".format(filename))
@@ -460,7 +433,7 @@ class Drawer:
 
         plt.figure(figsize=(8, 4))
 
-        robotNum = self.data["para"]["number"]
+        robotNum = self.data["para"]["swarm"]["num"]
 
         runtime = [dt["runtime"] for dt in self.data["state"]]
 
@@ -470,7 +443,7 @@ class Drawer:
             plt.subplot(211).clear()
             plt.subplot(212).clear()
             plt.subplot(211).plot(
-                runtime, [dt["robot"][i]["battery"] for dt in self.data["state"]],
+                runtime, [dt["robots"][i]["state"]["battery"] for dt in self.data["state"]],
                 color='C0'
             )
             plt.subplot(211).set_title('Energy Level' + f' of UAV #{i + 1}')
@@ -478,7 +451,7 @@ class Drawer:
             plt.subplot(211).set_ylabel('Energy Level')
 
             plt.subplot(212).plot(
-                runtime, [max(dt["robot"][i]["energyCBF"], 0) for dt in self.data["state"]],
+                runtime, [max(dt["robots"][i]["cbfNoSlack"]["energyCBF"], 0) for dt in self.data["state"]],
                 color='C0'
             )
             plt.subplot(212).set_title(r'CBF Value $min(h_{energy}, h_{l10n})$' + f' of UAV #{i + 1}')
@@ -553,7 +526,6 @@ class Drawer:
                 plt.subplot(figID).legend()
             filename = f'{id}-CBFs.png'
             plt.savefig(os.path.join(self.folderName, filename))
-
 
         pb.close()
 
@@ -638,7 +610,7 @@ class Drawer:
 
         matplotlib.use('agg')
 
-        robotNum = self.data["para"]["number"]
+        robotNum = self.data["para"]["swarm"]["num"]
         halfNum = math.ceil(robotNum / 2)
         row, col = halfNum, 2
 
@@ -647,7 +619,7 @@ class Drawer:
 
         runtime = [dt["runtime"] for dt in self.data["state"]]
 
-        cvt_cbf_plot = [MyBarPlot(runtime, [dt["robot"][i]["cvtCBF"] for dt in self.data["state"]],
+        cvt_cbf_plot = [MyBarPlot(runtime, [dt["robots"][i]["cbfSlack"]["cvtCBF"] for dt in self.data["state"]],
                                   plt.subplot(gs[i % halfNum, i // halfNum]),
                                   "#{}".format(i + 1), color='orangered', markerOn=False)
                         for i in range(robotNum)]
@@ -663,7 +635,7 @@ class Drawer:
 
         plt.figure(figsize=(8, 8))
 
-        robotNum = self.data["para"]["number"]
+        robotNum = self.data["para"]["swarm"]["num"]
 
         runtime = [dt["runtime"] for dt in self.data["state"]]
 
@@ -676,8 +648,8 @@ class Drawer:
             plt.subplot(111).set_ylabel('y')
             plt.subplot(111).set_title('Heatmap of' + f' UAV {i + 1}')
 
-            robotX = [dt["robot"][i]["x"] for dt in self.data["state"]]
-            robotY = [dt["robot"][i]["y"] for dt in self.data["state"]]
+            robotX = [dt["robots"][i]["state"]["x"] for dt in self.data["state"]]
+            robotY = [dt["robots"][i]["state"]["y"] for dt in self.data["state"]]
 
             heatmap, xedges, yedges = np.histogram2d(robotX, robotY, bins=20, range=[[-10, 10], [0, 20]])
 
@@ -711,22 +683,27 @@ class Drawer:
 
         plt.figure(figsize=(8, 8))
 
-        robotNum = self.data["para"]["swarm"]["num"]
-
-        runtime = [dt["runtime"] for dt in self.data["state"]]
-
         xnum, ynum = self.data["para"]["gridWorld"]["xNum"], self.data["para"]["gridWorld"]["yNum"]
         Z = np.zeros((ynum, xnum))
-        Z -= 1
 
-        length = len(self.data["state"])
-        for l in range(length):
-            data_now = self.data["state"][l]
-            for i in range(robotNum):
-                update_grids = data_now["update"][i]
-                for grid in update_grids:
-                    if Z[grid[1], grid[0]] == -1:
-                        Z[grid[1], grid[0]] = l
+        all_rows = []
+        all_cols = []
+        all_runtimes = []
+
+        data_state = self.data["state"][::-1]
+
+        for data_now in data_state:
+            if "update" in data_now and len(data_now["update"]):
+                updates = data_now["update"]
+                all_rows.extend([grid[1] for grid in updates])
+                all_cols.extend([grid[0] for grid in updates])
+                all_runtimes.extend([data_now["runtime"]] * len(updates))
+
+        rows = np.array(all_rows)
+        cols = np.array(all_cols)
+        runtimes = np.array(all_runtimes)
+
+        Z[rows, cols] = runtimes
 
         plt.subplot(111).clear()
         plt.subplot(111).set_aspect(1)

@@ -2,11 +2,13 @@
 #define CBF_ROBOT_HPP
 
 #include "utils.h"
-#include "CBF.hpp"
-#include "MultiCBF.hpp"
-#include "World.hpp"
+#include "cbf/cbf"
+#include "world/world"
 #include "models/models"
 #include "optimisers/optimisers"
+#include "communicators/communicators"
+
+typedef std::pair<int, Point> intPoint;
 
 class Robot {
 public:
@@ -16,11 +18,27 @@ public:
     std::unique_ptr<BaseModel> model;
     json opt;
     std::unique_ptr<OptimiserBase> optimiser;
+    std::unique_ptr<CommunicatorBase> comm;
+    World world;
+    GridWorld gridWorld;
+    json settings;
+    json myFormation;
+    json updatedGridWorld;
+    std::string folderName;
+    std::string filename;
+    CVT cvt;
+    double runtime;
 public:
 
     Robot() = default;
 
-    Robot(int id, const json &settings) : id(id) {
+    Robot(int id, json &settings)
+            : id(id),
+              world(settings["world"]),
+              gridWorld(settings["world"]),
+              settings(settings),
+              runtime(0.0) {
+        settings["id"] = id;
         if (settings["model"] == "SingleIntegrate2D") {
             model = std::make_unique<SingleIntegrate2D>();
         } else if (settings["model"] == "DoubleIntegrate2D") {
@@ -28,21 +46,300 @@ public:
         } else {
             throw std::invalid_argument("Invalid model type");
         }
+#ifdef ENABLE_GUROBI
         if (settings["optimiser"] == "Gurobi") {
             optimiser = std::make_unique<Gurobi>();
-        }
-        else if (settings["optimiser"] == "HiGHS") {
+        } else
+#endif
+#ifdef ENABLE_HIGHS
+        if (settings["optimiser"] == "HiGHS") {
             optimiser = std::make_unique<HiGHS>();
-        } else {
+        } else
+#endif
+        {
             throw std::invalid_argument("Invalid optimiser type");
         }
-        model->setStateVariable("battery", 20.0 * (rand() % 100) / 100 + 10);
-        model->setYawDeg(180);
+        setup();
         cbfSlack.clear();
         cbfNoSlack.cbfs.clear();
+        comm = std::make_unique<CommunicatorCentral>(settings);
     }
 
-    void optimise(VectorXd &uNominal, double runtime, double dt, World world) {
+    void setup() {
+        std::string method = settings["initial"]["position"]["method"];
+        if (method == "random-in-world") {
+             model->setPosition2D(world.getRandomPoint());
+        } else if (method == "random-in-polygon") {
+            Polygon poly = Polygon(getPointsFromJson(settings["initial"]["position"]["polygon"]));
+            model->setPosition2D(poly.get_random_point());
+        } else if (method == "specified") {
+            std::vector<Point> initialPositions = getPointsFromJson(settings["initial"]["position"]["positions"]);
+            model->setPosition2D(initialPositions[id - 1]);
+        } else {
+            throw std::invalid_argument("Invalid method for setting initial position");
+        }
+
+        double bMin = settings["initial"]["battery"]["min"], bMax = settings["initial"]["battery"]["max"];
+        model->setStateVariable("battery", bMin + (bMax - bMin) * rand() / RAND_MAX);
+        model->setYawDeg(settings["initial"]["yawDeg"]);
+    }
+
+    void checkRobotsInsideWorld() {
+        auto xLim = world.boundary.get_x_limit(1), yLim = world.boundary.get_y_limit(1);
+        auto robotPosition = model->xy();
+        if (robotPosition.x < xLim.first || robotPosition.x > xLim.second ||
+            robotPosition.y < yLim.first || robotPosition.y > yLim.second) {
+            throw std::runtime_error("Robot is outside the world");
+        }
+    }
+
+    void setEnergyCBF() {
+        auto config = settings["cbfs"]["without-slack"]["energy"];
+        auto batteryH = [&, config](VectorXd x, double t) {
+            std::function<double(Point)> minDistanceToChargingStations = [&](Point myPosition) {
+                return (
+                        world.distanceToChargingStations(myPosition)
+                        / world.chargingStations[world.nearestChargingStation(myPosition)].second
+                );
+            };
+
+            std::function rho = [&, config](Point p) {
+                double k = config["k"];
+                return k * log(minDistanceToChargingStations(p));
+            };
+
+            return model->extractFromVector(x, "battery") - rho(model->extractXYFromVector(x));
+        };
+
+        CBF energyCBF;
+        energyCBF.name = config["name"];
+        energyCBF.h = batteryH;
+        energyCBF.alpha = [](double _h) { return _h; };
+        cbfNoSlack.cbfs[energyCBF.name] = energyCBF;
+    }
+
+    void setYawCBF() {
+        auto config = settings["cbfs"]["with-slack"]["yaw"];
+        std::function<double(Point, double)> headingToNearestTarget = [&](Point myPosition, double t) {
+            double res = -1, headingRad = 0.0;
+            for (auto target: world.targets) {
+                if (target.visibleAtTime(t)) {
+                    if (res == -1 || myPosition.distance_to(target.pos(t)) < res) {
+                        res = myPosition.distance_to(target.pos(t));
+                        headingRad = myPosition.angle_to(target.pos(t));
+                    }
+                }
+            }
+            return headingRad;
+        };
+        CBF yawCBF;
+        yawCBF.name = config["name"];
+        yawCBF.h = [&, config](VectorXd x, double t) {
+            Point myPosition = model->extractXYFromVector(x);
+            double headingRad = headingToNearestTarget(myPosition, t);
+            double deltaHeadingRad = headingRad - model->extractFromVector(x, "yawRad");
+            deltaHeadingRad = atan2(sin(deltaHeadingRad), cos(deltaHeadingRad));
+            double kp = config["kp"];
+            return kp * deltaHeadingRad;
+        };
+        cbfSlack[yawCBF.name] = yawCBF;
+    }
+
+    void presetCBF() {
+        if (settings["cbfs"]["without-slack"]["energy"]["on"]) setEnergyCBF();
+        if (settings["cbfs"]["with-slack"]["yaw"]["on"]) setYawCBF();
+    }
+
+    void setCommunicationAutoCBF() {
+        auto config = settings["cbfs"]["without-slack"]["comm-auto"];
+        double maxRange = config["max-range"];
+        double maxConsiderRange = config["max-consider-range"];
+        Point origin(0, 0);
+
+        std::vector<intPoint> neighbours;
+        neighbours.clear();
+
+        for (auto &[id, pos2d]: comm->position2D) {
+            if (id == this->id) continue;
+            if (model->xy().distance_to(pos2d) > maxConsiderRange) continue;
+            if (pos2d.distance_to(origin) < model->xy().distance_to(origin)) continue;
+            neighbours.push_back({id, pos2d});
+        }
+
+        std::sort(
+                neighbours.begin(), neighbours.end(),
+                [&](intPoint a, intPoint b) {
+                    return a.second.distance_to(origin) < b.second.distance_to(origin);
+                }
+        );
+
+        auto closeNeighbours = std::vector<intPoint> (
+                neighbours.begin(),
+                neighbours.begin() + std::min(2, (int) neighbours.size())
+        );
+
+        std::vector<Point> formationPoints;
+        myFormation = {
+            {"id",           id},
+            {"anchorPoints", json::array()},
+            {"anchorIds",    json::array()}
+        };
+
+        for (auto &[id, pos]: closeNeighbours) {
+            myFormation["anchorIds"].push_back(id);
+            formationPoints.push_back(pos);
+        }
+
+        if (formationPoints.size() == 0) return;
+
+        auto autoFormationCommH = [this, formationPoints, maxRange, config](VectorXd x, double t) {
+            Point myPosition = model->extractXYFromVector(x);
+
+            double k = config["k"];
+
+            double h = inf;
+            for (auto &point: formationPoints) {
+                h = std::min(
+                        h,
+                        k * (
+                                maxRange -
+                                myPosition.distance_to(point)
+                        )
+                );
+            }
+            return h == inf ? 0 : h;
+        };
+
+        CBF commCBF;
+        commCBF.name = "commCBF";
+        commCBF.h = autoFormationCommH;
+        cbfNoSlack.cbfs[commCBF.name] = commCBF;
+    }
+
+    void setCommunicationFixedCBF() {
+        int n = settings["num"];
+        auto config = settings["cbfs"]["without-slack"]["comm-fixed"];
+        double maxRange = config["max-range"];
+        int minNeighbourIdOffset = config["min-neighbour-id-offset"];
+        int maxNeighbourIdOffset = config["max-neighbour-id-offset"];
+        auto partId = [&](int id) { return (id - 1) % (n / 2) + 1; };
+        auto isSecondPart = [&](int id) { return id > (n / 2); };
+
+        Point origin(0, 0);
+        Point baseOfMyPart = Point(-3 + 6 * isSecondPart(id), 0);
+        int idInPart = partId(id);
+
+        myFormation = {
+            {"id",           id},
+            {"anchorPoints", json::array()},
+            {"anchorIds",    json::array()}
+        };
+        std::vector<Point> formationPoints;
+
+        if (idInPart == 1) {
+            myFormation["anchorPoints"].push_back({baseOfMyPart.x, baseOfMyPart.y});
+            formationPoints.push_back(baseOfMyPart);
+        }
+        if (idInPart <= 2) {
+            myFormation["anchorPoints"].push_back({origin.x, origin.y});
+            formationPoints.push_back(origin);
+        }
+
+        for (auto &[id, pos2d]: comm->position2D) {
+            if (isSecondPart(id) != isSecondPart(this->id)) continue;
+            if (partId(id) < idInPart + minNeighbourIdOffset) continue;
+            if (partId(id) > idInPart + maxNeighbourIdOffset) continue;
+            myFormation["anchorIds"].push_back(id);
+            formationPoints.push_back(pos2d);
+        }
+
+        if (formationPoints.size() == 0) return;
+
+        auto fixedFormationCommH = [this, formationPoints, maxRange, config](VectorXd x, double t) {
+            Point myPosition = model->extractXYFromVector(x);
+
+            double k = config["k"];
+
+            double h = inf;
+            for (auto &point: formationPoints) {
+                h = std::min(
+                        h,
+                        k * (
+                                maxRange -
+                                myPosition.distance_to(point)
+                        )
+                );
+            }
+            return h;
+        };
+
+        CBF commCBF;
+        commCBF.name = "commCBF";
+        commCBF.h = fixedFormationCommH;
+        cbfNoSlack.cbfs[commCBF.name] = commCBF;
+    }
+
+    void setSafetyCBF() {
+        if (settings["num"] == 1) return;
+        auto config = settings["cbfs"]["without-slack"]["safety"];
+        auto safetyH = [&, config](VectorXd x, double t) {
+            Point myPosition = model->xy();
+
+            double safeDistance = config["safe-distance"];
+            double k = config["k"];
+
+            double h = inf;
+            for (auto &[id, pos2d]: comm->position2D) {
+                if (this->id == id) continue;
+                h = std::min(
+                        h,
+                        k * (myPosition.distance_to(pos2d) - safeDistance)
+                );
+            }
+            return h;
+        };
+
+        CBF safetyCBF;
+        safetyCBF.name = "safetyCBF";
+        safetyCBF.h = safetyH;
+        cbfNoSlack.cbfs[safetyCBF.name] = safetyCBF;
+    }
+
+    void setCVTCBF() {
+        auto config = settings["cbfs"]["with-slack"]["cvt"];
+        cvt = CVT(settings["num"], world.boundary);
+        for (auto &[id, pos2d]: comm->position2D) {
+            if (id == this->id) continue;
+            cvt.pt[id] = pos2d;
+        }
+        cvt.pt[this->id] = model->xy();
+        cvt.cal_poly();
+        for (int i = 1; i <= cvt.n; i++) {
+            cvt.ct[i] = gridWorld.getCentroidInPolygon(cvt.pl[i]);
+        }
+
+        CBF cvtCBF;
+        cvtCBF.name = "cvtCBF";
+        Point cvtCenter = cvt.ct[this->id];
+        cvtCBF.h = [cvtCenter, config, this](VectorXd x, double t) {
+            Point myPosition = this->model->extractXYFromVector(x);
+            double kp = config["kp"];
+            return -kp * cvtCenter.distance_to(myPosition);
+        };
+        cvtCBF.alpha = [](double h) { return h; };
+        cbfSlack[cvtCBF.name] = cvtCBF;
+    }
+
+    void postsetCBF() {
+        auto cbfConfig = settings["cbfs"];
+        if (cbfConfig["without-slack"]["comm-fixed"]["on"]) setCommunicationFixedCBF();
+        if (cbfConfig["without-slack"]["comm-auto"]["on"]) setCommunicationAutoCBF();
+        if (cbfConfig["with-slack"]["cvt"]["on"]) setCVTCBF();
+        if (cbfConfig["without-slack"]["safety"]["on"]) setSafetyCBF();
+    }
+
+    void optimise() {
+        VectorXd uNominal(model->uSize());
         opt = {
                 {"nominal",    model->control2Json(uNominal)},
                 {"result",     model->control2Json(uNominal)},
@@ -76,10 +373,10 @@ public:
                 optimiser->addLinearConstraint(uCoe, -constraintConstWithTime);
 
                 jsonCBFNoSlack.emplace_back(json{
-                                                 {"name",  cbfNoSlack.getName()},
-                                                 {"coe",   model->control2Json(uCoe)},
-                                                 {"const", constraintConstWithTime}
-                                         });
+                        {"name",  cbfNoSlack.getName()},
+                        {"coe",   model->control2Json(uCoe)},
+                        {"const", constraintConstWithTime}
+                });
             }
             opt["cbfNoSlack"] = jsonCBFNoSlack;
 
@@ -95,10 +392,10 @@ public:
                 optimiser->addLinearConstraint(coe, -constraintConst);
 
                 jsonCBFSlack.emplace_back(json{
-                                               {"name",  cbf.name},
-                                               {"coe",   model->control2Json(uCoe)},
-                                               {"const", constraintConst}
-                                       });
+                        {"name",  cbf.name},
+                        {"coe",   model->control2Json(uCoe)},
+                        {"const", constraintConst}
+                });
                 ++cnt;
             }
             opt["cbfSlack"] = jsonCBFSlack;
@@ -112,13 +409,112 @@ public:
         }
     }
 
-    void stepTimeForward(double dt) const {
+    void stepTimeForward(double dt) {
         model->stepTimeForward(dt);
+        runtime += dt;
     }
 
     void output() const {
         std::cout << "Robot " << id << ": ";
         model->output();
+    }
+
+    void updateGridWorld() {
+        updatedGridWorld = json::array();
+        double tol = 2;
+        for (auto &[id, position2D]: comm->position2D) {
+            auto updatedFor1 = gridWorld.setValueInCircle(position2D, tol, true, true);
+            updatedGridWorld.insert(updatedGridWorld.end(), updatedFor1.begin(), updatedFor1.end());
+        }
+    }
+
+    void getXLimit(double _x[], double inflation = 1.2) {
+        world.boundary.get_x_limit(_x, inflation);
+    }
+
+    void getYLimit(double *_y, double inflation = 1.2) {
+        world.boundary.get_y_limit(_y, inflation);
+    }
+
+    json getParams() {
+        json paraJson;
+        {
+            json worldJson;
+            double xLim[2], yLim[2];
+            getXLimit(xLim), getYLimit(yLim);
+            worldJson["lim"] = {{xLim[0], xLim[1]},
+                                {yLim[0], yLim[1]}};
+            getXLimit(xLim, 1.0), getYLimit(yLim, 1.0);
+            for (int i = 1; i <= world.boundary.n; i++) {
+                worldJson["boundary"].push_back({world.boundary.p[i].x, world.boundary.p[i].y});
+            }
+            worldJson["boundary"].push_back({world.boundary.p[1].x, world.boundary.p[1].y});
+            worldJson["charge"]["num"] = world.chargingStations.size();
+            for (auto &i: world.chargingStations) {
+                worldJson["charge"]["pos"].push_back({i.first.x, i.first.y});
+                worldJson["charge"]["dist"].push_back(i.second);
+            }
+            paraJson["world"] = worldJson;
+        }
+        {
+            json swarmJson;
+            swarmJson["num"] = settings["num"];
+            paraJson["swarm"] = swarmJson;
+        }
+        {
+            json targetsJson = json::array();
+            for (auto &i: world.targets) {
+                targetsJson.push_back({
+                                              {"k", i.densityParams["k"]},
+                                              {"r", i.densityParams["r"]}
+                                      });
+            }
+            paraJson["targets"] = targetsJson;
+        }
+        {
+            json gridWorldJson;
+            gridWorldJson["xNum"] = gridWorld.xNum;
+            gridWorldJson["yNum"] = gridWorld.yNum;
+            gridWorldJson["xLim"] = {gridWorld.xLim.first, gridWorld.xLim.second};
+            gridWorldJson["yLim"] = {gridWorld.yLim.first, gridWorld.yLim.second};
+            paraJson["gridWorld"] = gridWorldJson;
+        }
+        return paraJson;
+    }
+
+    json getState() {
+        json robotJson = {{"state", model->state2Json()},
+                          {"id",    id}};
+        if (!cbfNoSlack.cbfs.empty()) {
+            json cbfNoSlackJson;
+            for (auto &[name, cbf]: cbfNoSlack.cbfs) {
+                cbfNoSlackJson[cbf.name] = cbf.h(model->getX(), runtime);
+            }
+            cbfNoSlackJson[cbfNoSlack.getName()] = cbfNoSlack.h(model->getX(), runtime);
+            robotJson["cbfNoSlack"] = cbfNoSlackJson;
+        }
+        {
+            json cbfSlackJson;
+            for (auto &[name, cbf]: cbfSlack) {
+                cbfSlackJson[cbf.name] = cbf.h(model->getX(), runtime);
+            }
+            robotJson["cbfSlack"] = cbfSlackJson;
+        }
+
+        if (settings["cbfs"]["with-slack"]["cvt"]["on"]) {
+            json cvtJson = {{"num", cvt.pl[id].n + 1}};
+            for (int i = 1; i <= cvt.pl[id].n; i++) {
+                cvtJson["pos"].push_back({cvt.pl[id].p[i].x, cvt.pl[id].p[i].y});
+            }
+            cvtJson["pos"].push_back({cvt.pl[id].p[1].x, cvt.pl[id].p[1].y});
+            cvtJson["center"] = {cvt.ct[id].x, cvt.ct[id].y};
+            robotJson["cvt"] = cvtJson;
+        }
+
+        {
+            robotJson["opt"] = opt;
+        }
+        return robotJson;
     }
 
 };

@@ -19,6 +19,15 @@ public:
         reset();
     }
 
+    explicit GridWorld(const json &worldSettings) {
+        World tmpWorld(worldSettings);
+        xLim = tmpWorld.boundary.get_x_limit(1.0), yLim = tmpWorld.boundary.get_y_limit(1.0);
+        xNum = (xLim.second - xLim.first) / double(worldSettings["spacing"]);
+        yNum = (yLim.second - yLim.first) / double(worldSettings["spacing"]);
+        vis.resize(xNum * yNum);
+        reset();
+    }
+
     void reset(bool value = false) {
         for (auto a: vis) {
             a = value;

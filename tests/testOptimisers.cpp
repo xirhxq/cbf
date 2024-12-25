@@ -38,8 +38,12 @@ TEST_CASE("RandomSolvePerformanceComparison") {
     const int num_tests = 100;
 
     std::vector<std::unique_ptr<OptimiserBase>> optimisers;
+#ifdef ENABLE_GUROBI
     optimisers.emplace_back(std::make_unique<Gurobi>());
+#endif
+#ifdef ENABLE_HIGHS
     optimisers.emplace_back(std::make_unique<HiGHS>());
+#endif
 
     std::vector<double> total_times(optimisers.size(), 0.0);
 

@@ -13,10 +13,10 @@
     ],
     "spacing": 0.1
   },
-  "swarm": {
-    "num": 14,
-    "dim": 4,
-    "initial-position": {
+  "num": 14,
+  "dim": 4,
+  "initial": {
+    "position": {
       "//method": ["specified", "random-in-polygon", "random-in-world"],
       "method": "random-in-polygon",
       "polygon": [
@@ -31,26 +31,58 @@
         [10, 6]
       ]
     },
-    "launch": {
-      "model": "SingleIntegrate2D",
-      "optimiser": "HiGHS"
-    }
+    "battery": {
+      "min": 60,
+      "max": 80
+    },
+    "yawDeg": 180
   },
+  "model": "SingleIntegrate2D",
+  "optimiser": "Gurobi",
   "cbfs": {
     "with-slack": {
-      "cvt": true,
-      "yaw": false
+      "cvt": {
+        "name": "cvtCBF",
+        "on": true,
+        "kp": 5.0
+      },
+      "yaw": {
+        "name": "yawCBF",
+        "on": false,
+        "kp": 5.0
+      }
     },
     "without-slack": {
-      "energy": true,
-      "safety": false,
-      "comm-fixed": true,
-      "comm-auto": false
+      "energy": {
+        "name": "energyCBF",
+        "on": true,
+        "k": 15.0
+      },
+      "safety": {
+        "name": "safetyCBF",
+        "on": false,
+        "safe-distance": 3.0,
+        "k": 0.5
+      },
+      "comm-fixed": {
+        "name": "commFixedCBF",
+        "on": true,
+        "max-range": 8.5,
+        "k": 10.0,
+        "min-neighbour-id-offset": -2,
+        "max-neighbour-id-offset": 0
+      },
+      "comm-auto": {
+        "name": "commAutoCBF",
+        "on": false,
+        "max-range": 8,
+        "max-consider-range": 12,
+        "k": 10.0
+      }
     }
   },
   "execute": {
-    "time-total": 300,
-    "time-step": 0.02,
-    "grid-in-terminal": false
+    "time-total": 100,
+    "time-step": 0.02
   }
 }
