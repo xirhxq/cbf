@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.21)
+cmake_minimum_required(VERSION 3.16)
 project(cbf)
 
 option(CXX "enable C++ compilation" ON)
@@ -12,7 +12,7 @@ set(CMAKE_CXX_STANDARD 17)
 unset(ENABLE_GUROBI CACHE)
 unset(ENABLE_HIGHS CACHE)
 
-option(ENABLE_GUROBI "Enable Gurobi Optimizer" ON)
+option(ENABLE_GUROBI "Enable Gurobi Optimizer" OFF)
 option(ENABLE_HIGHS "Enable HiGHS Optimizer" ON)
 
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
