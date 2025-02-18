@@ -4,3 +4,4 @@ data/
 plot/
 .*
 !.gitignore
+build
