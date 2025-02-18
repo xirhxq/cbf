@@ -38,7 +38,7 @@
     "yawDeg": 180
   },
   "model": "SingleIntegrate2D",
-  "optimiser": "Gurobi",
+  "optimiser": "HiGHS",
   "cbfs": {
     "with-slack": {
       "cvt": {
