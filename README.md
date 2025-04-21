@@ -51,48 +51,30 @@ These documents provide detailed integration methods and configuration options t
 
 ### Python Environment Setup
 
-This project requires Python 3.11. You can create a virtual environment and install the necessary Python dependencies from the `requirements.txt` file using either the command line or CLion.
+#### 1. **Install Anaconda or Miniconda**
+Download [Anaconda](https://www.anaconda.com/download) (recommended for data science) or [Miniconda](https://docs.conda.io/en/latest/miniconda.html) (minimal installer), then follow default installation steps.
 
-#### Option 1: Create Virtual Environment via Command Line
+#### 2. **Create Python 3.11 Environment**
+```bash
+conda create -n cbf_env python=3.11
+conda activate cbf_env
+```  
+This creates an isolated environment with Python 3.11.
 
-1. **Create a Python 3.11 Virtual Environment:**
-   If you don't have Python 3.11 installed, please install it first. You can create a virtual environment using the following command:
-   ```bash
-   python3.11 -m venv .venv
-   ```
+#### 3. **Install FFmpeg**
+```bash
+conda install -c conda-forge ffmpeg  # Handles codec dependencies automatically
+```
 
-2. **Activate the Virtual Environment:**
-   After creating the virtual environment, activate it by running the appropriate command for your operating system:
-    - On Linux/macOS:
-      ```bash
-      source .venv/bin/activate
-      ```
-    - On Windows:
-      ```bash
-      .venv\Scripts\activate
-      ```
+#### 4. **Install Project Dependencies**
+```bash
+pip install -r requirements.txt  # Use --force-reinstall if conflicts occur
+```
 
-3. **Install Dependencies:**
-   Once the virtual environment is activated, install the required Python libraries using the following command:
-   ```bash
-   pip install -r requirements.txt
-   ```
+#### 5. **CLion Integration**
+- Open **File > Settings > Build > Python Interpreter**.
+- Click ⚙️ → **Add** → **Conda Environment** → Specify path:
+   - Unix: `conda_install_path/envs/cbf_env/bin/python`
+   - Windows: `...\envs\cbf_env\python.exe`.
 
-#### Option 2: Create Virtual Environment Using CLion
-
-1. **Open the Project in CLion:**
-   If you are using **CLion**, open the project and go to **File** > **Settings** (on Windows) or **CLion** > **Preferences** (on macOS).
-
-2. **Configure Python Interpreter:**
-    - Navigate to **Project: <Your Project Name>** > **Python Interpreter**.
-    - Click the gear icon and select **Add**.
-    - Choose **Virtualenv Environment** and select **Python 3.11** as the base interpreter.
-    - CLion will automatically create and activate a virtual environment for your project.
-
-3. **Install Dependencies:**
-   Once the virtual environment is created, CLion will prompt you to install the dependencies listed in `requirements.txt`. You can also manually trigger the installation by running:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-Both methods will set up the environment and install all necessary Python packages required to run the project.
+This streamlined workflow ensures dependency isolation and cross-platform compatibility. For advanced troubleshooting, refer to the original Chinese version.
