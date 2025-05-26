@@ -751,6 +751,74 @@ class Drawer:
             else:
                 print(f'导出失败：{output_file}')
 
+    @singleFile
+    def drawFixedCommDistance(self):
+        # check if this run has turned 'fixcomm' on
+        if self.data["config"]["cbfs"]["without-slack"]["comm-fixed"] is False:
+            print("This run has not turned 'comm-fixed' on, please check the config file")
+            return
+
+
+        if self.useTex:
+            matplotlib.rc('text', usetex=True)
+
+        matplotlib.use('agg')
+
+        plt.figure(figsize=(8, 4))
+
+        robotNum = self.data["para"]["swarm"]["num"]
+        idList = [i + 1 for i in range(robotNum)]
+
+        runtime = [dt["runtime"] for dt in self.data["state"]]
+
+        dists = {i: {} for i in idList}
+
+        pb = tqdm.tqdm(total=len(self.data["state"]), bar_format=self.barFormat)
+
+        for id, dataNow in enumerate(self.data["state"]):
+            id2Pos = {robot["id"]: (robot["state"]["x"], robot["state"]["y"]) for robot in dataNow["robots"]}
+            for myFormation in dataNow["formation"]:
+                myId = myFormation["id"]
+                myPos = id2Pos[myId]
+                for neighbour in myFormation["anchorIds"]:
+                    neighbourPos = id2Pos[neighbour]
+                    dist = np.sqrt((myPos[0] - neighbourPos[0]) ** 2 + (myPos[1] - neighbourPos[1]) ** 2)
+                    anchorText = f'To UAV #{neighbour}'
+                    if anchorText not in dists[myId]:
+                        dists[myId][anchorText] = []
+                    dists[myId][anchorText].append({"dist": dist, "time": dataNow["runtime"]})
+                for anchor in myFormation["anchorPoints"]:
+                    anchorPos = (anchor[0], anchor[1])
+                    dist = np.sqrt((myPos[0] - anchorPos[0]) ** 2 + (myPos[1] - anchorPos[1]) ** 2)
+                    anchorText = f'To ({anchor[0]:.1f}, {anchor[1]:.1f})'
+                    if anchorText not in dists[myId]:
+                        dists[myId][anchorText] = []
+                    dists[myId][anchorText].append({"dist": dist, "time": dataNow["runtime"]})
+            pb.update(1)
+
+        pb.close()
+
+        pb = tqdm.tqdm(total=robotNum, bar_format=self.barFormat)
+
+        for i in idList:
+            plt.subplot(111).clear()
+            for anchor in dists[i]:
+                plt.subplot(111).plot(
+                    [dt["time"] for dt in dists[i][anchor]],
+                    [dt["dist"] for dt in dists[i][anchor]],
+                    label=anchor
+                )
+            plt.subplot(111).set_title('Distance to neighbours, ' + f'UAV #{i}')
+            plt.subplot(111).set_xlabel('Time / s')
+            plt.subplot(111).set_ylabel('Distance / m')
+
+            leg = plt.subplot(111).legend(loc='best')
+            figureFilename = self.folderName + f'/{i}-FixedCommDistance.png'
+            plt.savefig(figureFilename, bbox_inches='tight')
+            pb.update(1)
+
+        pb.close()
+
     def menu(self):
         while True:
             if self.hasSingleFile:
@@ -765,6 +833,7 @@ class Drawer:
                 print('[7]: Draw all cvt cbf')
                 print('[8]: Screenshots from video')
                 print('[9]: Draw search heat-map')
+                print('[10]: Draw fixed comm distance')
                 op = int(input('Input the number: '))
                 if op == 0:
                     break
@@ -790,6 +859,8 @@ class Drawer:
                         self.makeScreenshotFromVideo()
                     elif op == 9:
                         self.drawSearchHeatmap()
+                    elif op == 10:
+                        self.drawFixedCommDistance()
             else:
                 print('-' * 10 + 'Choose which drawing you want:' + '-' * 10)
                 print('[0]: Quit')
