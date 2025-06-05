@@ -13,7 +13,7 @@
     ],
     "spacing": 0.1
   },
-  "num": 14,
+  "num": 4,
   "dim": 4,
   "initial": {
     "position": {
@@ -38,7 +38,7 @@
     "yawDeg": 180
   },
   "model": "SingleIntegrate2D",
-  "optimiser": "HiGHS",
+  "optimiser": "Gurobi",
   "cbfs": {
     "with-slack": {
       "cvt": {
@@ -82,7 +82,7 @@
     }
   },
   "execute": {
-    "time-total": 100,
+    "time-total": 5,
     "time-step": 0.02
   }
 }
