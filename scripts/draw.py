@@ -205,9 +205,9 @@ class Drawer:
         matplotlib.use('agg')
 
         robotNum = self.data["para"]["swarm"]["num"]
-        divider = 3
+        divider = 2
         halfNum = math.ceil(robotNum / divider)
-        row, col = 5, halfNum
+        row, col = halfNum, 3
 
         fig = plt.figure(figsize=self.figureSize)
         if self.plotOpt:
