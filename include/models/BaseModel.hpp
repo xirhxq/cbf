@@ -64,6 +64,20 @@ public:
         }
     }
 
+    VectorXd getVelocity() {
+        if (xMap.find("vx") == xMap.end() && uMap.find("vx") == uMap.end()) {
+            throw std::invalid_argument("Invalid state/control variable name: vx");
+        } else if (xMap.find("vy") == xMap.end() && uMap.find("vy") == uMap.end()) {
+            throw std::invalid_argument("Invalid state/control variable name: vy");
+        } else {
+            VectorXd v(2);
+            double vx = (xMap.find("vx") != xMap.end()) ? X[xMap["vx"]] : u[uMap["vx"]];
+            double vy = (xMap.find("vy") != xMap.end()) ? X[xMap["vy"]] : u[uMap["vy"]];
+            v << vx, vy;
+            return v;
+        }
+    }
+
     void setStateVariable(const std::string &name, double value) {
         auto it = xMap.find(name);
         if (it != xMap.end()) {

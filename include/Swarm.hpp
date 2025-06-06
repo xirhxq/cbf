@@ -93,9 +93,11 @@ public:
     void exchangeData() {
         for (const auto &robot: robots) {
             Point pos2d = robot->model->xy();
+            auto vel2d = robot->model->getVelocity();
             for (auto &otherRobot: robots) {
                 if (robot->id == otherRobot->id) continue;
                 otherRobot->comm->receivePosition2D(robot->id, pos2d);
+                otherRobot->comm->receiveVelocity2D(robot->id, vel2d);
             }
         };
     }
@@ -104,7 +106,7 @@ public:
         for (auto &robot: robots) {
             for (auto &other: robots) {
                 if (robot->id == other->id) continue;
-                assert(robot->model->xy().distance_to(other->comm->position2D[robot->id]) < 1e-3);
+                assert(robot->model->xy().distance_to(other->comm->_othersPos[robot->id]) < 1e-3);
             }
         }
     }

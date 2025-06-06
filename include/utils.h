@@ -27,4 +27,17 @@ std::vector<Point> getPointsFromJson(const json &j) {
     return points;
 }
 
+std::string vecToString(const VectorXd& vec) {
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(6) << "(";
+    for (int i = 0; i < vec.size(); ++i) {
+        oss << vec[i];
+        if (i < vec.size() - 1) {
+            oss << ", ";
+        }
+    }
+    oss << ")";
+    return oss.str();
+}
+
 #endif //CBF_UTILS_H

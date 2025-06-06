@@ -9,12 +9,21 @@ public:
     CommunicatorCentral(json settings) : CommunicatorBase(settings) {}
 
     void sendPosition2D(int id, const Point pos2d) override {
-        position2D[id] = pos2d;
+        _othersPos[id] = pos2d;
     }
 
     void receivePosition2D(int id, const Point pos2d) override {
         if (id == this->id) return;
-        position2D[id] = pos2d;
+        _othersPos[id] = pos2d;
+    }
+
+    void sendVelocity2D(int id, const VectorXd velocity2D) override {
+        _othersVel[id] = velocity2D;
+    }
+
+    void receiveVelocity2D(int id, const VectorXd velocity2D) override {
+        if (id == this->id) return;
+        _othersVel[id] = velocity2D;
     }
 };
 
