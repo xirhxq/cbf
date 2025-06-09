@@ -1,6 +1,7 @@
 import math
 
 from utils import *
+from loader import DataLoader
 from components.map_animation import MapAnimationComponent
 from components.optimisation import OptimizationContourPlot
 from components.fixed_comm_range import FixedCommRangeComponent
@@ -9,10 +10,10 @@ from layout.grid_layout import GridLayout
 
 
 class AnimationDrawer:
-    def __init__(self, file, **kwargs):
-        self.folderName = os.path.dirname(file)
-        self.file = file
-        self.data = json.load(open(self.file))
+    def __init__(self, files, **kwargs):
+        self.loader = DataLoader(files)
+        self.data = self.loader.data
+        self.folderName = self.loader.folderName
 
         self.barFormat = "{percentage:3.0f}%|{bar:50}| {n_fmt}/{total_fmt} [elap: {elapsed}s eta: {remaining}s]"
         self.shotList = []
@@ -112,9 +113,9 @@ class AnimationDrawer:
 
 
 if __name__ == '__main__':
-    filename = findNewestFile('../../data', '*')
+    files = [findNewestFile('../../data', '*')]
     drawer = AnimationDrawer(
-        filename,
+        files,
         config={}
     )
     drawer.run_animation()
