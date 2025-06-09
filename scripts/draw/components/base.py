@@ -3,4 +3,4 @@ class PlotComponent:
         raise NotImplementedError
 
     def update(self, num):
-        raise NotImplementedError
+        pass
