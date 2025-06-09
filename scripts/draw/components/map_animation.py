@@ -3,7 +3,7 @@ from .base import PlotComponent
 
 
 class MapAnimationComponent(PlotComponent):
-    def __init__(self, data, ax=None):
+    def __init__(self, ax, data):
         self.data = data
         self.ax = ax
         self.interval = self.data["state"][1]["runtime"] - self.data["state"][0]["runtime"]

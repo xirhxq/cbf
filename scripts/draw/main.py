@@ -64,7 +64,7 @@ class AnimationDrawer:
 
         components = []
 
-        map_component = MapAnimationComponent(self.data, ax=axes_map['map'])
+        map_component = MapAnimationComponent(axes_map['map'], self.data)
         components.append(map_component)
 
         for i in range(robotNum):
