@@ -1,24 +1,6 @@
 import math
 from matplotlib.gridspec import GridSpec
-
-
-REGISTRIED_COMPONENTS = {
-    'map': {
-        'class': 'MapAnimationComponent',
-    },
-    'opt': {
-        'title': 'Opt Result',
-        'class': 'OptimizationContourPlot',
-    },
-    'fix': {
-        'title': 'Fixed Comm Range',
-        'class': 'FixedCommRangeComponent',
-    },
-    'cbf': {
-        'title': 'CBF Values',
-        'class': 'CBFValuesComponent',
-    }
-}
+from components.components import *
 
 
 class GridLayout:

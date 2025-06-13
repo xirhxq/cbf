@@ -1,10 +1,6 @@
 from utils import *
 from loader import DataLoader
-from components.map_animation import MapAnimationComponent
-from components.optimisation import OptimizationContourPlot
-from components.fixed_comm_range import FixedCommRangeComponent
-from components.cbf_values import CBFValuesComponent
-from layout.grid_layout import GridLayout
+from layout.grid_layout import *
 
 
 class AnimationDrawer:
