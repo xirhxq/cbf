@@ -1,10 +1,10 @@
 import numpy as np
 from utils import *
 
-from .base import PlotComponent
+from .base import BaseComponent
 
 
-class CBFValuesComponent(PlotComponent):
+class CBFValuesComponent(BaseComponent):
     def __init__(self, ax, data, robot_id, title=None, **kwargs):
         self.ax = ax
         self.data = data["state"]

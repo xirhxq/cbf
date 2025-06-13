@@ -1,8 +1,8 @@
 from utils import *
 
-from .base import PlotComponent
+from .base import BaseComponent
 
-class OptimizationContourPlot(PlotComponent):
+class OptimizationContourPlot(BaseComponent):
     def __init__(self, ax, data, robot_id, title, **kwargs):
         self.data = [dt["robots"][robot_id]["opt"] for dt in data["state"]]
         self.title = title

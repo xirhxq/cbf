@@ -1,5 +1,5 @@
 from .map_animation import MapAnimationComponent
-from .optimisation import OptimizationContourPlot
+from .optimisation_contour import OptimizationContourPlot
 from .fixed_comm_range import FixedCommRangeComponent
 from .cbf_values import CBFValuesComponent
 

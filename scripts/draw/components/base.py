@@ -1,4 +1,4 @@
-class PlotComponent:
+class BaseComponent:
     def setup(self, fig, gs, config):
         raise NotImplementedError
 

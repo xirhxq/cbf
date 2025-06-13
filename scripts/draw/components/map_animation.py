@@ -1,8 +1,8 @@
 from utils import *
-from .base import PlotComponent
+from .base import BaseComponent
 
 
-class MapAnimationComponent(PlotComponent):
+class MapAnimationComponent(BaseComponent):
     def __init__(self, ax, data, **kwargs):
         self.data = data
         self.ax = ax
