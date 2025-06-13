@@ -11,7 +11,7 @@ class StaticSeparatePlotDrawer:
     def __init__(self, files):
         self.loader = DataLoader(files)
         self.data = self.loader.data
-        self.folder = self.loader.folderName
+        self.folder = self.loader.folder
 
         plt.switch_backend('agg')
 
@@ -45,7 +45,7 @@ class StaticGroupPlotDrawer:
     def __init__(self, files):
         self.loader = DataLoader(files)
         self.data = self.loader.data
-        self.folder = self.loader.folderName
+        self.folder = self.loader.folder
 
         plt.switch_backend('agg')
 
@@ -82,7 +82,7 @@ class AnimationDrawer:
     def __init__(self, files):
         self.loader = DataLoader(files)
         self.data = self.loader.data
-        self.folderName = self.loader.folderName
+        self.folder = self.loader.folder
 
         self.shotList = []
 
@@ -129,7 +129,7 @@ class AnimationDrawer:
         )
 
         suffix = '-'.join(plot_list)
-        filename = os.path.join(self.folderName, 'animation-' + suffix + '.mp4')
+        filename = os.path.join(self.folder, 'animation-' + suffix + '.mp4')
 
         fps = int(1 / interval)
         ani.save(filename, writer='ffmpeg', fps=fps)
