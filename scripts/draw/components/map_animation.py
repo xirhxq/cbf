@@ -26,12 +26,6 @@ class MapAnimationComponent(BaseComponent):
         self.Z = np.zeros((self.gridWorldJson["xNum"], self.gridWorldJson["yNum"]))
         self.zExtent = self.gridWorldJson["xLim"] + self.gridWorldJson["yLim"]
 
-    def setup(self, fig, gs, config=None):
-        if config:
-            self.__dict__.update(config)
-        self.ax = fig.add_subplot(gs)
-        return self.ax
-
     def update(self, num, dataNow=None):
         from matplotlib.patches import Wedge, Circle
 

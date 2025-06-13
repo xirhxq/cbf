@@ -23,9 +23,6 @@ class OptimizationContourPlot(BaseComponent):
         self.cbfList = []
         self.cbfName = []
 
-    def setup(self, fig, gs, config=None):
-        pass
-
     def update(self, num, dataNow=None):
         if dataNow is None:
             dataNow = self.data[num]

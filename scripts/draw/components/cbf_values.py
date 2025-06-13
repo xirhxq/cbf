@@ -5,12 +5,14 @@ from .base import BaseComponent
 
 
 class CBFValuesComponent(BaseComponent):
-    def __init__(self, ax, data, robot_id, title=None, **kwargs):
+    def __init__(self, ax, data, robot_id, title=None, mode='separate', **kwargs):
         self.ax = ax
         self.data = data["state"]
         self.robot_id = robot_id
+        self.title = title or f"CBF Values, Robot #{robot_id + 1}"
+        self.mode = mode
+
         self.keys = ("cbfNoSlack", "cbfSlack")
-        self.title = title or f"Robot #{robot_id + 1} CBF Values"
 
         self.runtime = [frame["runtime"] for frame in self.data]
         self.values = {}
@@ -56,15 +58,19 @@ class CBFValuesComponent(BaseComponent):
         for label in self.values:
             time_data = self.values[label]["time"]
             value_data = self.values[label]["value"]
-            line, = self.ax.plot(time_data, value_data, label=self.get_abbv(label.split(":")[1]))
+            label = label.split(":")[1]
+            label = self.get_abbv(label) if self.mode != 'separate' else label
+            line, = self.ax.plot(time_data, value_data, label=label)
             self.lines[label] = line
 
-        self.vline = self.ax.plot([0, 0], [0, 1], 'r--', alpha=0.3)[0]
         self.ax.legend(loc='best')
-        self.y_limits = self.ax.get_ylim()
 
-    def setup(self, fig, gs, config=None):
-        pass
+        if self.mode == 'animation':
+            self.setup()
+
+    def setup(self):
+        self.vline = self.ax.plot([0, 0], [0, 1], 'r--', alpha=0.3)[0]
+        self.y_limits = self.ax.get_ylim()
 
     def update(self, num, dataNow=None):
         self.vline.set_data([self.runtime[num], self.runtime[num]], self.y_limits)

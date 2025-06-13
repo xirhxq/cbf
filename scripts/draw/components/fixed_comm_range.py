@@ -3,11 +3,12 @@ from utils import *
 from .base import BaseComponent
 
 class FixedCommRangeComponent(BaseComponent):
-    def __init__(self, ax, data, robot_id, title=None, **kwargs):
+    def __init__(self, ax, data, robot_id, title=None, mode='separate', **kwargs):
         self.ax = ax
         self.data = data["state"]
         self.robot_id = robot_id
-        self.title = title or f"Robot #{robot_id + 1} Comm Distance"
+        self.title = title or f"Comm Distance, Robot #{robot_id + 1}"
+        self.mode = mode
 
         runtime = [dt["runtime"] for dt in self.data]
         id2Position = [
@@ -64,12 +65,14 @@ class FixedCommRangeComponent(BaseComponent):
             line, = self.ax.plot(times, dists, label=label)
             self.lines[label] = line
 
-        self.vline = self.ax.plot([0, 0], [0, 1], 'r--', alpha=0.3)[0]
         self.ax.legend(loc='best')
-        self.y_limits = self.ax.get_ylim()
 
-    def setup(self, fig, gs, config=None):
-        pass
+        if self.mode == 'animation':
+            self.setup()
+
+    def setup(self):
+        self.vline = self.ax.plot([0, 0], [0, 1], 'r--', alpha=0.3)[0]
+        self.y_limits = self.ax.get_ylim()
 
     def update(self, num, dataNow=None):
         self.vline.set_data([self.runtime[num], self.runtime[num]], self.y_limits)
