@@ -64,12 +64,12 @@ class FixedCommRangeComponent(PlotComponent):
             line, = self.ax.plot(times, dists, label=label)
             self.lines[label] = line
 
+        self.vline = self.ax.plot([0, 0], [0, 1], 'r--', alpha=0.3)[0]
         self.ax.legend(loc='best')
+        self.y_limits = self.ax.get_ylim()
 
     def setup(self, fig, gs, config=None):
         pass
 
     def update(self, num, dataNow=None):
-        self.ax.clear()
-        self._initialize_plot()
-        self.ax.axvline(x=self.runtime[num], color='red', linestyle='--', alpha=0.3)
+        self.vline.set_data([self.runtime[num], self.runtime[num]], self.y_limits)

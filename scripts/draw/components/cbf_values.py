@@ -1,3 +1,4 @@
+import numpy as np
 from utils import *
 
 from .base import PlotComponent
@@ -58,13 +59,12 @@ class CBFValuesComponent(PlotComponent):
             line, = self.ax.plot(time_data, value_data, label=self.get_abbv(label.split(":")[1]))
             self.lines[label] = line
 
+        self.vline = self.ax.plot([0, 0], [0, 1], 'r--', alpha=0.3)[0]
         self.ax.legend(loc='best')
+        self.y_limits = self.ax.get_ylim()
 
     def setup(self, fig, gs, config=None):
         pass
 
     def update(self, num, dataNow=None):
-        self.ax.clear()
-        self._initialize_plot()
-        current_time = self.values[list(self.values.keys())[0]]["time"][num]
-        self.ax.axvline(x=current_time, color='red', linestyle='--', alpha=0.3)
+        self.vline.set_data([self.runtime[num], self.runtime[num]], self.y_limits)
