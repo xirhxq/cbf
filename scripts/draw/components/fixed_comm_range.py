@@ -5,7 +5,7 @@ from .base import PlotComponent
 class FixedCommRangeComponent(PlotComponent):
     def __init__(self, ax, data, robot_id, name=None):
         self.ax = ax
-        self.data = data
+        self.data = data["state"]
         self.robot_id = robot_id
         self.name = name or f"Robot #{robot_id + 1} Comm Distance"
 

@@ -4,17 +4,17 @@ from .base import PlotComponent
 
 
 class CBFValuesComponent(PlotComponent):
-    def __init__(self, ax, data, robot_id, name=None, keys=("cbfNoSlack", "cbfSlack")):
+    def __init__(self, ax, data, robot_id, name=None):
         self.ax = ax
-        self.data = data
+        self.data = data["state"]
         self.robot_id = robot_id
-        self.keys = keys
+        self.keys = ("cbfNoSlack", "cbfSlack")
         self.name = name or f"Robot #{robot_id + 1} CBF Values"
 
         self.runtime = [frame["runtime"] for frame in self.data]
         self.values = {}
 
-        for key in keys:
+        for key in self.keys:
             if key in self.data[0]["robots"][robot_id]:
                 cbf_names = set()
                 for frame in self.data:

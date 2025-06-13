@@ -1,5 +1,3 @@
-import math
-
 from utils import *
 from loader import DataLoader
 from components.map_animation import MapAnimationComponent
@@ -10,7 +8,7 @@ from layout.grid_layout import GridLayout
 
 
 class AnimationDrawer:
-    def __init__(self, files, **kwargs):
+    def __init__(self, files):
         self.loader = DataLoader(files)
         self.data = self.loader.data
         self.folderName = self.loader.folderName
@@ -20,78 +18,46 @@ class AnimationDrawer:
 
         plt.switch_backend('agg')
 
-    def run_animation(self):
-        robotNum = self.data["config"]["num"]
-        sideNum = 3
-        sideRows = 4 if robotNum >= 8 else 1
-        sideCols = math.ceil(robotNum / sideRows)
-        mapCols = math.ceil(sideCols / 2)
-
+    def run_animation(self, plot_list=None):
+        plot_list = ['map'] if plot_list == [] or plot_list is None else plot_list
         fig = plt.figure(figsize=(16, 9))
         fig.set_tight_layout(True)
 
-        animation_config = {
-            'rows': sideRows * sideNum,
-            'cols': sideCols + mapCols,
-            'components': [
-                {
-                    'name': 'map',
-                    'grid': [[None, None], [None, -sideCols]]
-                }
-            ]
-        }
-
-        for i in range(robotNum):
-            animation_config['components'].append({
-                'name': f'robot_{i + 1}_opt',
-                'grid': [i // sideCols, -sideCols + (i % sideCols)]
-            })
-            animation_config['components'].append({
-                'name': f'robot_{i + 1}_fix_comm',
-                'grid': [i // sideCols + sideRows, -sideCols + (i % sideCols)]
-            })
-            animation_config['components'].append({
-                'name': f'robot_{i + 1}_cbf',
-                'type': 'cbf_values',
-                'grid': [i // sideCols + sideRows * 2, -sideCols + (i % sideCols)]
-            })
-
-
-        print(animation_config)
-
-        layout = GridLayout(fig, animation_config)
-        axes_map = layout.allocate_axes()
+        axes_map = GridLayout(fig, self.data["config"]["num"], plot_list).allocate_axes()
 
         components = []
+        if 'map' in plot_list:
+            map_component = MapAnimationComponent(axes_map['map'], self.data, name="Map")
+            components.append(map_component)
 
-        map_component = MapAnimationComponent(axes_map['map'], self.data)
-        components.append(map_component)
-
-        for i in range(robotNum):
-            components.append(
-                OptimizationContourPlot(
-                    axes_map[f'robot_{i + 1}_opt'],
-                    [dt["robots"][i]["opt"] for dt in self.data["state"]],
-                    f"Opt Result, Robot #{i + 1}"
+        for i in range(self.data["config"]["num"]):
+            if 'opt' in plot_list:
+                components.append(
+                    OptimizationContourPlot(
+                        axes_map[f'opt_{i + 1}'],
+                        self.data,
+                        robot_id=i,
+                        name=f"Opt Result, Robot #{i + 1}"
+                    )
                 )
-            )
-            components.append(
-                FixedCommRangeComponent(
-                    axes_map[f'robot_{i + 1}_fix_comm'],
-                    self.data["state"],
-                    robot_id=i,
-                    name=f"Robot #{i + 1} Fixed Communication"
+            if 'fix' in plot_list:
+                components.append(
+                    FixedCommRangeComponent(
+                        axes_map[f'fix_{i + 1}'],
+                        self.data,
+                        robot_id=i,
+                        name=f"Robot #{i + 1} Fixed Communication"
+                    )
                 )
-            )
-            components.append(
-                CBFValuesComponent(
-                    axes_map[f'robot_{i + 1}_cbf'],
-                    self.data["state"],
-                    robot_id=i,
-                    name=f"CBF Values, Robot #{i + 1}"
+            if 'cbf' in plot_list:
+                components.append(
+                    CBFValuesComponent(
+                        axes_map[f'cbf_{i + 1}'],
+                        self.data,
+                        robot_id=i,
+                        name=f"CBF Values, Robot #{i + 1}"
+                    )
                 )
-            )
-
 
         totalLength = len(self.data["state"])
 
@@ -102,11 +68,20 @@ class AnimationDrawer:
             for comp in components:
                 comp.update(num)
 
-        ani = animation.FuncAnimation(fig, update, frames=totalLength, interval=int(1000 * map_component.interval),
-                                      blit=False)
-        filename = os.path.join(self.folderName, 'animation.mp4')
+        interval = self.data["state"][1]["runtime"] - self.data["state"][0]["runtime"]
+        interval_ms = int(1000 * interval)
 
-        fps = int(1 / (self.data["state"][1]["runtime"] - self.data["state"][0]["runtime"]))
+        ani = animation.FuncAnimation(
+            fig, update,
+            frames=totalLength,
+            interval=interval_ms,
+            blit=False
+        )
+
+        suffix = '-'.join(plot_list)
+        filename = os.path.join(self.folderName, 'animation-' + suffix + '.mp4')
+
+        fps = int(1 / interval)
         ani.save(filename, writer='ffmpeg', fps=fps)
         pbar.close()
         print(f"\nmp4 saved in {filename}")
@@ -115,7 +90,13 @@ class AnimationDrawer:
 if __name__ == '__main__':
     files = [findNewestFile('../../data', '*')]
     drawer = AnimationDrawer(
-        files,
-        config={}
+        files
     )
-    drawer.run_animation()
+    drawer.run_animation(
+        plot_list=[
+            'map',
+            'opt',
+            'fix',
+            'cbf'
+        ]
+    )

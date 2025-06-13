@@ -3,8 +3,8 @@ from utils import *
 from .base import PlotComponent
 
 class OptimizationContourPlot(PlotComponent):
-    def __init__(self, ax, data, name):
-        self.data = data
+    def __init__(self, ax, data, robot_id, name):
+        self.data = [dt["robots"][robot_id]["opt"] for dt in data["state"]]
         self.name = name
         self.ax = ax
         self.ax.set_title(self.name)
