@@ -4,12 +4,12 @@ from .base import PlotComponent
 
 
 class CBFValuesComponent(PlotComponent):
-    def __init__(self, ax, data, robot_id, name=None):
+    def __init__(self, ax, data, robot_id, title=None, **kwargs):
         self.ax = ax
         self.data = data["state"]
         self.robot_id = robot_id
         self.keys = ("cbfNoSlack", "cbfSlack")
-        self.name = name or f"Robot #{robot_id + 1} CBF Values"
+        self.title = title or f"Robot #{robot_id + 1} CBF Values"
 
         self.runtime = [frame["runtime"] for frame in self.data]
         self.values = {}
@@ -46,7 +46,7 @@ class CBFValuesComponent(PlotComponent):
             return cbf_name.split('CBF')[0]
 
     def _initialize_plot(self):
-        self.ax.set_title(self.name)
+        self.ax.set_title(self.title)
         self.ax.set_xlabel('Time / s')
         self.ax.set_ylabel('CBF Value')
 

@@ -3,11 +3,11 @@ from utils import *
 from .base import PlotComponent
 
 class OptimizationContourPlot(PlotComponent):
-    def __init__(self, ax, data, robot_id, name):
+    def __init__(self, ax, data, robot_id, title, **kwargs):
         self.data = [dt["robots"][robot_id]["opt"] for dt in data["state"]]
-        self.name = name
+        self.title = title
         self.ax = ax
-        self.ax.set_title(self.name)
+        self.ax.set_title(self.title)
         self.txt = self.ax.text(0.05, 0.85, '', color='red', transform=self.ax.transAxes, fontsize=20)
         self.markerNominal, = self.ax.plot([self.data[0]["nominal"]["vx"]], [self.data[0]["nominal"]["vy"]], "b*")
         self.markerResult, = self.ax.plot([0, self.data[0]["result"]["vx"]], [0, self.data[0]["result"]["vy"]], "r")

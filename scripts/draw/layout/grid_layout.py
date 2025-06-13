@@ -2,6 +2,25 @@ import math
 from matplotlib.gridspec import GridSpec
 
 
+REGISTRIED_COMPONENTS = {
+    'map': {
+        'class': 'MapAnimationComponent',
+    },
+    'opt': {
+        'title': 'Opt Result',
+        'class': 'OptimizationContourPlot',
+    },
+    'fix': {
+        'title': 'Fixed Comm Range',
+        'class': 'FixedCommRangeComponent',
+    },
+    'cbf': {
+        'title': 'CBF Values',
+        'class': 'CBFValuesComponent',
+    }
+}
+
+
 class GridLayout:
     def __init__(self, fig, n, plot_list):
         self.plot_list = plot_list
@@ -18,7 +37,13 @@ class GridLayout:
         if side_num == 0:
             layout_config['rows'] = 1
             layout_config['cols'] = 1
-            layout_config['components'] = [{'name': 'map', 'grid': [[None, None], [None, None]]}]
+            layout_config['components'] = [
+                {
+                    'name': 'map',
+                    'grid': [[None, None], [None, None]],
+                    **REGISTRIED_COMPONENTS['map']
+                }
+            ]
         else:
             side_rows = 2 if self.n >= 8 else 1
             side_cols = math.ceil(self.n / side_rows)
@@ -31,8 +56,8 @@ class GridLayout:
                 map_cols = math.ceil(side_cols / 2)
                 layout_config['components'].append(
                     {
-                        'name': 'map',
-                        'grid': [[None, None], [None, map_cols]]
+                        'grid': [[None, None], [None, map_cols]],
+                        **REGISTRIED_COMPONENTS['map']
                     }
                 )
             else:
@@ -52,17 +77,19 @@ class GridLayout:
                     )
 
                 for id in range(n):
-                        layout.append(
-                            {
-                                'name': f'{name}_{id + 1}',
-                                'grid': [i, j]
-                            }
-                        )
+                    layout.append(
+                        {
+                            'grid': [i, j],
+                            'robot_id': id,
+                            **REGISTRIED_COMPONENTS[name]
+                        }
+                    )
+                    layout[-1]["title"] += f", Robot #{id + 1}"
 
-                        j = j + 1
-                        if j >= grid[1][1]:
-                            j = grid[1][0]
-                            i = i + 1
+                    j = j + 1
+                    if j >= grid[1][1]:
+                        j = grid[1][0]
+                        i = i + 1
 
             for index, item in enumerate(side_list):
                 parse_group_layout(
@@ -81,13 +108,12 @@ class GridLayout:
         rows = self.layout_config.get("rows", 2)
         cols = self.layout_config.get("cols", 2)
         gs = GridSpec(rows, cols)
-        axes_map = {}
+        axes_map = []
         for comp_cfg in self.layout_config.get("components", []):
-            name = comp_cfg["name"]
             grid = comp_cfg.get("grid", [0, 0])
-
             row_spec, col_spec = self._get_grid(grid)
-            axes_map[name] = self.fig.add_subplot(gs[row_spec, col_spec])
+            comp_cfg["ax"] = self.fig.add_subplot(gs[row_spec, col_spec])
+            axes_map.append(comp_cfg)
         return axes_map
 
     def _get_grid(self, grid):

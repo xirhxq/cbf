@@ -26,38 +26,17 @@ class AnimationDrawer:
         axes_map = GridLayout(fig, self.data["config"]["num"], plot_list).allocate_axes()
 
         components = []
-        if 'map' in plot_list:
-            map_component = MapAnimationComponent(axes_map['map'], self.data, name="Map")
-            components.append(map_component)
 
-        for i in range(self.data["config"]["num"]):
-            if 'opt' in plot_list:
-                components.append(
-                    OptimizationContourPlot(
-                        axes_map[f'opt_{i + 1}'],
-                        self.data,
-                        robot_id=i,
-                        name=f"Opt Result, Robot #{i + 1}"
-                    )
+        for item in axes_map:
+            component_class = item["class"]
+            if component_class not in globals():
+                raise ValueError(f"Component class '{component_class}' not found. ")
+            components.append(
+                globals()[component_class](
+                    data=self.data,
+                    **item
                 )
-            if 'fix' in plot_list:
-                components.append(
-                    FixedCommRangeComponent(
-                        axes_map[f'fix_{i + 1}'],
-                        self.data,
-                        robot_id=i,
-                        name=f"Robot #{i + 1} Fixed Communication"
-                    )
-                )
-            if 'cbf' in plot_list:
-                components.append(
-                    CBFValuesComponent(
-                        axes_map[f'cbf_{i + 1}'],
-                        self.data,
-                        robot_id=i,
-                        name=f"CBF Values, Robot #{i + 1}"
-                    )
-                )
+            )
 
         totalLength = len(self.data["state"])
 
@@ -89,10 +68,7 @@ class AnimationDrawer:
 
 if __name__ == '__main__':
     files = [findNewestFile('../../data', '*')]
-    drawer = AnimationDrawer(
-        files
-    )
-    drawer.run_animation(
+    AnimationDrawer(files).run_animation(
         plot_list=[
             'map',
             'opt',

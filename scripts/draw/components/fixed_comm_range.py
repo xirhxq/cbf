@@ -3,11 +3,11 @@ from utils import *
 from .base import PlotComponent
 
 class FixedCommRangeComponent(PlotComponent):
-    def __init__(self, ax, data, robot_id, name=None):
+    def __init__(self, ax, data, robot_id, title=None, **kwargs):
         self.ax = ax
         self.data = data["state"]
         self.robot_id = robot_id
-        self.name = name or f"Robot #{robot_id + 1} Comm Distance"
+        self.title = title or f"Robot #{robot_id + 1} Comm Distance"
 
         runtime = [dt["runtime"] for dt in self.data]
         id2Position = [
@@ -54,7 +54,7 @@ class FixedCommRangeComponent(PlotComponent):
         self._initialize_plot()
 
     def _initialize_plot(self):
-        self.ax.set_title(self.name)
+        self.ax.set_title(self.title)
         self.ax.set_xlabel('Time / s')
         self.ax.set_ylabel('Distance / m')
 
