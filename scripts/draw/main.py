@@ -8,6 +8,7 @@ BAR_FORMAT = "{percentage:3.0f}%|{bar:50}| {n_fmt}/{total_fmt} [elap: {elapsed}s
 
 
 class StaticGlobalPlotDrawer:
+    DPI = 300
     def __init__(self, files):
         self.loader = DataLoader(files)
         self.data = self.loader.data
@@ -16,10 +17,13 @@ class StaticGlobalPlotDrawer:
         plt.switch_backend('agg')
 
     def draw_plots(self, plot_type):
-        fig, ax = plt.subplots(figsize=(8, 8))
+        assert plot_type in REGISTRIED_COMPONENTS, f"Plot type '{plot_type}' is not registered."
+        config = REGISTRIED_COMPONENTS[plot_type]
+
+        fig, ax = plt.subplots(figsize=config["figsize"])
         fig.set_tight_layout(True)
 
-        component_class = REGISTRIED_COMPONENTS[plot_type]["class"]
+        component_class = config["class"]
         if component_class not in globals():
             raise ValueError(f"Component class '{component_class}' not found. ")
         component = globals()[component_class](
@@ -28,12 +32,13 @@ class StaticGlobalPlotDrawer:
             mode='global'
         )
 
-        filename = os.path.join(self.folder, plot_type + '.png')
-        fig.savefig(filename, dpi=300, bbox_inches='tight')
+        filename = os.path.join(self.folder, config["filename"] + '.png')
+        fig.savefig(filename, dpi=self.DPI, bbox_inches='tight')
         plt.close(fig)
 
 
 class StaticSeparatePlotDrawer:
+    DPI = 300
     def __init__(self, files):
         self.loader = DataLoader(files)
         self.data = self.loader.data
@@ -42,13 +47,16 @@ class StaticSeparatePlotDrawer:
         plt.switch_backend('agg')
 
     def draw_plots(self, plot_type):
+        assert plot_type in REGISTRIED_COMPONENTS, f"Plot type '{plot_type}' is not registered."
+        config = REGISTRIED_COMPONENTS[plot_type]
+
         num_robots = self.data["config"]["num"]
 
         pbar = tqdm.tqdm(total=num_robots, bar_format=BAR_FORMAT)
 
         for robot_id in range(num_robots):
-            fig, ax = plt.subplots(figsize=(10, 6))
-            component_class = REGISTRIED_COMPONENTS[plot_type]["class"]
+            fig, ax = plt.subplots(figsize=config["figsize"])
+            component_class = config["class"]
             if component_class not in globals():
                 raise ValueError(f"Component class '{component_class}' not found. ")
             component = globals()[component_class](
@@ -58,8 +66,8 @@ class StaticSeparatePlotDrawer:
                 mode='separate'
             )
 
-            filename = os.path.join(self.folder, plot_type + f"-{robot_id + 1}.png")
-            fig.savefig(filename, dpi=300, bbox_inches='tight')
+            filename = os.path.join(self.folder, config["filename"] + f"-{robot_id + 1}.png")
+            fig.savefig(filename, dpi=self.DPI, bbox_inches='tight')
             plt.close(fig)
 
             pbar.update(1)
@@ -68,6 +76,8 @@ class StaticSeparatePlotDrawer:
 
 
 class StaticGroupPlotDrawer:
+    FIGSIZE = (16, 9)
+    DPI = 300
     def __init__(self, files):
         self.loader = DataLoader(files)
         self.data = self.loader.data
@@ -77,7 +87,9 @@ class StaticGroupPlotDrawer:
 
 
     def draw_plots(self, plot_list):
-        fig = plt.figure(figsize=(16, 9))
+        if any(plot_type not in REGISTRIED_COMPONENTS for plot_type in plot_list):
+            raise ValueError(f"Some plot types in {plot_list} are not registered.")
+        fig = plt.figure(figsize=self.FIGSIZE)
         fig.set_tight_layout(True)
 
         axes_map = GridLayout(fig, self.data["config"]["num"], plot_list).allocate_axes()
@@ -97,14 +109,15 @@ class StaticGroupPlotDrawer:
             )
 
 
-        suffix = '-'.join(plot_list)
+        suffix = '-'.join([REGISTRIED_COMPONENTS[plot_type]["filename"] for plot_type in plot_list])
         filename = os.path.join(self.folder, suffix + '-all.png')
-        fig.savefig(filename, dpi=300, bbox_inches='tight')
+        fig.savefig(filename, dpi=self.DPI, bbox_inches='tight')
         plt.close(fig)
 
 
 
 class AnimationDrawer:
+    FIGSIZE = (16, 9)
     def __init__(self, files):
         self.loader = DataLoader(files)
         self.data = self.loader.data
@@ -116,7 +129,9 @@ class AnimationDrawer:
 
     def run_animation(self, plot_list=None):
         plot_list = ['map'] if plot_list == [] or plot_list is None else plot_list
-        fig = plt.figure(figsize=(16, 9))
+        fig = plt.figure(figsize=self.FIGSIZE)
+        if len(plot_list) == 1 and 'figsize' in REGISTRIED_COMPONENTS[plot_list[0]].keys():
+            fig = plt.figure(figsize=REGISTRIED_COMPONENTS[plot_list[0]]["figsize"])
         fig.set_tight_layout(True)
 
         axes_map = GridLayout(fig, self.data["config"]["num"], plot_list).allocate_axes()
@@ -172,6 +187,11 @@ if __name__ == '__main__':
         plot_list=[
             'fix',
             'cbf'
+        ]
+    )
+    AnimationDrawer(files).run_animation(
+        plot_list=[
+            'map',
         ]
     )
     AnimationDrawer(files).run_animation(
