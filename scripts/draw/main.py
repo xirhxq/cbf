@@ -57,6 +57,18 @@ if __name__ == '__main__':
             'action': lambda: StaticGroupPlotDrawer(files).draw_plots(['cvt'])
         },
         {
+            'name': 'Generate Energy Level (All Robots in One)',
+            'action': lambda: StaticGlobalPlotDrawer(files).draw_plots('energy')
+        },
+        {
+            'name': 'Generate Energy Level (Grouped Subplots)',
+            'action': lambda: StaticGroupPlotDrawer(files).draw_plots(['energy_group'])
+        },
+        {
+            'name': 'Generate Energy Level (Each Robot Separately)',
+            'action': lambda: StaticSeparatePlotDrawer(files).draw_plots('energy_separate')
+        },
+        {
             'name': 'Run Animation (Map Only)',
             'action': lambda: AnimationDrawer(files).run_animation(['map'])
         },

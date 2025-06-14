@@ -13,10 +13,10 @@ class StaticGroupPlotDrawer(BaseDrawer):
 
         for item in axes_map:
             component_class = self._check_class(item["class"])
+            item["mode"] = 'group'
             components.append(
                 component_class(
                     data=self.data,
-                    mode='group',
                     **item
                 )
             )

@@ -17,7 +17,6 @@ class StaticSeparatePlotDrawer(BaseDrawer):
                 ax=ax,
                 data=self.data,
                 robot_id=robot_id,
-                mode='separate',
                 **config
             )
 

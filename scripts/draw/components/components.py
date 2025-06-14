@@ -4,6 +4,7 @@ from .fixed_comm_range import FixedCommRangeComponent
 from .cbf_values import CBFValuesComponent
 from .search_heatmap import SearchHeatmapComponent
 from .heatmap import HeatmapComponent
+from .energy import EnergyComponent
 
 REGISTRIED_COMPONENTS = {
     'map': {
@@ -57,5 +58,26 @@ REGISTRIED_COMPONENTS = {
         'params': {
             'cbf_filter': 'min'
         }
+    },
+    'energy': {
+        'title': 'Energy Level (All)',
+        'class': 'EnergyComponent',
+        'filename': 'energy_all',
+        'figsize': (10, 6),
+        'mode': 'global'
+    },
+    'energy_group': {
+        'title': 'Energy Level (Grouped)',
+        'class': 'EnergyComponent',
+        'filename': 'energy_group',
+        'figsize': (12, 8),
+        'mode': 'group'
+    },
+    'energy_separate': {
+        'title': 'Energy Level (Separate)',
+        'class': 'EnergyComponent',
+        'filename': 'energy_separate',
+        'figsize': (8, 6),
+        'mode': 'separate'
     }
 }
