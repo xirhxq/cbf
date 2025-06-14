@@ -7,6 +7,32 @@ from layout.grid_layout import *
 BAR_FORMAT = "{percentage:3.0f}%|{bar:50}| {n_fmt}/{total_fmt} [elap: {elapsed}s eta: {remaining}s]"
 
 
+class StaticGlobalPlotDrawer:
+    def __init__(self, files):
+        self.loader = DataLoader(files)
+        self.data = self.loader.data
+        self.folder = self.loader.folder
+
+        plt.switch_backend('agg')
+
+    def draw_plots(self, plot_type):
+        fig, ax = plt.subplots(figsize=(8, 8))
+        fig.set_tight_layout(True)
+
+        component_class = REGISTRIED_COMPONENTS[plot_type]["class"]
+        if component_class not in globals():
+            raise ValueError(f"Component class '{component_class}' not found. ")
+        component = globals()[component_class](
+            ax=ax,
+            data=self.data,
+            mode='global'
+        )
+
+        filename = os.path.join(self.folder, plot_type + '.png')
+        fig.savefig(filename, dpi=300, bbox_inches='tight')
+        plt.close(fig)
+
+
 class StaticSeparatePlotDrawer:
     def __init__(self, files):
         self.loader = DataLoader(files)
@@ -139,6 +165,7 @@ class AnimationDrawer:
 
 if __name__ == '__main__':
     files = [findNewestFile('../../data', '*')]
+    StaticGlobalPlotDrawer(files).draw_plots('sh')
     StaticSeparatePlotDrawer(files).draw_plots('cbf')
     StaticSeparatePlotDrawer(files).draw_plots('fix')
     StaticGroupPlotDrawer(files).draw_plots(
