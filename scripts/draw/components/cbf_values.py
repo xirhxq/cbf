@@ -1,4 +1,3 @@
-import numpy as np
 from utils import *
 
 from .base import BaseComponent
