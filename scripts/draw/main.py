@@ -37,6 +37,10 @@ if __name__ == '__main__':
             'action': lambda: StaticSeparatePlotDrawer(files).draw_plots('fix')
         },
         {
+            'name': 'Generate Heatmap per Robot',
+            'action': lambda: StaticSeparatePlotDrawer(files).draw_plots('heat')
+        },
+        {
             'name': 'Generate Combined Plot (Fix + CBF)',
             'action': lambda: StaticGroupPlotDrawer(files).draw_plots(['fix', 'cbf'])
         },

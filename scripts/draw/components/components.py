@@ -3,6 +3,7 @@ from .optimisation_contour import OptimizationContourPlot
 from .fixed_comm_range import FixedCommRangeComponent
 from .cbf_values import CBFValuesComponent
 from .search_heatmap import SearchHeatmapComponent
+from .heatmap import HeatmapComponent
 
 
 REGISTRIED_COMPONENTS = {
@@ -32,6 +33,12 @@ REGISTRIED_COMPONENTS = {
         'title': 'Search Heatmap',
         'class': 'SearchHeatmapComponent',
         'filename': 'search-heatmap',
+        'figsize': (8, 8),
+    },
+    'heat': {
+        'title': 'Heatmap',
+        'class': 'HeatmapComponent',
+        'filename': 'heatmap',
         'figsize': (8, 8),
     }
 }
