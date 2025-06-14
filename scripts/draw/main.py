@@ -4,11 +4,11 @@ from components.components import *
 from layout.grid_layout import *
 
 
-BAR_FORMAT = "{percentage:3.0f}%|{bar:50}| {n_fmt}/{total_fmt} [elap: {elapsed}s eta: {remaining}s]"
-
-
-class StaticGlobalPlotDrawer:
+class BaseDrawer:
+    BAR_FORMAT = "{percentage:3.0f}%|{bar:50}| {n_fmt}/{total_fmt} [elap: {elapsed}s eta: {remaining}s]"
     DPI = 300
+    FIGSIZE = (16, 9)
+
     def __init__(self, files):
         self.loader = DataLoader(files)
         self.data = self.loader.data
@@ -16,17 +16,36 @@ class StaticGlobalPlotDrawer:
 
         plt.switch_backend('agg')
 
+    def _check_plot_type(self, plot_type):
+        if plot_type not in REGISTRIED_COMPONENTS:
+            raise ValueError(
+                f"Plot type '{plot_type}' is not registered. "
+                f"Available types: {list(REGISTRIED_COMPONENTS.keys())}"
+            )
+
+    def _check_plot_list(self, plot_list):
+        if any(plot_type not in REGISTRIED_COMPONENTS for plot_type in plot_list):
+            raise ValueError(
+                f"Some plot types in {plot_list} are not registered. "
+                f"Available types: {list(REGISTRIED_COMPONENTS.keys())}"
+            )
+
+    def _check_class(self, class_name):
+        if class_name not in globals():
+            raise ValueError(f"Component class '{class_name}' not found. ")
+        return globals()[class_name]
+
+
+class StaticGlobalPlotDrawer(BaseDrawer):
     def draw_plots(self, plot_type):
-        assert plot_type in REGISTRIED_COMPONENTS, f"Plot type '{plot_type}' is not registered."
+        self._check_plot_type(plot_type)
         config = REGISTRIED_COMPONENTS[plot_type]
 
         fig, ax = plt.subplots(figsize=config["figsize"])
         fig.set_tight_layout(True)
 
-        component_class = config["class"]
-        if component_class not in globals():
-            raise ValueError(f"Component class '{component_class}' not found. ")
-        component = globals()[component_class](
+        component_class = self._check_class(config["class"])
+        component = component_class(
             ax=ax,
             data=self.data,
             mode='global'
@@ -37,29 +56,19 @@ class StaticGlobalPlotDrawer:
         plt.close(fig)
 
 
-class StaticSeparatePlotDrawer:
-    DPI = 300
-    def __init__(self, files):
-        self.loader = DataLoader(files)
-        self.data = self.loader.data
-        self.folder = self.loader.folder
-
-        plt.switch_backend('agg')
-
+class StaticSeparatePlotDrawer(BaseDrawer):
     def draw_plots(self, plot_type):
-        assert plot_type in REGISTRIED_COMPONENTS, f"Plot type '{plot_type}' is not registered."
+        self._check_plot_type(plot_type)
         config = REGISTRIED_COMPONENTS[plot_type]
 
         num_robots = self.data["config"]["num"]
 
-        pbar = tqdm.tqdm(total=num_robots, bar_format=BAR_FORMAT)
+        pbar = tqdm.tqdm(total=num_robots, bar_format=self.BAR_FORMAT)
 
         for robot_id in range(num_robots):
             fig, ax = plt.subplots(figsize=config["figsize"])
-            component_class = config["class"]
-            if component_class not in globals():
-                raise ValueError(f"Component class '{component_class}' not found. ")
-            component = globals()[component_class](
+            component_class = self._check_class(config["class"])
+            component = component_class(
                 ax=ax,
                 data=self.data,
                 robot_id=robot_id,
@@ -75,20 +84,9 @@ class StaticSeparatePlotDrawer:
         pbar.close()
 
 
-class StaticGroupPlotDrawer:
-    FIGSIZE = (16, 9)
-    DPI = 300
-    def __init__(self, files):
-        self.loader = DataLoader(files)
-        self.data = self.loader.data
-        self.folder = self.loader.folder
-
-        plt.switch_backend('agg')
-
-
+class StaticGroupPlotDrawer(BaseDrawer):
     def draw_plots(self, plot_list):
-        if any(plot_type not in REGISTRIED_COMPONENTS for plot_type in plot_list):
-            raise ValueError(f"Some plot types in {plot_list} are not registered.")
+        self._check_plot_list(plot_list)
         fig = plt.figure(figsize=self.FIGSIZE)
         fig.set_tight_layout(True)
 
@@ -97,11 +95,9 @@ class StaticGroupPlotDrawer:
         components = []
 
         for item in axes_map:
-            component_class = item["class"]
-            if component_class not in globals():
-                raise ValueError(f"Component class '{component_class}' not found. ")
+            component_class = self._check_class(item["class"])
             components.append(
-                globals()[component_class](
+                component_class(
                     data=self.data,
                     mode='group',
                     **item
@@ -116,19 +112,11 @@ class StaticGroupPlotDrawer:
 
 
 
-class AnimationDrawer:
-    FIGSIZE = (16, 9)
-    def __init__(self, files):
-        self.loader = DataLoader(files)
-        self.data = self.loader.data
-        self.folder = self.loader.folder
-
-        self.shotList = []
-
-        plt.switch_backend('agg')
+class AnimationDrawer(BaseDrawer):
 
     def run_animation(self, plot_list=None):
         plot_list = ['map'] if plot_list == [] or plot_list is None else plot_list
+        self._check_plot_list(plot_list)
         fig = plt.figure(figsize=self.FIGSIZE)
         if len(plot_list) == 1 and 'figsize' in REGISTRIED_COMPONENTS[plot_list[0]].keys():
             fig = plt.figure(figsize=REGISTRIED_COMPONENTS[plot_list[0]]["figsize"])
@@ -139,11 +127,9 @@ class AnimationDrawer:
         components = []
 
         for item in axes_map:
-            component_class = item["class"]
-            if component_class not in globals():
-                raise ValueError(f"Component class '{component_class}' not found. ")
+            component_class = self._check_class(item["class"])
             components.append(
-                globals()[component_class](
+                component_class(
                     data=self.data,
                     mode='animation',
                     **item
@@ -152,7 +138,7 @@ class AnimationDrawer:
 
         totalLength = len(self.data["state"])
 
-        pbar = tqdm.tqdm(total=totalLength, bar_format=BAR_FORMAT)
+        pbar = tqdm.tqdm(total=totalLength, bar_format=self.BAR_FORMAT)
 
         def update(num):
             pbar.update(1)
