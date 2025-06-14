@@ -53,6 +53,10 @@ if __name__ == '__main__':
             'action': lambda: StaticGroupPlotDrawer(files).draw_plots(['fix', 'cbf'])
         },
         {
+            'name': 'Generate CVT CBF Value Combined Plot',
+            'action': lambda: StaticGroupPlotDrawer(files).draw_plots(['cvt'])
+        },
+        {
             'name': 'Run Animation (Map Only)',
             'action': lambda: AnimationDrawer(files).run_animation(['map'])
         },
