@@ -8,7 +8,7 @@ class HeatmapComponent(BaseComponent):
         self.ax = ax
         self.data = data["state"]
         self.robot_id = robot_id
-        self.title = title or f"Heatmap, Robot #{robot_id + 1}"
+        self.title = (title or f"Heatmap") + f", Robot #{robot_id + 1}"
 
         self.robot_positions = [
             (frame["robots"][robot_id]["state"]["x"], frame["robots"][robot_id]["state"]["y"])

@@ -3,13 +3,41 @@ from utils import *
 from .base import BaseComponent
 
 
+def filter_all(name):
+    return True
+
+
+def filter_cvt(name):
+    return name == 'cvtCBF'
+
+
+def filter_min(name):
+    return 'min' in name
+
+
+CBF_FILTERS = {
+    'all': filter_all,
+    'cvt': filter_cvt,
+    'min': filter_min
+}
+
+
 class CBFValuesComponent(BaseComponent):
     def __init__(self, ax, data, robot_id, title=None, mode='separate', **kwargs):
         self.ax = ax
         self.data = data["state"]
         self.robot_id = robot_id
-        self.title = title or f"CBF Values, Robot #{robot_id + 1}"
+        self.title = (title or f"CBF Values") + f", Robot #{robot_id + 1}"
         self.mode = mode
+        self.cbf_filter = kwargs.get('params', {}).get('cbf_filter', 'all')
+
+        if isinstance(self.cbf_filter, str):
+            assert self.cbf_filter in CBF_FILTERS, f"Mode '{self.cbf_filter}' not supported."
+            self.filter_func = CBF_FILTERS[self.cbf_filter]
+        elif callable(self.cbf_filter):
+            self.filter_func = self.cbf_filter
+        else:
+            raise ValueError("mode must be a string or a callable function.")
 
         self.keys = ("cbfNoSlack", "cbfSlack")
 
@@ -22,7 +50,9 @@ class CBFValuesComponent(BaseComponent):
                 for frame in self.data:
                     if key in frame["robots"][robot_id]:
                         for name, value in frame["robots"][robot_id][key].items():
-                            cbf_names.add(name)
+                            if self.filter_func(name):
+                                cbf_names.add(name)
+
                 for cbf_name in sorted(cbf_names):
                     times = []
                     values = []
@@ -30,7 +60,7 @@ class CBFValuesComponent(BaseComponent):
                         val = None
                         if key in frame["robots"][robot_id]:
                             for name, value in frame["robots"][robot_id][key].items():
-                                if name == cbf_name:
+                                if name == cbf_name and self.filter_func(name):
                                     val = value
                                     break
                         times.append(frame["runtime"])

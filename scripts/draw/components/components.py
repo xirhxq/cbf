@@ -5,7 +5,6 @@ from .cbf_values import CBFValuesComponent
 from .search_heatmap import SearchHeatmapComponent
 from .heatmap import HeatmapComponent
 
-
 REGISTRIED_COMPONENTS = {
     'map': {
         'class': 'MapAnimationComponent',
@@ -40,5 +39,23 @@ REGISTRIED_COMPONENTS = {
         'class': 'HeatmapComponent',
         'filename': 'heatmap',
         'figsize': (8, 8),
+    },
+    'cvt': {
+        'title': 'CVT CBF Value',
+        'class': 'CBFValuesComponent',
+        'filename': 'cvt_cbf',
+        'figsize': (10, 6),
+        'params': {
+            'cbf_filter': 'cvt'
+        }
+    },
+    'min': {
+        'title': 'Mininum of CBF without Slack',
+        'class': 'CBFValuesComponent',
+        'filename': 'min_cbf',
+        'figsize': (10, 6),
+        'params': {
+            'cbf_filter': 'min'
+        }
     }
 }

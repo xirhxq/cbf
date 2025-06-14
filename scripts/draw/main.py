@@ -33,6 +33,14 @@ if __name__ == '__main__':
             'action': lambda: StaticSeparatePlotDrawer(files).draw_plots('cbf')
         },
         {
+            'name': 'Generate CVT CBF Value per Robot',
+            'action': lambda: StaticSeparatePlotDrawer(files).draw_plots('cvt')
+        },
+        {
+            'name': 'Generate Min CBF Value per Robot',
+            'action': lambda: StaticSeparatePlotDrawer(files).draw_plots('min')
+        },
+        {
             'name': 'Generate Fixed Communication Range Plots',
             'action': lambda: StaticSeparatePlotDrawer(files).draw_plots('fix')
         },

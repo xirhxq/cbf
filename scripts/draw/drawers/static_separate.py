@@ -17,7 +17,8 @@ class StaticSeparatePlotDrawer(BaseDrawer):
                 ax=ax,
                 data=self.data,
                 robot_id=robot_id,
-                mode='separate'
+                mode='separate',
+                **config
             )
 
             filename = os.path.join(self.folder, config["filename"] + f"-{robot_id + 1}.png")

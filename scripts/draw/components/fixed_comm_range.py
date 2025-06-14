@@ -7,7 +7,7 @@ class FixedCommRangeComponent(BaseComponent):
         self.ax = ax
         self.data = data["state"]
         self.robot_id = robot_id
-        self.title = title or f"Comm Distance, Robot #{robot_id + 1}"
+        self.title = (title or f"Comm Distance") + f", Robot #{robot_id + 1}"
         self.mode = mode
 
         runtime = [dt["runtime"] for dt in self.data]
