@@ -2,28 +2,35 @@ from .base import *
 
 
 class StaticSeparatePlotDrawer(BaseDrawer):
-    def draw_plots(self, plot_type):
-        self._check_plot_type(plot_type)
-        config = REGISTRIED_COMPONENTS[plot_type]
+    def draw_plots(self, plot_list):
+        self._check_plot_list(plot_list)
 
         num_robots = self.data["config"]["num"]
 
         pbar = tqdm.tqdm(total=num_robots, bar_format=self.BAR_FORMAT)
 
+        if len(plot_list) == 1:
+            self.FIGSIZE = REGISTRIED_COMPONENTS[plot_list[0]]["figsize"]
+
         for robot_id in range(num_robots):
-            fig, ax = plt.subplots(figsize=config["figsize"])
-            component_class = self._check_class(config["class"])
-            component = component_class(
-                ax=ax,
-                data=self.data,
-                robot_id=robot_id,
-                **config
-            )
+            fig = plt.figure(figsize=self.FIGSIZE)
+            fig.set_tight_layout(True)
 
-            filename = os.path.join(self.folder, config["filename"] + f"-{robot_id + 1}.png")
+            axes_map = GridLayout(fig, plot_list, expand=False, n=num_robots, robot_id=robot_id).allocate_axes()
+
+            for item in axes_map:
+                component_class = self._check_class(item["class"])
+                item["mode"] = 'separate'
+                component = component_class(
+                    data=self.data,
+                    **item
+                )
+
+            suffix = '-'.join([REGISTRIED_COMPONENTS[plot_type]["filename"] for plot_type in plot_list])
+            filename = os.path.join(self.folder, suffix + f'-{robot_id + 1}.png')
             fig.savefig(filename, dpi=self.DPI, bbox_inches='tight')
-            plt.close(fig)
 
+            plt.close(fig)
             pbar.update(1)
 
         pbar.close()

@@ -11,7 +11,7 @@ class AnimationDrawer(BaseDrawer):
             fig = plt.figure(figsize=REGISTRIED_COMPONENTS[plot_list[0]]["figsize"])
         fig.set_tight_layout(True)
 
-        axes_map = GridLayout(fig, self.data["config"]["num"], plot_list).allocate_axes()
+        axes_map = GridLayout(fig, plot_list, n=self.data["config"]["num"]).allocate_axes()
 
         components = []
 

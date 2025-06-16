@@ -30,23 +30,27 @@ if __name__ == '__main__':
         },
         {
             'name': 'Generate CBF Values per Robot',
-            'action': lambda: StaticSeparatePlotDrawer(files).draw_plots('cbf')
+            'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['cbf'])
         },
         {
             'name': 'Generate CVT CBF Value per Robot',
-            'action': lambda: StaticSeparatePlotDrawer(files).draw_plots('cvt')
+            'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['cvt'])
         },
         {
             'name': 'Generate Min CBF Value per Robot',
-            'action': lambda: StaticSeparatePlotDrawer(files).draw_plots('min')
+            'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['min'])
         },
         {
             'name': 'Generate Fixed Communication Range Plots',
-            'action': lambda: StaticSeparatePlotDrawer(files).draw_plots('fix')
+            'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['fix'])
         },
         {
             'name': 'Generate Heatmap per Robot',
-            'action': lambda: StaticSeparatePlotDrawer(files).draw_plots('heat')
+            'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['heat'])
+        },
+        {
+            'name': 'Generate Statistic per Robot',
+            'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['energy', 'min'])
         },
         {
             'name': 'Generate Combined Plot (Fix + CBF)',

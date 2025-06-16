@@ -4,10 +4,20 @@ from components.components import *
 
 
 class GridLayout:
-    def __init__(self, fig, n, plot_list):
-        self.plot_list = plot_list
+    def __init__(self, fig, plot_list, expand=True, n=None, robot_id=None, **kwargs):
         self.fig = fig
+        self.plot_list = plot_list
+
+        if expand:
+            assert n is not None, "When expand is True, n must be provided."
+        else:
+            assert robot_id is not None, "When expand is False, robot_id must be provided."
+
+        self.expand = expand
         self.n = n
+        self.robot_id = robot_id
+
+
         self.layout_config = self._get_layout()
 
 
@@ -73,15 +83,27 @@ class GridLayout:
                         i = i + 1
 
             for index, item in enumerate(side_list):
-                parse_group_layout(
-                    layout_config['components'],
-                    item,
-                    [
-                        [index * side_rows, (index + 1) * side_rows],
-                        [map_cols, layout_config['cols']]
-                    ],
-                    self.n
-                )
+                if self.expand:
+                    parse_group_layout(
+                        layout_config['components'],
+                        item,
+                        [
+                            [index * side_rows, (index + 1) * side_rows],
+                            [map_cols, layout_config['cols']]
+                        ],
+                        self.n
+                    )
+                else:
+                    layout_config['components'].append(
+                        {
+                            'grid': [
+                                [index * side_rows, (index + 1) * side_rows],
+                                [map_cols, layout_config['cols']]
+                            ],
+                            'robot_id': self.robot_id,
+                            **REGISTRIED_COMPONENTS[item]
+                        }
+                    )
 
         return layout_config
 
