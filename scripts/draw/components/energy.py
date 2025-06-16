@@ -20,9 +20,9 @@ class EnergyComponent(BaseComponent):
 
         self._initialize_plot()
 
-    def _plot_single(self, ax, robot_id):
-        ax.plot(self.runtime, self.battery_data[robot_id], label=f'UAV #{robot_id + 1}')
-        ax.set_title(f'Energy Level, Robot #{robot_id + 1}')
+    def _plot_single(self, ax):
+        ax.plot(self.runtime, self.battery_data[self.robot_id], label=f'UAV #{self.robot_id + 1}')
+        ax.set_title(f'Energy Level, Robot #{self.robot_id + 1}')
         ax.set_xlabel('Time / s')
         ax.set_ylabel('Battery Level')
 
@@ -34,19 +34,13 @@ class EnergyComponent(BaseComponent):
         ax.set_ylabel('Battery Level')
         ax.legend(loc='best')
 
-    def _plot_separate_subplots(self, fig, axes):
-        for i, ax in enumerate(axes):
-            if i < self.robot_num:
-                self._plot_single(ax, i)
-        fig.tight_layout()
-
     def _initialize_plot(self):
         if self.mode == 'global':
             self._plot_all_in_one(self.ax)
         elif self.mode == 'group':
-            self._plot_separate_subplots(self.ax.figure, self.ax.figure.axes)
+            self._plot_single(self.ax)
         elif self.mode == 'separate':
-            self._plot_single(self.ax, self.robot_id)
+            self._plot_single(self.ax)
 
     def update(self, num):
         pass

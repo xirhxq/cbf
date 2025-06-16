@@ -69,8 +69,8 @@ if __name__ == '__main__':
             'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['energy', 'min'])
         },
         {
-            'name': 'Fix Communication Range & CBF, Grouped',
-            'action': lambda: StaticGroupPlotDrawer(files).draw_plots(['fix', 'cbf'])
+            'name': 'Fix Communication Range & CBF & Energy, Grouped',
+            'action': lambda: StaticGroupPlotDrawer(files).draw_plots(['fix', 'cbf', 'energy'])
         },
         {
             'name': 'CVT CBF, Grouped',
