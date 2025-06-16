@@ -33,63 +33,63 @@ if __name__ == '__main__':
 
     menu_options = [
         {
-            'name': 'Generate Search Heatmap',
+            'name': 'Search Heatmap',
             'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['sh'])
         },
         {
-            'name': 'Generate Energy Level (All Robots in One)',
+            'name': 'Energy Level, All Robots',
             'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['energy'])
         },
         {
-            'name': 'Generate Statistics',
+            'name': 'Search Heatmap & Energy, All Robots',
             'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['sh', 'energy'])
         },
         {
-            'name': 'Generate CBF Values per Robot',
+            'name': 'CBF Values, Per Robot',
             'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['cbf'])
         },
         {
-            'name': 'Generate CVT CBF Value per Robot',
+            'name': 'CVT CBF Value, Per Robot',
             'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['cvt'])
         },
         {
-            'name': 'Generate Min CBF Value per Robot',
+            'name': 'Min CBF Value, Per Robot',
             'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['min'])
         },
         {
-            'name': 'Generate Fixed Communication Range Plots',
+            'name': 'Fixed Communication Range, Per Robot',
             'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['fix'])
         },
         {
-            'name': 'Generate Heatmap per Robot',
+            'name': 'Heatmap, Per Robot',
             'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['heat'])
         },
         {
-            'name': 'Generate Statistic per Robot',
+            'name': 'Energy & Min CBF, Per Robot',
             'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['energy', 'min'])
         },
         {
-            'name': 'Generate Combined Plot (Fix + CBF)',
+            'name': 'Fix Communication Range & CBF, Grouped',
             'action': lambda: StaticGroupPlotDrawer(files).draw_plots(['fix', 'cbf'])
         },
         {
-            'name': 'Generate CVT CBF Value Combined Plot',
+            'name': 'CVT CBF, Grouped',
             'action': lambda: StaticGroupPlotDrawer(files).draw_plots(['cvt'])
         },
         {
-            'name': 'Generate Energy Level (Grouped Subplots)',
+            'name': 'Energy Level, Grouped',
             'action': lambda: StaticGroupPlotDrawer(files).draw_plots(['energy'])
         },
         {
-            'name': 'Generate Energy Level (Each Robot Separately)',
+            'name': 'Energy Level, Per Robot',
             'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['energy'])
         },
         {
-            'name': 'Run Animation (Map Only)',
+            'name': 'Animation (Map)',
             'action': lambda: AnimationDrawer(files).run_animation(['map'])
         },
         {
-            'name': 'Run Animation (Full Set)',
+            'name': 'Animation (Full Set)',
             'action': lambda: AnimationDrawer(files).run_animation(['map', 'opt', 'fix', 'cbf'])
         }
     ]
