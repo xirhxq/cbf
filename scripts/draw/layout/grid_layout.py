@@ -66,7 +66,6 @@ class GridLayout:
                             **REGISTRIED_COMPONENTS[name]
                         }
                     )
-                    layout[-1]["title"] += f", Robot #{id + 1}"
 
                     j = j + 1
                     if j >= grid[1][1]:

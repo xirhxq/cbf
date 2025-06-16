@@ -5,7 +5,7 @@ from .base import BaseComponent
 class OptimizationContourPlot(BaseComponent):
     def __init__(self, ax, data, robot_id, title, **kwargs):
         self.data = [dt["robots"][robot_id]["opt"] for dt in data["state"]]
-        self.title = title
+        self.title = (title or f"Opt Result") + f", Robot #{robot_id + 1}"
         self.ax = ax
         self.ax.set_title(self.title)
         self.txt = self.ax.text(0.05, 0.85, '', color='red', transform=self.ax.transAxes, fontsize=20)
