@@ -29,10 +29,10 @@ class EnergyComponent(BaseComponent):
     def _plot_all_in_one(self, ax):
         for i in range(self.robot_num):
             ax.plot(self.runtime, self.battery_data[i], label=f'UAV #{i + 1}')
-        ax.set_title('Energy Levels of All Robots')
+        ax.set_title('Energy Levels, All Robots')
         ax.set_xlabel('Time / s')
         ax.set_ylabel('Battery Level')
-        ax.legend(bbox_to_anchor=(1.0, -0.15), ncol=5)
+        ax.legend(loc='best')
 
     def _plot_separate_subplots(self, fig, axes):
         for i, ax in enumerate(axes):

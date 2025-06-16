@@ -44,7 +44,7 @@ REGISTRIED_COMPONENTS = {
     'cvt': {
         'title': 'CVT CBF Value',
         'class': 'CBFValuesComponent',
-        'filename': 'cvt_cbf',
+        'filename': 'cvtcbf',
         'figsize': (10, 6),
         'params': {
             'cbf_filter': 'cvt'
@@ -53,31 +53,23 @@ REGISTRIED_COMPONENTS = {
     'min': {
         'title': 'Mininum of CBF without Slack',
         'class': 'CBFValuesComponent',
-        'filename': 'min_cbf',
+        'filename': 'mincbf',
         'figsize': (10, 6),
         'params': {
             'cbf_filter': 'min'
         }
     },
-    'energy': {
+    'energy-all': {
         'title': 'Energy Level (All)',
         'class': 'EnergyComponent',
-        'filename': 'energy_all',
+        'filename': 'energy-all',
         'figsize': (10, 6),
         'mode': 'global'
     },
-    'energy_group': {
+    'energy': {
         'title': 'Energy Level (Grouped)',
         'class': 'EnergyComponent',
-        'filename': 'energy_group',
+        'filename': 'energy',
         'figsize': (12, 8),
-        'mode': 'group'
     },
-    'energy_separate': {
-        'title': 'Energy Level (Separate)',
-        'class': 'EnergyComponent',
-        'filename': 'energy_separate',
-        'figsize': (8, 6),
-        'mode': 'separate'
-    }
 }

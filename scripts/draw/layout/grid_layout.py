@@ -8,11 +8,6 @@ class GridLayout:
         self.fig = fig
         self.plot_list = plot_list
 
-        if expand:
-            assert n is not None, "When expand is True, n must be provided."
-        else:
-            assert robot_id is not None, "When expand is False, robot_id must be provided."
-
         self.expand = expand
         self.n = n
         self.robot_id = robot_id

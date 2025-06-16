@@ -2,20 +2,30 @@ from .base import *
 
 
 class StaticGlobalPlotDrawer(BaseDrawer):
-    def draw_plots(self, plot_type):
-        self._check_plot_type(plot_type)
-        config = REGISTRIED_COMPONENTS[plot_type]
+    def draw_plots(self, plot_list):
+        self._check_plot_list(plot_list)
 
-        fig, ax = plt.subplots(figsize=config["figsize"])
+        num_robots = self.data["config"]["num"]
+
+        if len(plot_list) == 1:
+            self.FIGSIZE = REGISTRIED_COMPONENTS[plot_list[0]]["figsize"]
+
+        fig = plt.figure(figsize=self.FIGSIZE)
         fig.set_tight_layout(True)
 
-        component_class = self._check_class(config["class"])
-        component = component_class(
-            ax=ax,
-            data=self.data,
-            mode='global'
-        )
+        axes_map = GridLayout(fig, plot_list, expand=False, n=num_robots).allocate_axes()
 
-        filename = os.path.join(self.folder, config["filename"] + '.png')
+        for item in axes_map:
+            component_class = self._check_class(item["class"])
+            item["mode"] = 'global'
+            component = component_class(
+                data=self.data,
+                **item
+            )
+
+
+        suffix = '-'.join([REGISTRIED_COMPONENTS[plot_type]["filename"] for plot_type in plot_list])
+        filename = os.path.join(self.folder, suffix + f'.png')
         fig.savefig(filename, dpi=self.DPI, bbox_inches='tight')
+
         plt.close(fig)
