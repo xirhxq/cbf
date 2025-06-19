@@ -261,30 +261,24 @@ public:
 
         if (formationPoints.size() == 0) return;
 
-        auto fixedFormationCommH = [this, formationPoints, formationVels, maxRange, config](VectorXd x, double t) {
-            Point myPosition = model->extractXYFromVector(x);
-
+        for (int i = 0; i < formationPoints.size(); i++) {
+            auto otherPoint = formationPoints[i];
+            auto otherVel = formationVels[i];
             double k = config["k"];
-
-            double h = inf;
-            for (int i = 0; i < formationPoints.size(); i++) {
-                auto otherPoint = formationPoints[i];
-                auto otherVel = formationVels[i];
-                h = std::min(
-                        h,
-                        k * (
-                                maxRange -
-                                myPosition.distance_to(otherPoint + otherVel * t)
-                        )
+            auto fixedFormationCommH = [this, otherPoint, otherVel, maxRange, k](VectorXd x, double t) {
+                Point myPosition = model->extractXYFromVector(x);
+                double h = k * (
+                        maxRange -
+                        myPosition.distance_to(otherPoint + otherVel * t)
                 );
-            }
-            return h;
-        };
+                return h;
+            };
 
-        CBF commCBF;
-        commCBF.name = "commCBF";
-        commCBF.h = fixedFormationCommH;
-        cbfNoSlack.cbfs[commCBF.name] = commCBF;
+            CBF commCBF;
+            commCBF.name = "commCBF" + std::to_string(i);
+            commCBF.h = fixedFormationCommH;
+            cbfNoSlack.cbfs[commCBF.name] = commCBF;
+        }
     }
 
     void setSafetyCBF() {
