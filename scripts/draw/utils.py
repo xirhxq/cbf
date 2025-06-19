@@ -20,15 +20,6 @@ from matplotlib.patches import Wedge
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 
-def findNewestFile(folder: str, ptn: str):
-    directories = glob.glob(os.path.join(folder, ptn))
-    assert len(directories) > 0, "No directory found with pattern {}".format(ptn)
-    directories = [d for d in directories if len(glob.glob(d + '/data.json')) > 0]
-    assert len(directories) > 0, "No directory found with 'data.json' in it"
-    newestFile = max(directories)
-    return os.path.join(newestFile, 'data.json')
-
-
 def name2Color(name):
     name = name.lower()
     if 'cvt' in name:

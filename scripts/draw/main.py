@@ -28,8 +28,25 @@ def interactive_menu(options):
             print("Invalid input. Please try again.")
 
 
+def interactive_selection(options):
+    print("Select options:")
+    for idx, option in enumerate(options):
+        print(f"[{idx}]: {option}")
+    choice = input("Choose options (separated by comma): ").strip().lower()
+    selected_options = [options[int(choice)] for choice in choice.split(',')]
+    return selected_options
+
+
+def findNewestFiles(folder: str, ptn: str, num: int = 1):
+    directories = glob.glob(os.path.join(folder, ptn))
+    assert len(directories) > 0, "No directory found with pattern {}".format(ptn)
+    directories = [d for d in directories if len(glob.glob(d + '/data.json')) > 0]
+    num = min(num, len(directories))
+    return [os.path.join(d, 'data.json') for d in sorted(directories, reverse=True)[:num]]
+
+
 if __name__ == '__main__':
-    files = [findNewestFile('../../data', '*')]
+    files = interactive_selection(findNewestFiles('../../data', '*', 10))
 
     menu_options = [
         {
