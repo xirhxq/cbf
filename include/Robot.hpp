@@ -222,12 +222,13 @@ public:
         double maxRange = config["max-range"];
         int minNeighbourIdOffset = config["min-neighbour-id-offset"];
         int maxNeighbourIdOffset = config["max-neighbour-id-offset"];
-        auto partId = [&](int id) { return (id - 1) % (n / 2) + 1; };
+        auto idInMyPart = [&](int id) { return (id - 1) % (n / 2) + 1; };
         auto isSecondPart = [&](int id) { return id > (n / 2); };
 
         Point origin(0, 0);
         Point baseOfMyPart = Point(-3 + 6 * isSecondPart(id), 0);
-        int idInPart = partId(id);
+        int partId = isSecondPart(id) ? 2 : 1;
+        int idInPart = idInMyPart(id);
 
         myFormation = {
             {"id",           id},
@@ -236,27 +237,31 @@ public:
         };
         std::vector<Point> formationPoints;
         std::vector<Point> formationVels;
+        std::vector<std::string> anchorNames;
 
         if (idInPart == 1) {
             myFormation["anchorPoints"].push_back({baseOfMyPart.x, baseOfMyPart.y});
             formationPoints.push_back(baseOfMyPart);
             formationVels.push_back({0, 0});
+            anchorNames.push_back("anchor #" + std::to_string(partId));
         }
         if (idInPart <= 2) {
             myFormation["anchorPoints"].push_back({origin.x, origin.y});
             formationPoints.push_back(origin);
             formationVels.push_back({0, 0});
+            anchorNames.push_back("anchor #3");
         }
 
         for (auto &[id, otherPos]: comm->_othersPos) {
             if (isSecondPart(id) != isSecondPart(this->id)) continue;
-            if (partId(id) < idInPart + minNeighbourIdOffset) continue;
-            if (partId(id) > idInPart + maxNeighbourIdOffset) continue;
+            if (idInMyPart(id) < idInPart + minNeighbourIdOffset) continue;
+            if (idInMyPart(id) > idInPart + maxNeighbourIdOffset) continue;
             myFormation["anchorIds"].push_back(id);
             formationPoints.push_back(otherPos);
 
             auto otherVel = comm->_othersVel[id];
             formationVels.push_back(Point(otherVel));
+            anchorNames.push_back("#" + std::to_string(id));
         }
 
         if (formationPoints.size() == 0) return;
@@ -275,7 +280,7 @@ public:
             };
 
             CBF commCBF;
-            commCBF.name = "commCBF" + std::to_string(i);
+            commCBF.name = "commCBF(" + anchorNames[i] + ")";
             commCBF.h = fixedFormationCommH;
             cbfNoSlack.cbfs[commCBF.name] = commCBF;
         }
