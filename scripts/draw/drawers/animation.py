@@ -2,6 +2,7 @@ from .base import *
 
 
 class AnimationDrawer(BaseDrawer):
+    FIGSIZE = (10, 6)
 
     def run_animation(self, plot_list=None):
         plot_list = ['map'] if plot_list == [] or plot_list is None else plot_list
