@@ -150,8 +150,7 @@ public:
         if (settings["cbfs"]["with-slack"]["yaw"]["on"]) setYawCBF();
     }
 
-    void setCommunicationAutoCBF() {
-        auto config = settings["cbfs"]["without-slack"]["comm-auto"];
+    void setCommunicationAutoCBF(const json& config) {
         double maxRange = config["max-range"];
         double maxConsiderRange = config["max-consider-range"];
         Point origin(0, 0);
@@ -216,9 +215,8 @@ public:
         cbfNoSlack.cbfs[commCBF.name] = commCBF;
     }
 
-    void setCommunicationFixedCBF() {
+    void setCommunicationFixedCBF(const json& config) {
         int n = settings["num"];
-        auto config = settings["cbfs"]["without-slack"]["comm-fixed"];
         double maxRange = config["max-range"];
         int minNeighbourIdOffset = config["min-neighbour-id-offset"];
         int maxNeighbourIdOffset = config["max-neighbour-id-offset"];
@@ -286,9 +284,8 @@ public:
         }
     }
 
-    void setSafetyCBF() {
+    void setSafetyCBF(const json& config) {
         if (settings["num"] == 1) return;
-        auto config = settings["cbfs"]["without-slack"]["safety"];
         auto safetyH = [&, config](VectorXd x, double t) {
             Point myPosition = model->xy();
 
@@ -312,8 +309,7 @@ public:
         cbfNoSlack.cbfs[safetyCBF.name] = safetyCBF;
     }
 
-    void setCVTCBF() {
-        auto config = settings["cbfs"]["with-slack"]["cvt"];
+    void setCVTCBF(const json& config) {
         cvt = CVT(settings["num"], world.boundary);
         for (auto &[id, pos2d]: comm->_othersPos) {
             if (id == this->id) continue;
@@ -339,10 +335,10 @@ public:
 
     void postsetCBF() {
         auto cbfConfig = settings["cbfs"];
-        if (cbfConfig["without-slack"]["comm-fixed"]["on"]) setCommunicationFixedCBF();
-        if (cbfConfig["without-slack"]["comm-auto"]["on"]) setCommunicationAutoCBF();
-        if (cbfConfig["with-slack"]["cvt"]["on"]) setCVTCBF();
-        if (cbfConfig["without-slack"]["safety"]["on"]) setSafetyCBF();
+        if (cbfConfig["without-slack"]["comm-fixed"]["on"]) setCommunicationFixedCBF(cbfConfig["without-slack"]["comm-fixed"]);
+        if (cbfConfig["without-slack"]["comm-auto"]["on"]) setCommunicationAutoCBF(cbfConfig["without-slack"]["comm-auto"]);
+        if (cbfConfig["with-slack"]["cvt"]["on"]) setCVTCBF(cbfConfig["with-slack"]["cvt"]);
+        if (cbfConfig["without-slack"]["safety"]["on"]) setSafetyCBF(cbfConfig["without-slack"]["safety"]);
     }
 
     void optimise() {
