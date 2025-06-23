@@ -64,13 +64,29 @@
         "safe-distance": 3.0,
         "k": 0.5
       },
-      "comm-fixed": {
-        "name": "commFixedCBF",
+      "comm-scissor": {
+        "name": "commScissorCBF",
         "on": true,
         "max-range": 8.5,
         "k": 10.0,
         "min-neighbour-id-offset": -2,
-        "max-neighbour-id-offset": 0
+        "max-neighbour-id-offset": 0,
+        "compensate-velocity": false,
+        "bases": [
+          [-3, 0],
+          [3, 0],
+          [0, 0]
+        ]
+      },
+      "comm-chain": {
+        "name": "commChainCBF",
+        "on": false,
+        "max-range": 8.5,
+        "k": 10.0,
+        "min-neighbour-id-offset": -1,
+        "max-neighbour-id-offset": 0,
+        "compensate-velocity": false,
+        "base": [0, 0]
       },
       "comm-auto": {
         "name": "commAutoCBF",
