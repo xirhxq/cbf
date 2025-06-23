@@ -268,7 +268,7 @@ public:
                 Point myPosition = model->extractXYFromVector(x);
                 double h = k * (
                         maxRange -
-                        myPosition.distance_to(otherPoint + otherVel * t)
+                        myPosition.distance_to(otherPoint + otherVel * (t - this->runtime))
                 );
                 return h;
             };
@@ -322,7 +322,7 @@ public:
                 Point myPosition = model->extractXYFromVector(x);
                 double h = k * (
                         maxRange -
-                        myPosition.distance_to(otherPoint + otherVel * t)
+                        myPosition.distance_to(otherPoint + otherVel * (t - this->runtime))
                 );
                 return h;
             };
