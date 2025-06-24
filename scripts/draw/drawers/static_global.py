@@ -29,3 +29,4 @@ class StaticGlobalPlotDrawer(BaseDrawer):
         fig.savefig(filename, dpi=self.DPI, bbox_inches='tight')
 
         plt.close(fig)
+        print(f"Plot saved to {filename}")

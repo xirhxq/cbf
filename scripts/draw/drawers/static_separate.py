@@ -34,3 +34,4 @@ class StaticSeparatePlotDrawer(BaseDrawer):
             pbar.update(1)
 
         pbar.close()
+        print(f"Plot saved to {filename}")

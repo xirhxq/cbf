@@ -50,4 +50,4 @@ class AnimationDrawer(BaseDrawer):
         fps = int(1 / interval)
         ani.save(filename, writer='ffmpeg', fps=fps)
         pbar.close()
-        print(f"\nmp4 saved in {filename}")
+        print(f"\nAnimation saved in {filename}")
