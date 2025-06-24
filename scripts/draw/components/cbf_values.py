@@ -45,10 +45,10 @@ class CBFValuesComponent(BaseComponent):
         self.values = {}
 
         for key in self.keys:
-            if key in self.data[0]["robots"][robot_id]:
+            if key in self.data[0]["robots"][robot_id] and self.data[0]["robots"][robot_id][key] is not None:
                 cbf_names = set()
                 for frame in self.data:
-                    if key in frame["robots"][robot_id]:
+                    if key in frame["robots"][robot_id] and frame["robots"][robot_id][key] is not None:
                         for name, value in frame["robots"][robot_id][key].items():
                             if self.filter_func(name):
                                 cbf_names.add(name)

@@ -81,7 +81,7 @@ class MapAnimationComponent(BaseComponent):
                                 annoText += '-->' + ', '.join([f'o' for p in comm["anchorPoints"]])
                 self.ax.annotate(annoText, xy=(robotX[i], robotY[i]), fontsize=8)
 
-            if self.data["config"]["cbfs"]["with-slack"]["cvt"] and self.showCVT:
+            if self.data["config"]["cbfs"]["with-slack"]["cvt"]["on"] and self.showCVT:
                 cvtPolygonX = [pos[0] for pos in dataNow["robots"][i]["cvt"]["pos"]]
                 cvtPolygonY = [pos[1] for pos in dataNow["robots"][i]["cvt"]["pos"]]
                 self.ax.plot(cvtPolygonX, cvtPolygonY, 'k')
