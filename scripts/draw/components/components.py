@@ -59,13 +59,6 @@ REGISTRIED_COMPONENTS = {
             'cbf_filter': 'min'
         }
     },
-    'energy-all': {
-        'title': 'Energy Level (All)',
-        'class': 'EnergyComponent',
-        'filename': 'energy-all',
-        'figsize': (10, 6),
-        'mode': 'global'
-    },
     'energy': {
         'title': 'Energy Level (Grouped)',
         'class': 'EnergyComponent',
