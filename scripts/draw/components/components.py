@@ -5,6 +5,7 @@ from .cbf_values import CBFValuesComponent
 from .search_heatmap import SearchHeatmapComponent
 from .heatmap import HeatmapComponent
 from .energy import EnergyComponent
+from .control_input import ControlInputComponent
 
 REGISTRIED_COMPONENTS = {
     'map': {
@@ -65,4 +66,9 @@ REGISTRIED_COMPONENTS = {
         'filename': 'energy',
         'figsize': (12, 8),
     },
+    'u': {
+        'class': 'ControlInputComponent',
+        'filename': 'u',
+        'figsize': (12, 8),
+    }
 }

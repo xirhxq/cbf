@@ -102,6 +102,18 @@ if __name__ == '__main__':
             'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['energy'])
         },
         {
+            'name': 'Control Input, All Robots',
+            'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['u'])
+        },
+        {
+            'name': 'Control Input, Per Robot',
+            'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['u'])
+        },
+        {
+            'name': 'Control Input, Grouped',
+            'action': lambda: StaticGroupPlotDrawer(files).draw_plots(['u'])
+        },
+        {
             'name': 'Animation (Map)',
             'action': lambda: AnimationDrawer(files).run_animation(['map'])
         },
