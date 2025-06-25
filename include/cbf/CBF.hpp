@@ -44,6 +44,17 @@ public:
     double constraintConstWithoutTime(const VectorXd & f, const MatrixXd & g, const VectorXd & x, double t) {
         return dhdx(x, t).dot(f) + alpha(h(x, t));
     }
+
+    double hdot(const VectorXd & f, const MatrixXd & g, const VectorXd & x, const VectorXd & u, double t) {
+        return dhdt(x, t) + dhdx(x, t).dot(f) + dhdx(x, t).transpose() * g * u;
+    }
+
+    void checkInequality(const VectorXd & f, const MatrixXd & g, const VectorXd & x, const VectorXd & u, double t) {
+        std::cout << std::setprecision(4)
+            << "Checking " << name << ": "
+            << hdot(f, g, x, u, t) << " >= "
+            << -alpha(h(x, t)) << std::endl;
+    }
 };
 
 #endif //CBF_CBF_HPP

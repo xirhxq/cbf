@@ -460,6 +460,8 @@ public:
             model->setControlInput(u);
             opt["result"] = model->control2Json(u);
             opt["slacks"] = result.tail(slackSize);
+
+            // cbfNoSlack.checkInequality(f, g, x, u, runtime);
         }
     }
 
