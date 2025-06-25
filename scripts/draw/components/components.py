@@ -6,6 +6,7 @@ from .search_heatmap import SearchHeatmapComponent
 from .heatmap import HeatmapComponent
 from .energy import EnergyComponent
 from .control_input import ControlInputComponent
+from .cbf_derivative import CBFDerivativeComponent
 
 REGISTRIED_COMPONENTS = {
     'map': {
@@ -70,5 +71,11 @@ REGISTRIED_COMPONENTS = {
         'class': 'ControlInputComponent',
         'filename': 'u',
         'figsize': (12, 8),
+    },
+    'cbfd': {
+        'title': 'CBF Derivative',
+        'class': 'CBFDerivativeComponent',
+        'filename': 'cbf-derivative',
+        'figsize': (10, 6),
     }
 }

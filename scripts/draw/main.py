@@ -119,7 +119,11 @@ if __name__ == '__main__':
         },
         {
             'name': 'Animation (Full Set)',
-            'action': lambda: AnimationDrawer(files).run_animation(['map', 'opt', 'fix', 'cbf'])
+            'action': lambda: AnimationDrawer(files).run_animation(['map', 'opt', 'cbf'])
+        },
+        {
+            'name': 'CBF Derivative, Per Robot',
+            'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['cbfd'])
         }
     ]
 
