@@ -3,7 +3,7 @@ from .base import *
 
 class AnimationDrawer(BaseDrawer):
 
-    def run_animation(self, plot_list=None):
+    def run_animation(self, plot_list=None, last_seconds=None):
         plot_list = ['map'] if plot_list == [] or plot_list is None else plot_list
         self._check_plot_list(plot_list)
         fig = plt.figure(figsize=self.FIGSIZE)
@@ -25,7 +25,10 @@ class AnimationDrawer(BaseDrawer):
                 )
             )
 
-        totalLength = len(self.data["state"])
+        interval = self.data["state"][1]["runtime"] - self.data["state"][0]["runtime"]
+        interval_ms = int(1000 * interval)
+
+        totalLength = len(self.data["state"]) if last_seconds is None else int(last_seconds / interval)
 
         pbar = tqdm.tqdm(total=totalLength, bar_format=self.BAR_FORMAT)
 
@@ -34,17 +37,16 @@ class AnimationDrawer(BaseDrawer):
             for comp in components:
                 comp.update(num)
 
-        interval = self.data["state"][1]["runtime"] - self.data["state"][0]["runtime"]
-        interval_ms = int(1000 * interval)
-
         ani = animation.FuncAnimation(
             fig, update,
-            frames=totalLength,
+            frames=totalLength if last_seconds is None else range(-totalLength, 0),
             interval=interval_ms,
             blit=False
         )
 
         suffix = '-'.join(plot_list)
+        if last_seconds is not None:
+            suffix += '-last-' + str(last_seconds)
         filename = os.path.join(self.folder, 'animation-' + suffix + '.mp4')
 
         fps = int(1 / interval)

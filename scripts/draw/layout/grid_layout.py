@@ -32,8 +32,8 @@ class GridLayout:
                 }
             ]
         else:
-            side_rows = 2 if self.n >= 8 else 1
-            side_cols = math.ceil(self.n / side_rows)
+            side_cols = min(4, self.n)
+            side_rows = math.ceil(self.n / side_cols)
 
             layout_config = {
                 'components': []
