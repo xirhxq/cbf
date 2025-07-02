@@ -420,18 +420,29 @@ public:
 
             optimiser->setObjective(uNominal);
 
-            if (!cbfNoSlack.cbfs.empty()) {
-                VectorXd uCoe = cbfNoSlack.constraintUCoe(f, g, x, runtime);
-                double constraintConstWithTime = cbfNoSlack.constraintConstWithTime(f, g, x, runtime);
-
+            for (auto &[name, cbf]: cbfNoSlack.cbfs) {
+                VectorXd uCoe = cbf.constraintUCoe(f, g, x, runtime);
+                double constraintConstWithTime = cbf.constraintConstWithTime(f, g, x, runtime);
                 optimiser->addLinearConstraint(uCoe, -constraintConstWithTime);
-
                 jsonCBFNoSlack.emplace_back(json{
-                        {"name",  cbfNoSlack.getName()},
+                        {"name",  cbf.name},
                         {"coe",   model->control2Json(uCoe)},
                         {"const", constraintConstWithTime}
                 });
             }
+
+            // if (!cbfNoSlack.cbfs.empty()) {
+            //     VectorXd uCoe = cbfNoSlack.constraintUCoe(f, g, x, runtime);
+            //     double constraintConstWithTime = cbfNoSlack.constraintConstWithTime(f, g, x, runtime);
+            //
+            //     optimiser->addLinearConstraint(uCoe, -constraintConstWithTime);
+            //
+            //     jsonCBFNoSlack.emplace_back(json{
+            //             {"name",  cbfNoSlack.getName()},
+            //             {"coe",   model->control2Json(uCoe)},
+            //             {"const", constraintConstWithTime}
+            //     });
+            // }
             opt["cbfNoSlack"] = jsonCBFNoSlack;
 
             int cnt = 0;
@@ -546,7 +557,7 @@ public:
             for (auto &[name, cbf]: cbfNoSlack.cbfs) {
                 cbfNoSlackJson[cbf.name] = cbf.h(model->getX(), runtime);
             }
-            cbfNoSlackJson[cbfNoSlack.getName()] = cbfNoSlack.h(model->getX(), runtime);
+            // cbfNoSlackJson[cbfNoSlack.getName()] = cbfNoSlack.h(model->getX(), runtime);
             robotJson["cbfNoSlack"] = cbfNoSlackJson;
         }
         {
