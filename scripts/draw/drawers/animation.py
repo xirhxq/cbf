@@ -3,7 +3,7 @@ from .base import *
 
 class AnimationDrawer(BaseDrawer):
 
-    def run_animation(self, plot_list=None, last_seconds=None):
+    def run_animation(self, plot_list=None, first_seconds=None, last_seconds=None, time_range=None):
         plot_list = ['map'] if plot_list == [] or plot_list is None else plot_list
         self._check_plot_list(plot_list)
         fig = plt.figure(figsize=self.FIGSIZE)
@@ -28,7 +28,20 @@ class AnimationDrawer(BaseDrawer):
         interval = self.data["state"][1]["runtime"] - self.data["state"][0]["runtime"]
         interval_ms = int(1000 * interval)
 
-        totalLength = len(self.data["state"]) if last_seconds is None else int(last_seconds / interval)
+        total_time = self.data["config"]["execute"]["time-total"]
+        runtime = [frame["runtime"] for frame in self.data["state"]]
+
+        start, end = 0, len(runtime)
+
+        if first_seconds is not None:
+            start = np.searchsorted(runtime, first_seconds)
+        if last_seconds is not None:
+            start = np.searchsorted(runtime, total_time - last_seconds)
+        if time_range is not None:
+            start = np.searchsorted(runtime, time_range[0])
+            end = np.searchsorted(runtime, time_range[1])
+
+        totalLength = end - start
 
         pbar = tqdm.tqdm(total=totalLength, bar_format=self.BAR_FORMAT)
 
@@ -39,7 +52,7 @@ class AnimationDrawer(BaseDrawer):
 
         ani = animation.FuncAnimation(
             fig, update,
-            frames=totalLength if last_seconds is None else range(-totalLength, 0),
+            frames=range(start, end),
             interval=interval_ms,
             blit=False
         )
@@ -47,6 +60,10 @@ class AnimationDrawer(BaseDrawer):
         suffix = '-'.join(plot_list)
         if last_seconds is not None:
             suffix += '-last-' + str(last_seconds)
+        elif first_seconds is not None:
+            suffix += '-first-' + str(first_seconds)
+        elif time_range is not None:
+            suffix += '-range-' + str(time_range[0]) + '-' + str(time_range[1])
         filename = os.path.join(self.folder, 'animation-' + suffix + '.mp4')
 
         fps = int(1 / interval)

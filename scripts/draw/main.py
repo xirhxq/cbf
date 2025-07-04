@@ -122,12 +122,20 @@ if __name__ == '__main__':
             'action': lambda: AnimationDrawer(files).run_animation(['map'], last_seconds=5)
         },
         {
+            'name': 'Animation (Map, Certain Time Range)',
+            'action': lambda: AnimationDrawer(files).run_animation(['map'], time_range=(130, 140))
+        },
+        {
             'name': 'Animation (Full Set)',
             'action': lambda: AnimationDrawer(files).run_animation(['map', 'opt', 'cbf'])
         },
         {
             'name': 'Animation (Full Set, Last 5 Seconds)',
             'action': lambda: AnimationDrawer(files).run_animation(['map', 'opt'], last_seconds=5)
+        },
+        {
+            'name': 'Animation (Full Set, Certain Time Range)',
+            'action': lambda: AnimationDrawer(files).run_animation(['map', 'opt'], time_range=(130, 140))
         },
         {
             'name': 'CBF Derivative, Per Robot',
