@@ -139,7 +139,7 @@ if __name__ == '__main__':
         },
         {
             'name': 'Animation (Full Set, Certain Time Range, #1 Only)',
-            'action': lambda: AnimationDrawer(files).run_animation(['map', 'opt'], time_range=(130, 133), id_list=[1])
+            'action': lambda: AnimationDrawer(files).run_animation(['map', 'opt', 'cbfd-energy', 'cbf-energy'], time_range=(120, 130), id_list=[1])
         },
         {
             'name': 'CBF Derivative, Per Robot',

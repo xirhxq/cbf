@@ -17,20 +17,6 @@ class AnimationDrawer(BaseDrawer):
 
         id_list = [id - 1 for id in id_list] if id_list is not None else [i for i in range(self.data["config"]["num"])]
 
-        axes_map = GridLayout(fig, plot_list, id_list=id_list).allocate_axes()
-
-        components = []
-
-        for item in axes_map:
-            component_class = self._check_class(item["class"])
-            components.append(
-                component_class(
-                    data=self.data,
-                    mode='animation',
-                    **item
-                )
-            )
-
         interval = self.data["state"][1]["runtime"] - self.data["state"][0]["runtime"]
         interval_ms = int(1000 * interval)
 
@@ -48,6 +34,21 @@ class AnimationDrawer(BaseDrawer):
             end = np.searchsorted(runtime, time_range[1])
 
         totalLength = end - start
+
+        axes_map = GridLayout(fig, plot_list, id_list=id_list).allocate_axes()
+
+        components = []
+
+        for item in axes_map:
+            component_class = self._check_class(item["class"])
+            components.append(
+                component_class(
+                    data=self.data,
+                    mode='animation',
+                    index_range=(start, end),
+                    **item
+                )
+            )
 
         pbar = tqdm.tqdm(total=totalLength, bar_format=self.BAR_FORMAT)
 

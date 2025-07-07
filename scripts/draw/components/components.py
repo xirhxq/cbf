@@ -77,5 +77,23 @@ REGISTRIED_COMPONENTS = {
         'class': 'CBFDerivativeComponent',
         'filename': 'cbf-derivative',
         'figsize': (10, 6),
+    },
+    'cbf-energy': {
+        'title': 'Energy CBF Value',
+        'class': 'CBFValuesComponent',
+        'filename': 'energy-cbf',
+        'figsize': (10, 6),
+        'params': {
+            'cbf_filter': lambda name: name.startswith('energy')
+        }
+    },
+    'cbfd-energy': {
+        'title': 'Energy CBF Derivative',
+        'class': 'CBFDerivativeComponent',
+        'filename': 'energy-cbf-derivative',
+        'figsize': (10, 6),
+        'params': {
+               'cbf_filter': 'energy'
+        }
     }
 }

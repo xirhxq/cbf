@@ -16,20 +16,23 @@ class CBFDerivativeComponent(BaseComponent):
         self.runtime = [frame["runtime"] for frame in self.data]
         self.values = {}
 
-
-        frame =  self.data[0]
+        frame = self.data[0]
 
         cbf_names = set()
         if self.key in frame["robots"][robot_id] and self.data[0]["robots"][robot_id][self.key] is not None:
             for name, value in frame["robots"][robot_id][self.key].items():
                 cbf_names.add(name)
 
+        if kwargs.get('params', {}).get('cbf_filter', None) is not None:
+            cbf_names = set(filter(lambda name: kwargs['params']['cbf_filter'] in name, cbf_names))
+
+        self.index_range = kwargs.get('index_range', (0, len(self.data)))
 
         for cbf_name in sorted(cbf_names):
             times = []
             dh_list = []
             alphah_list = []
-            for idx, frame in enumerate(self.data):
+            for idx, frame in enumerate(self.data[slice(*self.index_range)]):
                 if idx == len(self.data) - 1:
                     continue
                 next_frame = self.data[idx + 1]
@@ -78,8 +81,12 @@ class CBFDerivativeComponent(BaseComponent):
             self.setup()
 
     def setup(self):
-        self.vline = self.ax.plot([0, 0], [0, 1], 'r--', alpha=0.3)[0]
         self.y_limits = self.ax.get_ylim()
+        self.vline = self.ax.plot(
+            [self.runtime[self.index_range[0]], self.runtime[self.index_range[0]]],
+            [self.y_limits[0], self.y_limits[1]],
+            'r--', alpha=0.3
+        )[0]
 
     def update(self, num, dataNow=None):
         self.vline.set_data([self.runtime[num], self.runtime[num]], self.y_limits)

@@ -44,10 +44,12 @@ class CBFValuesComponent(BaseComponent):
         self.runtime = [frame["runtime"] for frame in self.data]
         self.values = {}
 
+        self.index_range = kwargs.get('index_range', (0, len(self.data)))
+
         for key in self.keys:
             if key in self.data[0]["robots"][robot_id] and self.data[0]["robots"][robot_id][key] is not None:
                 cbf_names = set()
-                for frame in self.data:
+                for frame in self.data[slice(*self.index_range)]:
                     if key in frame["robots"][robot_id] and frame["robots"][robot_id][key] is not None:
                         for name, value in frame["robots"][robot_id][key].items():
                             if self.filter_func(name):
@@ -56,7 +58,7 @@ class CBFValuesComponent(BaseComponent):
                 for cbf_name in sorted(cbf_names):
                     times = []
                     values = []
-                    for idx, frame in enumerate(self.data):
+                    for idx, frame in enumerate(self.data[slice(*self.index_range)]):
                         val = None
                         if key in frame["robots"][robot_id]:
                             for name, value in frame["robots"][robot_id][key].items():
@@ -67,6 +69,7 @@ class CBFValuesComponent(BaseComponent):
                         values.append(val if val is not None else np.nan)
 
                     self.values[f"{key}:{cbf_name}"] = {"time": times, "value": values}
+                    print(f"CBF {key}:{cbf_name} for Robot {robot_id + 1} has {len(times)} data points.")
 
         self.lines = {}
         self._initialize_plot()
@@ -98,8 +101,12 @@ class CBFValuesComponent(BaseComponent):
             self.setup()
 
     def setup(self):
-        self.vline = self.ax.plot([0, 0], [0, 1], 'r--', alpha=0.3)[0]
         self.y_limits = self.ax.get_ylim()
+        self.vline = self.ax.plot(
+            [self.runtime[self.index_range[0]], self.runtime[self.index_range[0]]],
+            [self.y_limits[0], self.y_limits[1]],
+            'r--', alpha=0.3
+        )[0]
 
     def update(self, num, dataNow=None):
         self.vline.set_data([self.runtime[num], self.runtime[num]], self.y_limits)
