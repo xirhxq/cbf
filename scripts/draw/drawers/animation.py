@@ -3,7 +3,11 @@ from .base import *
 
 class AnimationDrawer(BaseDrawer):
 
-    def run_animation(self, plot_list=None, first_seconds=None, last_seconds=None, time_range=None):
+    def run_animation(self,
+                      plot_list=None,
+                      first_seconds=None, last_seconds=None, time_range=None,
+                      id_list=None
+                      ):
         plot_list = ['map'] if plot_list == [] or plot_list is None else plot_list
         self._check_plot_list(plot_list)
         fig = plt.figure(figsize=self.FIGSIZE)
@@ -11,7 +15,9 @@ class AnimationDrawer(BaseDrawer):
             fig = plt.figure(figsize=REGISTRIED_COMPONENTS[plot_list[0]]["figsize"])
         fig.set_tight_layout(True)
 
-        axes_map = GridLayout(fig, plot_list, n=self.data["config"]["num"]).allocate_axes()
+        id_list = [id - 1 for id in id_list] if id_list is not None else [i for i in range(self.data["config"]["num"])]
+
+        axes_map = GridLayout(fig, plot_list, id_list=id_list).allocate_axes()
 
         components = []
 
@@ -64,6 +70,8 @@ class AnimationDrawer(BaseDrawer):
             suffix += '-first-' + str(first_seconds)
         elif time_range is not None:
             suffix += '-range-' + str(time_range[0]) + '-' + str(time_range[1])
+        if id_list != [i for i in range(self.data["config"]["num"])]:
+            suffix += '-' + '-#'.join([str(id + 1) for id in id_list])
         filename = os.path.join(self.folder, 'animation-' + suffix + '.mp4')
 
         fps = int(1 / interval)

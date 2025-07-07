@@ -13,7 +13,7 @@ class StaticGlobalPlotDrawer(BaseDrawer):
         fig = plt.figure(figsize=self.FIGSIZE)
         fig.set_tight_layout(True)
 
-        axes_map = GridLayout(fig, plot_list, expand=False, n=num_robots).allocate_axes()
+        axes_map = GridLayout(fig, plot_list, expand=False, id_list=range(num_robots)).allocate_axes()
 
         for item in axes_map:
             component_class = self._check_class(item["class"])

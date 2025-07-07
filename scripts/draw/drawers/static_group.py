@@ -7,7 +7,7 @@ class StaticGroupPlotDrawer(BaseDrawer):
         fig = plt.figure(figsize=self.FIGSIZE)
         fig.set_tight_layout(True)
 
-        axes_map = GridLayout(fig, plot_list, n=self.data["config"]["num"]).allocate_axes()
+        axes_map = GridLayout(fig, plot_list, id_list=range(self.data["config"]["num"])).allocate_axes()
 
         components = []
 

@@ -3,7 +3,9 @@ from utils import *
 from .base import BaseComponent
 
 class OptimizationContourPlot(BaseComponent):
-    def __init__(self, ax, data, robot_id, title, **kwargs):
+    def __init__(self, ax, data, id_list, title, **kwargs):
+        assert len(id_list) == 1, "OptimizationContourPlot requires exactly one robot ID"
+        robot_id = id_list[0]
         self.data = [dt["robots"][robot_id]["opt"] for dt in data["state"]]
         self.title = (title or f"Opt Result") + f", Robot #{robot_id + 1}"
         self.ax = ax
@@ -29,6 +31,8 @@ class OptimizationContourPlot(BaseComponent):
 
         self.markerNominal.set_data([dataNow["nominal"]["vx"]], [dataNow["nominal"]["vy"]])
         self.markerResult.set_data([0, dataNow["result"]["vx"]], [0, dataNow["result"]["vy"]])
+
+        self.ax.set_title(self.title + f', ({dataNow["result"]["vx"]:.2f}, {dataNow["result"]["vy"]:.2f})')
 
         for ct in getattr(self, 'cbf_ct', []):
             for cl in ct.collections:

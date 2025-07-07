@@ -138,6 +138,10 @@ if __name__ == '__main__':
             'action': lambda: AnimationDrawer(files).run_animation(['map', 'opt'], time_range=(130, 140))
         },
         {
+            'name': 'Animation (Full Set, Certain Time Range, #1 Only)',
+            'action': lambda: AnimationDrawer(files).run_animation(['map', 'opt'], time_range=(130, 133), id_list=[1])
+        },
+        {
             'name': 'CBF Derivative, Per Robot',
             'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['cbfd'])
         }

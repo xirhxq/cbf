@@ -4,14 +4,14 @@ from components.components import *
 
 
 class GridLayout:
-    def __init__(self, fig, plot_list, expand=True, n=None, robot_id=None, **kwargs):
+    def __init__(self, fig, plot_list, expand=True, id_list=None, **kwargs):
         self.fig = fig
         self.plot_list = plot_list
 
         self.expand = expand
-        self.n = n
-        self.robot_id = robot_id
-
+        self.id_list = id_list
+        self.n = len(id_list)
+        self.robot_id = id_list[0] if id_list is not None and len(id_list) > 0 else None
 
         self.layout_config = self._get_layout()
 
@@ -28,11 +28,13 @@ class GridLayout:
                 {
                     'name': 'map',
                     'grid': [[None, None], [None, None]],
-                    **REGISTRIED_COMPONENTS['map']
+                    **REGISTRIED_COMPONENTS['map'],
+                    'id_list': self.id_list
                 }
             ]
         else:
-            side_cols = min(4, self.n)
+            total_grids = self.n * side_num
+            side_cols = math.ceil(math.sqrt(total_grids))
             side_rows = math.ceil(self.n / side_cols)
 
             layout_config = {
@@ -44,7 +46,8 @@ class GridLayout:
                 layout_config['components'].append(
                     {
                         'grid': [[None, None], [None, map_cols]],
-                        **REGISTRIED_COMPONENTS['map']
+                        **REGISTRIED_COMPONENTS['map'],
+                        'id_list': self.id_list
                     }
                 )
             else:
@@ -53,7 +56,7 @@ class GridLayout:
             layout_config['rows'] = side_rows * side_num
             layout_config['cols'] = side_cols + map_cols
 
-            def parse_group_layout(layout, name, grid, n):
+            def parse_group_layout(layout, name, grid, id_list):
                 i = grid[0][0] if grid[0][0] is not None else 0
                 j = grid[1][0] if grid[1][0] is not None else 0
 
@@ -63,12 +66,13 @@ class GridLayout:
                         f'({grid[0][0]}, {grid[1][0]}) to ({grid[0][1]}, {grid[1][1]})'
                     )
 
-                for id in range(n):
+                for id in id_list:
                     layout.append(
                         {
                             'grid': [i, j],
                             'robot_id': id,
-                            **REGISTRIED_COMPONENTS[name]
+                            **REGISTRIED_COMPONENTS[name],
+                            'id_list': [id]
                         }
                     )
 
@@ -86,7 +90,7 @@ class GridLayout:
                             [index * side_rows, (index + 1) * side_rows],
                             [map_cols, layout_config['cols']]
                         ],
-                        self.n
+                        id_list=self.id_list
                     )
                 else:
                     layout_config['components'].append(
@@ -96,7 +100,8 @@ class GridLayout:
                                 [map_cols, layout_config['cols']]
                             ],
                             'robot_id': self.robot_id,
-                            **REGISTRIED_COMPONENTS[item]
+                            **REGISTRIED_COMPONENTS[item],
+                            'id_list': self.id_list
                         }
                     )
 

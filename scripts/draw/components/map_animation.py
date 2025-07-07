@@ -3,9 +3,10 @@ from .base import BaseComponent
 
 
 class MapAnimationComponent(BaseComponent):
-    def __init__(self, ax, data, **kwargs):
+    def __init__(self, ax, data, id_list, **kwargs):
         self.data = data
         self.ax = ax
+        self.id_list = id_list
         self.interval = self.data["state"][1]["runtime"] - self.data["state"][0]["runtime"]
         self.fps = int(1 / self.interval)
         self.worldX = [data[0] for data in self.data["para"]["world"]["boundary"]]
@@ -44,16 +45,18 @@ class MapAnimationComponent(BaseComponent):
         dist_charge = self.data["para"]["world"]["charge"]["dist"]
         [self.ax.add_patch(Circle(xy=(pos[0], pos[1]), radius=dist, alpha=0.5)) for pos, dist in zip(pos_charge, dist_charge)]
 
-        robotX = [dataNow["robots"][i]["state"]["x"] for i in range(robotNum)]
-        robotY = [dataNow["robots"][i]["state"]["y"] for i in range(robotNum)]
-        robotBattery = [dataNow["robots"][i]["state"]["battery"] for i in range(robotNum)]
-        robotYawDeg = [math.degrees(dataNow["robots"][i]["state"]["yawRad"]) for i in range(robotNum)]
+        robotX = [dataNow["robots"][i]["state"]["x"] for i in self.id_list]
+        robotY = [dataNow["robots"][i]["state"]["y"] for i in self.id_list]
+        robotBattery = [dataNow["robots"][i]["state"]["battery"] for i in self.id_list]
+        robotYawDeg = [math.degrees(dataNow["robots"][i]["state"]["yawRad"]) for i in self.id_list]
 
         self.ax.scatter(robotX, robotY, c=robotBattery, cmap='RdYlGn', s=100, alpha=0.5)
 
         if "formation" in dataNow:
             id2Position = {robot["id"]: (robot["state"]["x"], robot["state"]["y"]) for robot in dataNow["robots"]}
             for myJson in dataNow["formation"]:
+                if myJson["id"] - 1 not in self.id_list:
+                    continue
                 myPosition = id2Position[myJson["id"]]
                 for anchorPoint in myJson.get("anchorPoints", []):
                     self.ax.arrow(myPosition[0], myPosition[1],
@@ -65,28 +68,28 @@ class MapAnimationComponent(BaseComponent):
                                   neighbor_pos[0] - myPosition[0], neighbor_pos[1] - myPosition[1],
                                   head_width=0.5, head_length=0.5, fc='k', ec='k', alpha=0.2)
 
-        for i in range(robotNum):
+        for i, id in enumerate(self.id_list):
             if self.showYaw:
                 self.ax.add_patch(Wedge(center=[robotX[i], robotY[i]], r=0.5,
                                         theta1=robotYawDeg[i] - 15, theta2=robotYawDeg[i] + 15, alpha=0.3))
 
             if self.robotAnnotation:
-                annoText = f'#{i + 1}[{robotBattery[i]:.2f}]'
+                annoText = f'#{id + 1}[{robotBattery[i]:.2f}]'
                 names = ["commFixed", "commAuto"]
                 for name in names:
                     if "cbfs" in dataNow and name in dataNow["cbfs"]:
                         for comm in dataNow["cbfs"][name]:
-                            if comm["id"] == i + 1:
+                            if comm["id"] == id + 1:
                                 annoText += '->' + ', '.join([f'{id}' for id in comm["anchorIds"]])
                                 annoText += '-->' + ', '.join([f'o' for p in comm["anchorPoints"]])
                 self.ax.annotate(annoText, xy=(robotX[i], robotY[i]), fontsize=8)
 
             if self.data["config"]["cbfs"]["with-slack"]["cvt"]["on"] and self.showCVT:
-                cvtPolygonX = [pos[0] for pos in dataNow["robots"][i]["cvt"]["pos"]]
-                cvtPolygonY = [pos[1] for pos in dataNow["robots"][i]["cvt"]["pos"]]
+                cvtPolygonX = [pos[0] for pos in dataNow["robots"][id]["cvt"]["pos"]]
+                cvtPolygonY = [pos[1] for pos in dataNow["robots"][id]["cvt"]["pos"]]
                 self.ax.plot(cvtPolygonX, cvtPolygonY, 'k')
-                cvtCenterX = [dataNow["robots"][i]["cvt"]["center"][0]]
-                cvtCenterY = [dataNow["robots"][i]["cvt"]["center"][1]]
+                cvtCenterX = [dataNow["robots"][id]["cvt"]["center"][0]]
+                cvtCenterY = [dataNow["robots"][id]["cvt"]["center"][1]]
                 self.ax.plot(cvtCenterX, cvtCenterY, '*', color='lime')
 
             if self.bigTimeText:
