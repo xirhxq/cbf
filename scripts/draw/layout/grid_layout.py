@@ -35,14 +35,46 @@ class GridLayout:
         else:
             total_grids = self.n * side_num
             side_cols = math.ceil(math.sqrt(total_grids))
-            side_rows = math.ceil(self.n / side_cols)
-
-            layout_config = {
-                'components': []
-            }
+            side_rows = math.ceil(side_num * self.n / side_cols)
 
             if 'map' in self.plot_list:
                 map_cols = math.ceil(side_cols / 2)
+            else:
+                map_cols = 0
+
+            layout_config = {
+                'components': [],
+                'rows': side_rows,
+                'cols': side_cols + map_cols,
+            }
+
+            grids = [[i, j + map_cols] for i in range(side_rows) for j in range(side_cols)]
+
+            for index, item in enumerate(side_list):
+                if self.expand:
+                    for id in self.id_list:
+                        layout_config['components'].append(
+                            {
+                                'robot_id': id,
+                                **REGISTRIED_COMPONENTS[item],
+                                'id_list': self.id_list,
+                            }
+                        )
+                else:
+                    layout_config['components'].append(
+                        {
+                            'robot_id': self.robot_id,
+                            **REGISTRIED_COMPONENTS[item],
+                            'id_list': self.id_list
+                        }
+                    )
+
+            assert len(grids) >= len(layout_config['components']), "Not enough grids for all components"
+
+            for index, item in enumerate(layout_config['components']):
+                item['grid'] = grids[index]
+
+            if 'map' in self.plot_list:
                 layout_config['components'].append(
                     {
                         'grid': [[None, None], [None, map_cols]],
@@ -50,60 +82,6 @@ class GridLayout:
                         'id_list': self.id_list
                     }
                 )
-            else:
-                map_cols = 0
-
-            layout_config['rows'] = side_rows * side_num
-            layout_config['cols'] = side_cols + map_cols
-
-            def parse_group_layout(layout, name, grid, id_list):
-                i = grid[0][0] if grid[0][0] is not None else 0
-                j = grid[1][0] if grid[1][0] is not None else 0
-
-                if i >= grid[0][1] or j >= grid[1][1]:
-                    raise ValueError(
-                        f'Grid exceeds: ({i}, {j}) is outside the range of '
-                        f'({grid[0][0]}, {grid[1][0]}) to ({grid[0][1]}, {grid[1][1]})'
-                    )
-
-                for id in id_list:
-                    layout.append(
-                        {
-                            'grid': [i, j],
-                            'robot_id': id,
-                            **REGISTRIED_COMPONENTS[name],
-                            'id_list': [id]
-                        }
-                    )
-
-                    j = j + 1
-                    if j >= grid[1][1]:
-                        j = grid[1][0]
-                        i = i + 1
-
-            for index, item in enumerate(side_list):
-                if self.expand:
-                    parse_group_layout(
-                        layout_config['components'],
-                        item,
-                        [
-                            [index * side_rows, (index + 1) * side_rows],
-                            [map_cols, layout_config['cols']]
-                        ],
-                        id_list=self.id_list
-                    )
-                else:
-                    layout_config['components'].append(
-                        {
-                            'grid': [
-                                [index * side_rows, (index + 1) * side_rows],
-                                [map_cols, layout_config['cols']]
-                            ],
-                            'robot_id': self.robot_id,
-                            **REGISTRIED_COMPONENTS[item],
-                            'id_list': self.id_list
-                        }
-                    )
 
         return layout_config
 
