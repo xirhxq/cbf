@@ -60,7 +60,7 @@ class CBFDerivativeComponent(BaseComponent):
     def _initialize_plot(self):
         self.ax.set_title(self.title)
         self.ax.set_xlabel('Time / s')
-        self.ax.set_ylabel('CBF Derivative')
+        self.ax.set_ylabel('CBC LHS-RHS')
 
         self.ax.axhline(y=0, color='black', linestyle='--', alpha=0.3)
 
