@@ -69,7 +69,6 @@ class CBFValuesComponent(BaseComponent):
                         values.append(val if val is not None else np.nan)
 
                     self.values[f"{key}:{cbf_name}"] = {"time": times, "value": values}
-                    print(f"CBF {key}:{cbf_name} for Robot {robot_id + 1} has {len(times)} data points.")
 
         self.lines = {}
         self._initialize_plot()
