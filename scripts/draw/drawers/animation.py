@@ -20,20 +20,11 @@ class AnimationDrawer(BaseDrawer):
         interval = self.data["state"][1]["runtime"] - self.data["state"][0]["runtime"]
         interval_ms = int(1000 * interval)
 
-        total_time = self.data["config"]["execute"]["time-total"]
-        runtime = [frame["runtime"] for frame in self.data["state"]]
+        self._get_index_range(
+            first_seconds=first_seconds, last_seconds=last_seconds, time_range=time_range
+        )
 
-        start, end = 0, len(runtime)
-
-        if first_seconds is not None:
-            start = np.searchsorted(runtime, first_seconds)
-        if last_seconds is not None:
-            start = np.searchsorted(runtime, total_time - last_seconds)
-        if time_range is not None:
-            start = np.searchsorted(runtime, time_range[0])
-            end = np.searchsorted(runtime, time_range[1])
-
-        totalLength = end - start
+        totalLength = self.index_range[1] - self.index_range[0]
 
         axes_map = GridLayout(fig, plot_list, id_list=id_list).allocate_axes()
 
@@ -45,7 +36,7 @@ class AnimationDrawer(BaseDrawer):
                 component_class(
                     data=self.data,
                     mode='animation',
-                    index_range=(start, end),
+                    index_range=self.index_range,
                     **item
                 )
             )
@@ -59,7 +50,7 @@ class AnimationDrawer(BaseDrawer):
 
         ani = animation.FuncAnimation(
             fig, update,
-            frames=range(start, end),
+            frames=range(*self.index_range),
             interval=interval_ms,
             blit=False
         )
@@ -72,7 +63,7 @@ class AnimationDrawer(BaseDrawer):
         elif time_range is not None:
             suffix += '-range-' + str(time_range[0]) + '-' + str(time_range[1])
         if id_list != [i for i in range(self.data["config"]["num"])]:
-            suffix += '-' + '-#'.join([str(id + 1) for id in id_list])
+            suffix += '-' + '-'.join(['#' + str(id + 1) for id in id_list])
         filename = os.path.join(self.folder, 'animation-' + suffix + '.mp4')
 
         fps = int(1 / interval)

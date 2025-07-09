@@ -16,6 +16,22 @@ class BaseDrawer:
 
         plt.switch_backend('agg')
 
+    def _get_index_range(self, **kwargs):
+        total_time = self.data["config"]["execute"]["time-total"]
+        runtime = [frame["runtime"] for frame in self.data["state"]]
+
+        start, end = 0, len(runtime)
+
+        if kwargs.get("first_seconds", None) is not None:
+            end = np.searchsorted(runtime, kwargs["first_seconds"])
+        elif kwargs.get("last_seconds", None) is not None:
+            start = np.searchsorted(runtime, total_time - kwargs["last_seconds"])
+        elif kwargs.get("time_range", None) is not None:
+            start = np.searchsorted(runtime, kwargs["time_range"][0])
+            end = np.searchsorted(runtime, kwargs["time_range"][1])
+
+        self.index_range = (start, end)
+
     def _check_plot_type(self, plot_type):
         if plot_type not in REGISTRIED_COMPONENTS:
             raise ValueError(

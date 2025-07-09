@@ -135,11 +135,23 @@ if __name__ == '__main__':
         },
         {
             'name': 'Animation (Full Set, Certain Time Range)',
-            'action': lambda: AnimationDrawer(files).run_animation(['map', 'opt'], time_range=(130, 140))
+            'action': lambda: AnimationDrawer(files).run_animation(['map', 'opt'], time_range=(120, 130))
         },
         {
             'name': 'Animation (Full Set, Certain Time Range, #1 Only)',
-            'action': lambda: AnimationDrawer(files).run_animation(['map', 'opt', 'cbfd-energy', 'cbf-energy'], time_range=(120, 130), id_list=[1])
+            'action': lambda: AnimationDrawer(files).run_animation(
+                ['map', 'opt', 'cbfd-energy', 'cbf-energy'],
+                time_range=(95, 105),
+                id_list=[1]
+            )
+        },
+        {
+            'name': 'CBF Derivative, Certain Time Range',
+            'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(
+                ['cbfd-energy'],
+                time_range=(95, 105),
+                id_list=[1]
+            )
         },
         {
             'name': 'CBF Derivative, Per Robot',
