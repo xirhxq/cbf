@@ -57,7 +57,7 @@ class GridLayout:
                             {
                                 'robot_id': id,
                                 **REGISTRIED_COMPONENTS[item],
-                                'id_list': self.id_list,
+                                'id_list': [id],
                             }
                         )
                 else:

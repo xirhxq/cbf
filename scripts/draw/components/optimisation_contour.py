@@ -4,7 +4,8 @@ from .base import BaseComponent
 
 class OptimizationContourPlot(BaseComponent):
     def __init__(self, ax, data, id_list, title, **kwargs):
-        assert len(id_list) == 1, "OptimizationContourPlot requires exactly one robot ID"
+        assert len(id_list) == 1, \
+            f"OptimizationContourPlot requires exactly one robot ID, but received {id_list}"
         robot_id = id_list[0]
         self.data = [dt["robots"][robot_id]["opt"] for dt in data["state"]]
         self.title = (title or f"Opt Result") + f", Robot #{robot_id + 1}"
