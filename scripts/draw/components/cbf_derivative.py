@@ -35,7 +35,7 @@ class CBFDerivativeComponent(BaseComponent):
             for idx, frame in enumerate(self.data[slice(*self.index_range)]):
                 if idx == len(self.data) - 1:
                     continue
-                next_frame = self.data[idx + 1]
+                next_frame = self.data[self.index_range[0] + idx + 1]
                 dh, alphah = None, None
                 if self.key in frame["robots"][robot_id]:
                     nowh = frame["robots"][robot_id][self.key][cbf_name]
