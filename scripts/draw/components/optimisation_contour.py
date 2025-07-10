@@ -31,7 +31,9 @@ class OptimizationContourPlot(BaseComponent):
             dataNow = self.data[num]
 
         self.markerNominal.set_data([dataNow["nominal"]["vx"]], [dataNow["nominal"]["vy"]])
+        self.markerNominal.set_zorder(10)
         self.markerResult.set_data([0, dataNow["result"]["vx"]], [0, dataNow["result"]["vy"]])
+        self.markerResult.set_zorder(10)
 
         self.ax.set_title(self.title + f', ({dataNow["result"]["vx"]:.2f}, {dataNow["result"]["vy"]:.2f})')
 
