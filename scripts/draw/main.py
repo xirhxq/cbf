@@ -140,7 +140,7 @@ if __name__ == '__main__':
         {
             'name': 'Animation (Full Set, Certain Time Range, #1 Only)',
             'action': lambda: AnimationDrawer(files).run_animation(
-                ['map', 'opt', 'cbfd-energy', 'cbf-energy'],
+                ['map', 'opt', 'cbc-energy', 'cbf-energy'],
                 time_range=(95, 105),
                 id_list=[1]
             )
@@ -148,14 +148,14 @@ if __name__ == '__main__':
         {
             'name': 'CBF Derivative, Certain Time Range',
             'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(
-                ['cbfd-energy'],
+                ['cbc-energy'],
                 time_range=(95, 105),
                 id_list=[1]
             )
         },
         {
             'name': 'CBF Derivative, Per Robot',
-            'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['cbfd'])
+            'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['cbc-energy'])
         }
     ]
 

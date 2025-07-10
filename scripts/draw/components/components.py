@@ -6,7 +6,7 @@ from .search_heatmap import SearchHeatmapComponent
 from .heatmap import HeatmapComponent
 from .energy import EnergyComponent
 from .control_input import ControlInputComponent
-from .cbf_derivative import CBFDerivativeComponent
+from .cbc import CBCComponent
 
 REGISTRIED_COMPONENTS = {
     'map': {
@@ -72,10 +72,10 @@ REGISTRIED_COMPONENTS = {
         'filename': 'u',
         'figsize': (12, 8),
     },
-    'cbfd': {
-        'title': 'CBF Derivative',
-        'class': 'CBFDerivativeComponent',
-        'filename': 'cbf-derivative',
+    'cbc': {
+        'title': 'Control Barrier Certificate',
+        'class': 'CBCComponent',
+        'filename': 'cbc',
         'figsize': (10, 6),
     },
     'cbf-energy': {
@@ -87,10 +87,10 @@ REGISTRIED_COMPONENTS = {
             'cbf_filter': lambda name: name.startswith('energy')
         }
     },
-    'cbfd-energy': {
-        'title': 'Energy CBF Derivative',
-        'class': 'CBFDerivativeComponent',
-        'filename': 'energy-cbf-derivative',
+    'cbc-energy': {
+        'title': 'Control Barrier Certificate, Energy CBF',
+        'class': 'CBCComponent',
+        'filename': 'cbc-energy',
         'figsize': (10, 6),
         'params': {
                'cbf_filter': 'energy'

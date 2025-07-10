@@ -3,7 +3,7 @@ from utils import *
 from .base import BaseComponent
 
 
-class CBFDerivativeComponent(BaseComponent):
+class CBCComponent(BaseComponent):
     def __init__(self, ax, data, robot_id, title=None, mode='separate', **kwargs):
         self.ax = ax
         self.data = data["state"]
