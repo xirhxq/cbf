@@ -63,7 +63,7 @@ public:
         }
 
         for (int i = uNominal.size(); i < var_count; i++) {
-            Q.insert(i, i) = 0.2;
+            obj_coeffs[i] = 0.01;
         }
 
         Q.makeCompressed();
@@ -74,6 +74,10 @@ public:
         model.hessian_.value_.assign(Q.valuePtr(), Q.valuePtr() + Q.nonZeros());
 
         model.lp_.col_cost_ = obj_coeffs;
+
+        for (int i = uNominal.size(); i < var_count; i++) {
+            col_lower[i] = 0.0;
+        }
     }
 
     void addLinearConstraint(Eigen::VectorXd coe, double rhs_value) override {
