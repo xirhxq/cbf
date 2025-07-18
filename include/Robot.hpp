@@ -472,6 +472,23 @@ public:
             opt["result"] = model->control2Json(u);
             opt["slacks"] = result.tail(slackSize);
 
+            if (settings["debug"]["opt-cbc"]) {
+                for (auto &[name, cbf]: cbfNoSlack.cbfs) {
+                    for (auto &item : opt["cbfNoSlack"]) {
+                        if (item["name"] == cbf.name) {
+                            item["lhs"] = cbf.hdot(f, g, x, u, runtime);
+                            item["rhs"] = -cbf.alpha(cbf.h(x, runtime));
+                            item["lfh"] = cbf.dhdx(x, runtime).dot(VectorXd(f)) + cbf.dhdt(x, runtime);
+                            item["dhdt"] = cbf.dhdt(x, runtime);
+                            item["lgh"] = cbf.constraintUCoe(f, g, x, runtime);
+                            item["expected-position"] = model->xy().vec() + u * 0.02;
+                            item["expected-h"] = cbf.hdot(f, g, x, u, runtime) * 0.02 + cbf.h(x, runtime);
+                            break;
+                        }
+                    }
+                }
+            }
+
             // cbfNoSlack.checkInequality(f, g, x, u, runtime);
         }
     }

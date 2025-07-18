@@ -100,5 +100,8 @@
   "execute": {
     "time-total": 5,
     "time-step": 0.02
+  },
+  "debug": {
+    "opt-cbc": false
   }
 }
