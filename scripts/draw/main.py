@@ -66,6 +66,10 @@ if __name__ == '__main__':
             'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['cbf'])
         },
         {
+            'name': 'CBF Values, Per Robot',
+            'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['cbf-energy'], time_range=(15, 25), id_list=[1])
+        },
+        {
             'name': 'CVT CBF Value, Per Robot',
             'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['cvt'])
         },
@@ -127,21 +131,21 @@ if __name__ == '__main__':
         },
         {
             'name': 'Animation (Full Set)',
-            'action': lambda: AnimationDrawer(files).run_animation(['map', 'opt', 'cbf'])
+            'action': lambda: AnimationDrawer(files).run_animation(['map', 'opt-ct', 'cbf'])
         },
         {
             'name': 'Animation (Full Set, Last 5 Seconds)',
-            'action': lambda: AnimationDrawer(files).run_animation(['map', 'opt'], last_seconds=5)
+            'action': lambda: AnimationDrawer(files).run_animation(['map', 'opt-ct'], last_seconds=5)
         },
         {
             'name': 'Animation (Full Set, Certain Time Range)',
-            'action': lambda: AnimationDrawer(files).run_animation(['map', 'opt'], time_range=(120, 130))
+            'action': lambda: AnimationDrawer(files).run_animation(['map', 'opt-ct'], time_range=(120, 130))
         },
         {
             'name': 'Animation (Full Set, Certain Time Range, #1 Only)',
             'action': lambda: AnimationDrawer(files).run_animation(
-                ['map', 'opt', 'cbc-energy', 'cbf-energy'],
-                time_range=(95, 105),
+                ['map', 'opt-vec', 'cbc-energy', 'cbf-energy', 'opt-ct'],
+                time_range=(130, 140),
                 id_list=[1]
             )
         },
@@ -149,7 +153,7 @@ if __name__ == '__main__':
             'name': 'CBF Derivative, Certain Time Range',
             'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(
                 ['cbc-energy'],
-                time_range=(95, 105),
+                time_range=(130, 140),
                 id_list=[1]
             )
         },

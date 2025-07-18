@@ -14,8 +14,8 @@ class OptimizationContourPlot(BaseComponent):
         self.txt = self.ax.text(0.05, 0.85, '', color='red', transform=self.ax.transAxes, fontsize=20)
         self.markerNominal, = self.ax.plot([self.data[0]["nominal"]["vx"]], [self.data[0]["nominal"]["vy"]], "b*")
         self.markerResult, = self.ax.plot([0, self.data[0]["result"]["vx"]], [0, self.data[0]["result"]["vy"]], "r")
-        self.xLimit = [-5, 5]
-        self.yLimit = [-5, 5]
+        self.xLimit = [-1, 1]
+        self.yLimit = [-1, 1]
         self.ax.plot(self.xLimit, [0, 0], '--k')
         self.ax.plot([0, 0], self.yLimit, '--k')
         self.ax.set_xlim(self.xLimit)
@@ -34,6 +34,9 @@ class OptimizationContourPlot(BaseComponent):
         self.markerNominal.set_zorder(10)
         self.markerResult.set_data([0, dataNow["result"]["vx"]], [0, dataNow["result"]["vy"]])
         self.markerResult.set_zorder(10)
+
+        self.ax.set_xlim([-abs(dataNow["result"]["vx"]) - 0.5, abs(dataNow["result"]["vx"]) + 0.5])
+        self.ax.set_ylim([-abs(dataNow["result"]["vy"]) - 0.5, abs(dataNow["result"]["vy"]) + 0.5])
 
         self.ax.set_title(self.title + f', ({dataNow["result"]["vx"]:.2f}, {dataNow["result"]["vy"]:.2f})')
 

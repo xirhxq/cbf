@@ -1,13 +1,15 @@
+import numpy as np
+
 from utils import *
 from .base import BaseComponent
 
 
-class CBCComponent(BaseComponent):
+class HDerivativeComponent(BaseComponent):
     def __init__(self, ax, data, robot_id, title=None, mode='separate', **kwargs):
         self.ax = ax
         self.data = data["state"]
         self.robot_id = robot_id
-        self.title = (title or f"CBF Values") + f", Robot #{robot_id + 1}"
+        self.title = (title or f"Next frame h(x), expected - real") + f", Robot #{robot_id + 1}"
         self.mode = mode
 
         self.key = "cbfNoSlack"
@@ -29,23 +31,22 @@ class CBCComponent(BaseComponent):
 
         for cbf_name in sorted(cbf_names):
             times = []
-            dh_list = []
-            alphah_list = []
+            values = []
             for idx, frame in enumerate(self.data[slice(*self.index_range)]):
                 if idx == len(self.data) - 1:
                     continue
                 next_frame = self.data[self.index_range[0] + idx + 1]
-                dh, alphah = None, None
                 if self.key in frame["robots"][robot_id]:
-                    nowh = frame["robots"][robot_id][self.key][cbf_name]
-                    nexth = next_frame["robots"][robot_id][self.key][cbf_name]
-                    dh = (nexth - nowh) / (next_frame["runtime"] - frame["runtime"])
-                    alphah = -nowh
+                    real_h = np.nan
+                    expected_h = np.nan
+                    for item in frame["robots"][robot_id]["opt"][self.key]:
+                        if item["name"] == cbf_name:
+                            expected_h = item["expected-h"]
+                            real_h = next_frame["robots"][robot_id]["cbfNoSlack"][cbf_name]
                 times.append(frame["runtime"])
-                dh_list.append(dh if dh is not None else np.nan)
-                alphah_list.append(alphah if alphah is not None else np.nan)
+                values.append(real_h - expected_h if real_h is not None and expected_h is not None else np.nan)
 
-            self.values[f"{cbf_name}"] = {"time": times, "dh": np.array(dh_list), "alphah": np.array(alphah_list)}
+            self.values[f"{cbf_name}"] = {"time": times, "value": np.array(values)}
 
         self.lines = {}
         self.markers = {}
@@ -73,13 +74,13 @@ class CBCComponent(BaseComponent):
     def _initialize_plot(self):
         self.ax.set_title(self.title)
         self.ax.set_xlabel('Time / s')
-        self.ax.set_ylabel('CBC LHS-RHS')
+        self.ax.set_ylabel('Next frame h(x), Expected - Real')
 
         self.ax.axhline(y=0, color='black', linestyle='--', alpha=0.3)
 
         for label in self.values:
             time_data = self.values[label]["time"]
-            line, = self.ax.plot(time_data, self.values[label]["dh"] - self.values[label]["alphah"], label=label, marker='o', markersize=5, alpha=0.4)
+            line, = self.ax.plot(time_data, self.values[label]["value"], label=label, marker='o', markersize=5, alpha=0.4)
             self.lines[label] = line
 
         self.ax.legend(loc='best')
@@ -105,20 +106,19 @@ class CBCComponent(BaseComponent):
 
         for label, line in self.lines.items():
             idx = num - self.index_range[0]
-            cbc = self.values[label]['dh'][idx] - self.values[label]['alphah'][idx]
+            value = self.values[label]["value"][idx]
 
             current_time = self.runtime[num]
 
-            self.markers[label].set_data(current_time, cbc)
+            self.markers[label].set_data(current_time, value)
 
             if current_time < (x_limits[0] + x_limits[1]) / 2:
                 self.value_texts[label].set_horizontalalignment('left')
-                self.value_texts[label].set_position((current_time + time_offset, cbc))
+                self.value_texts[label].set_position((current_time + time_offset, value))
             else:
                 self.value_texts[label].set_horizontalalignment('right')
-                self.value_texts[label].set_position((current_time - time_offset, cbc))
+                self.value_texts[label].set_position((current_time - time_offset, value))
 
-            # 设置文本内容
-            self.value_texts[label].set_text(f"{self.get_abbv(label)}: {cbc:.4f}")
+            self.value_texts[label].set_text(f"{self.get_abbv(label)}: {value:.4f}")
 
         self.ax.legend(loc='best')

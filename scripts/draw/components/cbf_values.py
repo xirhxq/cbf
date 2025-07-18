@@ -68,7 +68,7 @@ class CBFValuesComponent(BaseComponent):
                         times.append(frame["runtime"])
                         values.append(val if val is not None else np.nan)
 
-                    self.values[f"{key}:{cbf_name}"] = {"time": times, "value": values}
+                    self.values[f"{key}:{cbf_name}"] = {"time": times, "value": values, "min": np.min(values), "max": np.max(values)}
 
         self.lines = {}
         self._initialize_plot()
@@ -89,9 +89,10 @@ class CBFValuesComponent(BaseComponent):
         for label in self.values:
             time_data = self.values[label]["time"]
             value_data = self.values[label]["value"]
+            min_data = self.values[label]["min"]
             label = label.split(":")[1]
             label = self.get_abbv(label) if self.mode != 'separate' else label
-            line, = self.ax.plot(time_data, value_data, label=label)
+            line, = self.ax.plot(time_data, value_data, label=label + f"(min {min_data:.6f})")
             self.lines[label] = line
 
         self.ax.legend(loc='best')

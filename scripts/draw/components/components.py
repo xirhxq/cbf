@@ -7,6 +7,8 @@ from .heatmap import HeatmapComponent
 from .energy import EnergyComponent
 from .control_input import ControlInputComponent
 from .cbc import CBCComponent
+from .h_derivative import HDerivativeComponent
+from .optimisation_vector import OptimizationVectorComponent
 
 REGISTRIED_COMPONENTS = {
     'map': {
@@ -14,10 +16,15 @@ REGISTRIED_COMPONENTS = {
         'filename': 'map',
         'figsize': (10, 10)
     },
-    'opt': {
+    'opt-ct': {
         'title': 'Opt Result',
         'class': 'OptimizationContourPlot',
         'filename': 'opt',
+    },
+    'opt-vec': {
+        'title': 'Opt Result Vector',
+        'class': 'OptimizationVectorComponent',
+        'filename': 'opt-vec'
     },
     'fix': {
         'title': 'Fixed Comm Range',
@@ -94,6 +101,14 @@ REGISTRIED_COMPONENTS = {
         'figsize': (10, 6),
         'params': {
                'cbf_filter': 'energy'
+        }
+    },
+    'dh-energy': {
+        'class': 'HDerivativeComponent',
+        'filename': 'dh',
+        'figsize': (10, 6),
+        'params': {
+            'cbf_filter': 'energy'
         }
     }
 }
