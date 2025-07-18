@@ -9,24 +9,30 @@
 #include <vector>
 #include <string>
 
-void generateRandomProblem(int num_variables, Eigen::VectorXd &uNominal, Eigen::VectorXd &linearConstraintCoefficients,
+void generateRandomProblem(int num_variables,
+                           int num_slack_variables,
+                           Eigen::VectorXd &uNominal,
+                           Eigen::VectorXd &linearConstraintCoefficients,
                            double &rhs_value) {
     static std::random_device rd;
     static std::mt19937 gen(rd());
     static std::uniform_real_distribution<> dis(-10.0, 10.0);
 
     uNominal.resize(num_variables);
-    linearConstraintCoefficients.resize(num_variables);
+    linearConstraintCoefficients.resize(num_variables + num_slack_variables);
 
     for (int i = 0; i < num_variables; ++i) {
         uNominal[i] = dis(gen);
+    }
+
+    for (int i = 0; i < num_variables + num_slack_variables; ++i) {
         linearConstraintCoefficients[i] = dis(gen);
     }
 
     rhs_value = dis(gen);
 }
 
-void saveModels(const std::vector<std::unique_ptr<OptimiserBase>> &optimisers, int test_id) {
+void saveModels(const std::vector<std::unique_ptr<OptimiserBase> > &optimisers, int test_id) {
     for (size_t i = 0; i < optimisers.size(); ++i) {
         std::string filename = "model_" + std::to_string(test_id) + "_opt_" + std::to_string(i) + ".lp";
         optimisers[i]->write(filename);
@@ -35,9 +41,10 @@ void saveModels(const std::vector<std::unique_ptr<OptimiserBase>> &optimisers, i
 
 TEST_CASE("RandomSolvePerformanceComparison") {
     const int num_variables = 10;
+    const int num_slack_variables = 3;
     const int num_tests = 100;
 
-    std::vector<std::unique_ptr<OptimiserBase>> optimisers;
+    std::vector<std::unique_ptr<OptimiserBase> > optimisers;
 #ifdef ENABLE_GUROBI
     optimisers.emplace_back(std::make_unique<Gurobi>());
 #endif
@@ -50,7 +57,7 @@ TEST_CASE("RandomSolvePerformanceComparison") {
     for (int test = 0; test < num_tests; ++test) {
         Eigen::VectorXd uNominal, linearConstraintCoefficients;
         double rhs_value;
-        generateRandomProblem(num_variables, uNominal, linearConstraintCoefficients, rhs_value);
+        generateRandomProblem(num_variables, num_slack_variables, uNominal, linearConstraintCoefficients, rhs_value);
 
         Eigen::VectorXd reference_solution;
         bool test_failed = false;
@@ -58,7 +65,7 @@ TEST_CASE("RandomSolvePerformanceComparison") {
         for (size_t i = 0; i < optimisers.size(); ++i) {
             auto &optimiser = optimisers[i];
             optimiser->clear();
-            optimiser->start(num_variables);
+            optimiser->start(num_variables + num_slack_variables);
             optimiser->setObjective(uNominal);
             optimiser->addLinearConstraint(linearConstraintCoefficients, rhs_value);
 
@@ -73,6 +80,8 @@ TEST_CASE("RandomSolvePerformanceComparison") {
             auto end_time = std::chrono::high_resolution_clock::now();
 
             total_times[i] += std::chrono::duration<double, std::milli>(end_time - start_time).count();
+
+            std::cout << "Optimiser: " << i + 1 << ": " << solution.transpose() << std::endl;
 
             if (i == 0) {
                 reference_solution = solution;
