@@ -45,7 +45,9 @@ public:
             obj += (vars[i] - uNominal[i]) * (vars[i] - uNominal[i]);
         }
         for (int i = uNominal.size(); i < vars.size(); i++) {
-            obj += 0.1 * vars[i] * vars[i];
+            obj += 0.01 * vars[i];
+            GRBLinExpr ln = vars[i];
+            model->addConstr(ln, GRB_GREATER_EQUAL, 0.0);
         }
         model->setObjective(obj, GRB_MINIMIZE);
     }
