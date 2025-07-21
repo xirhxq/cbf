@@ -15,6 +15,8 @@ public:
 
     virtual void write(std::string filename) = 0;
 
+    virtual double getObjectiveValue() const = 0;
+
     virtual ~OptimiserBase() = default;
 };
 

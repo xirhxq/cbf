@@ -64,6 +64,13 @@ public:
         model->write(filename);
     }
 
+    double getObjectiveValue() const override {
+        if (model) {
+            return model->get(GRB_DoubleAttr_ObjVal);
+        }
+        return 0.0;
+    }
+
     Eigen::VectorXd solve() override {
         try {
             model->optimize();

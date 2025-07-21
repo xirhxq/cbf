@@ -82,6 +82,7 @@ TEST_CASE("RandomSolvePerformanceComparison") {
             total_times[i] += std::chrono::duration<double, std::milli>(end_time - start_time).count();
 
             std::cout << "Optimiser: " << i + 1 << ": " << solution.transpose() << std::endl;
+            std::cout << "Optimiser: " << i + 1 << ": " << optimiser->getObjectiveValue() << std::endl;
 
             if (i == 0) {
                 reference_solution = solution;

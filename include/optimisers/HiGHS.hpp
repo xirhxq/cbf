@@ -57,9 +57,12 @@ public:
         Q.resize(var_count, var_count);
         Q.setZero();
 
+        model.lp_.offset_ = 0.0;
+
         for (int i = 0; i < uNominal.size(); i++) {
             Q.insert(i, i) = 2.0;
             obj_coeffs[i] = -2.0 * uNominal[i];
+            model.lp_.offset_ += uNominal[i] * uNominal[i];
         }
 
         for (int i = uNominal.size(); i < var_count; i++) {
@@ -97,6 +100,11 @@ public:
 
     void write(std::string filename) override {
         highs.writeModel(filename);
+    }
+
+    double getObjectiveValue() const override {
+        const double obj_value = highs.getObjectiveValue();
+        return obj_value;
     }
 
     Eigen::VectorXd solve() override {
