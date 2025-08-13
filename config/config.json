@@ -40,6 +40,9 @@
   "model": "SingleIntegrate2D",
   "optimiser": "Gurobi",
   "cbfs": {
+    "objective-function": {
+      "k_delta": 1.0
+    },
     "with-slack": {
       "cvt": {
         "name": "cvtCBF",

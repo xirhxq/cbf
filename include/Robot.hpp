@@ -48,12 +48,12 @@ public:
         }
 #ifdef ENABLE_GUROBI
         if (settings["optimiser"] == "Gurobi") {
-            optimiser = std::make_unique<Gurobi>();
+            optimiser = std::make_unique<Gurobi>(settings["cbfs"]["objective-function"]);
         } else
 #endif
 #ifdef ENABLE_HIGHS
         if (settings["optimiser"] == "HiGHS") {
-            optimiser = std::make_unique<HiGHS>();
+            optimiser = std::make_unique<HiGHS>(settings["cbfs"]["objective-function"]);
         } else
 #endif
         {

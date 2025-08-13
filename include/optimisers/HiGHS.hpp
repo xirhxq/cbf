@@ -25,7 +25,7 @@ class HiGHS : public OptimiserBase {
     double infinity = highs.getInfinity();
 
 public:
-    HiGHS() {
+    HiGHS(json &settings): OptimiserBase(settings) {
         model.lp_.a_matrix_.format_ = MatrixFormat::kColwise;
         model.lp_.sense_ = ObjSense::kMinimize;
         highs.setOptionValue("output_flag", false);
@@ -66,7 +66,7 @@ public:
         }
 
         for (int i = uNominal.size(); i < var_count; i++) {
-            obj_coeffs[i] = 0.01;
+            obj_coeffs[i] = k_delta;
         }
 
         Q.makeCompressed();

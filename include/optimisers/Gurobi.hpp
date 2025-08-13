@@ -12,7 +12,7 @@ class Gurobi : public OptimiserBase{
     GRBQuadExpr obj = 0.0;
 
 public:
-    Gurobi(): env(true) {
+    Gurobi(json &settings): OptimiserBase(settings), env(true) {
         env.set(GRB_IntParam_OutputFlag, 0);
         env.start();
     }
@@ -45,7 +45,7 @@ public:
             obj += (vars[i] - uNominal[i]) * (vars[i] - uNominal[i]);
         }
         for (int i = uNominal.size(); i < vars.size(); i++) {
-            obj += 0.01 * vars[i];
+            obj += k_delta * vars[i];
             GRBLinExpr ln = vars[i];
             model->addConstr(ln, GRB_GREATER_EQUAL, 0.0);
         }

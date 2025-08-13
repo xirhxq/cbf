@@ -4,7 +4,15 @@
 #include "utils.h"
 
 class OptimiserBase {
+protected:
+    double k_delta = 1.0;
 public:
+    OptimiserBase(json &settings) {
+        if (settings.contains("k_delta")) {
+            k_delta = settings["k_delta"];
+        }
+    }
+
     virtual void clear() = 0;
     virtual void start(int size) = 0;
 
