@@ -27,6 +27,15 @@ class MapAnimationComponent(BaseComponent):
         self.Z = np.zeros((self.gridWorldJson["xNum"], self.gridWorldJson["yNum"]))
         self.zExtent = self.gridWorldJson["xLim"] + self.gridWorldJson["yLim"]
 
+        self.zUpdatedIndex = 0
+
+    def updateZ(self, num, dataNow=None):
+        if dataNow is None:
+            dataNow = self.data["state"][num]
+
+        if "update" in dataNow and len(dataNow["update"]):
+            self.Z[*zip(*dataNow["update"])] = 1
+
     def update(self, num, dataNow=None):
         from matplotlib.patches import Wedge, Circle
 
@@ -35,8 +44,9 @@ class MapAnimationComponent(BaseComponent):
 
         self.ax.clear()
 
-        if "update" in dataNow and len(dataNow["update"]):
-            self.Z[*zip(*dataNow["update"])] = 1
+        while self.zUpdatedIndex < num:
+            self.updateZ(self.zUpdatedIndex)
+            self.zUpdatedIndex += 1
 
         self.ax.imshow(self.Z.T, alpha=0.2, extent=self.zExtent, origin='lower', cmap='coolwarm', vmin=0, vmax=1)
 
