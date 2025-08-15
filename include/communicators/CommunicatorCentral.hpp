@@ -25,6 +25,15 @@ public:
         if (id == this->id) return;
         _othersVel[id] = velocity2D;
     }
+
+    void sendYawRad(int id, double yawRad) override {
+        _othersYawRad[id] = yawRad;
+    }
+
+    void receiveYawRad(int id, double yawRad) override {
+        if (id == this->id) return;
+        _othersYawRad[id] = yawRad;
+    }
 };
 
 #endif //CBF_COMMUNICATOR_CENTRAL_H

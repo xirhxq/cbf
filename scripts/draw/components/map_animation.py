@@ -13,7 +13,7 @@ class MapAnimationComponent(BaseComponent):
         self.worldY = [data[1] for data in self.data["para"]["world"]["boundary"]]
         self.gridWorldJson = self.data["para"]["gridWorld"]
         self.robotAnnotation = True
-        self.showYaw = False
+        self.showYaw = True
         self.showCVT = True
         self.showAxis = False
         self.bigTimeText = True
