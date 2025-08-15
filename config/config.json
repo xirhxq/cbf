@@ -35,9 +35,26 @@
       "min": 60,
       "max": 80
     },
-    "yawDeg": 180
+    "yawDeg": 90
   },
   "model": "SingleIntegrate2D",
+  "searching": {
+    "//method": ["downward", "front-sector", "front-cone"],
+    "method": "front-sector",
+    "downward": {
+      "radius": 2.0
+    },
+    "front-sector": {
+      "inner-radius": 0.5,
+      "outer-radius": 2.0,
+      "half-angle-deg": 30.0
+    },
+    "front-cone": {
+      "height": 0.5,
+      "downward-radius": 0.2,
+      "camera-pitch-deg": 30.0
+    }
+  },
   "optimiser": "Gurobi",
   "cbfs": {
     "objective-function": {

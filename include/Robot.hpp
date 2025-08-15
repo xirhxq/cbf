@@ -505,10 +505,36 @@ public:
 
     void updateGridWorld() {
         updatedGridWorld = json::array();
-        double tol = 2;
-        for (auto &[id, position2D]: comm->_othersPos) {
-            auto updatedFor1 = gridWorld.setValueInCircle(position2D, tol, true, true);
-            updatedGridWorld.insert(updatedGridWorld.end(), updatedFor1.begin(), updatedFor1.end());
+        json searchSettings = settings["searching"];
+        std::string method = searchSettings["method"];
+        json params = searchSettings[method];
+        if (method == "front-sector") {
+            for (auto &[id, position2D]: comm->_othersPos) {
+                params["centerAngleRad"] = comm->_othersYawRad[id];
+                auto updatedFor1 = gridWorld.setValueInSectorRing(
+                    position2D,
+                    params,
+                    true, true
+                );
+                updatedGridWorld.insert(updatedGridWorld.end(), updatedFor1.begin(), updatedFor1.end());
+            }
+        }
+        else if (method == "front-cone") {
+            for (auto &[id, position2D]: comm->_othersPos) {
+                params["yaw-rad"] = comm->_othersYawRad[id];
+                auto updatedFor1 = gridWorld.setValueInTiltedCone(
+                    position2D,
+                    params,
+                    true, true
+                );
+                updatedGridWorld.insert(updatedGridWorld.end(), updatedFor1.begin(), updatedFor1.end());
+            }
+        }
+        else if (method == "downward") {
+            for (auto &[id, position2D]: comm->_othersPos) {
+                auto updatedFor1 = gridWorld.setValueInCircle(position2D, params, true, true);
+                updatedGridWorld.insert(updatedGridWorld.end(), updatedFor1.begin(), updatedFor1.end());
+            }
         }
     }
 

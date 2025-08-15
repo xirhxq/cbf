@@ -113,10 +113,37 @@ public:
 
     void updateGridWorld() {
         updatedGridWorldGroundTruth = json::array();
-        double tol = 2;
+        json searchSettings = config["searching"];
+        std::string method = searchSettings["method"];
+        json params = searchSettings[method];
         for (auto &robot: robots) {
-            auto updatedFor1 = gridWorldGroundTruth.setValueInCircle(robot->model->xy(), tol, true, true);
-            updatedGridWorldGroundTruth.insert(updatedGridWorldGroundTruth.end(), updatedFor1.begin(), updatedFor1.end());
+            auto updatedFor1 = json::array();
+            if (method == "front-sector") {
+                params["centerAngleRad"] = robot->model->getStateVariable("yawRad");
+                updatedFor1 = gridWorldGroundTruth.setValueInSectorRing(
+                    robot->model->xy(),
+                    params,
+                    true, true
+                );
+            }
+            else if (method == "front-cone") {
+                params["yaw-rad"] = robot->model->getStateVariable("yawRad");
+                updatedFor1 = gridWorldGroundTruth.setValueInTiltedCone(
+                    robot->model->xy(),
+                    params,
+                    true, true
+                );
+            }
+            else if (method == "downward") {
+                updatedFor1 = gridWorldGroundTruth.setValueInCircle(
+                    robot->model->xy(),
+                    params, true, true
+                );
+            }
+            updatedGridWorldGroundTruth.insert(
+                updatedGridWorldGroundTruth.end(),
+                updatedFor1.begin(), updatedFor1.end()
+            );
         }
     }
 

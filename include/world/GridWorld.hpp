@@ -192,26 +192,22 @@ public:
         return ret;
     }
 
-    json setValueInCircle(Point center, double radii, bool value, bool updateJson = false) {
-        Point outerSquare[4] = {{center.x - radii, center.y - radii},
-                                {center.x + radii, center.y - radii},
-                                {center.x + radii, center.y + radii},
-                                {center.x - radii, center.y + radii}};
-        Polygon poly = Polygon(4, outerSquare);
+    json setValueInCircle(Point center, json params, bool value, bool updateJson = false) {
+        double radius = params["radius"];
         json ret = json::array();
-        pd xLimit = poly.get_x_limit(1.0), yLimit;
+        pd xLimit = {center.x - radius, center.x + radius};
+        pd yLimit = {center.y - radius, center.y + radius};
         pd xIndexes, yIndexes;
         xIndexes.first = getNumInXLim(xLimit.first, "ceil");
         xIndexes.second = getNumInXLim(xLimit.second, "floor");
         for (int i = xIndexes.first; i <= xIndexes.second; i++) {
             double x = getXPositionInXLimit(i);
             if (x > xLimit.second || x < xLimit.first) continue;
-            yLimit = poly.get_y_lim_at_certain_x(x);
             yIndexes.first = getNumInYLim(yLimit.first, "ceil");
             yIndexes.second = getNumInYLim(yLimit.second, "floor");
             for (int j = yIndexes.first; j <= yIndexes.second; j++) {
                 Point p = getPointInArea(i, j);
-                if (p.distance_to(center) > radii) continue;
+                if (p.distance_to(center) > radius) continue;
                 if (updateJson && getValue(i, j) != value) {
                     ret.push_back({i, j});
                 }
@@ -220,6 +216,128 @@ public:
         }
         return ret;
     }
+
+    json setValueInTiltedCone(Point center, json params, bool value, bool updateJson = false) {
+        double h = params["height"];
+        double r = params["downward-radius"];
+        double yawRad = params["yaw-rad"];
+        double pitchRad = static_cast<double>(params["camera-pitch-deg"]) * M_PI / 180.0;
+
+        json ret = json::array();
+
+        // Apex of the cone A: (center.x, center.y, height)
+        // Projection of cone central line B:
+        // (center.x + height / tan(pitchRad) * cos(yawRad), center.y + height / tan(pitchRad) * sin(yawRad), 0)
+        Eigen::Vector3d A(center.x, center.y, h);
+        Eigen::Vector3d B(center.x + h / tan(pitchRad) * cos(yawRad),
+                          center.y + h / tan(pitchRad) * sin(yawRad),
+                          0.0);
+
+        double alpha = atan(r / h);
+        double theta = pitchRad;
+
+        double l = h / tan(theta - alpha) - h / tan(theta + alpha);
+
+        pd xLimit = {B.x() - l, B.x() + l};
+        pd yLimit = {B.y() - l, B.y() + l};
+
+        pd xIndexes, yIndexes;
+        xIndexes.first = getNumInXLim(xLimit.first, "ceil");
+        xIndexes.second = getNumInXLim(xLimit.second, "floor");
+
+        double angleThreshold = alpha;
+
+        for (int i = xIndexes.first; i <= xIndexes.second; i++) {
+            double x = getXPositionInXLimit(i);
+            if (x > xLimit.second || x < xLimit.first) continue;
+
+            yIndexes.first = getNumInYLim(yLimit.first, "ceil");
+            yIndexes.second = getNumInYLim(yLimit.second, "floor");
+
+            for (int j = yIndexes.first; j <= yIndexes.second; j++) {
+                Point p = getPointInArea(i, j);
+                Eigen::Vector3d P(p.x, p.y, 0.0);
+
+                Eigen::Vector3d PA = A - P;
+                Eigen::Vector3d BA = A - B;
+
+                double dotProduct = PA.dot(BA);
+                double magnitudePA = PA.norm();
+                double magnitudeBA = BA.norm();
+
+                if (magnitudePA == 0 || magnitudeBA == 0) continue;
+
+                double angle = acos(dotProduct / (magnitudePA * magnitudeBA));
+
+                if (angle <= angleThreshold) {
+                    if (updateJson && getValue(i, j) != value) {
+                        ret.push_back({i, j});
+                    }
+                    setValue(i, j, value);
+                }
+            }
+        }
+
+        return ret;
+    }
+
+    json setValueInSectorRing(Point center, json params, bool value, bool updateJson = false) {
+        double outerRadius = params["outer-radius"];
+        double innerRadius = params["inner-radius"];
+        double halfAngleRad = static_cast<double>(params["half-angle-deg"]) * M_PI / 180.0;
+        double centerAngleRad = params["centerAngleRad"];
+        pd xLimit = {center.x - outerRadius, center.x + outerRadius};
+        pd yLimit = {center.y - outerRadius, center.y + outerRadius};
+        pd xIndexes, yIndexes;
+        xIndexes.first = getNumInXLim(xLimit.first, "ceil");
+        xIndexes.second = getNumInXLim(xLimit.second, "floor");
+
+        json ret = json::array();
+
+        double startAngle = centerAngleRad - halfAngleRad;
+        double endAngle = centerAngleRad + halfAngleRad;
+
+        for (int i = xIndexes.first; i <= xIndexes.second; i++) {
+            double x = getXPositionInXLimit(i);
+            if (x > xLimit.second || x < xLimit.first) continue;
+
+            yLimit.first = center.y - outerRadius;
+            yLimit.second = center.y + outerRadius;
+            yIndexes.first = getNumInYLim(yLimit.first, "ceil");
+            yIndexes.second = getNumInYLim(yLimit.second, "floor");
+
+            for (int j = yIndexes.first; j <= yIndexes.second; j++) {
+                Point p = getPointInArea(i, j);
+
+                double distance = p.distance_to(center);
+                if (distance < innerRadius || distance > outerRadius) continue;
+
+                double dx = p.x - center.x;
+                double dy = p.y - center.y;
+                double theta = atan2(dy, dx);
+                if (theta < 0) theta += 2 * M_PI;
+
+                double start = fmod(startAngle, 2 * M_PI);
+                double end = fmod(endAngle, 2 * M_PI);
+                bool inSector = false;
+
+                if (start < end) {
+                    inSector = (theta >= start && theta <= end);
+                } else {
+                    inSector = (theta >= start || theta <= end);
+                }
+
+                if (!inSector) continue;
+
+                if (updateJson && getValue(i, j) != value) {
+                    ret.push_back({i, j});
+                }
+                setValue(i, j, value);
+            }
+        }
+        return ret;
+}
+
 
     Point getCentroidInPolygon(Polygon poly) {
         int cntTotal = 0, cntTrue = 0;
