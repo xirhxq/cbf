@@ -62,7 +62,7 @@ class MapAnimationComponent(BaseComponent):
 
         self.ax.scatter(robotX, robotY, c=robotBattery, cmap='RdYlGn', s=100, alpha=0.5)
 
-        if "formation" in dataNow:
+        if "formation" in dataNow and dataNow["formation"] != [None]:
             id2Position = {robot["id"]: (robot["state"]["x"], robot["state"]["y"]) for robot in dataNow["robots"]}
             for myJson in dataNow["formation"]:
                 if myJson["id"] - 1 not in self.id_list:
