@@ -90,7 +90,7 @@
         "max-range": 8.5,
         "k": 10.0,
         "min-neighbour-id-offset": -2,
-        "max-neighbour-id-offset": 0,
+        "max-neighbour-id-offset": 2,
         "compensate-velocity": false,
         "bases": [
           [-3, 0],
@@ -118,7 +118,7 @@
     }
   },
   "execute": {
-    "time-total": 5,
+    "time-total": 10,
     "time-step": 0.02
   },
   "debug": {
