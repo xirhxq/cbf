@@ -377,7 +377,28 @@ public:
         cvtCBF.h = [cvtCenter, config, this](VectorXd x, double t) {
             Point myPosition = this->model->extractXYFromVector(x);
             double kp = config["kp"];
-            return -kp * cvtCenter.distance_to(myPosition);
+
+            // Distance term
+            double distance_to_centroid = cvtCenter.distance_to(myPosition);
+            double h_distance = -kp * distance_to_centroid;
+
+            // Yaw alignment term
+            double k_yaw = config.value("k_yaw", 1.0); // Default to 1.0 if not found
+            double desired_yaw = atan2(cvtCenter.y - myPosition.y, cvtCenter.x - myPosition.x);
+            double current_yaw = this->model->extractFromVector(x, "yawRad");
+            double yaw_error = desired_yaw - current_yaw;
+            // Normalize angle to [-pi, pi]
+            yaw_error = atan2(sin(yaw_error), cos(yaw_error));
+
+            // Enhanced CBF formulation that maintains drive to target while encouraging yaw alignment
+            // We use a weighted combination that doesn't allow yaw misalignment to counteract distance reduction
+            double distance_weight = 1.0; // Weight for distance term
+            double yaw_weight = 0.1; // Lower weight for yaw term to prevent it from dominating
+
+            // Calculate the CBF value with separated terms
+            double cbf_value = distance_weight * h_distance + yaw_weight * (1.0 - cos(yaw_error));
+
+            return cbf_value;
         };
         cvtCBF.alpha = [](double h) { return h; };
         cbfSlack[cvtCBF.name] = cvtCBF;
