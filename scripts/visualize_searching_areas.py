@@ -28,6 +28,13 @@ methods = ['downward', 'front-sector', 'front-cone']
 sample_position = np.array([0, 0, 0.5])  # [x, y, z] position
 sample_yaw_deg = 90  # Yaw angle in degrees
 
+# Colors for each method
+METHOD_COLORS = {
+    'downward': 'blue',
+    'front-sector': 'green',
+    'front-cone': 'red'
+}
+
 # Unified view parameters for 3D plots
 VIEW_PARAMS = {
     'downward': {'elev': 20, 'azim': -70},           # Original downward view
@@ -38,8 +45,8 @@ VIEW_PARAMS = {
 
 # Unified axis limits for 2D plots
 AXIS_LIMITS = {
-    'xlim': (-5, 5),
-    'ylim': (-5, 5)
+    'xlim': (-2.5, 2.5),
+    'ylim': (-2.5, 2.5)
 }
 
 # Override parameters for visualization (if needed)
@@ -72,15 +79,15 @@ def get_params(method_name):
 #     'camera-pitch-deg': 30.0
 # }
 
-def plot_downward_search_2d(ax, position, params):
+def plot_downward_search_2d(ax, position, params, color='blue'):
     """Plot 2D view of downward circular search area"""
     radius = params['radius']
     
     # Draw the UAV as a point
-    ax.plot(position[0], position[1], 'bo', markersize=8)
+    ax.plot(position[0], position[1], 'o', color=color, markersize=8)
     
     # Draw the search circle (semi-transparent)
-    circle = plt.Circle((position[0], position[1]), radius, color='blue', alpha=0.3)
+    circle = plt.Circle((position[0], position[1]), radius, color=color, alpha=0.3)
     ax.add_patch(circle)
     
     # Set unified axis limits
@@ -90,12 +97,12 @@ def plot_downward_search_2d(ax, position, params):
     ax.set_aspect('equal')
     ax.set_title('downward, 2D view')
 
-def plot_downward_search_3d(ax, position, params):
+def plot_downward_search_3d(ax, position, params, color='blue'):
     """Plot 3D view of downward circular search area using Poly3DCollection"""
     radius = params['radius']
     
     # Draw the UAV as a point
-    ax.scatter(position[0], position[1], position[2], c='blue', s=50)
+    ax.scatter(position[0], position[1], position[2], c=color, s=50)
     
     # Draw vertical line from UAV to ground
     ax.plot([position[0], position[0]], [position[1], position[1]], [position[2], 0], 'k--', linewidth=1)
@@ -122,7 +129,7 @@ def plot_downward_search_3d(ax, position, params):
                       (base_x[next_i], base_y[next_i], base_z[next_i])])
 
     # Create the Poly3DCollection for the cone
-    poly3d = Poly3DCollection(verts, alpha=0.3, facecolor='blue', edgecolor='none')
+    poly3d = Poly3DCollection(verts, alpha=0.3, facecolor=color, edgecolor='none')
     ax.add_collection3d(poly3d)
     
     # Set axis limits with reduced padding to make the visualization larger
@@ -140,7 +147,7 @@ def plot_downward_search_3d(ax, position, params):
     
     ax.set_title('downward, 3D view')
 
-def plot_front_sector_search_2d(ax, position, params, yaw_deg):
+def plot_front_sector_search_2d(ax, position, params, yaw_deg, color='blue'):
     """Plot 2D view of front-sector search area"""
     inner_radius = params['inner-radius']
     outer_radius = params['outer-radius']
@@ -148,7 +155,7 @@ def plot_front_sector_search_2d(ax, position, params, yaw_deg):
     yaw_rad = math.radians(yaw_deg)
     
     # Draw the UAV as a point
-    ax.plot(position[0], position[1], 'bo', markersize=8)
+    ax.plot(position[0], position[1], 'o', color=color, markersize=8)
     
     # Draw the sector (semi-transparent)
     # Define angles for the sector
@@ -167,7 +174,7 @@ def plot_front_sector_search_2d(ax, position, params, yaw_deg):
     sector_y = np.concatenate([inner_y, outer_y, [inner_y[0]]])
     
     # Plot the filled polygon
-    ax.fill(sector_x, sector_y, color='blue', alpha=0.3)
+    ax.fill(sector_x, sector_y, color=color, alpha=0.3)
     
     # Set unified axis limits
     ax.set_xlim(AXIS_LIMITS['xlim'][0], AXIS_LIMITS['xlim'][1])
@@ -176,14 +183,14 @@ def plot_front_sector_search_2d(ax, position, params, yaw_deg):
     ax.set_aspect('equal')
     ax.set_title('front-sector, 2D view')
 
-def plot_front_sector_search_3d(ax, position, params, yaw_deg):
+def plot_front_sector_search_3d(ax, position, params, yaw_deg, color='blue'):
     """Plot 3D view of front-sector search area using Poly3DCollection"""
     inner_radius = params['inner-radius']
     outer_radius = params['outer-radius']
     half_angle_deg = params['half-angle-deg']
     
     # Draw the UAV as a point
-    ax.scatter(position[0], position[1], position[2], c='blue', s=50)
+    ax.scatter(position[0], position[1], position[2], c=color, s=50)
     
     # Draw vertical line from UAV to ground
     ax.plot([position[0], position[0]], [position[1], position[1]], [position[2], 0], 'k--', linewidth=1)
@@ -239,7 +246,7 @@ def plot_front_sector_search_3d(ax, position, params, yaw_deg):
     ])
     
     # Create the Poly3DCollection for the sector with correct transparency
-    poly3d = Poly3DCollection(verts, alpha=0.3, facecolor='blue', edgecolor='none')
+    poly3d = Poly3DCollection(verts, alpha=0.3, facecolor=color, edgecolor='none')
     ax.add_collection3d(poly3d)
     
     # Set axis limits with reduced padding to make the visualization larger
@@ -258,7 +265,7 @@ def plot_front_sector_search_3d(ax, position, params, yaw_deg):
     
     ax.set_title('front-sector, 3D view')
 
-def plot_front_cone_search_2d(ax, position_3d, params, yaw_deg):
+def plot_front_cone_search_2d(ax, position_3d, params, yaw_deg, color='blue'):
     """Plot 2D view of front-cone search area (corrected projection as ellipse)"""
     # Extract 2D position for plotting on XY plane
     position = position_3d[:2]
@@ -269,7 +276,7 @@ def plot_front_cone_search_2d(ax, position_3d, params, yaw_deg):
     pitch_rad = math.radians(camera_pitch_deg)
     
     # Draw the UAV as a point
-    ax.plot(position[0], position[1], 'bo', markersize=8)
+    ax.plot(position[0], position[1], 'o', color=color, markersize=8)
     
     # Calculate the projection of the cone onto the ground (z=0) plane
     # The cone's apex is at (position.x, position.y, position.z)
@@ -313,7 +320,7 @@ def plot_front_cone_search_2d(ax, position_3d, params, yaw_deg):
                 width=2 * ground_radius, 
                 height=ground_radius,  # Make it elliptical
                 angle=ellipse_angle,
-                color='blue', 
+                color=color, 
                 alpha=0.3
             )
             ax.add_patch(ellipse)
@@ -322,7 +329,7 @@ def plot_front_cone_search_2d(ax, position_3d, params, yaw_deg):
             # and doesn't intersect the ground in front of the UAV.
             # In this case, we might not draw anything or draw a very small circle.
             # For now, let's draw a small circle at UAV's XY position.
-            circle = plt.Circle((position[0], position[1]), 0.1, color='blue', alpha=0.3)
+            circle = plt.Circle((position[0], position[1]), 0.1, color=color, alpha=0.3)
             ax.add_patch(circle)
     else:
         # If dir_z == 0, the cone axis is parallel to the ground.
@@ -341,7 +348,7 @@ def plot_front_cone_search_2d(ax, position_3d, params, yaw_deg):
             width=2 * ground_radius, 
             height=ground_radius,  # Make it elliptical
             angle=ellipse_angle,
-            color='blue', 
+            color=color, 
             alpha=0.3
         )
         ax.add_patch(ellipse)
@@ -353,7 +360,7 @@ def plot_front_cone_search_2d(ax, position_3d, params, yaw_deg):
     ax.set_aspect('equal')
     ax.set_title('front-cone, 2D view')
 
-def plot_front_cone_search_3d(ax, position_3d, params, yaw_deg):
+def plot_front_cone_search_3d(ax, position_3d, params, yaw_deg, color='blue'):
     """Plot 3D view of front-cone search area using Poly3DCollection (optimized light cone effect)"""
     height = params['height']
     downward_radius = params['downward-radius']
@@ -362,7 +369,7 @@ def plot_front_cone_search_3d(ax, position_3d, params, yaw_deg):
     pitch_rad = math.radians(camera_pitch_deg)
     
     # Draw the UAV as a point
-    ax.scatter(position_3d[0], position_3d[1], position_3d[2], c='blue', s=50)
+    ax.scatter(position_3d[0], position_3d[1], position_3d[2], c=color, s=50)
     
     # Draw vertical line from UAV to ground
     ax.plot([position_3d[0], position_3d[0]], [position_3d[1], position_3d[1]], [position_3d[2], 0], 'k--', linewidth=1)
@@ -424,7 +431,7 @@ def plot_front_cone_search_3d(ax, position_3d, params, yaw_deg):
                       (base_x[next_i], base_y[next_i], base_z[next_i])])
     
     # Create the Poly3DCollection
-    poly3d = Poly3DCollection(verts, alpha=0.3, facecolor='blue', edgecolor='none')
+    poly3d = Poly3DCollection(verts, alpha=0.3, facecolor=color, edgecolor='none')
     ax.add_collection3d(poly3d)
     
     # Set axis limits with reduced padding to make the visualization larger
@@ -447,9 +454,9 @@ def plot_front_cone_search_3d(ax, position_3d, params, yaw_deg):
     
     ax.set_title('front-cone, 3D view')
 
-# Create 6 separate figures
+# Create individual figures for each method
 fig1, ax1 = plt.subplots(figsize=(6, 4.5))
-plot_downward_search_2d(ax1, sample_position[:2], get_params('downward'))
+plot_downward_search_2d(ax1, sample_position[:2], get_params('downward'), METHOD_COLORS['downward'])
 plt.tight_layout()
 output_path_1 = os.path.join(os.path.dirname(__file__), '..', 'plot', 'downward-2d.png')
 plt.savefig(output_path_1, dpi=300)
@@ -457,14 +464,14 @@ plt.close(fig1)
 
 fig2 = plt.figure(figsize=(6, 4.5))
 ax2 = fig2.add_subplot(111, projection='3d')
-plot_downward_search_3d(ax2, sample_position, get_params('downward'))
+plot_downward_search_3d(ax2, sample_position, get_params('downward'), METHOD_COLORS['downward'])
 plt.tight_layout()
 output_path_2 = os.path.join(os.path.join(os.path.dirname(__file__), '..', 'plot', 'downward-3d.png'))
 plt.savefig(output_path_2, dpi=300)
 plt.close(fig2)
 
 fig3, ax3 = plt.subplots(figsize=(6, 4.5))
-plot_front_sector_search_2d(ax3, sample_position[:2], get_params('front-sector'), sample_yaw_deg)
+plot_front_sector_search_2d(ax3, sample_position[:2], get_params('front-sector'), sample_yaw_deg, METHOD_COLORS['front-sector'])
 plt.tight_layout()
 output_path_3 = os.path.join(os.path.dirname(__file__), '..', 'plot', 'front-sector-2d.png')
 plt.savefig(output_path_3, dpi=300)
@@ -472,14 +479,14 @@ plt.close(fig3)
 
 fig4 = plt.figure(figsize=(6, 4.5))
 ax4 = fig4.add_subplot(111, projection='3d')
-plot_front_sector_search_3d(ax4, sample_position, get_params('front-sector'), sample_yaw_deg)
+plot_front_sector_search_3d(ax4, sample_position, get_params('front-sector'), sample_yaw_deg, METHOD_COLORS['front-sector'])
 plt.tight_layout()
 output_path_4 = os.path.join(os.path.dirname(__file__), '..', 'plot', 'front-sector-3d.png')
 plt.savefig(output_path_4, dpi=300)
 plt.close(fig4)
 
 fig5, ax5 = plt.subplots(figsize=(6, 4.5))
-plot_front_cone_search_2d(ax5, sample_position, get_params('front-cone'), sample_yaw_deg) # Pass full 3D position
+plot_front_cone_search_2d(ax5, sample_position, get_params('front-cone'), sample_yaw_deg, METHOD_COLORS['front-cone']) # Pass full 3D position
 plt.tight_layout()
 output_path_5 = os.path.join(os.path.dirname(__file__), '..', 'plot', 'front-cone-2d.png')
 plt.savefig(output_path_5, dpi=300)
@@ -487,11 +494,47 @@ plt.close(fig5)
 
 fig6 = plt.figure(figsize=(6, 4.5))
 ax6 = fig6.add_subplot(111, projection='3d')
-plot_front_cone_search_3d(ax6, sample_position, get_params('front-cone'), sample_yaw_deg)
+plot_front_cone_search_3d(ax6, sample_position, get_params('front-cone'), sample_yaw_deg, METHOD_COLORS['front-cone'])
 plt.tight_layout()
 output_path_6 = os.path.join(os.path.dirname(__file__), '..', 'plot', 'front-cone-3d.png')
 plt.savefig(output_path_6, dpi=300)
 plt.close(fig6)
+
+# Create comparison figures with all methods
+# 2D comparison
+fig7, ax7 = plt.subplots(figsize=(6, 4.5))
+plot_downward_search_2d(ax7, sample_position[:2], get_params('downward'), METHOD_COLORS['downward'])
+plot_front_sector_search_2d(ax7, sample_position[:2], get_params('front-sector'), sample_yaw_deg, METHOD_COLORS['front-sector'])
+plot_front_cone_search_2d(ax7, sample_position, get_params('front-cone'), sample_yaw_deg, METHOD_COLORS['front-cone'])
+
+# Add legend
+legend_elements = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=METHOD_COLORS['downward'], markersize=8, label='downward'),
+                   plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=METHOD_COLORS['front-sector'], markersize=8, label='front-sector'),
+                   plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=METHOD_COLORS['front-cone'], markersize=8, label='front-cone')]
+ax7.legend(handles=legend_elements, loc='upper right')
+
+plt.tight_layout()
+output_path_7 = os.path.join(os.path.dirname(__file__), '..', 'plot', 'comparison-2d.png')
+plt.savefig(output_path_7, dpi=300)
+plt.close(fig7)
+
+# 3D comparison
+fig8 = plt.figure(figsize=(6, 4.5))
+ax8 = fig8.add_subplot(111, projection='3d')
+plot_downward_search_3d(ax8, sample_position, get_params('downward'), METHOD_COLORS['downward'])
+plot_front_sector_search_3d(ax8, sample_position, get_params('front-sector'), sample_yaw_deg, METHOD_COLORS['front-sector'])
+plot_front_cone_search_3d(ax8, sample_position, get_params('front-cone'), sample_yaw_deg, METHOD_COLORS['front-cone'])
+
+# Add legend
+legend_elements = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=METHOD_COLORS['downward'], markersize=8, label='downward'),
+                   plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=METHOD_COLORS['front-sector'], markersize=8, label='front-sector'),
+                   plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=METHOD_COLORS['front-cone'], markersize=8, label='front-cone')]
+ax8.legend(handles=legend_elements, loc='upper right')
+
+plt.tight_layout()
+output_path_8 = os.path.join(os.path.dirname(__file__), '..', 'plot', 'comparison-3d.png')
+plt.savefig(output_path_8, dpi=300)
+plt.close(fig8)
 
 print(f"Visualizations saved to:")
 print(f"  {output_path_1}")
@@ -500,3 +543,5 @@ print(f"  {output_path_3}")
 print(f"  {output_path_4}")
 print(f"  {output_path_5}")
 print(f"  {output_path_6}")
+print(f"  {output_path_7}")
+print(f"  {output_path_8}")
