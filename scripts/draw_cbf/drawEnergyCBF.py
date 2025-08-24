@@ -7,7 +7,7 @@ import time
 import matplotlib.pyplot as plt
 
 scriptPath = os.path.dirname(os.path.realpath(__file__))
-dir = os.path.join(scriptPath, '..', 'plot')
+dir = os.path.join(scriptPath, '..', '..', 'plot', 'draw_cbf')
 os.makedirs(dir, exist_ok=True)
 
 matplotlib.use('Agg')
