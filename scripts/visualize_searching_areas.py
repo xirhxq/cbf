@@ -19,9 +19,58 @@ world_boundary = np.array(config['world']['boundary'])
 searching_config = config['searching']
 methods = ['downward', 'front-sector', 'front-cone']
 
-# Define a sample UAV position and yaw for visualization
-sample_position = np.array([0, 0, 10])  # Updated UAV position as per your request
-sample_yaw_deg = 90  # Example yaw in degrees
+# ========================
+# Visualization Parameters
+# ========================
+# These parameters can be adjusted for better visualization
+
+# Sample UAV position and yaw for visualization
+sample_position = np.array([0, 0, 0.5])  # [x, y, z] position
+sample_yaw_deg = 90  # Yaw angle in degrees
+
+# Unified view parameters for 3D plots
+VIEW_PARAMS = {
+    'downward': {'elev': 20, 'azim': -70},           # Original downward view
+    'front-sector': {'elev': 15, 'azim': -180},      # Original front-sector view (with yaw_deg=90)
+    'front-cone': {'elev': 15, 'azim': -180},        # Original front-cone view (with yaw_deg=90)
+    'zoom': 2.0                                      # Zoom level (higher = closer)
+}
+
+# Unified axis limits for 2D plots
+AXIS_LIMITS = {
+    'xlim': (-5, 5),
+    'ylim': (-5, 5)
+}
+
+# Override parameters for visualization (if needed)
+# Set to None to use parameters from config.json
+override_params = {
+    'downward': None,
+    'front-sector': None,
+    'front-cone': None
+}
+
+# Example of how to override parameters:
+# override_params['front-cone'] = {
+#     'height': 0.8,
+#     'downward-radius': 0.3,
+#     'camera-pitch-deg': 45.0
+# }
+
+# Function to get parameters (either from override or config)
+def get_params(method_name):
+    if override_params[method_name] is not None:
+        return override_params[method_name]
+    return searching_config[method_name]
+
+# If you want to override parameters for visualization without changing config.json,
+# uncomment and modify the appropriate lines in override_params above.
+# For example, to make the front-cone more visible:
+# override_params['front-cone'] = {
+#     'height': 1.0,
+#     'downward-radius': 0.5,
+#     'camera-pitch-deg': 30.0
+# }
 
 def plot_downward_search_2d(ax, position, params):
     """Plot 2D view of downward circular search area"""
@@ -34,10 +83,9 @@ def plot_downward_search_2d(ax, position, params):
     circle = plt.Circle((position[0], position[1]), radius, color='blue', alpha=0.3)
     ax.add_patch(circle)
     
-    # Set axis limits with padding
-    padding = 3
-    ax.set_xlim(position[0] - radius - padding, position[0] + radius + padding)
-    ax.set_ylim(position[1] - radius - padding, position[1] + radius + padding)
+    # Set unified axis limits
+    ax.set_xlim(AXIS_LIMITS['xlim'][0], AXIS_LIMITS['xlim'][1])
+    ax.set_ylim(AXIS_LIMITS['ylim'][0], AXIS_LIMITS['ylim'][1])
     
     ax.set_aspect('equal')
     ax.set_title('downward, 2D view')
@@ -77,8 +125,8 @@ def plot_downward_search_3d(ax, position, params):
     poly3d = Poly3DCollection(verts, alpha=0.3, facecolor='blue', edgecolor='none')
     ax.add_collection3d(poly3d)
     
-    # Set axis limits with padding
-    padding = 3
+    # Set axis limits with reduced padding to make the visualization larger
+    padding = 1.0
     ax.set_xlim(position[0] - radius - padding, position[0] + radius + padding)
     ax.set_ylim(position[1] - radius - padding, position[1] + radius + padding)
     ax.set_zlim(0 - padding, position[2] + padding)
@@ -86,8 +134,9 @@ def plot_downward_search_3d(ax, position, params):
     # Remove axis
     ax.set_axis_off()
     
-    # Set view angle for a better perspective of the light cone
-    ax.view_init(elev=20, azim=-70)
+    # Set unified view angle for closer perspective (original downward view)
+    ax.view_init(elev=VIEW_PARAMS['downward']['elev'], azim=VIEW_PARAMS['downward']['azim'])
+    ax.set_box_aspect(None, zoom=VIEW_PARAMS['zoom'])  # Zoom in to make the view closer
     
     ax.set_title('downward, 3D view')
 
@@ -120,10 +169,9 @@ def plot_front_sector_search_2d(ax, position, params, yaw_deg):
     # Plot the filled polygon
     ax.fill(sector_x, sector_y, color='blue', alpha=0.3)
     
-    # Set axis limits with padding
-    padding = 3
-    ax.set_xlim(position[0] - outer_radius - padding, position[0] + outer_radius + padding)
-    ax.set_ylim(position[1] - outer_radius - padding, position[1] + outer_radius + padding)
+    # Set unified axis limits
+    ax.set_xlim(AXIS_LIMITS['xlim'][0], AXIS_LIMITS['xlim'][1])
+    ax.set_ylim(AXIS_LIMITS['ylim'][0], AXIS_LIMITS['ylim'][1])
     
     ax.set_aspect('equal')
     ax.set_title('front-sector, 2D view')
@@ -194,8 +242,8 @@ def plot_front_sector_search_3d(ax, position, params, yaw_deg):
     poly3d = Poly3DCollection(verts, alpha=0.3, facecolor='blue', edgecolor='none')
     ax.add_collection3d(poly3d)
     
-    # Set axis limits with padding
-    padding = 3
+    # Set axis limits with reduced padding to make the visualization larger
+    padding = 1.0
     max_radius = max(inner_radius, outer_radius)
     ax.set_xlim(position[0] - max_radius - padding, position[0] + max_radius + padding)
     ax.set_ylim(position[1] - max_radius - padding, position[1] + max_radius + padding)
@@ -204,8 +252,9 @@ def plot_front_sector_search_3d(ax, position, params, yaw_deg):
     # Remove axis
     ax.set_axis_off()
     
-    # Set view angle to show from right-front of UAV
-    ax.view_init(elev=15, azim=-(yaw_deg + 90))  # View from right-front direction
+    # Set unified view angle for closer perspective (original front-sector view)
+    ax.view_init(elev=VIEW_PARAMS['front-sector']['elev'], azim=VIEW_PARAMS['front-sector']['azim'])
+    ax.set_box_aspect(None, zoom=VIEW_PARAMS['zoom'])  # Zoom in to make the view closer
     
     ax.set_title('front-sector, 3D view')
 
@@ -297,22 +346,9 @@ def plot_front_cone_search_2d(ax, position_3d, params, yaw_deg):
         )
         ax.add_patch(ellipse)
     
-    # Set axis limits with padding
-    padding = 3
-    # Determine a reasonable limit based on the cone's projection
-    if dir_z != 0 and t > 0:
-        xlim_min = min(position[0], center_x - 2 * ground_radius) - padding
-        xlim_max = max(position[0], center_x + 2 * ground_radius) + padding
-        ylim_min = min(position[1], center_y - ground_radius) - padding
-        ylim_max = max(position[1], center_y + ground_radius) + padding
-    else:
-        xlim_min = position[0] - padding
-        xlim_max = position[0] + padding
-        ylim_min = position[1] - padding
-        ylim_max = position[1] + padding
-        
-    ax.set_xlim(xlim_min, xlim_max)
-    ax.set_ylim(ylim_min, ylim_max)
+    # Set unified axis limits
+    ax.set_xlim(AXIS_LIMITS['xlim'][0], AXIS_LIMITS['xlim'][1])
+    ax.set_ylim(AXIS_LIMITS['ylim'][0], AXIS_LIMITS['ylim'][1])
     
     ax.set_aspect('equal')
     ax.set_title('front-cone, 2D view')
@@ -338,6 +374,7 @@ def plot_front_cone_search_3d(ax, position_3d, params, yaw_deg):
     dir_z = -math.sin(pitch_rad)  # Negative because z-axis points upwards, but pitch is downward
     
     # Base center of the cone (at ground level z=0)
+    base_center_z = 0
     if dir_z != 0:
         # Parameter t for the line equation: P(t) = UAV_pos + t * direction
         # At ground (z=0): position_3d[2] + t * dir_z = 0 => t = -position_3d[2] / dir_z
@@ -346,7 +383,6 @@ def plot_front_cone_search_3d(ax, position_3d, params, yaw_deg):
         # Point where the cone's central axis intersects the ground
         base_center_x = position_3d[0] + t * dir_x
         base_center_y = position_3d[1] + t * dir_y
-        base_center_z = 0
         
         # The radius of the cone at the ground level
         # Using similar triangles: radius / height = ground_radius / (height + t * |dir_z|)
@@ -362,7 +398,6 @@ def plot_front_cone_search_3d(ax, position_3d, params, yaw_deg):
         distance = 5.0
         base_center_x = position_3d[0] + distance * math.cos(yaw_rad)
         base_center_y = position_3d[1] + distance * math.sin(yaw_rad)
-        base_center_z = 0
         # The radius would be (distance / height) * downward_radius
         base_radius = (distance / height) * downward_radius
     
@@ -392,68 +427,70 @@ def plot_front_cone_search_3d(ax, position_3d, params, yaw_deg):
     poly3d = Poly3DCollection(verts, alpha=0.3, facecolor='blue', edgecolor='none')
     ax.add_collection3d(poly3d)
     
-    # Set axis limits with padding
-    padding = 3
+    # Set axis limits with reduced padding to make the visualization larger
+    padding = 1.0
     all_x = np.concatenate([[apex_x], base_x])
     all_y = np.concatenate([[apex_y], base_y])
     all_z = np.concatenate([[apex_z], base_z])
     
-    ax.set_xlim(np.min(all_x) - padding, np.max(all_x) + padding)
-    ax.set_ylim(np.min(all_y) - padding, np.max(all_y) + padding)
-    ax.set_zlim(np.min(all_z) - padding, np.max(all_z) + padding)
+    # Use the same axis limits as other plots for consistency
+    ax.set_xlim(AXIS_LIMITS['xlim'][0] - padding, AXIS_LIMITS['xlim'][1] + padding)
+    ax.set_ylim(AXIS_LIMITS['ylim'][0] - padding, AXIS_LIMITS['ylim'][1] + padding)
+    ax.set_zlim(0 - padding, position_3d[2] + padding)
     
     # Remove axis
     ax.set_axis_off()
     
-    # Set view angle for a better perspective from right-front of UAV
-    ax.view_init(elev=15, azim=-(yaw_deg + 90))  # View from right-front direction
+    # Set unified view angle for closer perspective (original front-cone view)
+    ax.view_init(elev=VIEW_PARAMS['front-cone']['elev'], azim=VIEW_PARAMS['front-cone']['azim'])
+    ax.set_box_aspect(None, zoom=VIEW_PARAMS['zoom'])  # Zoom in to make the view closer
     
     ax.set_title('front-cone, 3D view')
 
 # Create 6 separate figures
-fig1, ax1 = plt.subplots(figsize=(8, 6))
-plot_downward_search_2d(ax1, sample_position[:2], searching_config['downward'])
+fig1, ax1 = plt.subplots(figsize=(6, 4.5))
+plot_downward_search_2d(ax1, sample_position[:2], get_params('downward'))
 plt.tight_layout()
 output_path_1 = os.path.join(os.path.dirname(__file__), '..', 'plot', 'downward-2d.png')
-plt.savefig(output_path_1, dpi=300, bbox_inches='tight')
+plt.savefig(output_path_1, dpi=300)
 plt.close(fig1)
 
-fig2 = plt.figure(figsize=(8, 6))
+fig2 = plt.figure(figsize=(6, 4.5))
 ax2 = fig2.add_subplot(111, projection='3d')
-plot_downward_search_3d(ax2, sample_position, searching_config['downward'])
+plot_downward_search_3d(ax2, sample_position, get_params('downward'))
 plt.tight_layout()
 output_path_2 = os.path.join(os.path.join(os.path.dirname(__file__), '..', 'plot', 'downward-3d.png'))
-plt.savefig(output_path_2, dpi=300, bbox_inches='tight')
+plt.savefig(output_path_2, dpi=300)
 plt.close(fig2)
 
-fig3, ax3 = plt.subplots(figsize=(8, 6))
-plot_front_sector_search_2d(ax3, sample_position[:2], searching_config['front-sector'], sample_yaw_deg)
+fig3, ax3 = plt.subplots(figsize=(6, 4.5))
+plot_front_sector_search_2d(ax3, sample_position[:2], get_params('front-sector'), sample_yaw_deg)
 plt.tight_layout()
 output_path_3 = os.path.join(os.path.dirname(__file__), '..', 'plot', 'front-sector-2d.png')
-plt.savefig(output_path_3, dpi=300, bbox_inches='tight')
+plt.savefig(output_path_3, dpi=300)
 plt.close(fig3)
 
-fig4 = plt.figure(figsize=(8, 6))
+fig4 = plt.figure(figsize=(6, 4.5))
 ax4 = fig4.add_subplot(111, projection='3d')
-plot_front_sector_search_3d(ax4, sample_position, searching_config['front-sector'], sample_yaw_deg)
+plot_front_sector_search_3d(ax4, sample_position, get_params('front-sector'), sample_yaw_deg)
 plt.tight_layout()
 output_path_4 = os.path.join(os.path.dirname(__file__), '..', 'plot', 'front-sector-3d.png')
-plt.savefig(output_path_4, dpi=300, bbox_inches='tight')
+plt.savefig(output_path_4, dpi=300)
 plt.close(fig4)
 
-fig5, ax5 = plt.subplots(figsize=(8, 6))
-plot_front_cone_search_2d(ax5, sample_position, searching_config['front-cone'], sample_yaw_deg) # Pass full 3D position
+fig5, ax5 = plt.subplots(figsize=(6, 4.5))
+plot_front_cone_search_2d(ax5, sample_position, get_params('front-cone'), sample_yaw_deg) # Pass full 3D position
 plt.tight_layout()
 output_path_5 = os.path.join(os.path.dirname(__file__), '..', 'plot', 'front-cone-2d.png')
-plt.savefig(output_path_5, dpi=300, bbox_inches='tight')
+plt.savefig(output_path_5, dpi=300)
 plt.close(fig5)
 
-fig6 = plt.figure(figsize=(8, 6))
+fig6 = plt.figure(figsize=(6, 4.5))
 ax6 = fig6.add_subplot(111, projection='3d')
-plot_front_cone_search_3d(ax6, sample_position, searching_config['front-cone'], sample_yaw_deg)
+plot_front_cone_search_3d(ax6, sample_position, get_params('front-cone'), sample_yaw_deg)
 plt.tight_layout()
 output_path_6 = os.path.join(os.path.dirname(__file__), '..', 'plot', 'front-cone-3d.png')
-plt.savefig(output_path_6, dpi=300, bbox_inches='tight')
+plt.savefig(output_path_6, dpi=300)
 plt.close(fig6)
 
 print(f"Visualizations saved to:")
