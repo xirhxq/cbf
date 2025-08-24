@@ -118,8 +118,8 @@ public:
         cbfNoSlack.cbfs[energyCBF.name] = energyCBF;
     }
 
-    void setYawCBF() {
-        auto config = settings["cbfs"]["with-slack"]["yaw"];
+    void setTargetYawCBF() {
+        auto config = settings["cbfs"]["with-slack"]["target-yaw"];
         std::function<double(Point, double)> headingToNearestTarget = [&](Point myPosition, double t) {
             double res = -1, headingRad = 0.0;
             for (auto target: world.targets) {
@@ -132,9 +132,9 @@ public:
             }
             return headingRad;
         };
-        CBF yawCBF;
-        yawCBF.name = config["name"];
-        yawCBF.h = [&, config](VectorXd x, double t) {
+        CBF targetYawCBF;
+        targetYawCBF.name = config["name"];
+        targetYawCBF.h = [&, config](VectorXd x, double t) {
             Point myPosition = model->extractXYFromVector(x);
             double headingRad = headingToNearestTarget(myPosition, t);
             double deltaHeadingRad = headingRad - model->extractFromVector(x, "yawRad");
@@ -142,12 +142,12 @@ public:
             double kp = config["kp"];
             return kp * deltaHeadingRad;
         };
-        cbfSlack[yawCBF.name] = yawCBF;
+        cbfSlack[targetYawCBF.name] = targetYawCBF;
     }
 
     void presetCBF() {
         if (settings["cbfs"]["without-slack"]["energy"]["on"]) setEnergyCBF();
-        if (settings["cbfs"]["with-slack"]["yaw"]["on"]) setYawCBF();
+        if (settings["cbfs"]["with-slack"]["target-yaw"]["on"]) setTargetYawCBF();
     }
 
     void setCommunicationAutoCBF(const json& config) {
@@ -371,16 +371,35 @@ public:
             cvt.ct[i] = gridWorld.getCentroidInPolygon(cvt.pl[i]);
         }
 
-        CBF cvtCBF;
-        cvtCBF.name = "cvtCBF";
         Point cvtCenter = cvt.ct[this->id];
-        cvtCBF.h = [cvtCenter, config, this](VectorXd x, double t) {
-            Point myPosition = this->model->extractXYFromVector(x);
-            double kp = config["kp"];
-            return -kp * cvtCenter.distance_to(myPosition);
-        };
-        cvtCBF.alpha = [](double h) { return h; };
-        cbfSlack[cvtCBF.name] = cvtCBF;
+
+        if (config.contains("cvt") && config["cvt"]["on"]) {
+            CBF cvtDistanceCBF;
+            cvtDistanceCBF.name = config["cvt"]["name"];
+            cvtDistanceCBF.h = [cvtCenter, config, this](VectorXd x, double t) {
+                Point myPosition = this->model->extractXYFromVector(x);
+                double kp = config["cvt"]["kp"];
+                return -kp * cvtCenter.distance_to(myPosition);
+            };
+            cvtDistanceCBF.alpha = [](double h) { return h; };
+            cbfSlack[cvtDistanceCBF.name] = cvtDistanceCBF;
+        }
+
+        if (config.contains("cvt-yaw") && config["cvt-yaw"]["on"]) {
+            CBF cvtYawCBF;
+            cvtYawCBF.name = config["cvt-yaw"]["name"];
+            cvtYawCBF.h = [cvtCenter, config, this](VectorXd x, double t) {
+                Point myPosition = this->model->extractXYFromVector(x);
+                double k_yaw = config["cvt-yaw"].value("k_yaw", 1.0);
+                double desired_yaw = atan2(cvtCenter.y - myPosition.y, cvtCenter.x - myPosition.x);
+                double current_yaw = this->model->extractFromVector(x, "yawRad");
+                double yaw_error = desired_yaw - current_yaw;
+                yaw_error = atan2(sin(yaw_error), cos(yaw_error));
+                return k_yaw * (cos(yaw_error) - 1.0);
+            };
+            cvtYawCBF.alpha = [](double h) { return h; };
+            cbfSlack[cvtYawCBF.name] = cvtYawCBF;
+        }
     }
 
     void postsetCBF() {
@@ -388,7 +407,7 @@ public:
         if (cbfConfig["without-slack"]["comm-scissor"]["on"]) setCommScissorCBF(cbfConfig["without-slack"]["comm-scissor"]);
         if (cbfConfig["without-slack"]["comm-chain"]["on"]) setCommChainCBF(cbfConfig["without-slack"]["comm-chain"]);
         if (cbfConfig["without-slack"]["comm-auto"]["on"]) setCommunicationAutoCBF(cbfConfig["without-slack"]["comm-auto"]);
-        if (cbfConfig["with-slack"]["cvt"]["on"]) setCVTCBF(cbfConfig["with-slack"]["cvt"]);
+        if (cbfConfig["with-slack"]["cvt"]["on"] || cbfConfig["with-slack"]["cvt-yaw"]["on"]) setCVTCBF(cbfConfig["with-slack"]);
         if (cbfConfig["without-slack"]["safety"]["on"]) setSafetyCBF(cbfConfig["without-slack"]["safety"]);
     }
 
@@ -611,7 +630,7 @@ public:
             robotJson["cbfSlack"] = cbfSlackJson;
         }
 
-        if (settings["cbfs"]["with-slack"]["cvt"]["on"]) {
+        if (settings["cbfs"]["with-slack"]["cvt"]["on"] || settings["cbfs"]["with-slack"]["cvt-yaw"]["on"]) {
             json cvtJson = {{"num", cvt.pl[id].n + 1}};
             for (int i = 1; i <= cvt.pl[id].n; i++) {
                 cvtJson["pos"].push_back({cvt.pl[id].p[i].x, cvt.pl[id].p[i].y});

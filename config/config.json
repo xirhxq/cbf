@@ -13,7 +13,7 @@
     ],
     "spacing": 0.1
   },
-  "num": 4,
+  "num": 1,
   "dim": 4,
   "initial": {
     "position": {
@@ -35,7 +35,7 @@
       "min": 60,
       "max": 80
     },
-    "yawDeg": 90
+    "yawDeg": 0
   },
   "model": "SingleIntegrate2D",
   "searching": {
@@ -66,7 +66,12 @@
         "on": true,
         "kp": 5.0
       },
-      "yaw": {
+      "cvt-yaw": {
+        "name": "cvtYawCBF",
+        "on": true,
+        "k_yaw": 100.0
+      },
+      "target-yaw": {
         "name": "yawCBF",
         "on": false,
         "kp": 5.0
@@ -75,7 +80,7 @@
     "without-slack": {
       "energy": {
         "name": "energyCBF",
-        "on": true,
+        "on": false,
         "k": 15.0
       },
       "safety": {
@@ -86,7 +91,7 @@
       },
       "comm-scissor": {
         "name": "commScissorCBF",
-        "on": true,
+        "on": false,
         "max-range": 8.5,
         "k": 10.0,
         "min-neighbour-id-offset": -2,

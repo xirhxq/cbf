@@ -150,6 +150,10 @@ if __name__ == '__main__':
             )
         },
         {
+            'name': 'Animation (Map with CVT CBF)',
+            'action': lambda: AnimationDrawer(files).run_animation(['map', 'cvt'])
+        },
+        {
             'name': 'CBF Derivative, Certain Time Range',
             'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(
                 ['cbc-energy'],
