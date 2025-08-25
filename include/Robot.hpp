@@ -381,7 +381,9 @@ public:
             cvtDistanceCBF.h = [cvtCenter, config, this](VectorXd x, double t) {
                 Point myPosition = this->model->extractXYFromVector(x);
                 double kp = config["cvt"]["kp"];
-                double maxDistance = 4242.64;
+                auto xLim = world.boundary.get_x_limit(1);
+                auto yLim = world.boundary.get_y_limit(1);
+                double maxDistance = sqrt(pow(xLim.second - xLim.first, 2) + pow(yLim.second - yLim.first, 2));
                 double distance = cvtCenter.distance_to(myPosition);
                 return -100.0 * (distance / maxDistance);
             };
