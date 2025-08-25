@@ -15,7 +15,7 @@ public:
         u = Eigen::VectorXd::Zero(3);
 
         F = Eigen::VectorXd::Zero(4);
-        F[xMap["battery"]] = -1.0;
+        F[xMap["battery"]] = -0.1;
 
         A = Eigen::MatrixXd::Zero(4, 4);
 

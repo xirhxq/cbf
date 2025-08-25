@@ -10,7 +10,11 @@ protected:
     Eigen::MatrixXd A, B;
     std::unordered_map<std::string, int> xMap;
     std::unordered_map<std::string, int> uMap;
+    
 public:
+    static constexpr double BATTERY_MIN = 3700.0;
+    static constexpr double BATTERY_MAX = 4200.0;
+    
     virtual ~BaseModel() = default;
 
     auto getX() const {
@@ -131,7 +135,7 @@ public:
         if (xMap.find("battery") == xMap.end()) {
             throw std::invalid_argument("Invalid state variable name: battery");
         }
-        F[xMap["battery"]] = 10.0;
+        F[xMap["battery"]] = 1.0;
     }
 
     void stopCharge() {
@@ -145,7 +149,7 @@ public:
         if (xMap.find("battery") == xMap.end()) {
             throw std::invalid_argument("Invalid state variable name: battery");
         }
-        if (X[xMap["battery"]] >= 100.0) {
+        if (X[xMap["battery"]] >= BATTERY_MAX) {
             stopCharge();
         }
     }
