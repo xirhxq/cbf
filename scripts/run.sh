@@ -16,4 +16,4 @@ source .venv/bin/activate
 
 cd "$PROJECT_ROOT/scripts/draw"
 sleep 2
-echo -e "0\n0\n3\n5\n17\nq" | python main.py
+echo -e "0\n0\n3\n5\n14\nq" | python main.py
