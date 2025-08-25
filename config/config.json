@@ -18,7 +18,7 @@
   "initial": {
     "position": {
       "//method": ["specified", "random-in-polygon", "random-in-world"],
-      "method": "random-in-polygon",
+      "method": "specified",
       "polygon": [
         [-100, 0],
         [-100, 100],
@@ -26,14 +26,14 @@
         [100, 0]
       ],
       "positions": [
-        [1000, 400],
-        [1000, 500],
-        [1000, 600]
+        [0, 400],
+        [0, 500],
+        [0, 600]
       ]
     },
     "battery": {
-      "min": 60,
-      "max": 80
+      "min": 4100,
+      "max": 4200
     },
     "yawDeg": 0
   },
@@ -64,24 +64,24 @@
       "cvt": {
         "name": "cvtCBF",
         "on": true,
-        "kp": 5.0
+        "kp": 1.0
       },
       "cvt-yaw": {
         "name": "cvtYawCBF",
         "on": true,
-        "k_yaw": 100.0
+        "k_yaw": 1.0
       },
       "target-yaw": {
         "name": "yawCBF",
         "on": false,
-        "kp": 5.0
+        "kp": 1.0
       }
     },
     "without-slack": {
       "energy": {
         "name": "energyCBF",
-        "on": false,
-        "k": 15.0
+        "on": true,
+        "k": 1.0
       },
       "safety": {
         "name": "safetyCBF",
@@ -92,7 +92,7 @@
         "name": "commScissorCBF",
         "on": false,
         "max-range": 850.0,
-        "k": 10.0,
+        "k": 1.0,
         "min-neighbour-id-offset": -2,
         "max-neighbour-id-offset": 2,
         "compensate-velocity": false,
@@ -106,7 +106,7 @@
         "name": "commChainCBF",
         "on": false,
         "max-range": 850.0,
-        "k": 10.0,
+        "k": 1.0,
         "min-neighbour-id-offset": -1,
         "max-neighbour-id-offset": 0,
         "compensate-velocity": false,
@@ -117,13 +117,13 @@
         "on": false,
         "max-range": 800,
         "max-consider-range": 1200,
-        "k": 10.0
+        "k": 1.0
       }
     }
   },
   "execute": {
-    "time-total": 10,
-    "time-step": 0.02
+    "time-total": 1000,
+    "time-step": 2.0
   },
   "debug": {
     "opt-cbc": false
