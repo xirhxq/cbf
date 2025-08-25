@@ -5,3 +5,4 @@ plot/
 .*
 !.gitignore
 build
+QWEN.md
