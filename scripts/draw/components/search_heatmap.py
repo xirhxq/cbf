@@ -48,14 +48,5 @@ class SearchHeatmapComponent(BaseComponent):
         self.colorbar = plt.colorbar(self.image, ax=self.ax)
         self.colorbar.set_label('Time / s')
 
-        def scale_x(value, _):
-            return f'{int(value * 100)}'
-
-        def scale_y(value, _):
-            return f'{int(value * 100)}'
-
-        self.ax.xaxis.set_major_formatter(ticker.FuncFormatter(scale_x))
-        self.ax.yaxis.set_major_formatter(ticker.FuncFormatter(scale_y))
-
     def update(self, num, dataNow=None):
         pass
