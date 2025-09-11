@@ -22,25 +22,44 @@ matplotlib.use('Agg')
 BATTERY_MIN = 3700.0
 BATTERY_MAX = 4200.0
 
-pCharge = np.array(config['world']['charge'])
+pCharge = np.array([c["position"] for c in config['world']['charge']])
+chargingRadii = np.array([c['radius'] for c in config['world']['charge']])
 kBatt = config['cbfs']['without-slack']['energy']['k']
-dCharge = 0.3
 
 print(f"pCharge: {pCharge}")
+print(f"chargingRadii: {chargingRadii}")
 print(f"kBatt: {kBatt}")
-print(f"dCharge: {dCharge}")
 print(f"Battery range: {BATTERY_MIN} to {BATTERY_MAX}")
 
 def minDis2Charge(pos):
-    dePos = pos[np.newaxis, :] - pCharge[:, :, np.newaxis, np.newaxis]
+    # pos has shape (2, nx, ny)
+    # pCharge has shape (n_charge, 2)
+    # We want to compute distances between each point in pos and each charging station
+    
+    # Reshape pos to (2, nx*ny) for easier computation
+    nx, ny = pos.shape[1], pos.shape[2]
+    pos_flat = pos.reshape(2, -1)  # Shape: (2, nx*ny)
+    
+    # Compute differences: (n_charge, 2, nx*ny)
+    dePos = pCharge[:, :, np.newaxis] - pos_flat[np.newaxis, :, :]
+    
+    # Compute distances: (n_charge, nx*ny)
     dis = np.linalg.norm(dePos, axis=1)
+    
+    # Find minimum distance for each point: (nx*ny,)
     minDis = np.min(dis, axis=0)
+    
+    # Reshape back to (nx, ny)
+    minDis = minDis.reshape(nx, ny)
+    
     return minDis
 
 def rho(pos):
     min_dis = minDis2Charge(pos)
     print(f"Min distance range: {min_dis.min()} to {min_dis.max()}")
-    ratio = min_dis / dCharge
+    # Use average charging radius
+    avg_charging_radius = np.mean(chargingRadii)
+    ratio = min_dis / avg_charging_radius
     print(f"Ratio range: {ratio.min()} to {ratio.max()}")
     log_ratio = np.log(ratio)
     print(f"Log ratio range: {log_ratio.min()} to {log_ratio.max()}")

@@ -17,18 +17,12 @@ public:
 
     World(Polygon boundary) : boundary(std::move(boundary)) {}
 
-    World(Polygon boundary, std::vector<Point> chargingStationsPosition) : boundary(std::move(boundary)) {
-        for (auto _c: chargingStationsPosition) {
-            chargingStations.emplace_back(std::make_pair(_c, 0.3));
-        }
-    }
-
     explicit World(json settings) {
         boundary = Polygon(getPointsFromJson(settings["boundary"]));
         for (auto &c: settings["charge"]) {
             chargingStations.emplace_back(
-                    Point(c[0], c[1]),
-                    c.contains("r") ? double(c["r"]) : 0.3
+                    Point(c["position"][0], c["position"][1]),
+                    c.contains("radius") ? double(c["radius"]) : 0.3
             );
         }
     }
