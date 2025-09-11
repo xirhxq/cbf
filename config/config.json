@@ -64,7 +64,7 @@
       "cvt": {
         "name": "cvtCBF",
         "on": true,
-        "kp": 1.0
+        "kp": 10000.0
       },
       "cvt-yaw": {
         "name": "cvtYawCBF",
@@ -122,7 +122,7 @@
     }
   },
   "execute": {
-    "time-total": 1000,
+    "time-total": 10000,
     "time-step": 2.0
   },
   "debug": {
