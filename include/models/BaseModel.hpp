@@ -142,7 +142,7 @@ public:
         if (xMap.find("battery") == xMap.end()) {
             throw std::invalid_argument("Invalid state variable name: battery");
         }
-        F[xMap["battery"]] = -1.0;
+        F[xMap["battery"]] = -0.1;
     }
 
     void checkCharge() {
