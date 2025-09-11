@@ -14,26 +14,48 @@ class ControlInputComponent(BaseComponent):
         self.runtime = [frame["runtime"] for frame in self.data]
         self.robot_num = data["config"]["num"]
 
-        self.data_list = [
-            {
-                "vx": [frame["robots"][i]["opt"]["result"]["vx"] for frame in self.data],
-                "vy": [frame["robots"][i]["opt"]["result"]["vy"] for frame in self.data],
-                "speed": [np.linalg.norm([
+        first_frame_result = self.data[0]["robots"][0]["opt"]["result"]
+        control_fields = list(first_frame_result.keys())
+
+        self.data_list = []
+        for i in range(self.robot_num):
+            robot_data = {}
+            for field in control_fields:
+                robot_data[field] = [frame["robots"][i]["opt"]["result"][field] for frame in self.data]
+
+            if "vx" in control_fields and "vy" in control_fields:
+                robot_data["speed"] = [np.linalg.norm([
                     frame["robots"][i]["opt"]["result"]["vx"],
                     frame["robots"][i]["opt"]["result"]["vy"]
-                ]) for frame in self.data],
-            }
-            for i in range(self.robot_num)
-        ]
+                ]) for frame in self.data]
+            
+            self.data_list.append(robot_data)
 
-        self.legend_list = {
-            "vx": "Vel X",
-            "vy": "Vel Y",
-            "speed": "Speed"
-        }
+        self.legend_list = {}
+        for field in control_fields:
+            if field == "vx":
+                self.legend_list[field] = "Vel X"
+            elif field == "vy":
+                self.legend_list[field] = "Vel Y"
+            elif field == "ax":
+                self.legend_list[field] = "Accel X"
+            elif field == "ay":
+                self.legend_list[field] = "Accel Y"
+            elif field == "yawRateRad":
+                self.legend_list[field] = "Yaw Rate"
+            else:
+                self.legend_list[field] = field.capitalize()
+
+        if "vx" in control_fields and "vy" in control_fields:
+            self.legend_list["speed"] = "Speed"
 
         self.xLabel = "Time / s"
-        self.yLabel = "Value / m/s"
+        if "vx" in control_fields:
+            self.yLabel = "Value / m/s"
+        elif "ax" in control_fields:
+            self.yLabel = "Value / m/s²"
+        else:
+            self.yLabel = "Value"
 
         self._initialize_plot()
 
