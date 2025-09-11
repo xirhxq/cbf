@@ -385,7 +385,7 @@ public:
                 auto yLim = world.boundary.get_y_limit(1);
                 double maxDistance = sqrt(pow(xLim.second - xLim.first, 2) + pow(yLim.second - yLim.first, 2));
                 double distance = cvtCenter.distance_to(myPosition);
-                return -100.0 * (distance / maxDistance);
+                return -kp * (distance / maxDistance);
             };
             cvtDistanceCBF.alpha = [](double h) { return h; };
             cbfSlack[cvtDistanceCBF.name] = cvtDistanceCBF;
@@ -396,13 +396,12 @@ public:
             cvtYawCBF.name = config["cvt-yaw"]["name"];
             cvtYawCBF.h = [cvtCenter, config, this](VectorXd x, double t) {
                 Point myPosition = this->model->extractXYFromVector(x);
-                double k_yaw = config["cvt-yaw"].value("k_yaw", 1.0);
+                double k_yaw = config["cvt-yaw"]["k_yaw"];
                 double desired_yaw = atan2(cvtCenter.y - myPosition.y, cvtCenter.x - myPosition.x);
                 double current_yaw = this->model->extractFromVector(x, "yawRad");
                 double yaw_error = desired_yaw - current_yaw;
                 yaw_error = atan2(sin(yaw_error), cos(yaw_error));
-                double normalized_value = 100.0 * (cos(yaw_error) - 1.0) / (-2.0);
-                return std::max(-100.0, std::min(0.0, normalized_value));
+                return k_yaw * (1.0 - cos(yaw_error)) / (-2.0);
             };
             cvtYawCBF.alpha = [](double h) { return h; };
             cbfSlack[cvtYawCBF.name] = cvtYawCBF;
