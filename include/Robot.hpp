@@ -426,7 +426,7 @@ public:
                 {"cbfSlack",   json::array()}
         };
         json jsonCBFNoSlack = json::array(), jsonCBFSlack = json::array();
-        if (world.isCharging(model->xy()) && model->getStateVariable("battery") < 100.0) {
+        if (world.isCharging(model->xy()) && model->getStateVariable("battery") < model->BATTERY_MAX) {
             model->startCharge();
             uNominal.setZero();
             model->setControlInput(uNominal);
