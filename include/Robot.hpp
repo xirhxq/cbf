@@ -40,9 +40,9 @@ public:
               runtime(0.0) {
         settings["id"] = id;
         if (settings["model"] == "SingleIntegrate2D") {
-            model = std::make_unique<SingleIntegrate2D>();
+            model = std::make_unique<SingleIntegrate2D>(settings);
         } else if (settings["model"] == "DoubleIntegrate2D") {
-            model = std::make_unique<DoubleIntegrate2D>();
+            model = std::make_unique<DoubleIntegrate2D>(settings);
         } else {
             throw std::invalid_argument("Invalid model type");
         }
@@ -426,8 +426,10 @@ public:
                 {"cbfSlack",   json::array()}
         };
         json jsonCBFNoSlack = json::array(), jsonCBFSlack = json::array();
-        if (world.isCharging(model->xy()) && model->getStateVariable("battery") < model->BATTERY_MAX) {
+        double chargeRate = 1.0;
+        if (world.isCharging(model->xy(), chargeRate) && model->getStateVariable("battery") < model->BATTERY_MAX) {
             model->startCharge();
+            model->setChargeRate(chargeRate);
             uNominal.setZero();
             model->setControlInput(uNominal);
         } else {

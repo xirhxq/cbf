@@ -8,6 +8,7 @@ class World {
 public:
     Polygon boundary;
     std::vector<std::pair<Point, double>> chargingStations;
+    std::vector<double> chargingRates;
     std::vector<Target> targets;
 //    std::vector<std::function<Point (double)>> target_pos;
 //    std::vector<std::pair<std::function<double (Point, double)>, std::pair<double, double>>> dens;
@@ -24,6 +25,7 @@ public:
                     Point(c["position"][0], c["position"][1]),
                     c.contains("radius") ? double(c["radius"]) : 0.3
             );
+            chargingRates.push_back(c.contains("charge-rate") ? double(c["charge-rate"]) : 1.0);
         }
     }
 
@@ -48,9 +50,12 @@ public:
         return point.distance_to(chargingStations[nearestChargingStation(Point(point))].first);
     }
 
-    bool isCharging(Point point) {
+    bool isCharging(Point point, double &chargeRate) {
         for (int i = 0; i < chargingStations.size(); i++) {
-            if (point.distance_to(chargingStations[i].first) <= chargingStations[i].second) return true;
+            if (point.distance_to(chargingStations[i].first) <= chargingStations[i].second) {
+                chargeRate = chargingRates[i];
+                return true;
+            }
         }
         return false;
     }

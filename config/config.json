@@ -9,15 +9,18 @@
     "charge":[
       {
         "position": [-300, 100],
-        "radius": 10.0
+        "radius": 10.0,
+        "charge-rate": 1.0
       },
       {
         "position": [0, 100],
-        "radius": 10.0
+        "radius": 10.0,
+        "charge-rate": 1.0
       },
       {
         "position": [300, 100],
-        "radius": 10.0
+        "radius": 10.0,
+        "charge-rate": 1.0
       }
     ],
     "spacing": 10.0
@@ -47,6 +50,9 @@
     "yawDeg": 0
   },
   "model": "SingleIntegrate2D",
+  "model-params": {
+    "discharge-rate": 0.1
+  },
   "searching": {
     "//method": ["downward", "front-sector", "front-cone"],
     "method": "front-sector",
