@@ -443,7 +443,7 @@ public:
             int slackSize = cbfSlack.size();
             int totalSize = uSize + slackSize;
 
-            optimiser->start(totalSize);
+            optimiser->start(totalSize, uSize);
 
             optimiser->setObjective(uNominal);
 
