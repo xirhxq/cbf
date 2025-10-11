@@ -14,7 +14,7 @@ public:
     }
 
     virtual void clear() = 0;
-    virtual void start(int size) = 0;
+    virtual void start(int total_size, int u_size) = 0;
 
     virtual void setObjective(Eigen::VectorXd &uNominal) = 0;
     virtual void addLinearConstraint(Eigen::VectorXd coe, double rhs) = 0;
