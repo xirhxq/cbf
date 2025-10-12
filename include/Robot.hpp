@@ -508,8 +508,9 @@ public:
                             item["lfh"] = cbf.dhdx(x, runtime).dot(VectorXd(f)) + cbf.dhdt(x, runtime);
                             item["dhdt"] = cbf.dhdt(x, runtime);
                             item["lgh"] = cbf.constraintUCoe(f, g, x, runtime);
-                            item["expected-position"] = model->xy().vec() + u * 0.02;
-                            item["expected-h"] = cbf.hdot(f, g, x, u, runtime) * 0.02 + cbf.h(x, runtime);
+                            double dt = settings["execute"]["time-step"];
+                            item["expected-position"] = model->xy().vec() + u * dt;
+                            item["expected-h"] = cbf.hdot(f, g, x, u, runtime) * dt + cbf.h(x, runtime);
                             break;
                         }
                     }
