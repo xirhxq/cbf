@@ -339,10 +339,10 @@ public:
     void setSafetyCBF(const json& config) {
         if (settings["num"] == 1) return;
         auto safetyH = [&, config](VectorXd x, double t) {
-            Point myPosition = model->xy();
+            Point myPosition = model->extractXYFromVector(x);
 
             double safeDistance = config["safe-distance"];
-            double k = config["k"];
+            double k = config.contains("k") ? static_cast<double>(config["k"]) : 1.0;
 
             double h = inf;
             for (auto &[id, pos2d]: comm->_othersPos) {
