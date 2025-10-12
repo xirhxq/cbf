@@ -142,7 +142,7 @@ public:
             double deltaHeadingRad = headingRad - model->extractFromVector(x, "yawRad");
             deltaHeadingRad = atan2(sin(deltaHeadingRad), cos(deltaHeadingRad));
             double kp = config["kp"];
-            return kp * deltaHeadingRad;
+            return kp * (1.0 - cos(deltaHeadingRad)) / (-2.0);
         };
         cbfSlack[targetYawCBF.name] = targetYawCBF;
     }
