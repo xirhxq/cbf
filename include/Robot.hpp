@@ -22,7 +22,7 @@ public:
     World world;
     GridWorld gridWorld;
     json settings;
-    json myFormation;
+    json myFormation = json::object();
     json updatedGridWorld;
     std::string folderName;
     std::string filename;

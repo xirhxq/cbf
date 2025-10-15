@@ -65,6 +65,8 @@ class MapAnimationComponent(BaseComponent):
         if "formation" in dataNow and dataNow["formation"] != [None]:
             id2Position = {robot["id"]: (robot["state"]["x"], robot["state"]["y"]) for robot in dataNow["robots"]}
             for myJson in dataNow["formation"]:
+                if len(myJson) == 0 or not myJson:
+                    continue
                 if myJson["id"] - 1 not in self.id_list:
                     continue
                 myPosition = id2Position[myJson["id"]]
