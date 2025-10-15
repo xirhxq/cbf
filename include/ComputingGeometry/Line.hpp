@@ -21,10 +21,12 @@ public:
 
     Line(const Point &_s, double a) {
         s = _s;
-        if (sgn(a - pi / 2) == 0) {
-            e = s + Point(0, 1);
+        double cos_a = cos(a);
+        double sin_a = sin(a);
+        if (fabs(cos_a) < eps) {
+            e = s + Point(0, sin_a > 0 ? 1 : -1);
         } else {
-            e = s + Point(1, tan(a));
+            e = s + Point(cos_a, sin_a);
         }
     }
 
