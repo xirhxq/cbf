@@ -318,7 +318,9 @@ public:
                 if (theta < 0) theta += 2 * M_PI;
 
                 double start = fmod(startAngle, 2 * M_PI);
+                if (start < 0) start += 2 * M_PI;
                 double end = fmod(endAngle, 2 * M_PI);
+                if (end < 0) end += 2 * M_PI;
                 bool inSector = false;
 
                 if (start < end) {
