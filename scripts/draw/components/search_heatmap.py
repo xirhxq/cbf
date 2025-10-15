@@ -11,7 +11,7 @@ class SearchHeatmapComponent(BaseComponent):
 
         x_num = self.grid_world["xNum"]
         y_num = self.grid_world["yNum"]
-        self.Z = np.zeros((y_num, x_num))
+        self.Z = np.full((y_num, x_num), np.nan)
 
         all_rows = []
         all_cols = []
@@ -44,9 +44,20 @@ class SearchHeatmapComponent(BaseComponent):
         ylim = self.grid_world["yLim"]
         extent = [xlim[0], xlim[1], ylim[0], ylim[1]]
 
-        self.image = self.ax.imshow(Z_flipped, cmap='jet', aspect='auto', extent=extent, vmin=0, vmax=np.max(self.Z))
+        cmap = plt.cm.jet
+        cmap.set_bad(color='white')
+
+        valid_values = self.Z[~np.isnan(self.Z)]
+        if len(valid_values) > 0:
+            vmax = np.max(valid_values)
+            vmin = np.min(valid_values)
+        else:
+            vmax = 1
+            vmin = 0
+            
+        self.image = self.ax.imshow(Z_flipped, cmap=cmap, aspect='auto', extent=extent, vmin=vmin, vmax=vmax)
         self.colorbar = plt.colorbar(self.image, ax=self.ax)
-        self.colorbar.set_label('Time / s')
+        self.colorbar.set_label('First Search Time / s')
 
     def update(self, num, dataNow=None):
         pass
