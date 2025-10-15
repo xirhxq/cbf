@@ -29,6 +29,11 @@ class MapAnimationComponent(BaseComponent):
 
         self.zUpdatedIndex = 0
 
+        world_x_size = self.data["para"]["world"]["lim"][0][1] - self.data["para"]["world"]["lim"][0][0]
+        world_y_size = self.data["para"]["world"]["lim"][1][1] - self.data["para"]["world"]["lim"][1][0]
+        world_size = max(world_x_size, world_y_size)
+        self.wedge_radius = world_size * 0.05
+
     def updateZ(self, num, dataNow=None):
         if dataNow is None:
             dataNow = self.data["state"][num]
@@ -82,7 +87,7 @@ class MapAnimationComponent(BaseComponent):
 
         for i, id in enumerate(self.id_list):
             if self.showYaw:
-                self.ax.add_patch(Wedge(center=[robotX[i], robotY[i]], r=0.5,
+                self.ax.add_patch(Wedge(center=[robotX[i], robotY[i]], r=self.wedge_radius,
                                         theta1=robotYawDeg[i] - 15, theta2=robotYawDeg[i] + 15, alpha=0.3))
 
             if self.robotAnnotation:
