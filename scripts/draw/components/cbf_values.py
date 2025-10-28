@@ -77,7 +77,7 @@ class CBFValuesComponent(BaseComponent):
         if 'min(' in cbf_name:
             return 'min'
         else:
-            return cbf_name.split('CBF')[0]
+            return cbf_name.replace('CBF', '')
 
     def _initialize_plot(self):
         self.ax.set_title(self.title)
@@ -90,10 +90,10 @@ class CBFValuesComponent(BaseComponent):
             time_data = self.values[label]["time"]
             value_data = self.values[label]["value"]
             min_data = self.values[label]["min"]
-            label = label.split(":")[1]
-            label = self.get_abbv(label) if self.mode != 'separate' else label
-            line, = self.ax.plot(time_data, value_data, label=label + f"(min {min_data:.6f})")
-            self.lines[label] = line
+            full_label = label.split(":")[1]
+            display_label = self.get_abbv(full_label) if self.mode != 'separate' else full_label
+            line, = self.ax.plot(time_data, value_data, label=display_label + f"(min {min_data:.6f})")
+            self.lines[display_label] = line
 
         self.ax.legend(loc='best')
 
@@ -108,5 +108,69 @@ class CBFValuesComponent(BaseComponent):
             'r--', alpha=0.3
         )[0]
 
+        self.markers = {}
+        self.value_texts = {}
+
+        marker_style = dict(marker='*', color='red', alpha=0.7, markersize=10)
+        text_style = dict(color='red', alpha=0.8, fontsize=9, bbox=dict(facecolor='white', alpha=0.7, edgecolor='none'))
+
+        for label, line in self.lines.items():
+            marker_line, = self.ax.plot([np.nan], [np.nan], **marker_style)
+            self.markers[label] = marker_line
+
+            text = self.ax.text(np.nan, np.nan, "", **text_style,
+                                verticalalignment='center',
+                                horizontalalignment='left')
+            self.value_texts[label] = text
+
     def update(self, num, dataNow=None):
         self.vline.set_data([self.runtime[num], self.runtime[num]], self.y_limits)
+
+        time_span = self.runtime[self.index_range[1] - 1] - self.runtime[self.index_range[0]]
+        time_offset = time_span * 0.015
+
+        x_limits = self.ax.get_xlim()
+
+        for label, line in self.lines.items():
+            line_data_key = None
+            for key in self.values:
+                display_name = key.split(":")[1]
+                if self.mode != 'separate':
+                    display_name = self.get_abbv(display_name)
+                if display_name == label:
+                    line_data_key = key
+                    break
+
+            if line_data_key:
+                value_data = self.values[line_data_key]["value"]
+                time_idx = num - self.index_range[0]
+
+                if 0 <= time_idx < len(value_data):
+                    current_value = value_data[time_idx]
+                    current_time = self.runtime[num]
+
+                    if not np.isnan(current_value):
+                        if label in self.markers:
+                            self.markers[label].set_data(current_time, current_value)
+
+                        if current_time < (x_limits[0] + x_limits[1]) / 2:
+                            if label in self.value_texts:
+                                self.value_texts[label].set_horizontalalignment('left')
+                                self.value_texts[label].set_position((current_time + time_offset, current_value))
+                        else:
+                            if label in self.value_texts:
+                                self.value_texts[label].set_horizontalalignment('right')
+                                self.value_texts[label].set_position((current_time - time_offset, current_value))
+
+                        if label in self.value_texts:
+                            self.value_texts[label].set_text(f"{label}: {current_value:.4f}")
+                    else:
+                        if label in self.markers:
+                            self.markers[label].set_data([], [])
+                        if label in self.value_texts:
+                            self.value_texts[label].set_text("")
+            else:
+                if label in self.markers:
+                    self.markers[label].set_data([], [])
+                if label in self.value_texts:
+                    self.value_texts[label].set_text("")
