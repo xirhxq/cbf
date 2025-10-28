@@ -172,3 +172,29 @@ ax.set_title(f'Energy CBF 3D Surface (Battery: {battery_level:.0f})')
 output_path_3d = os.path.join(dir, 'energyCBF_3D.png')
 plt.savefig(output_path_3d, dpi=300, bbox_inches='tight')
 print(f"Energy CBF 3D figure saved to {output_path_3d}")
+
+plt.figure(figsize=(12, 10))
+
+z_rho = rho(lsPos)
+
+z_battery_zero_cbf = BATTERY_MIN + z_rho * (BATTERY_MAX - BATTERY_MIN) / 100.0
+print(f"Battery level for energyCBF=0 range: {z_battery_zero_cbf.min():.2f} to {z_battery_zero_cbf.max():.2f}")
+
+levels_battery = np.linspace(z_battery_zero_cbf.min(), z_battery_zero_cbf.max(), 20)
+ct_battery = plt.contour(x, y, z_battery_zero_cbf, levels_battery, colors='black')
+plt.clabel(ct_battery, inline=1, fontsize=10, fmt='%.0f')
+
+cf = plt.contourf(x, y, z_battery_zero_cbf, levels=levels_battery, alpha=0.3, cmap='viridis')
+plt.colorbar(cf, label='Battery Level (mV)')
+
+for charge_pos in pCharge:
+    plt.plot(charge_pos[0], charge_pos[1], 'ro', markersize=10, alpha=0.7)
+
+plt.xlabel('x')
+plt.ylabel('y')
+plt.title('Battery Level when Energy CBF = 0\n(Minimum battery required to safely reach charging station)')
+plt.grid(True, alpha=0.3)
+
+output_path_zero_cbf = os.path.join(dir, 'energyCBF_zero_battery_contour.png')
+plt.savefig(output_path_zero_cbf, dpi=300, bbox_inches='tight')
+print(f"Energy CBF=0 battery contour plot saved to {output_path_zero_cbf}")
