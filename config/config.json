@@ -10,22 +10,22 @@
       {
         "position": [-300, 100],
         "radius": 10.0,
-        "charge-rate": 1.0
+        "charge-rate": 5.0
       },
       {
         "position": [0, 100],
         "radius": 10.0,
-        "charge-rate": 1.0
+        "charge-rate": 5.0
       },
       {
         "position": [300, 100],
         "radius": 10.0,
-        "charge-rate": 1.0
+        "charge-rate": 5.0
       }
     ],
     "spacing": 10.0
   },
-  "num": 1,
+  "num": 14,
   "dim": 4,
   "initial": {
     "position": {
@@ -38,9 +38,20 @@
         [100, 0]
       ],
       "positions": [
-        [0, 400],
-        [0, 500],
-        [0, 600]
+        [-20, 0],
+        [20, 0],
+        [-20, 20],
+        [20, 20],
+        [-20, 40],
+        [20, 40],
+        [-20, 60],
+        [20, 60],
+        [-20, 80],
+        [20, 80],
+        [-20, 100],
+        [20, 100],
+        [-20, 120],
+        [20, 120]
       ]
     },
     "battery": {
@@ -51,7 +62,7 @@
   },
   "model": "SingleIntegrate2D",
   "model-params": {
-    "discharge-rate": 0.1
+    "discharge-rate": 0.5
   },
   "searching": {
     "//method": ["downward", "front-sector", "front-cone"],
@@ -73,7 +84,7 @@
   "optimiser": "Gurobi",
   "cbfs": {
     "objective-function": {
-      "k_delta": 1.0
+      "k_delta": 10.0
     },
     "with-slack": {
       "cvt": {
@@ -96,7 +107,7 @@
       "energy": {
         "name": "energyCBF",
         "on": true,
-        "k": 1.0
+        "k": 12.0
       },
       "safety": {
         "name": "safetyCBF",
@@ -105,7 +116,7 @@
       },
       "comm-scissor": {
         "name": "commScissorCBF",
-        "on": false,
+        "on": true,
         "max-range": 850.0,
         "k": 1.0,
         "min-neighbour-id-offset": -2,
@@ -137,8 +148,8 @@
     }
   },
   "execute": {
-    "time-total": 10000,
-    "time-step": 2.0
+    "time-total": 3600,
+    "time-step": 0.5
   },
   "debug": {
     "opt-cbc": false
