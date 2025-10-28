@@ -85,7 +85,7 @@ public:
     }
 
     void checkRobotsInsideWorld() {
-        auto xLim = world.boundary.get_x_limit(1), yLim = world.boundary.get_y_limit(1);
+        auto xLim = world.boundary.get_x_limit(1.1), yLim = world.boundary.get_y_limit(1.1);
         auto robotPosition = model->xy();
         if (robotPosition.x < xLim.first || robotPosition.x > xLim.second ||
             robotPosition.y < yLim.first || robotPosition.y > yLim.second) {
