@@ -48,12 +48,23 @@ class OptimizationVectorComponent(BaseComponent):
         if data_now is None:
             data_now = self.data[num]
 
-        self.markerResult.set_data([0, data_now["result"]["vx"]], [0, data_now["result"]["vy"]])
+        result_vx = data_now["result"]["vx"]
+        result_vy = data_now["result"]["vy"]
+        result_norm = np.sqrt(result_vx**2 + result_vy**2)
+
+        if result_norm > 1:
+            clipped_vx = result_vx / result_norm
+            clipped_vy = result_vy / result_norm
+        else:
+            clipped_vx = result_vx
+            clipped_vy = result_vy
+
+        self.markerResult.set_data([0, clipped_vx], [0, clipped_vy])
         self.markerResult.set_zorder(5)
         self.markerNominal.set_data([data_now["nominal"]["vx"]], [data_now["nominal"]["vy"]])
         self.markerNominal.set_zorder(10)
 
-        min_lim = max(1.2, max(abs(data_now["result"]["vx"]), abs(data_now["result"]["vy"])))
+        min_lim = max(1.2, max(abs(clipped_vx), abs(clipped_vy)))
 
         self.ax.set_xlim([-min_lim, min_lim])
         self.ax.set_ylim([-min_lim, min_lim])
@@ -62,20 +73,9 @@ class OptimizationVectorComponent(BaseComponent):
         self.texts["result"].set_position((np.nan, np.nan))
         self.texts["result"].set_text("")
 
-        result_vx = data_now["result"]["vx"]
-        result_vy = data_now["result"]["vy"]
-        result_norm = np.sqrt(result_vx**2 + result_vy**2)
-        
         if result_norm > 0:
-            if result_norm > 1:
-                text_x = result_vx / result_norm
-                text_y = result_vy / result_norm
-            else:
-                text_x = result_vx
-                text_y = result_vy
-            
-            self.resultText.set_position((text_x, text_y))
-            self.resultText.set_text(f"Result\n({result_vx:.2f}, {result_vy:.2f})")
+            self.resultText.set_position((clipped_vx, clipped_vy))
+            self.resultText.set_text(f"Result\n({result_vx:.2f}, {result_vy:.2f})\n|v|={result_norm:.2f}" + (" clipped" if result_norm > 1 else ""))
         else:
             self.resultText.set_position((np.nan, np.nan))
             self.resultText.set_text("")
