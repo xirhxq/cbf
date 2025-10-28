@@ -381,11 +381,8 @@ public:
             cvtDistanceCBF.h = [cvtCenter, config, this](VectorXd x, double t) {
                 Point myPosition = this->model->extractXYFromVector(x);
                 double kp = config["cvt"]["kp"];
-                auto xLim = world.boundary.get_x_limit(1);
-                auto yLim = world.boundary.get_y_limit(1);
-                double maxDistance = sqrt(pow(xLim.second - xLim.first, 2) + pow(yLim.second - yLim.first, 2));
                 double distance = cvtCenter.distance_to(myPosition);
-                return -kp * (distance / maxDistance);
+                return -kp * distance;
             };
             cvtDistanceCBF.alpha = [](double h) { return h; };
             cbfSlack[cvtDistanceCBF.name] = cvtDistanceCBF;

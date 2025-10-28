@@ -90,7 +90,7 @@
       "cvt": {
         "name": "cvtCBF",
         "on": true,
-        "kp": 10000.0
+        "kp": 1.0
       },
       "cvt-yaw": {
         "name": "cvtYawCBF",
