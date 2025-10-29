@@ -29,7 +29,7 @@ class OptimizationVectorComponent(BaseComponent):
         xVec, yVec = np.linspace(self.xLimit[0], self.xLimit[1], nx), np.linspace(self.yLimit[0], self.yLimit[1], ny)
         self.xgrid, self.ygrid = np.meshgrid(xVec, yVec)
 
-        self.keys = ("cbfNoSlack", "cbfSlack")
+        self.keys = ("cbfNoSlack", )
 
         self.lines = {key: {} for key in self.keys}
         self.texts = {key: {} for key in self.keys}
