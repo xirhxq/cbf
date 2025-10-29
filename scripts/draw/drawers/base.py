@@ -20,12 +20,15 @@ class BaseDrawer:
         total_time = self.data["config"]["execute"]["time-total"]
         runtime = [frame["runtime"] for frame in self.data["state"]]
 
+        actual_total_time = runtime[-1] if runtime else 0
+
         start, end = 0, len(runtime)
 
         if kwargs.get("first_seconds", None) is not None:
             end = np.searchsorted(runtime, kwargs["first_seconds"])
         elif kwargs.get("last_seconds", None) is not None:
-            start = np.searchsorted(runtime, total_time - kwargs["last_seconds"])
+            start_time = actual_total_time - kwargs["last_seconds"]
+            start = max(0, np.searchsorted(runtime, max(0, start_time)))
         elif kwargs.get("time_range", None) is not None:
             start = np.searchsorted(runtime, kwargs["time_range"][0])
             end = np.searchsorted(runtime, kwargs["time_range"][1])
