@@ -117,6 +117,37 @@ public:
         energyCBF.name = config["name"];
         energyCBF.h = batteryH;
         energyCBF.alpha = [](double _h) { return _h; };
+
+        energyCBF.dhdx_analytical = [&, config](VectorXd x, double t) -> VectorXd {
+            Point currentPos = model->extractXYFromVector(x);
+            int nearestIdx = world.nearestChargingStation(currentPos);
+            Point nearestStation = world.chargingStations[nearestIdx].first;
+
+            double d_min = currentPos.distance_to(nearestStation);
+
+            if (d_min < 1e-6) {
+                VectorXd grad = VectorXd::Zero(4);
+                grad[2] = 100.0 / (model->BATTERY_MAX - model->BATTERY_MIN);
+                return grad;
+            }
+
+            Point direction = (currentPos - nearestStation) / d_min;
+
+            double k = config["k"];
+
+            VectorXd grad = VectorXd::Zero(4);
+            grad[0] = -k * direction.x / d_min;  // ∂h/∂x
+            grad[1] = -k * direction.y / d_min;  // ∂h/∂y
+            grad[2] = 100.0 / (model->BATTERY_MAX - model->BATTERY_MIN);  // ∂h/∂E
+            grad[3] = 0; //
+
+            return grad;
+        };
+
+        energyCBF.dhdt_analytical = [&, config](VectorXd x, double t) -> double {
+            return 0.0;
+        };
+
         cbfNoSlack.cbfs[energyCBF.name] = energyCBF;
     }
 
