@@ -116,7 +116,9 @@ public:
         CBF energyCBF;
         energyCBF.name = config["name"];
         energyCBF.h = batteryH;
-        energyCBF.alpha = [](double _h) { return _h; };
+        double alpha_coe = config.value("alpha/coe", 0.1);
+        int alpha_pow = config.value("alpha/pow", 1);
+        energyCBF.setAlphaClassK(alpha_coe, alpha_pow);
 
         energyCBF.dhdx_analytical = [&, config](VectorXd x, double t) -> VectorXd {
             Point currentPos = model->extractXYFromVector(x);
@@ -337,6 +339,9 @@ public:
             commCBF.h = fixedFormationCommH;
             commCBF.dhdx_analytical = dhdx;
             commCBF.dhdt_analytical = dhdt;
+            double alpha_coe = config.value("alpha/coe", 0.1);
+            int alpha_pow = config.value("alpha/pow", 1);
+            commCBF.setAlphaClassK(alpha_coe, alpha_pow);
             cbfNoSlack.cbfs[commCBF.name] = commCBF;
         }
     }
@@ -443,7 +448,9 @@ public:
                 double distance = cvtCenter.distance_to(myPosition);
                 return -kp * distance;
             };
-            cvtDistanceCBF.alpha = [](double h) { return h; };
+            double cvt_alpha_coe = config["cvt"].value("alpha/coe", 1.0);
+            int cvt_alpha_pow = config["cvt"].value("alpha/pow", 1);
+            cvtDistanceCBF.setAlphaClassK(cvt_alpha_coe, cvt_alpha_pow);
             cbfSlack[cvtDistanceCBF.name] = cvtDistanceCBF;
         }
 
@@ -459,7 +466,9 @@ public:
                 yaw_error = atan2(sin(yaw_error), cos(yaw_error));
                 return k_yaw * (1.0 - cos(yaw_error)) / (-2.0);
             };
-            cvtYawCBF.alpha = [](double h) { return h; };
+            double cvt_yaw_alpha_coe = config["cvt-yaw"].value("alpha/coe", 1.0);
+            int cvt_yaw_alpha_pow = config["cvt-yaw"].value("alpha/pow", 1);
+            cvtYawCBF.setAlphaClassK(cvt_yaw_alpha_coe, cvt_yaw_alpha_pow);
             cbfSlack[cvtYawCBF.name] = cvtYawCBF;
         }
     }

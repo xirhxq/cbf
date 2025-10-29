@@ -90,29 +90,49 @@
       "cvt": {
         "name": "cvtCBF",
         "on": true,
-        "kp": 1.0
+        "kp": 1.0,
+        "alpha": {
+          "coe": 1.0,
+          "pow": 1
+        }
       },
       "cvt-yaw": {
         "name": "cvtYawCBF",
         "on": true,
-        "k_yaw": 1.0
+        "k_yaw": 1.0,
+        "alpha": {
+          "coe": 1.0,
+          "pow": 1
+        }
       },
       "target-yaw": {
         "name": "yawCBF",
         "on": false,
-        "kp": 1.0
+        "kp": 1.0,
+        "alpha": {
+          "coe": 1.0,
+          "pow": 1
+        }
       }
     },
     "without-slack": {
       "energy": {
         "name": "energyCBF",
         "on": true,
-        "k": 12.0
+        "k": 12.0,
+        "alpha": {
+          "coe": 0.1,
+          "pow": 1
+        }
       },
       "safety": {
         "name": "safetyCBF",
         "on": false,
-        "safe-distance": 300.0
+        "safe-distance": 300.0,
+        "alpha": {
+          "coe": 0.1,
+          "pow": 3
+        }
       },
       "comm-scissor": {
         "name": "commScissorCBF",
@@ -121,12 +141,16 @@
         "k": 1.0,
         "min-neighbour-id-offset": -2,
         "max-neighbour-id-offset": 2,
-        "compensate-velocity": false,
+        "compensate-velocity": true,
         "bases": [
           [-300, 0],
           [300, 0],
           [0, 0]
-        ]
+        ],
+        "alpha": {
+          "coe": 0.1,
+          "pow": 3
+        }
       },
       "comm-chain": {
         "name": "commChainCBF",
@@ -136,14 +160,22 @@
         "min-neighbour-id-offset": -1,
         "max-neighbour-id-offset": 0,
         "compensate-velocity": false,
-        "base": [0, 0]
+        "base": [0, 0],
+        "alpha": {
+          "coe": 0.1,
+          "pow": 1
+        }
       },
       "comm-auto": {
         "name": "commAutoCBF",
         "on": false,
         "max-range": 800,
         "max-consider-range": 1200,
-        "k": 1.0
+        "k": 1.0,
+        "alpha": {
+          "coe": 0.1,
+          "pow": 1
+        }
       }
     }
   },
