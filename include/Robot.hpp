@@ -301,14 +301,42 @@ public:
                 Point myPosition = model->extractXYFromVector(x);
                 double h = k * (
                         maxRange -
-                        myPosition.distance_to(otherPoint + otherVel * (t - this->runtime))
+                        myPosition.distance_to(otherPoint)
                 );
                 return h;
+            };
+
+            // Analytical spatial gradient: dhdx = -k * (p - p_anchor_rel) / ||p - p_anchor_rel||
+            auto dhdx = [this, otherPoint, otherVel, k](VectorXd x, double t) -> VectorXd {
+                Point myPosition = model->extractXYFromVector(x);
+                Point diff = myPosition - otherPoint;
+                double distance = diff.len();
+                if (distance < 1e-8) {
+                    return VectorXd::Zero(x.size());
+                }
+                VectorXd dhdx = VectorXd::Zero(x.size());
+                dhdx(0) = -k * diff.x / distance;
+                dhdx(1) = -k * diff.y / distance;
+                return dhdx;
+            };
+
+            // Analytical temporal derivative: dhdt = k * (p - p_anchor_rel) · v_anchor / ||p - p_anchor_rel||
+            auto dhdt = [this, otherPoint, otherVel, k](VectorXd x, double t) -> double {
+                Point myPosition = model->extractXYFromVector(x);
+                Point diff = myPosition - otherPoint;
+                double distance = diff.len();
+                if (distance < 1e-8) {
+                    return 0.0;
+                }
+                double dotProduct = diff * otherVel;
+                return k * dotProduct / distance;
             };
 
             CBF commCBF;
             commCBF.name = "commCBF(" + anchorNames[i] + ")";
             commCBF.h = fixedFormationCommH;
+            commCBF.dhdx_analytical = dhdx;
+            commCBF.dhdt_analytical = dhdt;
             cbfNoSlack.cbfs[commCBF.name] = commCBF;
         }
     }
