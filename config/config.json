@@ -142,36 +142,23 @@
           "pow": 3
         }
       },
-      "comm-scissor": {
-        "name": "commScissorCBF",
+      "comm-fixed": {
+        "name": "commFixedCBF",
         "on": true,
+        "mode": "scissor",
         "max-range": 850.0,
         "k": 1.0,
         "min-neighbour-id-offset": -2,
         "max-neighbour-id-offset": 2,
         "compensate-velocity": true,
         "bases": [
+          [0, 0],
           [-300, 0],
-          [300, 0],
-          [0, 0]
+          [300, 0]
         ],
         "alpha": {
           "coe": 0.1,
           "pow": 3
-        }
-      },
-      "comm-chain": {
-        "name": "commChainCBF",
-        "on": false,
-        "max-range": 850.0,
-        "k": 1.0,
-        "min-neighbour-id-offset": -1,
-        "max-neighbour-id-offset": 0,
-        "compensate-velocity": false,
-        "base": [0, 0],
-        "alpha": {
-          "coe": 0.1,
-          "pow": 1
         }
       },
       "comm-auto": {

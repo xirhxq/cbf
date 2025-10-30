@@ -290,49 +290,84 @@ public:
         cbfNoSlack.cbfs[commCBF.name] = commCBF;
     }
 
-    void setCommScissorCBF(const json& config) {
+    void setFixedCommCBF(const json& config) {
         int n = settings["num"];
         double maxRange = config["max-range"];
-        auto getIdInPart = [&](int id) { return (id - 1) % (n / 2) + 1; };
-        auto getPartId = [&](int id) { return id > n / 2 ? 2 : 1; };
+        std::string mode = config.value("mode", "scissor");
 
-        std::vector<Point> bases = getPointsFromJson(config["bases"]);
+        auto getFormationInfo = [&](int robotId) -> std::pair<int, int> {
+            if (mode == "scissor") {
+                int idInPart = (robotId - 1) % (n / 2) + 1;
+                int partId = robotId > n / 2 ? 2 : 1;
+                return {partId, idInPart};
+            } else if (mode == "chain") {
+                return {1, robotId};
+            } else {
+                throw std::invalid_argument("Unknown formation mode: " + mode);
+            }
+        };
 
-        int partId = getPartId(id);
-        int idInPart = getIdInPart(id);
+        auto [partId, idInPart] = getFormationInfo(id);
 
         myFormation = {
             {"id",           id},
             {"anchorPoints", json::array()},
             {"anchorIds",    json::array()}
         };
+
         std::vector<Point> formationPoints;
         std::vector<Point> formationVels;
         std::vector<std::string> anchorNames;
 
-        if (idInPart == 1) {
-            myFormation["anchorPoints"].push_back({bases[partId - 1].x, bases[partId - 1].y});
-            formationPoints.push_back(bases[partId - 1]);
-            formationVels.emplace_back(0, 0);
-            anchorNames.emplace_back("base #" + std::to_string(partId));
-        }
-        if (idInPart <= 2) {
-            myFormation["anchorPoints"].push_back({bases[bases.size() - 1].x, bases[bases.size() - 1].y});
-            formationPoints.push_back(bases[bases.size() - 1]);
-            formationVels.emplace_back(0, 0);
-            anchorNames.emplace_back("base #" + std::to_string(bases.size()));
+        int minOffset = config["min-neighbour-id-offset"];
+        int maxOffset = config["max-neighbour-id-offset"];
+
+        if (config.contains("bases") && !config["bases"].empty()) {
+            std::vector<Point> bases = getPointsFromJson(config["bases"]);
+
+            if (mode == "chain") {
+                for (int baseIdx = 0; baseIdx < bases.size(); baseIdx++) {
+                    int virtualId = -baseIdx;
+
+                    if (virtualId >= this->id + minOffset && virtualId <= this->id + maxOffset) {
+                        myFormation["anchorPoints"].push_back({bases[baseIdx].x, bases[baseIdx].y});
+                        formationPoints.push_back(bases[baseIdx]);
+                        formationVels.emplace_back(0, 0);
+                        anchorNames.emplace_back("base-" + std::to_string(virtualId));
+                    }
+                }
+            } else if (mode == "scissor") {
+                if (idInPart == 1 && partId <= 2 && minOffset <= -1) {
+                    myFormation["anchorPoints"].push_back({bases[partId].x, bases[partId].y});
+                    formationPoints.push_back(bases[partId]);
+                    formationVels.emplace_back(0, 0);
+                    anchorNames.emplace_back("base-" + std::to_string(partId));
+                }
+
+                if (idInPart <= 2 && minOffset <= -2) {
+                    myFormation["anchorPoints"].push_back({bases[0].x, bases[0].y});
+                    formationPoints.push_back(bases[0]);
+                    formationVels.emplace_back(0, 0);
+                    anchorNames.emplace_back("base-0");
+                }
+            }
         }
 
-        for (auto &[id, otherPos]: comm->_othersPos) {
-            if (getPartId(id) != getPartId(this->id)) continue;
-            if (id < this->id + static_cast<int>(config["min-neighbour-id-offset"])) continue;
-            if (id > this->id + static_cast<int>(config["max-neighbour-id-offset"])) continue;
-            myFormation["anchorIds"].push_back(id);
+        for (auto &[otherId, otherPos]: comm->_othersPos) {
+            if (otherId == this->id) continue;
+
+            if (otherId < this->id + minOffset) continue;
+            if (otherId > this->id + maxOffset) continue;
+
+            auto [otherPartId, otherIdInPart] = getFormationInfo(otherId);
+
+            if (otherPartId != partId) continue;
+
+            myFormation["anchorIds"].push_back(otherId);
             formationPoints.push_back(otherPos);
-
-            auto otherVel = comm->_othersVel[id];
+            auto otherVel = comm->_othersVel[otherId];
             formationVels.emplace_back(otherVel);
-            anchorNames.push_back("#" + std::to_string(id));
+            anchorNames.push_back("#" + std::to_string(otherId));
         }
 
         for (int i = 0; i < formationPoints.size(); i++) {
@@ -375,7 +410,7 @@ public:
             };
 
             CBF commCBF;
-            commCBF.name = "commCBF(" + anchorNames[i] + ")";
+            commCBF.name = "fixedCommCBF(" + anchorNames[i] + ")";
             commCBF.h = fixedFormationCommH;
             commCBF.dhdx_analytical = dhdx;
             commCBF.dhdt_analytical = dhdt;
@@ -386,60 +421,7 @@ public:
         }
     }
 
-    void setCommChainCBF(const json& config) {
-        int n = settings["num"];
-        double maxRange = config["max-range"];
-
-        Point base(config["base"][0], config["base"][1]);
-
-        myFormation = {
-            {"id",           id},
-            {"anchorPoints", json::array()},
-            {"anchorIds",    json::array()}
-        };
-        std::vector<Point> formationPoints;
-        std::vector<Point> formationVels;
-        std::vector<std::string> anchorNames;
-
-        if (id == 1) {
-            myFormation["anchorPoints"].push_back({base.x, base.y});
-            formationPoints.push_back(base);
-            formationVels.emplace_back(0, 0);
-            anchorNames.emplace_back("base");
-        }
-
-        for (auto &[id, otherPos]: comm->_othersPos) {
-            if (id == this->id) continue;
-            if (id < this->id + static_cast<int>(config["min-neighbour-id-offset"])) continue;
-            if (id > this->id + static_cast<int>(config["max-neighbour-id-offset"])) continue;
-            myFormation["anchorIds"].push_back(id);
-            formationPoints.push_back(otherPos);
-
-            auto otherVel = comm->_othersVel[id];
-            formationVels.emplace_back(otherVel);
-            anchorNames.push_back("#" + std::to_string(id));
-        }
-
-        for (int i = 0; i < formationPoints.size(); i++) {
-            auto otherPoint = formationPoints[i];
-            auto otherVel = config["compensate-velocity"] ? formationVels[i] : Point(0, 0);
-            double k = config["k"];
-            auto fixedFormationCommH = [this, otherPoint, otherVel, maxRange, k](VectorXd x, double t) {
-                Point myPosition = model->extractXYFromVector(x);
-                double h = k * (
-                        maxRange -
-                        myPosition.distance_to(otherPoint + otherVel * (t - this->runtime))
-                );
-                return h;
-            };
-
-            CBF commCBF;
-            commCBF.name = "commCBF(" + anchorNames[i] + ")";
-            commCBF.h = fixedFormationCommH;
-            cbfNoSlack.cbfs[commCBF.name] = commCBF;
-        }
-    }
-
+    
     void setSafetyCBF(const json& config) {
         if (settings["num"] == 1) return;
         auto safetyH = [&, config](VectorXd x, double t) {
@@ -515,8 +497,8 @@ public:
 
     void postsetCBF() {
         auto cbfConfig = settings["cbfs"];
-        if (cbfConfig["without-slack"]["comm-scissor"]["on"]) setCommScissorCBF(cbfConfig["without-slack"]["comm-scissor"]);
-        if (cbfConfig["without-slack"]["comm-chain"]["on"]) setCommChainCBF(cbfConfig["without-slack"]["comm-chain"]);
+
+        if (cbfConfig["without-slack"]["comm-fixed"]["on"]) setFixedCommCBF(cbfConfig["without-slack"]["comm-fixed"]);
         if (cbfConfig["without-slack"]["comm-auto"]["on"]) setCommunicationAutoCBF(cbfConfig["without-slack"]["comm-auto"]);
         if (cbfConfig["with-slack"]["cvt"]["on"] || cbfConfig["with-slack"]["cvt-yaw"]["on"]) setCVTCBF(cbfConfig["with-slack"]);
         if (cbfConfig["without-slack"]["safety"]["on"]) setSafetyCBF(cbfConfig["without-slack"]["safety"]);
