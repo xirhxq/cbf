@@ -116,6 +116,8 @@
       }
     },
     "without-slack": {
+      "//method": ["all", "min"],
+      "method": "all",
       "energy": {
         "name": "energyCBF",
         "on": true,

@@ -512,29 +512,36 @@ public:
 
             optimiser->setObjective(uNominal);
 
-            for (auto &[name, cbf]: cbfNoSlack.cbfs) {
-                VectorXd uCoe = cbf.constraintUCoe(f, g, x, runtime);
-                double constraintConstWithTime = cbf.constraintConstWithTime(f, g, x, runtime);
-                optimiser->addLinearConstraint(uCoe, -constraintConstWithTime);
-                jsonCBFNoSlack.emplace_back(json{
-                        {"name",  cbf.name},
-                        {"coe",   model->control2Json(uCoe)},
-                        {"const", constraintConstWithTime}
-                });
-            }
+            std::string cbf_method = settings["cbfs"]["without-slack"].value("method", "all");
 
-            // if (!cbfNoSlack.cbfs.empty()) {
-            //     VectorXd uCoe = cbfNoSlack.constraintUCoe(f, g, x, runtime);
-            //     double constraintConstWithTime = cbfNoSlack.constraintConstWithTime(f, g, x, runtime);
-            //
-            //     optimiser->addLinearConstraint(uCoe, -constraintConstWithTime);
-            //
-            //     jsonCBFNoSlack.emplace_back(json{
-            //             {"name",  cbfNoSlack.getName()},
-            //             {"coe",   model->control2Json(uCoe)},
-            //             {"const", constraintConstWithTime}
-            //     });
-            // }
+            if (cbf_method == "all") {
+                for (auto &[name, cbf]: cbfNoSlack.cbfs) {
+                    VectorXd uCoe = cbf.constraintUCoe(f, g, x, runtime);
+                    double constraintConstWithTime = cbf.constraintConstWithTime(f, g, x, runtime);
+                    optimiser->addLinearConstraint(uCoe, -constraintConstWithTime);
+                    jsonCBFNoSlack.emplace_back(json{
+                            {"name",  cbf.name},
+                            {"coe",   model->control2Json(uCoe)},
+                            {"const", constraintConstWithTime}
+                    });
+                }
+            } else if (cbf_method == "min") {
+                if (!cbfNoSlack.cbfs.empty()) {
+                    VectorXd uCoe = cbfNoSlack.constraintUCoe(f, g, x, runtime);
+                    double constraintConstWithTime = cbfNoSlack.constraintConstWithTime(f, g, x, runtime);
+
+                    optimiser->addLinearConstraint(uCoe, -constraintConstWithTime);
+
+                    jsonCBFNoSlack.emplace_back(json{
+                            {"name",  cbfNoSlack.getName()},
+                            {"coe",   model->control2Json(uCoe)},
+                            {"const", constraintConstWithTime}
+                    });
+                }
+            }
+            else {
+                throw std::runtime_error("unknown cbfs.without-slack.method");
+            }
             opt["cbfNoSlack"] = jsonCBFNoSlack;
 
             int cnt = 0;
