@@ -93,11 +93,13 @@ public:
             Point pos2d = robot->model->xy();
             auto vel2d = robot->model->getVelocity();
             double yawRad = robot->model->getStateVariable("yawRad");
+            double batteryLevel = robot->model->getStateVariable("battery");
             for (auto &otherRobot: robots) {
                 if (robot->id == otherRobot->id) continue;
                 otherRobot->comm->receivePosition2D(robot->id, pos2d);
                 otherRobot->comm->receiveVelocity2D(robot->id, vel2d);
                 otherRobot->comm->receiveYawRad(robot->id, yawRad);
+                otherRobot->comm->receiveBatteryLevel(robot->id, batteryLevel);
             }
         };
     }
