@@ -108,9 +108,39 @@ public:
                 return k * log(minDistanceToChargingStations(p));
             };
 
-            double batteryLevel = model->extractFromVector(x, "battery");
-            double normalizedBattery = (batteryLevel - model->BATTERY_MIN) / (model->BATTERY_MAX - model->BATTERY_MIN) * 100.0;
-            return normalizedBattery - rho(model->extractXYFromVector(x));
+            std::string energy_value_type = config.value("energy-value", "neighbour-min");
+            double energy_value;
+
+            if (energy_value_type == "self") {
+                energy_value = model->extractFromVector(x, "battery");
+            } else if (energy_value_type == "neighbour-min"){
+                energy_value = model->extractFromVector(x, "battery");
+                if (myFormation.contains("anchorIds")) {
+                    for (int neighborId : myFormation["anchorIds"]) {
+                        if (comm->_othersBatteryLevel.find(neighborId) != comm->_othersBatteryLevel.end()) {
+                            energy_value = std::min(energy_value, comm->_othersBatteryLevel[neighborId]);
+                        }
+                    }
+                }
+            }
+            else {
+                throw std::invalid_argument("unknown energy-value type");
+            }
+
+            bool normalize_on = config["normalize"].value("on", false);
+            double normalized_energy;
+
+            if (normalize_on) {
+                double normalize_max = config["normalize"].value("max", 100);
+                double battery_min = model->BATTERY_MIN;
+                double battery_max = model->BATTERY_MAX;
+                normalized_energy = (energy_value - battery_min) / (battery_max - battery_min) * normalize_max;
+            } else {
+                double min_value = model->BATTERY_MIN;
+                normalized_energy = energy_value - min_value;
+            }
+
+            return normalized_energy - rho(model->extractXYFromVector(x));
         };
 
         CBF energyCBF;
@@ -121,27 +151,37 @@ public:
         energyCBF.setAlphaClassK(alpha_coe, alpha_pow);
 
         energyCBF.dhdx_analytical = [&, config](VectorXd x, double t) -> VectorXd {
+            bool normalize_on = config["normalize"]["on"];
+
             Point currentPos = model->extractXYFromVector(x);
             int nearestIdx = world.nearestChargingStation(currentPos);
             Point nearestStation = world.chargingStations[nearestIdx].first;
 
             double d_min = currentPos.distance_to(nearestStation);
 
-            if (d_min < 1e-6) {
-                VectorXd grad = VectorXd::Zero(4);
-                grad[2] = 100.0 / (model->BATTERY_MAX - model->BATTERY_MIN);
-                return grad;
+            VectorXd grad = VectorXd::Zero(4);
+
+            double normalize_max = config["normalize"].value("max", 100);
+            double battery_min = model->BATTERY_MIN;
+            double battery_max = model->BATTERY_MAX;
+
+            if (normalize_on) {
+                // For normalized case: h = (E - min) / (max - min) * max - k*log(d)
+                grad[2] = normalize_max / (battery_max - battery_min);
+            } else {
+                // For non-normalized case: h = (E - min) - k*log(d)
+                grad[2] = 1.0;
             }
 
             Point direction = (currentPos - nearestStation) / d_min;
 
             double k = config["k"];
 
-            VectorXd grad = VectorXd::Zero(4);
+            // The spatial derivative (∂h/∂x, ∂h/∂y) is the same for both cases
             grad[0] = -k * direction.x / d_min;  // ∂h/∂x
             grad[1] = -k * direction.y / d_min;  // ∂h/∂y
-            grad[2] = 100.0 / (model->BATTERY_MAX - model->BATTERY_MIN);  // ∂h/∂E
-            grad[3] = 0; //
+
+            grad[3] = 0; // ∂h/∂θ
 
             return grad;
         };
