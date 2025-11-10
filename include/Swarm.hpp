@@ -17,6 +17,12 @@ public:
     std::string folderName;
     std::string filename;
     std::vector<int> all_ids;
+
+    std::unique_ptr<CentralizedModel> centralizedModel;
+    std::unique_ptr<Gurobi> optimizer;
+
+    MultiCBF cbfNoSlack;
+    std::unordered_map<std::string, CBF> cbfSlack;
 public:
     Swarm(json &settings)
             : config(settings),
@@ -30,6 +36,8 @@ public:
             auto robot = std::make_unique<Robot>(i + 1, settings);
             robots.push_back(std::move(robot));
         }
+
+        initializeCentralizedOptimization();
     }
 
     void output() {
@@ -156,7 +164,11 @@ public:
         logParams();
         output();
 
-        for (auto &robot: robots) robot->presetCBF();
+        if (isCentralizedExecution()) {
+            presetCBFs();
+        } else {
+            for (auto &robot: robots) robot->presetCBF();
+        }
 
         auto settings = config["execute"];
 
@@ -170,7 +182,14 @@ public:
                 for (auto &robot: robots) robot->updateGridWorld();
                 updateGridWorld();
                 for (auto &robot: robots) robot->postsetCBF();
-                for (auto &robot: robots) robot->optimise();
+
+                if (isCentralizedExecution()) {
+                    postsetCBFs();
+                    centralizedOptimise();
+                } else {
+                    for (auto &robot: robots) robot->optimise();
+                }
+
                 logOnce();
                 for (auto &robot: robots) robot->stepTimeForward(tStep);
             }
@@ -198,6 +217,219 @@ public:
 
         printf("Data saved in %s\n", filename.c_str());
 
+    }
+
+private:
+    void presetCBFs() {
+        if (config["cbfs"]["without-slack"]["comm-fixed"]["on"]) setupCommCBF();
+    }
+
+    void postsetCBFs() {
+        if (config["cbfs"]["with-slack"]["cvt"]["on"]) setupCVTCBF();
+    }
+    
+    void setupCommCBF() {
+        auto commConfig = config["cbfs"]["without-slack"]["comm-fixed"];
+        if (!commConfig["on"]) return;
+
+        double maxRange = commConfig["max-range"];
+        int maxOffset = commConfig["max-neighbour-id-offset"];
+        int minOffset = commConfig["min-neighbour-id-offset"];
+
+        for (auto &robot : robots) {
+            robot->postsetCBF();
+            std::cout << "robot " << robot->id << ": " << robot->myFormation << std::endl;
+            std::vector<int> anchorIds;
+            if (robot->myFormation.contains("anchorIds")) {
+                for (auto &id : robot->myFormation["anchorIds"]) {
+                    anchorIds.push_back(id);
+                }
+            }
+
+            std::vector<Point> formationPoints;
+            if (robot->myFormation.contains("anchorPoints")) {
+                for (auto &point : robot->myFormation["anchorPoints"]) {
+                    formationPoints.emplace_back(point[0], point[1]);
+                }
+            }
+
+            for (int anchorId : anchorIds) {
+                if (anchorId >= robot->id) continue;
+
+                auto &other = robots[anchorId - 1];
+                CBF commCBF;
+                commCBF.name = "commCBF_" + std::to_string(robot->id) + "_" + std::to_string(other->id);
+
+                double alpha_coe = commConfig["alpha"]["coe"];
+                int alpha_pow = commConfig["alpha"]["pow"];
+                commCBF.setAlphaClassK(alpha_coe, alpha_pow);
+
+                auto commFunc = [this, &robot, &other, maxRange](VectorXd x, double t) -> double {
+                    int robot1Idx = robot->id - 1;
+                    int robot2Idx = other->id - 1;
+
+                    int stateOffset1 = centralizedModel->getStateOffset(robot1Idx);
+                    int stateSize1 = centralizedModel->stateSizes[robot1Idx];
+                    Eigen::VectorXd robot1State = x.segment(stateOffset1, stateSize1);
+
+                    int stateOffset2 = centralizedModel->getStateOffset(robot2Idx);
+                    int stateSize2 = centralizedModel->stateSizes[robot2Idx];
+                    Eigen::VectorXd robot2State = x.segment(stateOffset2, stateSize2);
+
+                    Point pos1 = robot->model->extractXYFromVector(robot1State);
+                    Point pos2 = other->model->extractXYFromVector(robot2State);
+
+                    // Calculate distance between robots for robot-to-robot communication
+                    double distance = pos1.distance_to(pos2);
+                    return maxRange - distance;
+                };
+                commCBF.h = commFunc;
+
+                cbfNoSlack.cbfs[commCBF.name] = commCBF;
+            }
+
+            for (int i = 0; i < formationPoints.size(); ++i) {
+                Point anchorPoint = formationPoints[i];
+                CBF anchorCBF;
+                anchorCBF.name = "anchorCBF_" + std::to_string(robot->id) + "_" + std::to_string(i);
+
+                double alpha_coe = commConfig["alpha"]["coe"];
+                int alpha_pow = commConfig["alpha"]["pow"];
+                anchorCBF.setAlphaClassK(alpha_coe, alpha_pow);
+
+                auto anchorFunc = [this, &robot, anchorPoint, maxRange](VectorXd x, double t) -> double {
+                    int robotIdx = robot->id - 1;
+                    int stateOffset = centralizedModel->getStateOffset(robotIdx);
+                    int stateSize = centralizedModel->stateSizes[robotIdx];
+                    Eigen::VectorXd robotState = x.segment(stateOffset, stateSize);
+
+                    Point robotPos = robot->model->extractXYFromVector(robotState);
+
+                    double distance = robotPos.distance_to(anchorPoint);
+                    return maxRange - distance;
+                };
+                anchorCBF.h = anchorFunc;
+
+                cbfNoSlack.cbfs[anchorCBF.name] = anchorCBF;
+            }
+        }
+    }
+
+    void setupCVTCBF() {
+        auto cvtConfig = config["cbfs"]["with-slack"]["cvt"];
+        if (!cvtConfig["on"]) return;
+
+        CVT tempCVT = CVT(n, robots[0]->world.boundary);
+        for (auto &robot : robots) {
+            tempCVT.pt[robot->id] = robot->model->xy();
+        }
+        tempCVT.cal_poly();
+        for (int i = 1; i <= tempCVT.n; i++) {
+            tempCVT.ct[i] = robots[0]->gridWorld.getCentroidInPolygon(tempCVT.pl[i]);
+        }
+
+        double alpha_coe = cvtConfig["alpha"]["coe"];
+        int alpha_pow = cvtConfig["alpha"]["pow"];
+        double kp = cvtConfig["kp"];
+
+        CBF cvtCBF;
+        cvtCBF.name = "cvtCBF";
+        cvtCBF.setAlphaClassK(alpha_coe, alpha_pow);
+
+        auto cvtFunc = [this, tempCVT, kp](VectorXd x, double t) -> double {
+            double totalDistance = 0.0;
+            for (auto &robot : robots) {
+                int robotIdx = robot->id - 1;
+                int stateOffset = centralizedModel->getStateOffset(robotIdx);
+                int stateSize = centralizedModel->stateSizes[robotIdx];
+                Eigen::VectorXd robotState = x.segment(stateOffset, stateSize);
+
+                Point robotPos = robot->model->extractXYFromVector(robotState);
+
+                Point cvtCenter = tempCVT.ct[robot->id];
+                totalDistance += cvtCenter.distance_to(robotPos);
+            }
+            return -kp * totalDistance;
+        };
+        cvtCBF.h = cvtFunc;
+
+        cbfSlack[cvtCBF.name] = cvtCBF;
+    }
+
+
+    void initializeCentralizedOptimization() {
+        centralizedModel = std::make_unique<CentralizedModel>();
+        for (auto &robot : robots) {
+            centralizedModel->addRobot(robot->model.get());
+        }
+
+        optimizer = std::make_unique<Gurobi>(config["cbfs"]["objective-function"]);
+    }
+
+    void centralizedOptimise() {
+        if (!optimizer || !centralizedModel) {
+            return;
+        }
+
+        centralizedModel->updateConcatenatedStates();
+
+        Eigen::VectorXd uNominal(centralizedModel->getTotalControlSize());
+        uNominal.setZero();
+
+        optimizer->clear();
+
+        auto f = centralizedModel->f();
+        auto g = centralizedModel->g();
+        auto x = centralizedModel->getX();
+
+        int uSize = centralizedModel->getTotalControlSize();
+        int slackSize = cbfSlack.size();
+        int totalSize = uSize + slackSize;
+
+        optimizer->start(totalSize, uSize);
+        optimizer->setObjective(uNominal);
+        printf("\n");
+
+        std::string cbf_method = config["cbfs"]["without-slack"].value("method", "all");
+        if (cbf_method == "all") {
+            for (auto &[name, cbf] : cbfNoSlack.cbfs) {
+                printf("CBF: %s\n", name.c_str());
+                VectorXd uCoe = cbf.constraintUCoe(f, g, x, robots[0]->runtime);
+                double constraintConstWithTime = cbf.constraintConstWithTime(f, g, x, robots[0]->runtime);
+                optimizer->addLinearConstraint(uCoe, -constraintConstWithTime);
+            }
+        }
+
+        int cnt = 0;
+        for (auto &[name, cbf] : cbfSlack) {
+            printf("CBF with slack: %s\n", name.c_str());
+            VectorXd uCoe = cbf.constraintUCoe(f, g, x, robots[0]->runtime);
+            Eigen::VectorXd sCoe = Eigen::VectorXd::Zero(slackSize);
+            sCoe(cnt) = 1.0;
+            Eigen::VectorXd coe(totalSize);
+            coe << uCoe, sCoe;
+            double constraintConst = cbf.constraintConstWithoutTime(f, g, x, robots[0]->runtime);
+
+            optimizer->addLinearConstraint(coe, -constraintConst);
+            ++cnt;
+        }
+
+        auto result = optimizer->solve();
+
+        optimizer->write("centralized_optimization.lp");
+
+        for (int i = 0; i < n; ++i) {
+            centralizedModel->setRobotControl(i, result);
+        }
+    }
+
+    bool isCentralizedExecution() const {
+        auto executeConfig = config["execute"];
+        if (executeConfig.contains("execution-mode")) {
+            std::string mode = executeConfig["execution-mode"];
+            return mode == "centralized";
+        }
+        return false;
     }
 };
 
