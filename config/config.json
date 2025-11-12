@@ -175,7 +175,9 @@
     }
   },
   "execute": {
-    "time-total": 3600,
+    "//execution-mode": ["distributed", "centralized"],
+    "execution-mode": "centralized",
+    "time-total": 1,
     "time-step": 0.5
   },
   "debug": {

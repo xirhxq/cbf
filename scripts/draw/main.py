@@ -168,6 +168,26 @@ if __name__ == '__main__':
         {
             'name': 'Search Percentage Over Time, All Robots',
             'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['sp'])
+        },
+        {
+            'name': 'Centralized CBF Values',
+            'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['centralized-cbf'])
+        },
+        {
+            'name': 'Centralized Communication CBF',
+            'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['centralized-comm'])
+        },
+        {
+            'name': 'Centralized CVT CBF',
+            'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['centralized-cvt'])
+        },
+        {
+            'name': 'Animation (Centralized CBF)',
+            'action': lambda: AnimationDrawer(files).run_animation(['centralized-cbf'])
+        },
+        {
+            'name': 'Animation (Centralized Communication)',
+            'action': lambda: AnimationDrawer(files).run_animation(['centralized-comm'])
         }
     ]
 
