@@ -68,8 +68,3 @@ class EnergyComponent(Lines):
             if frame < len(values):
                 return values[frame]
         return None
-
-
-EnergyComponentNew = EnergyComponent
-
-
