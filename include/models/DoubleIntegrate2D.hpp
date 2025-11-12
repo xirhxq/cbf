@@ -5,7 +5,7 @@
 
 class DoubleIntegrate2D : public BaseModel {
 public:
-    DoubleIntegrate2D() {
+    DoubleIntegrate2D(json &settings) : BaseModel(settings) {
         xMap = {{"x", 0}, {"y", 1}, {"vx", 2}, {"vy", 3}, {"battery", 4}, {"yawRad", 5}};
         uMap = {{"ax", 0}, {"ay", 1}, {"yawRateRad", 2}};
 
@@ -13,16 +13,16 @@ public:
         u = Eigen::VectorXd::Zero(3);
 
         F = Eigen::VectorXd::Zero(6);
-        F(xMap["battery"]) = -1.0;
+        F(xMap["battery"]) = -dischargeRate;
 
         A = Eigen::MatrixXd ::Zero(6, 6);
-        A(0, 2) = 1.0; // x <- vx
-        A(1, 3) = 1.0; // y <- vy
+        A(xMap["x"], xMap["vx"]) = 1.0;
+        A(xMap["y"], xMap["vy"]) = 1.0;
 
         B = Eigen::MatrixXd::Zero(6, 3);
-        B(2, 0) = 1.0; // vx <- ax
-        B(3, 1) = 1.0; // vy <- ay
-        B(5, 2) = 1.0; // yaw <- yawRateRad
+        B(xMap["vx"], uMap["ax"]) = 1.0;
+        B(xMap["vy"], uMap["ay"]) = 1.0;
+        B(xMap["yawRad"], uMap["yawRateRad"]) = 1.0;
 
     }
 

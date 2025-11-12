@@ -21,14 +21,20 @@ void generateRandomProblem(int num_variables,
     uNominal.resize(num_variables);
     linearConstraintCoefficients.resize(num_variables + num_slack_variables);
 
+    // Random nominal control around zero
     for (int i = 0; i < num_variables; ++i) {
         uNominal[i] = dis(gen);
     }
 
-    for (int i = 0; i < num_variables + num_slack_variables; ++i) {
+    // Linear constraint coefficients: random for control vars, +1 for slack vars
+    for (int i = 0; i < num_variables; ++i) {
         linearConstraintCoefficients[i] = dis(gen);
     }
+    for (int j = 0; j < num_slack_variables; ++j) {
+        linearConstraintCoefficients[num_variables + j] = 1.0; // s enters as +1 * s_j
+    }
 
+    // Random RHS
     rhs_value = dis(gen);
 }
 
@@ -46,10 +52,12 @@ TEST_CASE("RandomSolvePerformanceComparison") {
 
     std::vector<std::unique_ptr<OptimiserBase> > optimisers;
 #ifdef ENABLE_GUROBI
-    optimisers.emplace_back(std::make_unique<Gurobi>());
+    json gurobi_settings = {{"k_delta", 100.0}};
+    optimisers.emplace_back(std::make_unique<Gurobi>(gurobi_settings));
 #endif
 #ifdef ENABLE_HIGHS
-    optimisers.emplace_back(std::make_unique<HiGHS>());
+    json highs_settings = {{"k_delta", 100.0}};
+    optimisers.emplace_back(std::make_unique<HiGHS>(highs_settings));
 #endif
 
     std::vector<double> total_times(optimisers.size(), 0.0);
@@ -65,7 +73,7 @@ TEST_CASE("RandomSolvePerformanceComparison") {
         for (size_t i = 0; i < optimisers.size(); ++i) {
             auto &optimiser = optimisers[i];
             optimiser->clear();
-            optimiser->start(num_variables + num_slack_variables);
+            optimiser->start(num_variables + num_slack_variables, num_variables);
             optimiser->setObjective(uNominal);
             optimiser->addLinearConstraint(linearConstraintCoefficients, rhs_value);
 

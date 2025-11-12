@@ -10,7 +10,22 @@ protected:
     Eigen::MatrixXd A, B;
     std::unordered_map<std::string, int> xMap;
     std::unordered_map<std::string, int> uMap;
+    double dischargeRate;
+    
 public:
+    static constexpr double BATTERY_MIN = 3700.0;
+    static constexpr double BATTERY_MAX = 4200.0;
+    
+    BaseModel() : dischargeRate(0.1) {}
+    
+    BaseModel(json &settings) {
+        if (settings.contains("model-params") && settings["model-params"].contains("discharge-rate")) {
+            dischargeRate = settings["model-params"]["discharge-rate"];
+        } else {
+            dischargeRate = 0.1;
+        }
+    }
+    
     virtual ~BaseModel() = default;
 
     auto getX() const {
@@ -131,29 +146,30 @@ public:
         if (xMap.find("battery") == xMap.end()) {
             throw std::invalid_argument("Invalid state variable name: battery");
         }
-        F[xMap["battery"]] = 10.0;
+        F[xMap["battery"]] = 1.0;
+    }
+
+    void setChargeRate(double rate) {
+        if (xMap.find("battery") == xMap.end()) {
+            throw std::invalid_argument("Invalid state variable name: battery");
+        }
+        F[xMap["battery"]] = rate;
     }
 
     void stopCharge() {
         if (xMap.find("battery") == xMap.end()) {
             throw std::invalid_argument("Invalid state variable name: battery");
         }
-        F[xMap["battery"]] = -1.0;
+        F[xMap["battery"]] = -dischargeRate;
     }
 
     void checkCharge() {
         if (xMap.find("battery") == xMap.end()) {
             throw std::invalid_argument("Invalid state variable name: battery");
         }
-        if (X[xMap["battery"]] >= 100.0) {
+        if (X[xMap["battery"]] >= BATTERY_MAX) {
             stopCharge();
         }
-    }
-
-    void stepTimeForward(double dt) {
-        checkCharge();
-
-        X += (f() + g() * u) * dt;
     }
 
     json state2Json() const {
@@ -186,6 +202,12 @@ public:
             j[name] = u[index];
         }
         return j;
+    }
+
+    void stepTimeForward(double dt) {
+        checkCharge();
+
+        X += (f() + g() * u) * dt;
     }
 
     virtual void output() const = 0;

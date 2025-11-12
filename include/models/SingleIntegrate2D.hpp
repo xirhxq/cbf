@@ -7,7 +7,7 @@ class SingleIntegrate2D : public BaseModel {
 private:
 
 public:
-    SingleIntegrate2D() {
+    SingleIntegrate2D(json &settings) : BaseModel(settings) {
         xMap = {{"x", 0}, {"y", 1}, {"battery", 2}, {"yawRad", 3}};
         uMap = {{"vx", 0}, {"vy", 1}, {"yawRateRad", 2}};
 
@@ -15,14 +15,14 @@ public:
         u = Eigen::VectorXd::Zero(3);
 
         F = Eigen::VectorXd::Zero(4);
-        F[xMap["battery"]] = -1.0;
+        F[xMap["battery"]] = -dischargeRate;
 
         A = Eigen::MatrixXd::Zero(4, 4);
 
         B = Eigen::MatrixXd::Zero(4, 3);
-        B(0, 0) = 1.0; // x <- vx
-        B(1, 1) = 1.0; // y <- vy
-        B(3, 2) = 1.0; // yaw <- yawRateRad
+        B(xMap["x"], uMap["vx"]) = 1.0;
+        B(xMap["y"], uMap["vy"]) = 1.0;
+        B(xMap["yawRad"], uMap["yawRateRad"]) = 1.0;
     }
 
     void output() const override {

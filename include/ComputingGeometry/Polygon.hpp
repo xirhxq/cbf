@@ -3,6 +3,10 @@
 
 #include "Utils.h"
 #include "Line.hpp"
+#include <cassert>
+#include <algorithm>
+#include <functional>
+#include <vector>
 
 class Polygon {
 public:
@@ -286,6 +290,19 @@ public:
         }
         std::sort(vec_y.begin(), vec_y.end());
         return pd(*vec_y.begin(), *vec_y.rbegin());
+    }
+
+    double get_diameter() {
+        double res = 0.0;
+        for (int i = 1; i <= n; i++) {
+            for (int j = i + 1; j <= n; j++) {
+                double dis = (p[i] - p[j]).len();
+                if (dis > res) {
+                    res = dis;
+                }
+            }
+        }
+        return res;
     }
 
 

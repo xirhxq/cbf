@@ -22,21 +22,25 @@ public:
         delete model;
     }
 
-    void start(int size) override {
+    void start(int total_size, int u_size) override {
         model = new GRBModel(env);
-        std::vector<double> lowerBounds(size, -GRB_INFINITY);
-        std::vector<double> upperBounds(size, GRB_INFINITY);
-        std::vector<double> objCoeffs(size, 0.0);
-        std::vector<char> varTypes(size, GRB_CONTINUOUS);
+        std::vector<double> lowerBounds(total_size, -GRB_INFINITY);
+        std::vector<double> upperBounds(total_size, GRB_INFINITY);
+        std::vector<double> objCoeffs(total_size, 0.0);
+        std::vector<char> varTypes(total_size, GRB_CONTINUOUS);
         GRBVar *allVars = model->addVars(
                 lowerBounds.data(),
                 upperBounds.data(),
                 objCoeffs.data(),
                 varTypes.data(),
                 nullptr,
-                size
+                total_size
         );
-        vars.assign(allVars, allVars + size);
+        vars.assign(allVars, allVars + total_size);
+        // Set lower bounds for slack variables [u_size, total_size)
+        for (int i = u_size; i < total_size; ++i) {
+            vars[i].set(GRB_DoubleAttr_LB, 0.0);
+        }
     }
 
     void setObjective(Eigen::VectorXd &uNominal) override {
@@ -46,8 +50,6 @@ public:
         }
         for (int i = uNominal.size(); i < vars.size(); i++) {
             obj += k_delta * vars[i];
-            GRBLinExpr ln = vars[i];
-            model->addConstr(ln, GRB_GREATER_EQUAL, 0.0);
         }
         model->setObjective(obj, GRB_MINIMIZE);
     }

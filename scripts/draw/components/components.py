@@ -3,6 +3,7 @@ from .optimisation_contour import OptimizationContourPlot
 from .fixed_comm_range import FixedCommRangeComponent
 from .cbf_values import CBFValuesComponent
 from .search_heatmap import SearchHeatmapComponent
+from .search_percentage import SearchPercentageComponent
 from .heatmap import HeatmapComponent
 from .energy import EnergyComponent
 from .control_input import ControlInputComponent
@@ -43,6 +44,15 @@ REGISTRIED_COMPONENTS = {
         'class': 'SearchHeatmapComponent',
         'filename': 'search-heatmap',
         'figsize': (8, 8),
+    },
+    'sp': {
+        'title': 'Search Percentage Over Time',
+        'class': 'SearchPercentageComponent',
+        'filename': 'search-percentage',
+        'figsize': (10, 6),
+        'params': {
+            'show_milestones': False
+        }
     },
     'heat': {
         'title': 'Heatmap',
@@ -109,6 +119,24 @@ REGISTRIED_COMPONENTS = {
         'figsize': (10, 6),
         'params': {
             'cbf_filter': 'energy'
+        }
+    },
+    'cbf-comm': {
+        'title': 'Communication CBF Value',
+        'class': 'CBFValuesComponent',
+        'filename': 'comm-cbf',
+        'figsize': (10, 6),
+        'params': {
+            'cbf_filter': lambda name: 'comm' in name
+        }
+    },
+    'cbf-comm-energy': {
+        'title': 'Communication & Energy CBF Value',
+        'class': 'CBFValuesComponent',
+        'filename': 'comm-cbf',
+        'figsize': (10, 6),
+        'params': {
+            'cbf_filter': lambda name: 'comm' in name or 'energy' in name
         }
     }
 }

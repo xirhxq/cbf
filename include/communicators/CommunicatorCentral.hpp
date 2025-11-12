@@ -34,6 +34,15 @@ public:
         if (id == this->id) return;
         _othersYawRad[id] = yawRad;
     }
+
+    void sendBatteryLevel(int id, double batteryLevel) override {
+        _othersBatteryLevel[id] = batteryLevel;
+    }
+
+    void receiveBatteryLevel(int id, double batteryLevel) override {
+        if (id == this->id) return;
+        _othersBatteryLevel[id] = batteryLevel;
+    }
 };
 
 #endif //CBF_COMMUNICATOR_CENTRAL_H

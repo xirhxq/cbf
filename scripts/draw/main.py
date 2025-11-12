@@ -164,6 +164,10 @@ if __name__ == '__main__':
         {
             'name': 'CBF Derivative, Per Robot',
             'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['cbc-energy'])
+        },
+        {
+            'name': 'Search Percentage Over Time, All Robots',
+            'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['sp'])
         }
     ]
 

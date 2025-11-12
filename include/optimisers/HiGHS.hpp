@@ -46,11 +46,15 @@ public:
         model = HighsModel();
     }
 
-    void start(int size) override {
-        var_count = size;
-        col_lower.resize(size, -highs.getInfinity());
-        col_upper.resize(size, highs.getInfinity());
-        obj_coeffs.resize(size, 0.0);
+    void start(int total_size, int u_size) override {
+        var_count = total_size;
+        col_lower.resize(total_size, -highs.getInfinity());
+        col_upper.resize(total_size, highs.getInfinity());
+        obj_coeffs.resize(total_size, 0.0);
+        // Set lower bounds for slack variables [u_size, var_count)
+        for (int i = u_size; i < var_count; i++) {
+            col_lower[i] = 0.0;
+        }
     }
 
     void setObjective(Eigen::VectorXd &uNominal) override {
@@ -78,9 +82,6 @@ public:
 
         model.lp_.col_cost_ = obj_coeffs;
 
-        for (int i = uNominal.size(); i < var_count; i++) {
-            col_lower[i] = 0.0;
-        }
     }
 
     void addLinearConstraint(Eigen::VectorXd coe, double rhs_value) override {
@@ -123,6 +124,8 @@ public:
         model.lp_.row_lower_.assign(rhs.data(), rhs.data() + rhs.size());
         model.lp_.row_upper_ = row_upper;
 
+        // Set a small time limit to avoid indefinite hangs during debugging
+        highs.setOptionValue("time_limit", 2.0);
         HighsStatus return_status = highs.passModel(model);
 
         if (return_status != HighsStatus::kOk) {

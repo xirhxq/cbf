@@ -33,9 +33,12 @@ class GridLayout:
                 }
             ]
         else:
-            total_grids = self.n * side_num
+            if self.expand:
+                total_grids = self.n * side_num
+            else:
+                total_grids = side_num
             side_cols = math.ceil(math.sqrt(total_grids))
-            side_rows = math.ceil(side_num * self.n / side_cols)
+            side_rows = math.ceil(total_grids / side_cols)
 
             if 'map' in self.plot_list:
                 map_cols = math.ceil(side_cols / 2)

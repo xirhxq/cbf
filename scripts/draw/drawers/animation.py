@@ -18,7 +18,8 @@ class AnimationDrawer(BaseDrawer):
         id_list = [id - 1 for id in id_list] if id_list is not None else [i for i in range(self.data["config"]["num"])]
 
         interval = self.data["state"][1]["runtime"] - self.data["state"][0]["runtime"]
-        interval_ms = int(1000 * interval)
+        fps = 50
+        interval_ms = int(1000 / fps)
 
         self._get_index_range(
             first_seconds=first_seconds, last_seconds=last_seconds, time_range=time_range
@@ -66,7 +67,6 @@ class AnimationDrawer(BaseDrawer):
             suffix += '-' + '-'.join(['#' + str(id + 1) for id in id_list])
         filename = os.path.join(self.folder, 'animation-' + suffix + '.mp4')
 
-        fps = int(1 / interval)
         ani.save(filename, writer='ffmpeg', fps=fps)
         pbar.close()
         print(f"\nAnimation saved in {filename}")

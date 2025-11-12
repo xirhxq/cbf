@@ -32,7 +32,7 @@ class CBCComponent(BaseComponent):
             dh_list = []
             alphah_list = []
             for idx, frame in enumerate(self.data[slice(*self.index_range)]):
-                if idx == len(self.data) - 1:
+                if self.index_range[0] + idx == len(self.data) - 1:
                     continue
                 next_frame = self.data[self.index_range[0] + idx + 1]
                 dh, alphah = None, None
@@ -98,7 +98,7 @@ class CBCComponent(BaseComponent):
     def update(self, num, dataNow=None):
         self.vline.set_data([self.runtime[num], self.runtime[num]], self.y_limits)
 
-        time_span = self.runtime[self.index_range[1]] - self.runtime[self.index_range[0]]
+        time_span = self.runtime[self.index_range[1] - 1] - self.runtime[self.index_range[0]]
         time_offset = time_span * 0.015
 
         x_limits = self.ax.get_xlim()

@@ -1,130 +1,182 @@
 {
   "world": {
     "boundary": [
-      [-15, 0],
-      [15, 0],
-      [15, 30],
-      [-15, 30]
+      [-1500, 0],
+      [1500, 0],
+      [1500, 3000],
+      [-1500, 3000]
     ],
     "charge":[
-      [-3, 1],
-      [0, 1],
-      [3, 1]
+      {
+        "position": [-300, 100],
+        "radius": 10.0,
+        "charge-rate": 5.0
+      },
+      {
+        "position": [0, 100],
+        "radius": 10.0,
+        "charge-rate": 5.0
+      },
+      {
+        "position": [300, 100],
+        "radius": 10.0,
+        "charge-rate": 5.0
+      }
     ],
-    "spacing": 0.1
+    "spacing": 10.0
   },
-  "num": 1,
+  "num": 14,
   "dim": 4,
   "initial": {
     "position": {
       "//method": ["specified", "random-in-polygon", "random-in-world"],
-      "method": "random-in-polygon",
+      "method": "specified",
       "polygon": [
-        [-1, 0],
-        [-1, 1],
-        [1, 1],
-        [1, 0]
+        [-100, 0],
+        [-100, 100],
+        [100, 100],
+        [100, 0]
       ],
       "positions": [
-        [10, 4],
-        [10, 5],
-        [10, 6]
+        [-20, 0],
+        [20, 0],
+        [-20, 20],
+        [20, 20],
+        [-20, 40],
+        [20, 40],
+        [-20, 60],
+        [20, 60],
+        [-20, 80],
+        [20, 80],
+        [-20, 100],
+        [20, 100],
+        [-20, 120],
+        [20, 120]
       ]
     },
     "battery": {
-      "min": 60,
-      "max": 80
+      "min": 4100,
+      "max": 4200
     },
     "yawDeg": 0
   },
   "model": "SingleIntegrate2D",
+  "model-params": {
+    "discharge-rate": 0.5
+  },
   "searching": {
     "//method": ["downward", "front-sector", "front-cone"],
     "method": "front-sector",
     "downward": {
-      "radius": 2.0
+      "radius": 200.0
     },
     "front-sector": {
-      "inner-radius": 0.5,
-      "outer-radius": 2.0,
+      "inner-radius": 50.0,
+      "outer-radius": 200.0,
       "half-angle-deg": 30.0
     },
     "front-cone": {
-      "height": 0.5,
-      "downward-radius": 0.2,
+      "height": 50.0,
+      "downward-radius": 20.0,
       "camera-pitch-deg": 30.0
     }
   },
   "optimiser": "Gurobi",
   "cbfs": {
     "objective-function": {
-      "k_delta": 1.0
+      "k_delta": 10.0
     },
     "with-slack": {
       "cvt": {
         "name": "cvtCBF",
         "on": true,
-        "kp": 5.0
+        "kp": 1.0,
+        "alpha": {
+          "coe": 1.0,
+          "pow": 1
+        }
       },
       "cvt-yaw": {
         "name": "cvtYawCBF",
         "on": true,
-        "k_yaw": 100.0
+        "k_yaw": 1.0,
+        "alpha": {
+          "coe": 1.0,
+          "pow": 1
+        }
       },
       "target-yaw": {
         "name": "yawCBF",
         "on": false,
-        "kp": 5.0
+        "kp": 1.0,
+        "alpha": {
+          "coe": 1.0,
+          "pow": 1
+        }
       }
     },
     "without-slack": {
+      "//method": ["all", "min"],
+      "method": "all",
       "energy": {
         "name": "energyCBF",
-        "on": false,
-        "k": 15.0
+        "on": true,
+        "//energy-value": ["self", "neighbour-min"],
+        "energy-value": "neighbour-min",
+        "normalize": {
+          "on": false,
+          "max": 100.0
+        },
+        "k": 12.0,
+        "alpha": {
+          "coe": 0.1,
+          "pow": 1
+        }
       },
       "safety": {
         "name": "safetyCBF",
         "on": false,
-        "safe-distance": 3.0,
-        "k": 0.5
+        "safe-distance": 300.0,
+        "alpha": {
+          "coe": 0.1,
+          "pow": 3
+        }
       },
-      "comm-scissor": {
-        "name": "commScissorCBF",
-        "on": false,
-        "max-range": 8.5,
-        "k": 10.0,
+      "comm-fixed": {
+        "name": "commFixedCBF",
+        "on": true,
+        "mode": "scissor",
+        "max-range": 850.0,
+        "k": 1.0,
         "min-neighbour-id-offset": -2,
         "max-neighbour-id-offset": 2,
-        "compensate-velocity": false,
+        "compensate-velocity": true,
         "bases": [
-          [-3, 0],
-          [3, 0],
-          [0, 0]
-        ]
-      },
-      "comm-chain": {
-        "name": "commChainCBF",
-        "on": false,
-        "max-range": 8.5,
-        "k": 10.0,
-        "min-neighbour-id-offset": -1,
-        "max-neighbour-id-offset": 0,
-        "compensate-velocity": false,
-        "base": [0, 0]
+          [0, 0],
+          [-300, 0],
+          [300, 0]
+        ],
+        "alpha": {
+          "coe": 0.1,
+          "pow": 3
+        }
       },
       "comm-auto": {
         "name": "commAutoCBF",
         "on": false,
-        "max-range": 8,
-        "max-consider-range": 12,
-        "k": 10.0
+        "max-range": 800,
+        "max-consider-range": 1200,
+        "k": 1.0,
+        "alpha": {
+          "coe": 0.1,
+          "pow": 1
+        }
       }
     }
   },
   "execute": {
-    "time-total": 10,
-    "time-step": 0.02
+    "time-total": 3600,
+    "time-step": 0.5
   },
   "debug": {
     "opt-cbc": false
