@@ -17,7 +17,10 @@ class AnimationDrawer(BaseDrawer):
 
         id_list = [id - 1 for id in id_list] if id_list is not None else [i for i in range(self.data["config"]["num"])]
 
-        interval = self.data["state"][1]["runtime"] - self.data["state"][0]["runtime"]
+        if len(self.data["state"]) >= 2:
+            interval = self.data["state"][1]["runtime"] - self.data["state"][0]["runtime"]
+        else:
+            interval = 0.5
         fps = 50
         interval_ms = int(1000 / fps)
 

@@ -109,7 +109,6 @@ class Lines(BaseComponent):
                     self.runtime = first_value['runtime']
                 elif isinstance(first_value, dict) and 'timestamp' in first_value:
                     self.runtime = first_value['timestamp']
-
         if not self.runtime:
             raise ValueError("Cannot extract runtime from processed data")
 
@@ -118,12 +117,23 @@ class Lines(BaseComponent):
             return
 
         start_time, end_time = self.time_range
+
+        if len(self.runtime) < 2:
+            return
+
         start_idx = np.searchsorted(self.runtime, start_time)
-        end_idx = np.searchsorted(self.runtime, end_time)
+        end_idx = np.searchsorted(self.runtime, end_time, side='right')
 
-        self._filter_time_range_data(start_idx, end_idx)
-
-        self.runtime = self.runtime[start_idx:end_idx]
+        if end_idx > start_idx and end_idx <= len(self.runtime):
+            self._filter_time_range_data(start_idx, end_idx)
+            self.runtime = self.runtime[start_idx:end_idx]
+        elif end_idx == start_idx:
+            if start_idx > 0:
+                start_idx -= 1
+            if end_idx < len(self.runtime):
+                end_idx += 1
+            self._filter_time_range_data(start_idx, end_idx)
+            self.runtime = self.runtime[start_idx:end_idx]
 
     def _filter_time_range_data(self, start_idx, end_idx):
         if isinstance(self.processed_data, dict):
