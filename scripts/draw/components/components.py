@@ -51,7 +51,9 @@ REGISTRIED_COMPONENTS = {
         'filename': 'search-percentage',
         'figsize': (10, 6),
         'params': {
-            'show_milestones': False
+            # 'show_milestones': False,
+            'show_milestones': True,
+            'milestones': [0.25, 0.5, 0.75, 0.9]
         }
     },
     'heat': {
