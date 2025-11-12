@@ -23,6 +23,7 @@ public:
 
     MultiCBF cbfNoSlack;
     std::unordered_map<std::string, CBF> cbfSlack;
+    json opt;
 public:
     Swarm(json &settings)
             : config(settings),
@@ -72,6 +73,28 @@ public:
             stepData["formation"].push_back(robot->myFormation);
         }
         stepData["update"] = updatedGridWorldGroundTruth;
+
+        if (isCentralizedExecution()) {
+            json centralizedData = opt;
+
+            json cbfValues = json::object();
+
+            for (const auto& [name, cbf] : cbfNoSlack.cbfs) {
+                auto x = centralizedModel->getX();
+                double value = cbf.h(x, robots[0]->runtime);
+                cbfValues[name] = value;
+            }
+
+            for (const auto& [name, cbf] : cbfSlack) {
+                auto x = centralizedModel->getX();
+                double value = cbf.h(x, robots[0]->runtime);
+                cbfValues[name] = value;
+            }
+
+            centralizedData["cbfs"] = cbfValues;
+            stepData["centralized"] = centralizedData;
+        }
+
         data["state"].push_back(stepData);
         stepData.clear();
     }
@@ -165,6 +188,7 @@ public:
         output();
 
         if (isCentralizedExecution()) {
+            initializeCentralizedOptimization();
             presetCBFs();
         } else {
             for (auto &robot: robots) robot->presetCBF();
@@ -358,12 +382,18 @@ private:
 
 
     void initializeCentralizedOptimization() {
+        printf("Initializing centralized optimization...\n");
         centralizedModel = std::make_unique<CentralizedModel>();
         for (auto &robot : robots) {
             centralizedModel->addRobot(robot->model.get());
         }
 
-        optimizer = std::make_unique<Gurobi>(config["cbfs"]["objective-function"]);
+        if (config.contains("cbfs") && config["cbfs"].contains("objective-function")) {
+            optimizer = std::make_unique<Gurobi>(config["cbfs"]["objective-function"]);
+            printf("Centralized optimization initialized successfully\n");
+        } else {
+            printf("Warning: missing objective-function config\n");
+        }
     }
 
     void centralizedOptimise() {
@@ -375,6 +405,14 @@ private:
 
         Eigen::VectorXd uNominal(centralizedModel->getTotalControlSize());
         uNominal.setZero();
+
+        opt = {
+            {"nominal",    json::array()},
+            {"result",     json::array()},
+            {"cbfNoSlack", json::array()},
+            {"cbfSlack",   json::array()}
+        };
+        json jsonCBFNoSlack = json::array(), jsonCBFSlack = json::array();
 
         optimizer->clear();
 
@@ -388,6 +426,8 @@ private:
 
         optimizer->start(totalSize, uSize);
         optimizer->setObjective(uNominal);
+
+        opt["nominal"] = convertCentralizedControlToJson(uNominal);
         printf("\n");
 
         std::string cbf_method = config["cbfs"]["without-slack"].value("method", "all");
@@ -397,6 +437,13 @@ private:
                 VectorXd uCoe = cbf.constraintUCoe(f, g, x, robots[0]->runtime);
                 double constraintConstWithTime = cbf.constraintConstWithTime(f, g, x, robots[0]->runtime);
                 optimizer->addLinearConstraint(uCoe, -constraintConstWithTime);
+
+                // Add to JSON log
+                jsonCBFNoSlack.emplace_back(json{
+                    {"name",  cbf.name},
+                    {"coe",   convertCentralizedControlToJson(uCoe)},
+                    {"const", constraintConstWithTime}
+                });
             }
         }
 
@@ -411,12 +458,25 @@ private:
             double constraintConst = cbf.constraintConstWithoutTime(f, g, x, robots[0]->runtime);
 
             optimizer->addLinearConstraint(coe, -constraintConst);
+
+            jsonCBFSlack.emplace_back(json{
+                {"name",  cbf.name},
+                {"coe",   convertCentralizedControlToJson(uCoe)},
+                {"const", constraintConst}
+            });
             ++cnt;
         }
+
+        opt["cbfNoSlack"] = jsonCBFNoSlack;
+        opt["cbfSlack"] = jsonCBFSlack;
 
         auto result = optimizer->solve();
 
         optimizer->write("centralized_optimization.lp");
+
+        auto u = result.head(uSize);
+        opt["result"] = convertCentralizedControlToJson(u);
+        opt["slacks"] = convertCentralizedSlackToJson(result.tail(slackSize));
 
         for (int i = 0; i < n; ++i) {
             centralizedModel->setRobotControl(i, result);
@@ -430,6 +490,30 @@ private:
             return mode == "centralized";
         }
         return false;
+    }
+
+    json convertCentralizedControlToJson(const VectorXd& u) {
+        json result = json::array();
+        for (int i = 0; i < robots.size(); ++i) {
+            int controlOffset = centralizedModel->getControlOffset(i);
+            int controlSize = centralizedModel->controlSizes[i];
+            Eigen::VectorXd robotControl = u.segment(controlOffset, controlSize);
+
+            json robotControlJson = json::array();
+            for (int j = 0; j < robotControl.size(); ++j) {
+                robotControlJson.push_back(robotControl(j));
+            }
+            result.push_back(robotControlJson);
+        }
+        return result;
+    }
+
+    json convertCentralizedSlackToJson(const VectorXd& slack) {
+        json result = json::array();
+        for (int i = 0; i < slack.size(); ++i) {
+            result.push_back(slack(i));
+        }
+        return result;
     }
 };
 
