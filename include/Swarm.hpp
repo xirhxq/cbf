@@ -262,7 +262,6 @@ private:
 
         for (auto &robot : robots) {
             robot->postsetCBF();
-            std::cout << "robot " << robot->id << ": " << robot->myFormation << std::endl;
             std::vector<int> anchorIds;
             if (robot->myFormation.contains("anchorIds")) {
                 for (auto &id : robot->myFormation["anchorIds"]) {
@@ -382,7 +381,6 @@ private:
 
 
     void initializeCentralizedOptimization() {
-        printf("Initializing centralized optimization...\n");
         centralizedModel = std::make_unique<CentralizedModel>();
         for (auto &robot : robots) {
             centralizedModel->addRobot(robot->model.get());
@@ -390,7 +388,6 @@ private:
 
         if (config.contains("cbfs") && config["cbfs"].contains("objective-function")) {
             optimizer = std::make_unique<Gurobi>(config["cbfs"]["objective-function"]);
-            printf("Centralized optimization initialized successfully\n");
         } else {
             printf("Warning: missing objective-function config\n");
         }
@@ -428,12 +425,10 @@ private:
         optimizer->setObjective(uNominal);
 
         opt["nominal"] = convertCentralizedControlToJson(uNominal);
-        printf("\n");
 
         std::string cbf_method = config["cbfs"]["without-slack"].value("method", "all");
         if (cbf_method == "all") {
             for (auto &[name, cbf] : cbfNoSlack.cbfs) {
-                printf("CBF: %s\n", name.c_str());
                 VectorXd uCoe = cbf.constraintUCoe(f, g, x, robots[0]->runtime);
                 double constraintConstWithTime = cbf.constraintConstWithTime(f, g, x, robots[0]->runtime);
                 optimizer->addLinearConstraint(uCoe, -constraintConstWithTime);
@@ -449,7 +444,6 @@ private:
 
         int cnt = 0;
         for (auto &[name, cbf] : cbfSlack) {
-            printf("CBF with slack: %s\n", name.c_str());
             VectorXd uCoe = cbf.constraintUCoe(f, g, x, robots[0]->runtime);
             Eigen::VectorXd sCoe = Eigen::VectorXd::Zero(slackSize);
             sCoe(cnt) = 1.0;
