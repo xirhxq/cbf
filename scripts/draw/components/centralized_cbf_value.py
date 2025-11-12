@@ -42,7 +42,20 @@ class CentralizedCBFValueComponent(Lines):
         kwargs.setdefault('show_zero_line', True)
 
         params = kwargs.get('params', {})
-        self.cbf_filter = params.get('cbf_filter', 'all')
+
+        internal_params_defaults = {
+            'cbf_filter': 'all'
+        }
+
+        for param, default_value in internal_params_defaults.items():
+            if param in params:
+                setattr(self, param, params[param])
+            else:
+                setattr(self, param, default_value)
+
+        for key, value in params.items():
+            if key not in internal_params_defaults:
+                kwargs[key] = value
 
         kwargs['data_interpreter'] = centralized_cbf_interpreter
         Lines.__init__(self, ax, data, **kwargs)

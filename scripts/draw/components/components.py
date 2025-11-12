@@ -157,7 +157,8 @@ REGISTRIED_COMPONENTS = {
         'filename': 'centralized-comm',
         'figsize': (12, 8),
         'params': {
-            'cbf_filter': 'comm'
+            'cbf_filter': 'comm',
+            'show_min': True
         }
     },
     'centralized-cvt': {

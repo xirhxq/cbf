@@ -39,6 +39,7 @@ class Lines(BaseComponent):
         self.show_legend = kwargs.get('show_legend', True)
         self.show_markers = kwargs.get('show_markers', True)
         self.show_value_text = kwargs.get('show_value_text', True)
+        self.show_min = kwargs.get('show_min', False)
 
         self.show_bounds = kwargs.get('show_bounds', False)
         self.bounds_lower = kwargs.get('bounds_lower', None)
@@ -177,7 +178,13 @@ class Lines(BaseComponent):
             y_data = line_data['y']
             style = line_data.get('style', {})
 
-            line, = self.ax.plot(x_data, y_data, label=label, **{**self.line_style, **style})
+            if self.show_min:
+                min_value = np.min(y_data)
+                display_label = f"{label} (min {min_value:.4f})"
+            else:
+                display_label = label
+
+            line, = self.ax.plot(x_data, y_data, label=display_label, **{**self.line_style, **style})
             self.lines[line_data['label']] = line
 
             if len(self.robot_ids) == 1:
@@ -190,7 +197,13 @@ class Lines(BaseComponent):
                 y_data = line_data['y']
                 style = line_data.get('style', {})
 
-                line, = self.ax.plot(x_data, y_data, label=label, **{**self.line_style, **style})
+                if self.show_min:
+                    min_value = np.min(y_data)
+                    display_label = f"{label} (min {min_value:.4f})"
+                else:
+                    display_label = label
+
+                line, = self.ax.plot(x_data, y_data, label=display_label, **{**self.line_style, **style})
                 self.lines[label] = line
 
         self._apply_custom_styling()
