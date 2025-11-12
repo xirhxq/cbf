@@ -10,6 +10,7 @@ from .control_input import ControlInputComponent
 from .cbc import CBCComponent
 from .h_derivative import HDerivativeComponent
 from .optimisation_vector import OptimizationVectorComponent
+from .centralized_cbf_value import CentralizedCBFValueComponent
 
 REGISTRIED_COMPONENTS = {
     'map': {
@@ -139,6 +140,33 @@ REGISTRIED_COMPONENTS = {
         'figsize': (10, 6),
         'params': {
             'cbf_filter': lambda name: 'comm' in name or 'energy' in name
+        }
+    },
+    'centralized-cbf': {
+        'title': 'Centralized CBF Values',
+        'class': 'CentralizedCBFValueComponent',
+        'filename': 'centralized-cbf',
+        'figsize': (12, 8),
+        'params': {
+            'cbf_filter': 'all'
+        }
+    },
+    'centralized-comm': {
+        'title': 'Centralized Communication CBF Values',
+        'class': 'CentralizedCBFValueComponent',
+        'filename': 'centralized-comm',
+        'figsize': (12, 8),
+        'params': {
+            'cbf_filter': 'comm'
+        }
+    },
+    'centralized-cvt': {
+        'title': 'Centralized CVT CBF Values',
+        'class': 'CentralizedCBFValueComponent',
+        'filename': 'centralized-cvt',
+        'figsize': (12, 8),
+        'params': {
+            'cbf_filter': 'cvt'
         }
     }
 }
