@@ -113,7 +113,10 @@ class CentralizedCBFValueComponent(Lines):
 
     def _generate_cbf_label(self, cbf_name):
         if 'anchorCBF' in cbf_name:
-            return f"Anchor {cbf_name.split('_')[-1]}"
+            parts = cbf_name.split('_')
+            robot_id = parts[1]
+            anchor_idx = parts[2]
+            return f"UAV {robot_id}-Anchor {anchor_idx}"
         elif 'commCBF' in cbf_name:
             robot_ids = cbf_name.split('_')[1:]
             return f"Comm {'-'.join(robot_ids)}"
