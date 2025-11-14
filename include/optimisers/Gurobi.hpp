@@ -11,6 +11,10 @@ class Gurobi : public OptimiserBase{
     std::vector<GRBVar> vars;
     GRBQuadExpr obj = 0.0;
 
+    mutable bool has_error = false;
+    mutable std::string last_error_message;
+    mutable int last_error_code = 0;
+
 public:
     Gurobi(json &settings): OptimiserBase(settings), env(true) {
         env.set(GRB_IntParam_OutputFlag, 0);
@@ -20,6 +24,10 @@ public:
     void clear() override {
         vars.clear();
         delete model;
+        model = nullptr;
+        has_error = false;
+        last_error_message = "";
+        last_error_code = 0;
     }
 
     void start(int total_size, int u_size) override {
@@ -73,6 +81,47 @@ public:
         return 0.0;
     }
 
+    virtual json getStatus() const override {
+        json status;
+
+        if (has_error) {
+            status["status"] = "failed";
+            status["error_code"] = last_error_code;
+            status["error"] = last_error_message;
+        } else if (model) {
+            try {
+                int grb_status = model->get(GRB_IntAttr_Status);
+                switch (grb_status) {
+                    case GRB_OPTIMAL:
+                        status["status"] = "optimal";
+                        break;
+                    case GRB_INFEASIBLE:
+                        status["status"] = "infeasible";
+                        break;
+                    case GRB_UNBOUNDED:
+                        status["status"] = "unbounded";
+                        break;
+                    case GRB_INF_OR_UNBD:
+                        status["status"] = "inf_or_unbounded";
+                        break;
+                    default:
+                        status["status"] = "other";
+                        break;
+                }
+                status["objective_value"] = model->get(GRB_DoubleAttr_ObjVal);
+                status["vars_count"] = model->get(GRB_IntAttr_NumVars);
+                status["constraints_count"] = model->get(GRB_IntAttr_NumConstrs);
+            } catch (...) {
+                status["status"] = "error";
+                status["error"] = "Failed to get model status";
+            }
+        } else {
+            status["status"] = "not_initialized";
+        }
+
+        return status;
+    }
+
     Eigen::VectorXd solve() override {
         try {
             model->optimize();
@@ -80,14 +129,21 @@ public:
             for (int i = 0; i < vars.size(); i++) {
                 u[i] = vars[i].get(GRB_DoubleAttr_X);
             }
+            has_error = false;
+            last_error_code = 0;
+            last_error_message = "";
             return u;
         } catch (GRBException e) {
-            std::cout << "Error code = " << e.getErrorCode() << std::endl;
-            std::cout << e.getMessage() << std::endl;
+            has_error = true;
+            last_error_code = e.getErrorCode();
+            last_error_message = "Gurobi error: " + std::string(e.getMessage());
+            return Eigen::VectorXd::Zero(vars.size());
         } catch (...) {
-            std::cout << "Exception during optimization" << std::endl;
+            has_error = true;
+            last_error_code = -1;
+            last_error_message = "Unknown optimization error";
+            return Eigen::VectorXd::Zero(vars.size());
         }
-        return Eigen::VectorXd::Zero(vars.size());
     }
 };
 

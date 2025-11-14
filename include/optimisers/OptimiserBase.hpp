@@ -25,6 +25,8 @@ public:
 
     virtual double getObjectiveValue() const = 0;
 
+    virtual json getStatus() const = 0;
+
     virtual ~OptimiserBase() = default;
 };
 

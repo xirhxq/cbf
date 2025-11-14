@@ -640,6 +640,23 @@ public:
             opt["result"] = model->control2Json(u);
             opt["slacks"] = result.tail(slackSize);
 
+            try {
+                json solver_status = optimiser->getStatus();
+                opt["solver_info"] = solver_status;
+
+                std::string status = solver_status.value("status", "unknown");
+                if (status == "optimal") {
+                    opt["status"] = "success";
+                } else {
+                    opt["status"] = "failed";
+                    opt["error"] = solver_status.value("error", status);
+                }
+            } catch (...) {
+                opt["status"] = "failed";
+                opt["error"] = "Status check failed";
+                opt["solver_info"] = {{"status", "error"}};
+            }
+
             if (settings["debug"]["opt-cbc"]) {
                 for (auto &[name, cbf]: cbfNoSlack.cbfs) {
                     for (auto &item : opt["cbfNoSlack"]) {

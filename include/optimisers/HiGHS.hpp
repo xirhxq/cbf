@@ -24,6 +24,10 @@ class HiGHS : public OptimiserBase {
 
     double infinity = highs.getInfinity();
 
+    mutable bool has_error = false;
+    mutable std::string last_error_message;
+    mutable int last_error_code = 0;
+
 public:
     HiGHS(json &settings): OptimiserBase(settings) {
         model.lp_.a_matrix_.format_ = MatrixFormat::kColwise;
@@ -44,6 +48,9 @@ public:
         obj_coeffs.clear();
         Q.resize(0, 0);
         model = HighsModel();
+        has_error = false;
+        last_error_message = "";
+        last_error_code = 0;
     }
 
     void start(int total_size, int u_size) override {
@@ -108,42 +115,90 @@ public:
         return obj_value;
     }
 
+    virtual json getStatus() const override {
+        json status;
+
+        if (has_error) {
+            status["status"] = "failed";
+            status["error_code"] = last_error_code;
+            status["error"] = last_error_message;
+        } else if (solution.size() > 0) {
+            try {
+                status["objective_value"] = highs.getObjectiveValue();
+                status["vars_count"] = var_count;
+                status["constraints_count"] = constraint_count;
+
+                bool valid_solution = true;
+                for (int i = 0; i < solution.size(); i++) {
+                    if (!std::isfinite(solution[i])) {
+                        valid_solution = false;
+                        break;
+                    }
+                }
+
+                status["status"] = valid_solution ? "optimal" : "invalid_solution";
+            } catch (...) {
+                status["status"] = "error";
+                status["error"] = "Failed to get solution status";
+            }
+        } else {
+            status["status"] = "not_initialized";
+        }
+
+        return status;
+    }
+
     Eigen::VectorXd solve() override {
+        try {
+            A.makeCompressed();
+            model.lp_.a_matrix_.start_.assign(A.outerIndexPtr(), A.outerIndexPtr() + A.outerSize() + 1);
+            model.lp_.a_matrix_.index_.assign(A.innerIndexPtr(), A.innerIndexPtr() + A.nonZeros());
+            model.lp_.a_matrix_.value_.assign(A.valuePtr(), A.valuePtr() + A.nonZeros());
 
-        A.makeCompressed();
-        model.lp_.a_matrix_.start_.assign(A.outerIndexPtr(), A.outerIndexPtr() + A.outerSize() + 1);
-        model.lp_.a_matrix_.index_.assign(A.innerIndexPtr(), A.innerIndexPtr() + A.nonZeros());
-        model.lp_.a_matrix_.value_.assign(A.valuePtr(), A.valuePtr() + A.nonZeros());
+            model.lp_.num_col_ = var_count;
+            model.lp_.num_row_ = constraint_count;
+            model.lp_.col_lower_ = col_lower;
+            model.lp_.col_upper_ = col_upper;
 
-        model.lp_.num_col_ = var_count;
-        model.lp_.num_row_ = constraint_count;
-        model.lp_.col_lower_ = col_lower;
-        model.lp_.col_upper_ = col_upper;
+            std::vector<double> row_upper(constraint_count, highs.getInfinity());
+            model.lp_.row_lower_.assign(rhs.data(), rhs.data() + rhs.size());
+            model.lp_.row_upper_ = row_upper;
 
-        std::vector<double> row_upper(constraint_count, highs.getInfinity());
-        model.lp_.row_lower_.assign(rhs.data(), rhs.data() + rhs.size());
-        model.lp_.row_upper_ = row_upper;
+            highs.setOptionValue("time_limit", 2.0);
+            HighsStatus return_status = highs.passModel(model);
 
-        // Set a small time limit to avoid indefinite hangs during debugging
-        highs.setOptionValue("time_limit", 2.0);
-        HighsStatus return_status = highs.passModel(model);
+            if (return_status != HighsStatus::kOk) {
+                throw std::runtime_error("Error in passing model to HiGHS");
+            }
 
-        if (return_status != HighsStatus::kOk) {
-            throw std::runtime_error("Error in passing model to HiGHS");
+            return_status = highs.run();
+            if (return_status != HighsStatus::kOk) {
+                throw std::runtime_error("Error in solving the model with HiGHS");
+            }
+
+            const HighsSolution &highs_solution = highs.getSolution();
+            solution.resize(var_count);
+            for (int i = 0; i < var_count; i++) {
+                solution[i] = highs_solution.col_value[i];
+            }
+
+            has_error = false;
+            last_error_code = 0;
+            last_error_message = "";
+
+            return solution;
+
+        } catch (const std::exception& e) {
+            has_error = true;
+            last_error_code = -1;
+            last_error_message = std::string("HiGHS error: ") + e.what();
+            return Eigen::VectorXd::Zero(var_count);
+        } catch (...) {
+            has_error = true;
+            last_error_code = -2;
+            last_error_message = "Unknown HiGHS error";
+            return Eigen::VectorXd::Zero(var_count);
         }
-
-        return_status = highs.run();
-        if (return_status != HighsStatus::kOk) {
-            throw std::runtime_error("Error in solving the model with HiGHS");
-        }
-
-        const HighsSolution &highs_solution = highs.getSolution();
-        solution.resize(var_count);
-        for (int i = 0; i < var_count; i++) {
-            solution[i] = highs_solution.col_value[i];
-        }
-
-        return solution;
     }
 };
 
