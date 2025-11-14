@@ -296,7 +296,12 @@ private:
                     Point pos2 = other->model->extractXYFromVector(robot2State);
 
                     double distance = pos1.distance_to(pos2);
-                    return k * (maxRange - distance);
+                    double h = k * (maxRange - distance);
+
+                    // Robust CBF: ĥ = h - lε, where l = k for comm CBF
+                    double robust_h = h - k * (robot->uncertainty + other->uncertainty);
+
+                    return robust_h;
                 };
                 commCBF.h = commFunc;
 
@@ -318,7 +323,13 @@ private:
                     Point robotPos = robot->model->extractXYFromVector(robotState);
 
                     double distance = robotPos.distance_to(anchorPoint);
-                    return k * (maxRange - distance);
+                    double h = k * (maxRange - distance);
+
+                    // Robust CBF: ĥ = h - lε, where l = k for anchor CBF
+                    // Anchor points have no uncertainty, only robot uncertainty
+                    double robust_h = h - k * robot->uncertainty;
+
+                    return robust_h;
                 };
                 anchorCBF.h = anchorFunc;
 

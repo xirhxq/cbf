@@ -28,6 +28,7 @@ public:
     std::string filename;
     CVT cvt;
     double runtime;
+    double uncertainty = 0.0;
 public:
 
     Robot() = default;
@@ -59,6 +60,15 @@ public:
         {
             throw std::invalid_argument("Invalid optimiser type");
         }
+        if (settings.contains("uncertainty")) {
+            auto unc_config = settings["uncertainty"];
+            std::string method = unc_config.value("method", "const");
+
+            if (method == "const" && unc_config.contains("const")) {
+                uncertainty = unc_config["const"]["epsilon"];
+            }
+        }
+
         setup();
         cbfSlack.clear();
         cbfNoSlack.cbfs.clear();
