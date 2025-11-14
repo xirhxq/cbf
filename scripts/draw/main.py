@@ -190,6 +190,10 @@ if __name__ == '__main__':
             'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['comm-uncertainty-maxrange'])
         },
         {
+            'name': 'Optimization Failure Timeline',
+            'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['optimization-failure'])
+        },
+        {
             'name': 'Animation (Centralized CBF)',
             'action': lambda: AnimationDrawer(files).run_animation(['centralized-cbf'])
         },

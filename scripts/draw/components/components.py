@@ -12,6 +12,7 @@ from .h_derivative import HDerivativeComponent
 from .optimisation_vector import OptimizationVectorComponent
 from .centralized_cbf_value import CentralizedCBFValueComponent
 from .commcbf_uncertainty import CommCBFUncertaintyComponent
+from .optimization_failure import OptimizationFailureComponent
 
 REGISTRIED_COMPONENTS = {
     'map': {
@@ -192,5 +193,11 @@ REGISTRIED_COMPONENTS = {
             'uncertainty_mode': 'from_max_range',
             'max_range': 850
         }
+    },
+    'optimization-failure': {
+        'title': 'Optimization Failure Timeline',
+        'class': 'OptimizationFailureComponent',
+        'filename': 'optimization-failure',
+        'figsize': (12, 6)
     }
 }
