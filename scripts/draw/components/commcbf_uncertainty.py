@@ -20,14 +20,55 @@ def commcbf_uncertainty_interpreter(data):
             for i, base in enumerate(comm_fixed_config['bases']):
                 anchor_points[f"anchor_{i}"] = base
 
-    # Find all commCBF relationships across frames
+    # Infer commCBF relationships from formation data (works for both centralized and distributed)
     commcbf_relationships = set()
-    for frame in data["state"]:
-        if 'centralized' in frame and 'cbfs' in frame['centralized']:
+
+    # First, try to find CBFs in centralized data if available
+    if data["state"] and 'centralized' in data["state"][0] and 'cbfs' in data["state"][0]['centralized']:
+        for frame in data["state"]:
             cbfs = frame['centralized']['cbfs']
             for cbf_name in cbfs.keys():
                 if cbf_name.startswith('commCBF_') or cbf_name.startswith('anchorCBF_'):
                     commcbf_relationships.add(cbf_name)
+
+    # If no centralized CBFs found, infer from formation data
+    if not commcbf_relationships and data["state"]:
+        # Get formation data from first frame
+        first_frame = data["state"][0]
+        if 'formation' in first_frame:
+            formations = first_frame['formation']
+
+            # Infer robot-to-robot relationships from anchorIds
+            for robot in formations:
+                if 'anchorIds' in robot:
+                    for anchor_id in robot['anchorIds']:
+                        if anchor_id > 0:  # Only positive IDs are real robots
+                            robot_id = robot['id']
+                            commcbf_relationships.add(f"commCBF_{max(robot_id, anchor_id)}_{min(robot_id, anchor_id)}")
+
+            # Infer robot-to-anchor relationships from anchorPoints and bases config
+            if 'bases' in comm_fixed_config:
+                bases = comm_fixed_config['bases']
+                for robot in formations:
+                    if 'anchorPoints' in robot:
+                        robot_id = robot['id']
+                        for i, base in enumerate(bases):
+                            if [base[0], base[1]] in robot['anchorPoints']:
+                                commcbf_relationships.add(f"anchorCBF_{robot_id}_{i}")
+
+        # Fallback: also check distributed CBF names in individual robots
+        if not commcbf_relationships and 'robots' in first_frame:
+            for robot in first_frame['robots']:
+                if 'cbfNoSlack' in robot:
+                    for cbf_name in robot['cbfNoSlack'].keys():
+                        if cbf_name.startswith('fixedCommCBF') and '#' in cbf_name:
+                            # Extract robot ID from fixedCommCBF(#X) format
+                            import re
+                            match = re.search(r'#(\d+)', cbf_name)
+                            if match:
+                                other_id = int(match.group(1))
+                                robot_id = robot['id']
+                                commcbf_relationships.add(f"commCBF_{max(robot_id, other_id)}_{min(robot_id, other_id)}")
 
     # Process each commCBF relationship
     for cbf_name in commcbf_relationships:
