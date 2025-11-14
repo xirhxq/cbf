@@ -20,6 +20,7 @@ class StaticGlobalPlotDrawer(BaseDrawer):
             item["mode"] = 'global'
             component = component_class(
                 data=self.data,
+                fig=fig,
                 **item
             )
 

@@ -11,6 +11,7 @@ from .cbc import CBCComponent
 from .h_derivative import HDerivativeComponent
 from .optimisation_vector import OptimizationVectorComponent
 from .centralized_cbf_value import CentralizedCBFValueComponent
+from .commcbf_uncertainty import CommCBFUncertaintyComponent
 
 REGISTRIED_COMPONENTS = {
     'map': {
@@ -168,6 +169,28 @@ REGISTRIED_COMPONENTS = {
         'figsize': (12, 8),
         'params': {
             'cbf_filter': 'cvt'
+        }
+    },
+    'comm-uncertainty': {
+        'title': 'CommCBF Distance + Uncertainty',
+        'class': 'CommCBFUncertaintyComponent',
+        'filename': 'comm-uncertainty',
+        'figsize': (12, 8),
+        'params': {
+            'cbf_filter': 'all',
+            'uncertainty_mode': 'stacked',
+            'max_range': 850
+        }
+    },
+    'comm-uncertainty-maxrange': {
+        'title': 'CommCBF Distance + Uncertainty (From Max Range)',
+        'class': 'CommCBFUncertaintyComponent',
+        'filename': 'comm-uncertainty-maxrange',
+        'figsize': (12, 8),
+        'params': {
+            'cbf_filter': 'all',
+            'uncertainty_mode': 'from_max_range',
+            'max_range': 850
         }
     }
 }

@@ -182,6 +182,14 @@ if __name__ == '__main__':
             'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['centralized-cvt'])
         },
         {
+            'name': 'CommCBF Distance + Uncertainty',
+            'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['comm-uncertainty'])
+        },
+        {
+            'name': 'CommCBF Distance + Uncertainty (From Max Range)',
+            'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['comm-uncertainty-maxrange'])
+        },
+        {
             'name': 'Animation (Centralized CBF)',
             'action': lambda: AnimationDrawer(files).run_animation(['centralized-cbf'])
         },
