@@ -28,7 +28,7 @@ public:
     std::string filename;
     CVT cvt;
     double runtime;
-    double uncertainty = 0.0;
+    std::function<double(double)> uncertaintyFunction;
 public:
 
     Robot() = default;
@@ -65,8 +65,25 @@ public:
             std::string method = unc_config.value("method", "const");
 
             if (method == "const" && unc_config.contains("const")) {
-                uncertainty = unc_config["const"]["epsilon"];
+                double const_uncertainty = unc_config["const"]["epsilon"];
+                // Set constant function
+                uncertaintyFunction = [const_uncertainty](double distance) { return const_uncertainty; };
+            } else if (method == "dist" && unc_config.contains("dist")) {
+                // Distance-based uncertainty: linear function y = kx + b
+                auto dist_config = unc_config["dist"];
+                double k = dist_config.value("k", 0.05);    // Slope: uncertainty increase per meter
+                double b = dist_config.value("b", 1.0);     // Intercept: uncertainty at origin
+
+                uncertaintyFunction = [k, b](double distance) {
+                    return k * distance + b;
+                };
+            } else {
+                // Default constant function (zero uncertainty)
+                uncertaintyFunction = [](double distance) { return 0.0; };
             }
+        } else {
+            // Default constant function (zero uncertainty)
+            uncertaintyFunction = [](double distance) { return 0.0; };
         }
 
         setup();
@@ -384,13 +401,33 @@ public:
             auto otherPoint = formationPoints[i];
             auto otherVel = config["compensate-velocity"] ? formationVels[i] : Point(0, 0);
             double k = config["k"];
-            auto fixedFormationCommH = [this, otherPoint, otherVel, maxRange, k](VectorXd x, double t) {
+            bool isAnchor = anchorNames[i].find("base-") != std::string::npos;  // Check if this is an anchor point
+
+            auto fixedFormationCommH = [this, otherPoint, otherVel, maxRange, k, isAnchor](VectorXd x, double t) {
                 Point myPosition = model->extractXYFromVector(x);
-                double h = k * (
-                        maxRange -
-                        myPosition.distance_to(otherPoint)
-                );
-                return h;
+
+                // Calculate distance between robots/anchor
+                double distance = myPosition.distance_to(otherPoint);
+                double h = k * (maxRange - distance);
+
+                // Robust CBF: ĥ = h - lε, where l = k for comm CBF
+                // Use distance from origin for uncertainty calculation
+                Point origin(0, 0);
+                double myDistFromOrigin = myPosition.distance_to(origin);
+                double myUncertainty = uncertaintyFunction(myDistFromOrigin);
+
+                double robust_h;
+                if (isAnchor) {
+                    // Robot-to-anchor communication: only robot uncertainty
+                    robust_h = h - k * myUncertainty;
+                } else {
+                    // Robot-to-robot communication: sum of both uncertainties
+                    double otherDistFromOrigin = otherPoint.distance_to(origin);
+                    double otherUncertainty = uncertaintyFunction(otherDistFromOrigin);
+                    robust_h = h - k * (myUncertainty + otherUncertainty);
+                }
+
+                return robust_h;
             };
 
             // Analytical spatial gradient: dhdx = -k * (p - p_anchor_rel) / ||p - p_anchor_rel||
@@ -753,10 +790,18 @@ public:
             robotJson["cvt"] = cvtJson;
         }
 
+        // Calculate current distance from origin and compute uncertainty
+        Point currentPos = model->xy();
+        double currentDistFromOrigin = currentPos.distance_to(Point(0, 0));
+        robotJson["uncertainty"] = uncertaintyFunction(currentDistFromOrigin);
         {
             robotJson["opt"] = opt;
         }
         return robotJson;
+    }
+
+    double getUncertaintyAtDistance(double distance) {
+        return uncertaintyFunction(distance);
     }
 
 };

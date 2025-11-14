@@ -299,7 +299,13 @@ private:
                     double h = k * (maxRange - distance);
 
                     // Robust CBF: ĥ = h - lε, where l = k for comm CBF
-                    double robust_h = h - k * (robot->uncertainty + other->uncertainty);
+                    // Use distance from origin for uncertainty calculation
+                    Point origin(0, 0);
+                    double robotDistFromOrigin = pos1.distance_to(origin);
+                    double otherDistFromOrigin = pos2.distance_to(origin);
+                    double uncertainty1 = robot->getUncertaintyAtDistance(robotDistFromOrigin);
+                    double uncertainty2 = other->getUncertaintyAtDistance(otherDistFromOrigin);
+                    double robust_h = h - k * (uncertainty1 + uncertainty2);
 
                     return robust_h;
                 };
@@ -327,7 +333,11 @@ private:
 
                     // Robust CBF: ĥ = h - lε, where l = k for anchor CBF
                     // Anchor points have no uncertainty, only robot uncertainty
-                    double robust_h = h - k * robot->uncertainty;
+                    // Use distance from origin for uncertainty calculation
+                    Point origin(0, 0);
+                    double robotDistFromOrigin = robotPos.distance_to(origin);
+                    double uncertainty = robot->getUncertaintyAtDistance(robotDistFromOrigin);
+                    double robust_h = h - k * uncertainty;
 
                     return robust_h;
                 };

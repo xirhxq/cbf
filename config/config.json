@@ -65,9 +65,14 @@
     "discharge-rate": 0.5
   },
   "uncertainty": {
-    "method": "const",
+    "//method": ["dist", "const"],
+    "method": "dist",
     "const": {
       "epsilon": 100
+    },
+    "dist": {
+      "k": 0.05,
+      "b": 1.0
     }
   },
   "searching": {
