@@ -89,6 +89,17 @@ public:
         return Eigen::VectorXd();
     }
 
+    
+    Eigen::VectorXd getRobotStateFromX(const Eigen::VectorXd& x, int id) const {
+        int robotIndex = id - 1;
+        if (robotIndex >= 0 && robotIndex < static_cast<int>(individualModels.size())) {
+            int stateOffset = getStateOffset(robotIndex);
+            int stateSize = stateSizes[robotIndex];
+            return x.segment(stateOffset, stateSize);
+        }
+        return Eigen::VectorXd();
+    }
+
     Eigen::VectorXd getRobotControl(int robotIndex) const {
         if (robotIndex >= 0 && robotIndex < static_cast<int>(individualModels.size())) {
             return individualModels[robotIndex]->getControlInput();

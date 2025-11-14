@@ -257,6 +257,7 @@ private:
         if (!commConfig["on"]) return;
 
         double maxRange = commConfig["max-range"];
+        double k = commConfig["k"];
         int maxOffset = commConfig["max-neighbour-id-offset"];
         int minOffset = commConfig["min-neighbour-id-offset"];
 
@@ -287,24 +288,15 @@ private:
                 int alpha_pow = commConfig["alpha"]["pow"];
                 commCBF.setAlphaClassK(alpha_coe, alpha_pow);
 
-                auto commFunc = [this, &robot, &other, maxRange](VectorXd x, double t) -> double {
-                    int robot1Idx = robot->id - 1;
-                    int robot2Idx = other->id - 1;
-
-                    int stateOffset1 = centralizedModel->getStateOffset(robot1Idx);
-                    int stateSize1 = centralizedModel->stateSizes[robot1Idx];
-                    Eigen::VectorXd robot1State = x.segment(stateOffset1, stateSize1);
-
-                    int stateOffset2 = centralizedModel->getStateOffset(robot2Idx);
-                    int stateSize2 = centralizedModel->stateSizes[robot2Idx];
-                    Eigen::VectorXd robot2State = x.segment(stateOffset2, stateSize2);
+                auto commFunc = [this, &robot, &other, maxRange, k](VectorXd x, double t) -> double {
+                    Eigen::VectorXd robot1State = centralizedModel->getRobotStateFromX(x, robot->id);
+                    Eigen::VectorXd robot2State = centralizedModel->getRobotStateFromX(x, other->id);
 
                     Point pos1 = robot->model->extractXYFromVector(robot1State);
                     Point pos2 = other->model->extractXYFromVector(robot2State);
 
-                    // Calculate distance between robots for robot-to-robot communication
                     double distance = pos1.distance_to(pos2);
-                    return maxRange - distance;
+                    return k * (maxRange - distance);
                 };
                 commCBF.h = commFunc;
 
@@ -320,16 +312,13 @@ private:
                 int alpha_pow = commConfig["alpha"]["pow"];
                 anchorCBF.setAlphaClassK(alpha_coe, alpha_pow);
 
-                auto anchorFunc = [this, &robot, anchorPoint, maxRange](VectorXd x, double t) -> double {
-                    int robotIdx = robot->id - 1;
-                    int stateOffset = centralizedModel->getStateOffset(robotIdx);
-                    int stateSize = centralizedModel->stateSizes[robotIdx];
-                    Eigen::VectorXd robotState = x.segment(stateOffset, stateSize);
+                auto anchorFunc = [this, &robot, anchorPoint, maxRange, k](VectorXd x, double t) -> double {
+                    Eigen::VectorXd robotState = centralizedModel->getRobotStateFromX(x, robot->id);
 
                     Point robotPos = robot->model->extractXYFromVector(robotState);
 
                     double distance = robotPos.distance_to(anchorPoint);
-                    return maxRange - distance;
+                    return k * (maxRange - distance);
                 };
                 anchorCBF.h = anchorFunc;
 
@@ -433,7 +422,6 @@ private:
                 double constraintConstWithTime = cbf.constraintConstWithTime(f, g, x, robots[0]->runtime);
                 optimizer->addLinearConstraint(uCoe, -constraintConstWithTime);
 
-                // Add to JSON log
                 jsonCBFNoSlack.emplace_back(json{
                     {"name",  cbf.name},
                     {"coe",   convertCentralizedControlToJson(uCoe)},
