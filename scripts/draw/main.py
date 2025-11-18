@@ -31,7 +31,35 @@ def interactive_menu(options):
 def interactive_selection(options):
     print("Select options:")
     for idx, option in enumerate(options):
-        print(f"[{idx}]: {option}")
+        file_path = option
+        try:
+            import json
+            with open(file_path, 'r') as f:
+                data = json.load(f)
+
+            config = data.get('config', {})
+            state = data.get('state', [])
+
+            # Basic info
+            duration = state[-1]['runtime'] if state else 0
+            exec_mode = config.get('execute', {}).get('execution-mode', 'unknown')
+            num_robots = config.get('num', 0)
+            file_name = os.path.basename(os.path.dirname(file_path))
+
+            # CBF info
+            cbfs = config.get('cbfs', {})
+            cbf_info = []
+            if cbfs.get('without-slack', {}).get('comm-fixed', {}).get('on', False):
+                cbf_info.append('comm-fixed')
+            if cbfs.get('with-slack', {}).get('cvt', {}).get('on', False):
+                cbf_info.append('cvt')
+            if cbfs.get('without-slack', {}).get('safety', {}).get('on', False):
+                cbf_info.append('safety')
+
+            print(f"[{idx}]: {file_name} - {duration:.1f}s | {exec_mode} | {num_robots} robots | CBF: {', '.join(cbf_info) if cbf_info else 'none'}")
+        except:
+            print(f"[{idx}]: {os.path.basename(os.path.dirname(file_path))} - Error reading file")
+
     choice = input("Choose options (separated by comma): ").strip().lower()
     selected_options = [options[int(choice)] for choice in choice.split(',')]
     return selected_options
