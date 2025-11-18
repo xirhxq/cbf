@@ -1,96 +1,110 @@
 from utils import *
+from .lines import Lines
 
-from .base import BaseComponent
 
+def control_input_lines_data_interpreter(data):
+    state = data["state"]
+    robot_num = data["config"]["num"]
 
-class ControlInputComponent(BaseComponent):
-    def __init__(self, ax, data, robot_id=None, title=None, mode='global', **kwargs):
-        self.ax = ax
-        self.data = data["state"]
-        self.robot_id = robot_id
-        self.title = (title or f"Control Input")
-        self.mode = mode
+    runtime = [frame["runtime"] for frame in state]
 
-        self.runtime = [frame["runtime"] for frame in self.data]
-        self.robot_num = data["config"]["num"]
+    first_frame_result = state[0]["robots"][0]["opt"]["result"]
+    control_fields = list(first_frame_result.keys())
 
-        first_frame_result = self.data[0]["robots"][0]["opt"]["result"]
-        control_fields = list(first_frame_result.keys())
+    processed_data = {}
 
-        self.data_list = []
-        for i in range(self.robot_num):
-            robot_data = {}
-            for field in control_fields:
-                robot_data[field] = [frame["robots"][i]["opt"]["result"][field] for frame in self.data]
-
-            if "vx" in control_fields and "vy" in control_fields:
-                robot_data["speed"] = [np.linalg.norm([
-                    frame["robots"][i]["opt"]["result"]["vx"],
-                    frame["robots"][i]["opt"]["result"]["vy"]
-                ]) for frame in self.data]
-            
-            self.data_list.append(robot_data)
-
-        self.legend_list = {}
+    for i in range(robot_num):
+        robot_id = i
         for field in control_fields:
+            label_base = field
             if field == "vx":
-                self.legend_list[field] = "Vel X"
+                label_base = "Vel X"
             elif field == "vy":
-                self.legend_list[field] = "Vel Y"
+                label_base = "Vel Y"
             elif field == "ax":
-                self.legend_list[field] = "Accel X"
+                label_base = "Accel X"
             elif field == "ay":
-                self.legend_list[field] = "Accel Y"
+                label_base = "Accel Y"
             elif field == "yawRateRad":
-                self.legend_list[field] = "Yaw Rate"
+                label_base = "Yaw Rate"
             else:
-                self.legend_list[field] = field.capitalize()
+                label_base = field.capitalize()
+
+            label = f"{label_base}, Robot #{robot_id + 1}"
+
+            field_data = [frame["robots"][robot_id]["opt"]["result"][field] for frame in state]
+            processed_data[label] = field_data
 
         if "vx" in control_fields and "vy" in control_fields:
-            self.legend_list["speed"] = "Speed"
+            speed_data = []
+            for frame in state:
+                vx = frame["robots"][robot_id]["opt"]["result"]["vx"]
+                vy = frame["robots"][robot_id]["opt"]["result"]["vy"]
+                speed = np.linalg.norm([vx, vy])
+                speed_data.append(speed)
 
-        self.xLabel = "Time / s"
-        if "vx" in control_fields:
-            self.yLabel = "Value / m/s"
-        elif "ax" in control_fields:
-            self.yLabel = "Value / m/s²"
-        else:
-            self.yLabel = "Value"
+            speed_label = f"Speed, Robot #{robot_id + 1}"
+            processed_data[speed_label] = speed_data
 
-        self._initialize_plot()
+    processed_data['runtime'] = runtime
 
-    def _plot_single(self, ax):
-        for key, label in self.legend_list.items():
-            ax.plot(self.runtime, self.data_list[self.robot_id][key], label=f'{label}, UAV #{self.robot_id + 1}')
-        ax.set_title(self.title + f', Robot #{self.robot_id + 1}')
-        ax.set_xlabel(self.xLabel)
-        ax.set_ylabel(self.yLabel)
-        ax.legend(loc='best')
+    return processed_data
 
-    def _plot_all_in_one(self, ax):
-        for i in range(self.robot_num):
-            for key, label in self.legend_list.items():
-                ax.plot(self.runtime, self.data_list[i][key], label=f'{label}, UAV #{i + 1}')
-        ax.set_title(self.title + ', All Robots')
-        ax.set_xlabel(self.xLabel)
-        ax.set_ylabel(self.yLabel)
-        ax.legend(loc='best')
 
-    def _initialize_plot(self):
-        if self.mode == "global":
-            self._plot_all_in_one(self.ax)
-        elif self.mode == "group":
-            self._plot_single(self.ax)
-        elif self.mode == "separate":
-            self._plot_single(self.ax)
-        elif self.mode == "animation":
-            self._plot_single(self.ax)
-            self._setup_timeline(self.ax)
+class ControlInputComponent(Lines):
+    def __init__(self, ax, data, **kwargs):
+        kwargs['data_interpreter'] = control_input_lines_data_interpreter
 
-    def _setup_timeline(self, ax):
-        self.vline = self.ax.plot([0, 0], [0, 1], 'r--', alpha=0.3)[0]
-        self.y_limits = self.ax.get_ylim()
+        if 'title' not in kwargs:
+            kwargs['title'] = 'Control Input'
+        if 'xlabel' not in kwargs:
+            kwargs['xlabel'] = 'Time / s'
+        if 'ylabel' not in kwargs:
+            state = data.get("state", [])
+            if state:
+                first_frame_result = state[0]["robots"][0]["opt"]["result"]
+                if "vx" in first_frame_result or "vy" in first_frame_result:
+                    kwargs['ylabel'] = 'Velocity / m/s'
+                elif "ax" in first_frame_result or "ay" in first_frame_result:
+                    kwargs['ylabel'] = 'Acceleration / m/s²'
+                else:
+                    kwargs['ylabel'] = 'Value'
+            else:
+                kwargs['ylabel'] = 'Value'
 
-    def update(self, num):
-        self.vline.set_data([self.runtime[num], self.runtime[num]], self.y_limits)
+        super().__init__(ax, data, **kwargs)
 
+    def _default_data_processor(self):
+        return {}
+
+    def _get_line_data(self):
+        line_data_list = []
+
+        for label, values in self.processed_data.items():
+            if label == 'runtime':
+                continue
+
+            import re
+            robot_match = re.search(r'Robot #(\d+)', label)
+
+            if robot_match:
+                robot_id_from_label = int(robot_match.group(1)) - 1
+
+                if robot_id_from_label in self.robot_ids:
+                    line_data = {
+                        'label': label,
+                        'x': self.runtime,
+                        'y': values,
+                        'style': {}
+                    }
+                    line_data_list.append(line_data)
+            elif len(self.robot_ids) == 0 or len(self.robot_ids) == data.get('config', {}).get('num', 0):
+                line_data = {
+                    'label': label,
+                    'x': self.runtime,
+                    'y': values,
+                    'style': {}
+                }
+                line_data_list.append(line_data)
+
+        return line_data_list
