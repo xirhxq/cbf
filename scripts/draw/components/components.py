@@ -13,6 +13,7 @@ from .optimisation_vector import OptimizationVectorComponent
 from .centralized_cbf_value import CentralizedCBFValueComponent
 from .commcbf_uncertainty import CommCBFUncertaintyComponent
 from .optimization_failure import OptimizationFailureComponent
+from .cvt_center_density import CVTCenterDensityComponent
 
 REGISTRIED_COMPONENTS = {
     'map': {
@@ -199,5 +200,11 @@ REGISTRIED_COMPONENTS = {
         'class': 'OptimizationFailureComponent',
         'filename': 'optimization-failure',
         'figsize': (12, 6)
+    },
+    'cvt-center-density': {
+        'title': 'CVT Center Density Over Time',
+        'class': 'CVTCenterDensityComponent',
+        'filename': 'cvt-center-density',
+        'figsize': (12, 8)
     }
 }

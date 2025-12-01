@@ -468,7 +468,6 @@ public:
         }
     }
 
-    
     void setSafetyCBF(const json& config) {
         if (settings["num"] == 1) return;
         auto safetyH = [&, config](VectorXd x, double t) {
@@ -502,8 +501,25 @@ public:
         }
         cvt.pt[this->id] = model->xy();
         cvt.cal_poly();
-        for (int i = 1; i <= cvt.n; i++) {
-            cvt.ct[i] = gridWorld.getCentroidInPolygon(cvt.pl[i]);
+        Point densityCentroid = gridWorld.getCentroidInPolygon(cvt.pl[this->id]);
+
+        std::string explorationMode = "intelligent";
+        if (config.contains("cvt") && config["cvt"].contains("exploration-mode")) {
+            explorationMode = config["cvt"]["exploration-mode"];
+        }
+
+        if (explorationMode == "centroid") {
+            cvt.ct[this->id] = densityCentroid;
+        } else if (explorationMode == "intelligent") {
+            if (gridWorld.isExplored(densityCentroid)) {
+                cvt.ct[this->id] = gridWorld.getNearestUnexploredPointInPolygon(cvt.pl[this->id], densityCentroid);
+            } else {
+                cvt.ct[this->id] = densityCentroid;
+            }
+        } else if (explorationMode == "nearest-unexplored") {
+            cvt.ct[this->id] = gridWorld.getNearestUnexploredPointInPolygon(cvt.pl[this->id], densityCentroid);
+        } else {
+            throw std::invalid_argument("Unknown exploration-mode: " + explorationMode);
         }
 
         Point cvtCenter = cvt.ct[this->id];

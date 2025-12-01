@@ -228,6 +228,18 @@ if __name__ == '__main__':
         {
             'name': 'Animation (Centralized Communication)',
             'action': lambda: AnimationDrawer(files).run_animation(['centralized-comm'])
+        },
+        {
+            'name': 'CVT Center Density Over Time, All Robots',
+            'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['cvt-center-density'])
+        },
+        {
+            'name': 'CVT Center Density Over Time, Grouped',
+            'action': lambda: StaticGroupPlotDrawer(files).draw_plots(['cvt-center-density'])
+        },
+        {
+            'name': 'CVT Center Density Over Time, Per Robot',
+            'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['cvt-center-density'])
         }
     ]
 

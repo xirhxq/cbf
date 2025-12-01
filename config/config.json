@@ -101,7 +101,9 @@
       "cvt": {
         "name": "cvtCBF",
         "on": true,
-        "kp": 1.0,
+        "//exploration-mode": ["centroid", "intelligent", "nearest-unexplored"],
+        "exploration-mode": "intelligent",
+        "kp": 5.0,
         "alpha": {
           "coe": 1.0,
           "pow": 1
@@ -131,7 +133,7 @@
       "method": "all",
       "energy": {
         "name": "energyCBF",
-        "on": true,
+        "on": false,
         "//energy-value": ["self", "neighbour-min"],
         "energy-value": "neighbour-min",
         "normalize": {
@@ -156,11 +158,11 @@
       "comm-fixed": {
         "name": "commFixedCBF",
         "on": true,
-        "mode": "chain",
+        "mode": "scissor",
         "max-range": 850.0,
         "k": 1.0,
-        "min-neighbour-id-offset": -1,
-        "max-neighbour-id-offset": 1,
+        "min-neighbour-id-offset": -2,
+        "max-neighbour-id-offset": 0,
         "compensate-velocity": true,
         "bases": [
           [0, 0],
@@ -187,8 +189,8 @@
   },
   "execute": {
     "//execution-mode": ["distributed", "centralized"],
-    "execution-mode": "centralized",
-    "time-total": 1000,
+    "execution-mode": "distributed",
+    "time-total": 500,
     "time-step": 0.5
   },
   "debug": {
