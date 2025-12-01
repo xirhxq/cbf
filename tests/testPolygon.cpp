@@ -100,7 +100,7 @@ TEST_CASE("Polygon Point Management") {
     Polygon poly(square);
 
     SUBCASE("Add Point") {
-        Point new_point(0.5, 0.5); // Add point inside to maintain convexity
+        Point new_point(0.5, 2.5);
         poly.add_one_point(new_point);
         CHECK(poly.n >= 4);
     }
@@ -323,3 +323,53 @@ TEST_CASE("Polygon Stress Test") {
         CHECK(poly.circumference() > 0);
     }
 }
+
+TEST_CASE("Polygon Contains Method") {
+      SUBCASE("Basic Square - Internal Points") {
+          std::vector<Point> square = {Point(0, 0), Point(2, 0), Point(2, 2), Point(0, 2)};
+          Polygon poly(square);
+
+          // Test points clearly inside the square (convex polygon)
+          CHECK(poly.contains(Point(1, 1)) == true);    // Center
+          CHECK(poly.contains(Point(0.5, 0.5)) == true);  // Bottom-left quadrant
+          CHECK(poly.contains(Point(1.5, 1.5)) == true); // Top-right quadrant
+
+          // Test points clearly outside the square
+          CHECK(poly.contains(Point(-1, 1)) == false);   // Left
+          CHECK(poly.contains(Point(3, 1)) == false);    // Right
+          CHECK(poly.contains(Point(1, -1)) == false);   // Bottom
+          CHECK(poly.contains(Point(1, 3)) == false);    // Top
+      }
+
+      SUBCASE("Triangle - Internal Points") {
+          std::vector<Point> triangle = {Point(0, 0), Point(3, 0), Point(0, 4)};
+          Polygon poly(triangle);
+
+          // Test points well inside the right triangle (convex polygon)
+          CHECK(poly.contains(Point(1, 1)) == true);    // Well inside
+          CHECK(poly.contains(Point(0.5, 0.5)) == true); // Near corner
+          CHECK(poly.contains(Point(1, 0.5)) == true);  // Bottom area
+
+          // Test points clearly outside the triangle
+          CHECK(poly.contains(Point(-1, 1)) == false);   // Left
+          CHECK(poly.contains(Point(4, 1)) == false);    // Right
+          CHECK(poly.contains(Point(1, 3)) == false);    // Near hypotenuse but outside
+      }
+
+      SUBCASE("Edge and Vertex Tests") {
+          std::vector<Point> square = {Point(0, 0), Point(1, 0), Point(1, 1), Point(0, 1)};
+          Polygon poly(square);
+
+          // Test vertices (should be true for boundary points)
+          CHECK(poly.contains(Point(0, 0)) == true);     // Bottom-left vertex
+          CHECK(poly.contains(Point(1, 1)) == true);     // Top-right vertex
+
+          // Test edge midpoints (should be true for boundary points)
+          CHECK(poly.contains(Point(0.5, 0)) == true);   // Bottom edge midpoint
+          CHECK(poly.contains(Point(0, 0.5)) == true);   // Left edge midpoint
+
+          // Test points just outside
+          CHECK(poly.contains(Point(-1e-10, 0.5)) == false); // Just left of left edge
+          CHECK(poly.contains(Point(0.5, 1+1e-10)) == false); // Just above top edge
+      }
+  }

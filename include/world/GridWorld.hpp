@@ -150,6 +150,14 @@ public:
         return {getXPositionInXLimit(getXIndex(index)), getYPositionInYLimit(getYIndex(index))};
     }
 
+    bool isExplored(Point point) {
+        return getValue(point);
+    }
+
+    bool isUnexplored(Point point) {
+        return !getValue(point);
+    }
+
     double getValueInPolygon(Polygon poly) {
         double res = 0;
         pd xLimit = poly.get_x_limit(1.0), yLimit;
@@ -376,6 +384,45 @@ public:
         }
     }
 
+    Point getNearestUnexploredPointInPolygon(Polygon poly, Point centerPoint) {
+        Point nearestUnexplored;
+        double minDistance = INFINITY;
+        bool found = false;
+
+        pd xLimit = poly.get_x_limit(1.0), yLimit;
+        pd xIndexes, yIndexes;
+        xIndexes.first = getNumInXLim(xLimit.first, "ceil");
+        xIndexes.second = getNumInXLim(xLimit.second, "floor");
+
+        for (int i = xIndexes.first; i <= xIndexes.second; i++) {
+            double x = getXPositionInXLimit(i);
+            yLimit = poly.get_y_lim_at_certain_x(x);
+            yIndexes.first = getNumInYLim(yLimit.first, "ceil");
+            yIndexes.second = getNumInYLim(yLimit.second, "floor");
+
+            for (int j = yIndexes.first; j <= yIndexes.second; j++) {
+                double y = getYPositionInYLimit(j);
+
+                Point candidate = Point(x, y);
+                if (poly.contains(candidate) && getValue(i, j)) {
+                    double distance = centerPoint.distance_to(candidate);
+                    if (distance < minDistance) {
+                        minDistance = distance;
+                        nearestUnexplored = candidate;
+                        found = true;
+                    }
+                }
+            }
+        }
+
+        if (found && !getValue(nearestUnexplored)) {
+            throw std::runtime_error("Error: Nearest unexplored point is not unexplored!");
+        }
+
+        return found ? nearestUnexplored : centerPoint;
+    }
+
+  
     void outputCentroidInPolygon(Polygon poly) {
         auto tempVis = vis;
         for (auto a: tempVis) {

@@ -305,6 +305,40 @@ public:
         return res;
     }
 
+    bool contains(const Point &point) {
+        bool inside = false;
+
+        for (int i = 1; i <= n; i++) {
+            int j = (i == n) ? 1 : i + 1;
+
+            if (point == p[i] || point == p[j]) {
+                return true;
+            }
+
+            Point edge = p[j] - p[i];
+            Point to_point = point - p[i];
+
+            double cross = edge.x * to_point.y - edge.y * to_point.x;
+            if (fabs(cross) < 1e-10) {
+                double dot = edge.x * to_point.x + edge.y * to_point.y;
+                double edge_len_sq = edge.x * edge.x + edge.y * edge.y;
+
+                if (dot >= -1e-10 && dot <= edge_len_sq + 1e-10) {
+                    return true;
+                }
+            }
+        }
+
+        // Ray casting algorithm
+        for (int i = 1, j = n; i <= n; j = i++) {
+            if (((p[i].y > point.y) != (p[j].y > point.y)) &&
+                (point.x < (p[j].x - p[i].x) * (point.y - p[i].y) / (p[j].y - p[i].y) + p[i].x)) {
+                inside = !inside;
+            }
+        }
+        return inside;
+    }
+
 
 };
 
