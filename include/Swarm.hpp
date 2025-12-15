@@ -125,12 +125,15 @@ public:
             auto vel2d = robot->model->getVelocity();
             double yawRad = robot->model->getStateVariable("yawRad");
             double batteryLevel = robot->model->getStateVariable("battery");
+            Eigen::Matrix2d positionCovariance = robot->positionCovariance;
+
             for (auto &otherRobot: robots) {
                 if (robot->id == otherRobot->id) continue;
                 otherRobot->comm->receivePosition2D(robot->id, pos2d);
                 otherRobot->comm->receiveVelocity2D(robot->id, vel2d);
                 otherRobot->comm->receiveYawRad(robot->id, yawRad);
                 otherRobot->comm->receiveBatteryLevel(robot->id, batteryLevel);
+                otherRobot->comm->receivePositionCovariance(robot->id, positionCovariance);
             }
         };
     }

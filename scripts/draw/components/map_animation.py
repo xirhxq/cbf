@@ -19,6 +19,11 @@ class MapAnimationComponent(BaseComponent):
         self.bigTimeText = True
         self.shotList = []
 
+        self.showPositionCovariance = (
+            "position_covariance" in self.data["config"] and
+            self.data["config"]["position_covariance"]["enable"]
+        )
+
         self.x = np.linspace(self.gridWorldJson["xLim"][0], self.gridWorldJson["xLim"][1],
                              self.gridWorldJson["xNum"])
         self.y = np.linspace(self.gridWorldJson["yLim"][0], self.gridWorldJson["yLim"][1],
@@ -90,8 +95,51 @@ class MapAnimationComponent(BaseComponent):
                 self.ax.add_patch(Wedge(center=[robotX[i], robotY[i]], r=self.wedge_radius,
                                         theta1=robotYawDeg[i] - 15, theta2=robotYawDeg[i] + 15, alpha=0.3))
 
+            if (self.showPositionCovariance and
+                "position_covariance" in dataNow["robots"][id]):
+                from matplotlib.patches import Ellipse
+                import numpy as np
+
+                cov_data = dataNow["robots"][id]["position_covariance"]
+                cov_xx = cov_data["cov_xx"]
+                cov_xy = cov_data["cov_xy"]
+                cov_yy = cov_data["cov_yy"]
+
+                cov_matrix = np.array([[cov_xx, cov_xy], [cov_xy, cov_yy]])
+                eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)
+
+                sort_indices = np.argsort(eigenvalues)[::-1]
+                eigenvalues = eigenvalues[sort_indices]
+                eigenvectors = eigenvectors[:, sort_indices]
+
+                width = 4 * np.sqrt(eigenvalues[0])
+                height = 4 * np.sqrt(eigenvalues[1])
+                angle = np.degrees(np.arctan2(eigenvectors[1, 0], eigenvectors[0, 0]))
+
+                ellipse = Ellipse(
+                    xy=(robotX[i], robotY[i]),
+                    width=width,
+                    height=height,
+                    angle=angle,
+                    facecolor='red',
+                    alpha=0.2,
+                    edgecolor='red',
+                    linewidth=1
+                )
+                self.ax.add_patch(ellipse)
+
             if self.robotAnnotation:
-                annoText = f'#{id + 1}[{robotBattery[i]:.2f}]'
+                annoText = f'#{id + 1}'
+
+                if (self.showPositionCovariance and
+                    "position_covariance" in dataNow["robots"][id]):
+                    cov_data = dataNow["robots"][id]["position_covariance"]
+                    cov_xx = cov_data["cov_xx"]
+                    cov_xy = cov_data["cov_xy"]
+                    cov_yy = cov_data["cov_yy"]
+
+                    annoText += f'[{cov_xx:.1f},{cov_xy:.1f},{cov_yy:.1f}]]'
+
                 names = ["commFixed", "commAuto"]
                 for name in names:
                     if "cbfs" in dataNow and name in dataNow["cbfs"]:

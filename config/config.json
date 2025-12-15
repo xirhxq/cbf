@@ -25,7 +25,7 @@
     ],
     "spacing": 10.0
   },
-  "num": 3,
+  "num": 14,
   "dim": 4,
   "initial": {
     "position": {
@@ -74,6 +74,10 @@
       "k": 0.05,
       "b": 1.0
     }
+  },
+  "position_covariance": {
+    "enable": true,
+    "ranging_sigma": 5.0
   },
   "searching": {
     "//method": ["downward", "front-sector", "front-cone"],

@@ -240,6 +240,14 @@ if __name__ == '__main__':
         {
             'name': 'CVT Center Density Over Time, Per Robot',
             'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['cvt-center-density'])
+        },
+        {
+            'name': 'Position Covariance (Global) - Average Std Dev',
+            'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['position-uncertainty-std-avg'])
+        },
+        {
+            'name': 'Position Covariance (Per Robot) - Average Std Dev',
+            'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['position-uncertainty-std-avg'])
         }
     ]
 

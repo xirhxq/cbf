@@ -14,6 +14,7 @@ from .centralized_cbf_value import CentralizedCBFValueComponent
 from .commcbf_uncertainty import CommCBFUncertaintyComponent
 from .optimization_failure import OptimizationFailureComponent
 from .cvt_center_density import CVTCenterDensityComponent
+from .line_covariance_magnitude import LineCovarianceMagnitude
 
 REGISTRIED_COMPONENTS = {
     'map': {
@@ -206,5 +207,15 @@ REGISTRIED_COMPONENTS = {
         'class': 'CVTCenterDensityComponent',
         'filename': 'cvt-center-density',
         'figsize': (12, 8)
+    },
+    'position-uncertainty-std-avg': {
+        'title': 'Position Covariance (Average Std Dev)',
+        'class': 'LineCovarianceMagnitude',
+        'filename': 'position-uncertainty-std-avg',
+        'figsize': (12, 8),
+        'params': {
+            'uncertainty_type': 'std_avg',
+            'yscale': 'log',
+        }
     }
 }

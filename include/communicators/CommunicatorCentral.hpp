@@ -3,6 +3,7 @@
 
 #include "utils.h"
 #include "CommunicatorBase.hpp"
+#include <Eigen/Dense>
 
 class CommunicatorCentral : public CommunicatorBase {
 public:
@@ -42,6 +43,15 @@ public:
     void receiveBatteryLevel(int id, double batteryLevel) override {
         if (id == this->id) return;
         _othersBatteryLevel[id] = batteryLevel;
+    }
+
+    void sendPositionCovariance(int id, const Eigen::Matrix2d& covariance) override {
+        _othersPositionCovariance[id] = covariance;
+    }
+
+    void receivePositionCovariance(int id, const Eigen::Matrix2d& covariance) override {
+        if (id == this->id) return;
+        _othersPositionCovariance[id] = covariance;
     }
 };
 

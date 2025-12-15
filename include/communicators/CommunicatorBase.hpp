@@ -25,6 +25,9 @@ public:
     virtual void sendBatteryLevel(int id, double batteryLevel) = 0;
     virtual void receiveBatteryLevel(int id, double batteryLevel) = 0;
 
+    virtual void sendPositionCovariance(int id, const Eigen::Matrix2d& covariance) = 0;
+    virtual void receivePositionCovariance(int id, const Eigen::Matrix2d& covariance) = 0;
+
     void output() {
         for (auto &i : all) {
             std::cout << "Robot " << i << ": ";
@@ -45,6 +48,7 @@ public:
     std::unordered_map<int, VectorXd> _othersVel;
     std::unordered_map<int, double> _othersYawRad;
     std::unordered_map<int, double> _othersBatteryLevel;
+    std::unordered_map<int, Eigen::Matrix2d> _othersPositionCovariance;
 };
 
 #endif // CBF_COMMUNICATOR_BASE_HPP

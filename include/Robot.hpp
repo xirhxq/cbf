@@ -29,6 +29,12 @@ public:
     CVT cvt;
     double runtime;
     std::function<double(double)> uncertaintyFunction;
+
+    Eigen::Matrix2d positionCovariance;
+    bool enablePositionCovariance;
+    double rangingSigma;
+    double basePositionSigma;
+    std::function<double(double)> rangingUncertaintyFunction;
 public:
 
     Robot() = default;
@@ -84,6 +90,24 @@ public:
         } else {
             // Default constant function (zero uncertainty)
             uncertaintyFunction = [](double distance) { return 0.0; };
+        }
+
+        // Initialize Scissor uncertainty propagation
+        enablePositionCovariance = false;
+        rangingSigma = 5.0;
+        basePositionSigma = 1.0;
+        positionCovariance = Eigen::Matrix2d::Zero();
+
+        rangingUncertaintyFunction = [this](double distance) { return rangingSigma; };
+
+        if (settings.contains("position_covariance")) {
+            auto config = settings["position_covariance"];
+            enablePositionCovariance = config.value("enable", false);
+
+            if (config.contains("ranging_sigma")) {
+                rangingSigma = config["ranging_sigma"];
+                rangingUncertaintyFunction = [this](double distance) { return rangingSigma; };
+            }
         }
 
         setup();
@@ -345,6 +369,7 @@ public:
         std::vector<Point> formationPoints;
         std::vector<Point> formationVels;
         std::vector<std::string> anchorNames;
+        std::vector<Eigen::Matrix2d> formationCovariances;
 
         int minOffset = config["min-neighbour-id-offset"];
         int maxOffset = config["max-neighbour-id-offset"];
@@ -361,6 +386,7 @@ public:
                         formationPoints.push_back(bases[baseIdx]);
                         formationVels.emplace_back(0, 0);
                         anchorNames.emplace_back("base-" + std::to_string(virtualId));
+                        formationCovariances.push_back(Eigen::Matrix2d::Zero());
                     }
                 }
             } else if (mode == "scissor") {
@@ -369,6 +395,7 @@ public:
                     formationPoints.push_back(bases[partId]);
                     formationVels.emplace_back(0, 0);
                     anchorNames.emplace_back("base-" + std::to_string(partId));
+                    formationCovariances.push_back(Eigen::Matrix2d::Zero());
                 }
 
                 if (idInPart <= 2 && minOffset <= -2) {
@@ -376,6 +403,7 @@ public:
                     formationPoints.push_back(bases[0]);
                     formationVels.emplace_back(0, 0);
                     anchorNames.emplace_back("base-0");
+                    formationCovariances.push_back(Eigen::Matrix2d::Zero());
                 }
             }
         }
@@ -395,6 +423,71 @@ public:
             auto otherVel = comm->_othersVel[otherId];
             formationVels.emplace_back(otherVel);
             anchorNames.push_back("#" + std::to_string(otherId));
+
+            if (comm && comm->_othersPositionCovariance.count(otherId)) {
+                formationCovariances.push_back(comm->_othersPositionCovariance[otherId]);
+            } else {
+                formationCovariances.push_back(Eigen::Matrix2d::Identity() * 4.0);
+            }
+        }
+
+        if (enablePositionCovariance && formationPoints.size() >= 2) {
+            Point p = this->model->xy();
+
+            std::vector<Point> anchorPoints;
+            std::vector<double> distances;
+            std::vector<double> angles;
+            std::vector<double> ranging_uncertainties;
+            std::vector<Eigen::Matrix2d> covariances;
+            std::vector<double> position_variances;
+            std::vector<double> total_variances;
+
+            for (int i = 0; i < 2 && i < formationPoints.size(); ++i) {
+                Point anchor_point = formationPoints[i];
+
+                double distance = p.distance_to(anchor_point);
+                double angle = std::atan2(p.y - anchor_point.y, p.x - anchor_point.x);
+
+                double ranging_unc = rangingUncertaintyFunction(distance);
+
+                // ρ² = cos²θ·cov(0,0) + sin²θ·cov(1,1) + 2cosθ·sinθ·cov(0,1) + σ²_ranging
+                Eigen::Matrix2d anchor_cov = formationCovariances[i];
+                double position_var = (std::cos(angle) * std::cos(angle) * anchor_cov(0, 0) +
+                                      std::sin(angle) * std::sin(angle) * anchor_cov(1, 1) +
+                                      2.0 * std::cos(angle) * std::sin(angle) * anchor_cov(0, 1));
+
+                double total_variance = position_var + ranging_unc * ranging_unc;
+
+                anchorPoints.push_back(anchor_point);
+                distances.push_back(distance);
+                angles.push_back(angle);
+                ranging_uncertainties.push_back(ranging_unc);
+                covariances.push_back(anchor_cov);
+                position_variances.push_back(position_var);
+                total_variances.push_back(total_variance);
+            }
+
+            Eigen::Matrix2d J;
+            Eigen::Matrix2d Sigma = Eigen::Matrix2d::Zero();
+
+            for (int i = 0; i < 2; ++i) {
+                J(i, 0) = std::cos(angles[i]);
+                J(i, 1) = std::sin(angles[i]);
+                Sigma(i, i) = total_variances[i];
+            }
+
+            // Φ = J^T * Σ^(-1) * J
+            Eigen::Matrix2d Phi;
+            try {
+                Phi = J.transpose() * Sigma.inverse() * J;
+                positionCovariance = Phi.inverse();
+
+                if (positionCovariance(0, 0) <= 0 || positionCovariance(1, 1) <= 0) {
+                    positionCovariance = Eigen::Matrix2d::Identity() * 1.0;
+                }
+            } catch (...) {
+                positionCovariance = Eigen::Matrix2d::Identity() * 100.0;
+            }
         }
 
         for (int i = 0; i < formationPoints.size(); i++) {
@@ -827,6 +920,18 @@ public:
         Point currentPos = model->xy();
         double currentDistFromOrigin = currentPos.distance_to(Point(0, 0));
         robotJson["uncertainty"] = uncertaintyFunction(currentDistFromOrigin);
+
+        if (enablePositionCovariance) {
+            Eigen::Matrix2d cov = positionCovariance;
+            json covarianceJson = {
+                {"cov_xx", cov(0, 0)},
+                {"cov_xy", cov(0, 1)},
+                {"cov_yx", cov(1, 0)},
+                {"cov_yy", cov(1, 1)}
+            };
+            robotJson["position_covariance"] = covarianceJson;
+        }
+
         {
             robotJson["opt"] = opt;
         }
@@ -837,7 +942,7 @@ public:
         return uncertaintyFunction(distance);
     }
 
-};
+    };
 
 
 #endif //CBF_ROBOT_HPP
