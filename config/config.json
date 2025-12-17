@@ -77,7 +77,7 @@
   },
   "position_covariance": {
     "enable": true,
-    "ranging_sigma": 5.0
+    "ranging_sigma": 0.1
   },
   "searching": {
     "//method": ["downward", "front-sector", "front-cone"],
