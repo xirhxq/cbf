@@ -11,9 +11,8 @@ public:
     double trueWeight = 0.0, falseWeight = 1.0;
 
 public:
-    GridWorld() {
+    GridWorld() {}
 
-    }
     GridWorld(pd xLim, int xNum, pd yLim, int yNum): xLim(xLim), yLim(yLim), xNum(xNum), yNum(yNum) {
         vis.resize(xNum * yNum);
         reset();
@@ -68,7 +67,6 @@ public:
             ret = floor(ratio * size);
         }
         ret = std::max(std::min(ret, size - 1), 0);
-//    printf("ratio = %.2lf ret = %d\n", ratio, ret);
         return ret;
     }
 
@@ -99,7 +97,7 @@ public:
         int xIndex = getNumInXLim(point.x);
         int yIndex = getNumInYLim(point.y);
         int index = getIndex(xIndex, yIndex);
-//    printf("(%d, %d) == (%d) -> %d\n", x_ind, y_ind, ind, bool(vis[ind]));
+        //    printf("(%d, %d) == (%d) -> %d\n", x_ind, y_ind, ind, bool(vis[ind]));
         return vis[index] == true;
     }
 
@@ -182,11 +180,9 @@ public:
         pd xIndexes, yIndexes;
         xIndexes.first = getNumInXLim(xLimit.first, "ceil");
         xIndexes.second = getNumInXLim(xLimit.second, "floor");
-//    printf("x_lim: (%.12lf, %.12lf)\tx_ind: (%lf, %lf)\n", x_lim_pd.first, x_lim_pd.second, x_ind_pd.first, x_ind_pd.second);
         for (int xIndex = xIndexes.first; xIndex <= xIndexes.second; xIndex++) {
             double x = getXPositionInXLimit(xIndex);
             if (x > xLimit.second || x < xLimit.first) continue;
-//        printf("x_ind = %d, x_pos = %.12lf\n", x_ind, x_pos);
             yLimit = poly.get_y_lim_at_certain_x(x);
             yIndexes.first = getNumInYLim(yLimit.first, "ceil");
             yIndexes.second = getNumInYLim(yLimit.second, "floor");
@@ -346,7 +342,7 @@ public:
             }
         }
         return ret;
-}
+    }
 
 
     Point getCentroidInPolygon(Polygon poly) {
@@ -422,7 +418,7 @@ public:
         return found ? nearestUnexplored : centerPoint;
     }
 
-  
+
     void outputCentroidInPolygon(Polygon poly) {
         auto tempVis = vis;
         for (auto a: tempVis) {
@@ -442,7 +438,6 @@ public:
             }
         }
     }
-
 };
 
 
