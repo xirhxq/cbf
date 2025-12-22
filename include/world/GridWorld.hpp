@@ -380,7 +380,7 @@ public:
         }
     }
 
-    Point getNearestUnexploredPointInPolygon(Polygon poly, Point centerPoint) {
+    Point getNearestUnexploredPointInPolygon(Polygon poly, Point me, Point centerPoint) {
         Point nearestUnexplored;
         double minDistance = INFINITY;
         bool found = false;
@@ -400,8 +400,8 @@ public:
                 double y = getYPositionInYLimit(j);
 
                 Point candidate = Point(x, y);
-                if (poly.contains(candidate) && getValue(i, j)) {
-                    double distance = centerPoint.distance_to(candidate);
+                if (!getValue(i, j)) {
+                    double distance = me.distance_to(candidate);
                     if (distance < minDistance) {
                         minDistance = distance;
                         nearestUnexplored = candidate;
@@ -411,7 +411,7 @@ public:
             }
         }
 
-        if (found && !getValue(nearestUnexplored)) {
+        if (found && getValue(nearestUnexplored)) {
             throw std::runtime_error("Error: Nearest unexplored point is not unexplored!");
         }
 

@@ -625,12 +625,16 @@ public:
             cvt.ct[this->id] = densityCentroid;
         } else if (explorationMode == "intelligent") {
             if (gridWorld.isExplored(densityCentroid)) {
-                cvt.ct[this->id] = gridWorld.getNearestUnexploredPointInPolygon(cvt.pl[this->id], densityCentroid);
+                cvt.ct[this->id] = gridWorld.getNearestUnexploredPointInPolygon(
+                    cvt.pl[this->id], this->model->xy(), densityCentroid
+                );
             } else {
                 cvt.ct[this->id] = densityCentroid;
             }
         } else if (explorationMode == "nearest-unexplored") {
-            cvt.ct[this->id] = gridWorld.getNearestUnexploredPointInPolygon(cvt.pl[this->id], densityCentroid);
+            cvt.ct[this->id] = gridWorld.getNearestUnexploredPointInPolygon(
+                cvt.pl[this->id], this->model->xy(), densityCentroid
+            );
         } else {
             throw std::invalid_argument("Unknown exploration-mode: " + explorationMode);
         }
