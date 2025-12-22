@@ -69,8 +69,10 @@ public:
             stepData["robots"] = robotsJson;
         }
         stepData["formation"] = json::array();
+        stepData["covariance_formation"] = json::array();
         for (auto &robot: robots) {
             stepData["formation"].push_back(robot->myFormation);
+            stepData["covariance_formation"].push_back(robot->myCovarianceFormation);
         }
         stepData["update"] = updatedGridWorldGroundTruth;
 

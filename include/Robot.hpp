@@ -23,6 +23,7 @@ public:
     GridWorld gridWorld;
     json settings;
     json myFormation = json::object();
+    json myCovarianceFormation = json::object();
     json updatedGridWorld;
     std::string folderName;
     std::string filename;
@@ -369,6 +370,9 @@ public:
         std::vector<Point> formationPoints;
         std::vector<Point> formationVels;
         std::vector<std::string> anchorCBFNames;
+        std::vector<double> formationUncertainties;
+
+        double myUncertainty = getUncertaintyFromCovariance(positionCovariance);
 
         std::vector<Point> anchorPoints;
         std::vector<std::string> anchorCovNames;
@@ -376,6 +380,14 @@ public:
 
         int minOffset = config["min-neighbour-id-offset"];
         int maxOffset = config["max-neighbour-id-offset"];
+
+        if (enablePositionCovariance) {
+            myCovarianceFormation = {
+                {"id", id},
+                {"anchorIds", json::array()},
+                {"baseIds", json::array()}
+            };
+        }
 
         if (config.contains("bases") && !config["bases"].empty()) {
             std::vector<Point> bases = getPointsFromJson(config["bases"]);
@@ -389,6 +401,7 @@ public:
                         formationPoints.push_back(bases[baseIdx]);
                         formationVels.emplace_back(0, 0);
                         anchorCBFNames.emplace_back("base-" + std::to_string(virtualId));
+                        formationUncertainties.emplace_back(0);
                     }
                 }
             } else if (mode == "scissor") {
@@ -397,6 +410,7 @@ public:
                     formationPoints.push_back(bases[partId]);
                     formationVels.emplace_back(0, 0);
                     anchorCBFNames.emplace_back("base-" + std::to_string(partId));
+                    formationUncertainties.emplace_back(0);
                 }
 
                 if (idInPart <= 2 && minOffset <= -2) {
@@ -404,6 +418,7 @@ public:
                     formationPoints.push_back(bases[0]);
                     formationVels.emplace_back(0, 0);
                     anchorCBFNames.emplace_back("base-0");
+                    formationUncertainties.emplace_back(0);
                 }
             }
 
@@ -412,6 +427,10 @@ public:
                     anchorPoints.push_back(bases[baseIdx]);
                     anchorCovNames.push_back("base-" + std::to_string(baseIdx));
                     anchorCovariances.push_back(Eigen::Matrix2d::Zero());
+
+                    if (enablePositionCovariance) {
+                        myCovarianceFormation["baseIds"].push_back(baseIdx);
+                    }
                 }
             }
         }
@@ -425,16 +444,13 @@ public:
 
             if (otherPartId != partId) continue;
 
-            if (otherPos.distance_to(this->model->xy()) <= maxRange) {
+            if (otherPos.distance_to(this->model->xy()) <= maxRange || otherId >= this->id + minOffset) {
                 anchorPoints.push_back(otherPos);
                 anchorCovNames.push_back("#" + std::to_string(otherId));
-                if (comm && comm->_othersPositionCovariance.count(otherId)) {
-                    anchorCovariances.push_back(comm->_othersPositionCovariance[otherId]);
-                } else {
-                    throw std::invalid_argument(
-                        "No covariance for robot " + std::to_string(otherId)
-                        + " stored in robot " + std::to_string(this->id)
-                    );
+                anchorCovariances.push_back(comm->_othersPositionCovariance[otherId]);
+
+                if (enablePositionCovariance) {
+                    myCovarianceFormation["anchorIds"].push_back(otherId);
                 }
             }
 
@@ -445,6 +461,7 @@ public:
             auto otherVel = comm->_othersVel[otherId];
             formationVels.emplace_back(otherVel);
             anchorCBFNames.push_back("#" + std::to_string(otherId));
+            formationUncertainties.push_back(getUncertaintyFromCovariance(comm->_othersPositionCovariance[otherId]));
         }
 
         if (enablePositionCovariance) {
@@ -471,9 +488,12 @@ public:
                 total_variances.push_back(total_variance);
             }
 
-            auto n_anchors = angles.size();
+            int n_anchors = angles.size();
             if (n_anchors < 2) {
-                throw std::invalid_argument("Not enough anchors for covariance calculation");
+                throw std::invalid_argument(
+                    "#" + std::to_string(this->id) +
+                    " has less than two anchor points for covariance calculation"
+                );
             } else {
                 Eigen::MatrixXd J(n_anchors, 2);
                 Eigen::MatrixXd Sigma = Eigen::MatrixXd::Zero(n_anchors, n_anchors);
@@ -500,8 +520,9 @@ public:
             auto otherVel = config["compensate-velocity"] ? formationVels[i] : Point(0, 0);
             double k = config["k"];
             bool isAnchor = anchorCBFNames[i].find("base-") != std::string::npos;  // Check if this is an anchor point
+            auto otherUncertainty = formationUncertainties[i];
 
-            auto fixedFormationCommH = [this, otherPoint, otherVel, maxRange, k, isAnchor](VectorXd x, double t) {
+            auto fixedFormationCommH = [this, otherPoint, otherVel, maxRange, k, isAnchor, myUncertainty, otherUncertainty](VectorXd x, double t) {
                 Point myPosition = model->extractXYFromVector(x);
 
                 // Calculate distance between robots/anchor
@@ -509,10 +530,6 @@ public:
                 double h = k * (maxRange - distance);
 
                 // Robust CBF: ĥ = h - lε, where l = k for comm CBF
-                // Use distance from origin for uncertainty calculation
-                Point origin(0, 0);
-                double myDistFromOrigin = myPosition.distance_to(origin);
-                double myUncertainty = uncertaintyFunction(myDistFromOrigin);
 
                 double robust_h;
                 if (isAnchor) {
@@ -520,8 +537,6 @@ public:
                     robust_h = h - k * myUncertainty;
                 } else {
                     // Robot-to-robot communication: sum of both uncertainties
-                    double otherDistFromOrigin = otherPoint.distance_to(origin);
-                    double otherUncertainty = uncertaintyFunction(otherDistFromOrigin);
                     robust_h = h - k * (myUncertainty + otherUncertainty);
                 }
 
@@ -924,7 +939,7 @@ public:
         // Calculate current distance from origin and compute uncertainty
         Point currentPos = model->xy();
         double currentDistFromOrigin = currentPos.distance_to(Point(0, 0));
-        robotJson["uncertainty"] = uncertaintyFunction(currentDistFromOrigin);
+        robotJson["uncertainty"] = getUncertaintyFromCovariance(positionCovariance);
 
         if (enablePositionCovariance) {
             Eigen::Matrix2d cov = positionCovariance;
@@ -945,6 +960,10 @@ public:
 
     double getUncertaintyAtDistance(double distance) {
         return uncertaintyFunction(distance);
+    }
+
+    double getUncertaintyFromCovariance(Eigen::Matrix2d cov) {
+        return (std::sqrt(cov(0, 0)) + std::sqrt(cov(1, 1))) / 2;
     }
 
     };
