@@ -14,7 +14,6 @@ public:
     }
 
     void receivePosition2D(int id, const Point pos2d) override {
-        if (id == this->id) return;
         _othersPos[id] = pos2d;
     }
 
@@ -23,7 +22,6 @@ public:
     }
 
     void receiveVelocity2D(int id, const VectorXd velocity2D) override {
-        if (id == this->id) return;
         _othersVel[id] = velocity2D;
     }
 
@@ -32,7 +30,6 @@ public:
     }
 
     void receiveYawRad(int id, double yawRad) override {
-        if (id == this->id) return;
         _othersYawRad[id] = yawRad;
     }
 
@@ -41,7 +38,6 @@ public:
     }
 
     void receiveBatteryLevel(int id, double batteryLevel) override {
-        if (id == this->id) return;
         _othersBatteryLevel[id] = batteryLevel;
     }
 
@@ -50,7 +46,6 @@ public:
     }
 
     void receivePositionCovariance(int id, const Eigen::Matrix2d& covariance) override {
-        if (id == this->id) return;
         _othersPositionCovariance[id] = covariance;
     }
 };

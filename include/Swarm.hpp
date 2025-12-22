@@ -130,7 +130,6 @@ public:
             Eigen::Matrix2d positionCovariance = robot->positionCovariance;
 
             for (auto &otherRobot: robots) {
-                if (robot->id == otherRobot->id) continue;
                 otherRobot->comm->receivePosition2D(robot->id, pos2d);
                 otherRobot->comm->receiveVelocity2D(robot->id, vel2d);
                 otherRobot->comm->receiveYawRad(robot->id, yawRad);
@@ -143,7 +142,6 @@ public:
     void checkInformationExchange() {
         for (auto &robot: robots) {
             for (auto &other: robots) {
-                if (robot->id == other->id) continue;
                 assert(robot->model->xy().distance_to(other->comm->_othersPos[robot->id]) < 1e-3);
             }
         }
@@ -185,6 +183,14 @@ public:
         }
     }
 
+    void checkUpdatedGridWorld() {
+        for (auto &robot: robots) {
+            if (updatedGridWorldGroundTruth.size() != robot->updatedGridWorld.size()) {
+                throw std::runtime_error("updatedGridWorldGroundTruth size mismatch, robot id: " + std::to_string(robot->id));
+            }
+        }
+    }
+
     void run() {
         exchangeData();
         checkInformationExchange();
@@ -210,6 +216,7 @@ public:
                 printf("\r%.2lf seconds elapsed... %.2lf%%", robots[0]->runtime, gridWorldGroundTruth.getPercentage() * 100);
                 for (auto &robot: robots) robot->updateGridWorld();
                 updateGridWorld();
+                checkUpdatedGridWorld();
                 for (auto &robot: robots) robot->postsetCBF();
 
                 if (isCentralizedExecution()) {
