@@ -18,6 +18,7 @@ class MapAnimationComponent(BaseComponent):
         self.showAxis = False
         self.bigTimeText = True
         self.shotList = []
+        self.showCovarianceFormation = kwargs.get('show_covariance_formation', True)
 
         self.showPositionCovariance = (
             "position_covariance" in self.data["config"] and
@@ -83,12 +84,35 @@ class MapAnimationComponent(BaseComponent):
                 for anchorPoint in myJson.get("anchorPoints", []):
                     self.ax.arrow(myPosition[0], myPosition[1],
                                   anchorPoint[0] - myPosition[0], anchorPoint[1] - myPosition[1],
-                                  head_width=0.5, head_length=0.5, fc='k', ec='k', alpha=0.2)
+                                  head_width=0.5, head_length=0.5, fc='gray', ec='gray', alpha=0.3)
                 for neighbor_id in myJson.get("anchorIds", []):
                     neighbor_pos = id2Position[neighbor_id]
                     self.ax.arrow(myPosition[0], myPosition[1],
                                   neighbor_pos[0] - myPosition[0], neighbor_pos[1] - myPosition[1],
-                                  head_width=0.5, head_length=0.5, fc='k', ec='k', alpha=0.2)
+                                  head_width=0.5, head_length=0.5, fc='gray', ec='gray', alpha=0.3)
+
+        if self.showCovarianceFormation and "covariance_formation" in dataNow and dataNow["covariance_formation"] != [None]:
+            id2Position = {robot["id"]: (robot["state"]["x"], robot["state"]["y"]) for robot in dataNow["robots"]}
+            for myJson in dataNow["covariance_formation"]:
+                if len(myJson) == 0 or not myJson:
+                    continue
+                if myJson["id"] - 1 not in self.id_list:
+                    continue
+                myPosition = id2Position[myJson["id"]]
+
+                for anchor_id in myJson.get("anchorIds", []):
+                    if anchor_id in id2Position:
+                        anchor_pos = id2Position[anchor_id]
+                        self.ax.plot([myPosition[0], anchor_pos[0]], [myPosition[1], anchor_pos[1]],
+                                   'b-', alpha=0.4, linewidth=1.5, label='Covariance Robot' if myJson["id"] == 1 else "")
+
+                for base_id in myJson.get("baseIds", []):
+                    if "config" in self.data and "cbfs" in self.data["config"] and "without-slack" in self.data["config"]["cbfs"] and "comm-fixed" in self.data["config"]["cbfs"]["without-slack"] and "bases" in self.data["config"]["cbfs"]["without-slack"]["comm-fixed"]:
+                        bases = self.data["config"]["cbfs"]["without-slack"]["comm-fixed"]["bases"]
+                        if base_id < len(bases):
+                            base_pos = bases[base_id]
+                            self.ax.plot([myPosition[0], base_pos[0]], [myPosition[1], base_pos[1]],
+                                       'r-', alpha=0.4, linewidth=1.5, label='Covariance Base' if myJson["id"] == 1 else "")
 
         for i, id in enumerate(self.id_list):
             if self.showYaw:
