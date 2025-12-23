@@ -44,14 +44,49 @@ def interactive_selection(options):
             duration = state[-1]['runtime'] if state else 0
             exec_mode = config.get('execute', {}).get('execution-mode', 'unknown')[:4]  # dist/cen
             num_robots = config.get('num', 0)
-            searching_method = config.get('searching', {}).get('method', 'unknown')[:4]  # down/front
             file_name = os.path.basename(os.path.dirname(file_path))
+
+            # Searching method with parameters
+            searching = config.get('searching', {})
+            method_full = searching.get('method', 'unknown')
+            # Abbreviate: downward->down, front-sector->sect, front-cone->cone
+            if method_full == 'downward':
+                searching_method = 'down'
+            elif method_full == 'front-sector':
+                searching_method = 'sect'
+            elif method_full == 'front-cone':
+                searching_method = 'cone'
+            else:
+                searching_method = method_full[:4]
+            searching_params = ''
+            if searching_method == 'down':
+                radius = searching.get('downward', {}).get('radius', 0)
+                searching_params = f'(r{int(radius)})'
+            elif searching_method == 'sect':
+                inner_r = searching.get('front-sector', {}).get('inner-radius', 0)
+                outer_r = searching.get('front-sector', {}).get('outer-radius', 0)
+                half_angle = searching.get('front-sector', {}).get('half-angle-deg', 0)
+                searching_params = f'(r{int(inner_r)}-{int(outer_r)},{int(half_angle)}°)'
+
+            # Calculate final search percentage
+            grid_world = data.get('para', {}).get('gridWorld', {})
+            x_num = grid_world.get('xNum', 1)
+            y_num = grid_world.get('yNum', 1)
+            total_cells = x_num * y_num
+            searched_cells = set()
+            for frame in state:
+                if "update" in frame and len(frame["update"]) > 0:
+                    for grid in frame["update"]:
+                        cell_id = (grid[0], grid[1])
+                        searched_cells.add(cell_id)
+            search_pct = len(searched_cells) / total_cells * 100 if total_cells > 0 else 0
 
             # CBF info
             cbfs = config.get('cbfs', {})
             cbf_info = []
             if cbfs.get('without-slack', {}).get('comm-fixed', {}).get('on', False):
-                cbf_info.append('comm')
+                max_range = cbfs.get('without-slack', {}).get('comm-fixed', {}).get('max-range', 0)
+                cbf_info.append(f'comm(r{int(max_range)})')
             cvt_on = cbfs.get('with-slack', {}).get('cvt', {}).get('on', False)
             if cvt_on:
                 exploration_mode = cbfs.get('with-slack', {}).get('cvt', {}).get('exploration-mode', 'unknown')
@@ -60,7 +95,7 @@ def interactive_selection(options):
             if cbfs.get('without-slack', {}).get('safety', {}).get('on', False):
                 cbf_info.append('safety')
 
-            print(f"[{idx}]: {file_name} - {duration:.1f}s | {exec_mode} | {num_robots}r | {searching_method} | {', '.join(cbf_info) if cbf_info else 'none'}")
+            print(f"[{idx}]: {file_name} - {duration:.1f}s | {search_pct:.1f}% | {exec_mode} | {num_robots}r | {searching_method}{searching_params} | {', '.join(cbf_info) if cbf_info else 'none'}")
         except:
             print(f"[{idx}]: {os.path.basename(os.path.dirname(file_path))} - Error reading file")
 
