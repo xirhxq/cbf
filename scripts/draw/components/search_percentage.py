@@ -34,12 +34,12 @@ def search_percentage_interpreter(data):
 class SearchPercentageComponent(Lines):
     def __init__(self, ax, data, **kwargs):
         kwargs.setdefault('title', "Search Percentage Over Time")
-        kwargs.setdefault('ylabel', 'Search Percentage')
+        kwargs.setdefault('ylabel', 'Search Percentage (%)')
 
         params = kwargs.get('params', {})
         self.show_milestones = params.get('show_milestones', True)
-        self.milestones = params.get('milestones', [0.25, 0.5, 0.75, 0.9])
-        self.milestone_colors = params.get('milestone_colors', ['orange', 'red', 'purple', 'darkred'])
+        self.milestones = params.get('milestones', [0.25, 0.5, 0.75, 1.0])
+        self.milestone_colors = params.get('milestone_colors', ['orange', 'red', 'purple', 'green'])
 
         kwargs['data_interpreter'] = search_percentage_interpreter
 
@@ -61,6 +61,14 @@ class SearchPercentageComponent(Lines):
         self.ax.set_ylim([0, 1.05])
         self.ax.grid(True, alpha=0.3)
 
+        self.ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{int(y*100)}%'))
+
+        max_pct = self.processed_data['search_percentages'][-1]
+        print(f"Search Percentage: Max {max_pct*100:.2f}%")
+        self.ax.text(0.02, 0.98, f'Max: {max_pct*100:.1f}%',
+                     transform=self.ax.transAxes, verticalalignment='top',
+                     bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
         if self.show_milestones:
             self._add_milestones()
 
@@ -68,7 +76,8 @@ class SearchPercentageComponent(Lines):
         for milestone, color in zip(self.milestones, self.milestone_colors):
             milestone_time = None
             for i, percentage in enumerate(self.processed_data['search_percentages']):
-                if percentage >= milestone:
+                # Use a small epsilon for floating point comparison
+                if percentage >= milestone - 1e-6:
                     milestone_time = self.runtime[i]
                     break
 
