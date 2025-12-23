@@ -42,21 +42,25 @@ def interactive_selection(options):
 
             # Basic info
             duration = state[-1]['runtime'] if state else 0
-            exec_mode = config.get('execute', {}).get('execution-mode', 'unknown')
+            exec_mode = config.get('execute', {}).get('execution-mode', 'unknown')[:4]  # dist/cen
             num_robots = config.get('num', 0)
+            searching_method = config.get('searching', {}).get('method', 'unknown')[:4]  # down/front
             file_name = os.path.basename(os.path.dirname(file_path))
 
             # CBF info
             cbfs = config.get('cbfs', {})
             cbf_info = []
             if cbfs.get('without-slack', {}).get('comm-fixed', {}).get('on', False):
-                cbf_info.append('comm-fixed')
-            if cbfs.get('with-slack', {}).get('cvt', {}).get('on', False):
-                cbf_info.append('cvt')
+                cbf_info.append('comm')
+            cvt_on = cbfs.get('with-slack', {}).get('cvt', {}).get('on', False)
+            if cvt_on:
+                exploration_mode = cbfs.get('with-slack', {}).get('cvt', {}).get('exploration-mode', 'unknown')
+                exploration_mode_short = exploration_mode.split('-')[0][:6]
+                cbf_info.append(f'cvt({exploration_mode_short})')
             if cbfs.get('without-slack', {}).get('safety', {}).get('on', False):
                 cbf_info.append('safety')
 
-            print(f"[{idx}]: {file_name} - {duration:.1f}s | {exec_mode} | {num_robots} robots | CBF: {', '.join(cbf_info) if cbf_info else 'none'}")
+            print(f"[{idx}]: {file_name} - {duration:.1f}s | {exec_mode} | {num_robots}r | {searching_method} | {', '.join(cbf_info) if cbf_info else 'none'}")
         except:
             print(f"[{idx}]: {os.path.basename(os.path.dirname(file_path))} - Error reading file")
 

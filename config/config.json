@@ -40,18 +40,18 @@
       "positions": [
         [-20, 10],
         [20, 10],
-        [-20, 20],
-        [20, 20],
-        [-20, 30],
-        [20, 30],
-        [-20, 40],
-        [20, 40],
-        [-20, 50],
-        [20, 50],
-        [-20, 60],
-        [20, 60],
-        [-20, 70],
-        [20, 70]
+        [-30, 20],
+        [30, 20],
+        [-40, 30],
+        [40, 30],
+        [-50, 40],
+        [50, 40],
+        [-60, 50],
+        [60, 50],
+        [-70, 60],
+        [70, 60],
+        [-80, 70],
+        [80, 70]
       ]
     },
     "battery": {
@@ -86,7 +86,7 @@
       "radius": 200.0
     },
     "front-sector": {
-      "inner-radius": 50.0,
+      "inner-radius": 0.0,
       "outer-radius": 200.0,
       "half-angle-deg": 30.0
     },
@@ -107,6 +107,7 @@
         "on": true,
         "//exploration-mode": ["centroid", "intelligent", "nearest-unexplored"],
         "exploration-mode": "intelligent",
+        "front-focus-distance": 400.0,
         "kp": 5.0,
         "alpha": {
           "coe": 1.0,
@@ -161,7 +162,7 @@
       },
       "comm-fixed": {
         "name": "commFixedCBF",
-        "on": true,
+        "on": false,
         "mode": "scissor",
         "max-range": 850.0,
         "k": 1.0,

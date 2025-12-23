@@ -621,19 +621,30 @@ public:
             explorationMode = config["cvt"]["exploration-mode"];
         }
 
+        double frontFocusDistance;
+        if (config.contains("cvt") && config["cvt"].contains("front-focus-distance")) {
+            frontFocusDistance = config["cvt"]["front-focus-distance"];
+        }
+        else {
+            throw std::invalid_argument("CVT: front-focus-distance not specified");
+        }
+
+        double heading = this->model->getStateVariable("yawRad");
+        Point focus = model->xy() + frontFocusDistance * Point(std::cos(heading), std::sin(heading));
+
         if (explorationMode == "centroid") {
             cvt.ct[this->id] = densityCentroid;
         } else if (explorationMode == "intelligent") {
             if (gridWorld.isExplored(densityCentroid)) {
                 cvt.ct[this->id] = gridWorld.getNearestUnexploredPointInPolygon(
-                    cvt.pl[this->id], this->model->xy(), densityCentroid
+                    cvt.pl[this->id], focus, densityCentroid
                 );
             } else {
                 cvt.ct[this->id] = densityCentroid;
             }
         } else if (explorationMode == "nearest-unexplored") {
             cvt.ct[this->id] = gridWorld.getNearestUnexploredPointInPolygon(
-                cvt.pl[this->id], this->model->xy(), densityCentroid
+                cvt.pl[this->id], focus, densityCentroid
             );
         } else {
             throw std::invalid_argument("Unknown exploration-mode: " + explorationMode);
