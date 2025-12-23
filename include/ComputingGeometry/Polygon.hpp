@@ -277,16 +277,30 @@ public:
     pd get_y_lim_at_certain_x(double _x) {
         std::vector<double> vec_y;
         for (int i = 1; i <= n; i++) {
-            if (fabs(p[i].x - _x) <= eps && fabs(p[index_after(n, i, 1)].x - _x) <= eps) {
-                vec_y.push_back(p[i].y);
-                vec_y.push_back(p[index_after(n, i, 1)].y);
-            } else if ((p[i].x <= _x) != (p[index_after(n, i, 1)].x <= _x)
-                       || (p[i].x >= _x) != (p[index_after(n, i, 1)].x >= _x)) {
-                Line l = Line(p[i], p[index_after(n, i, 1)]);
+            Point pi = p[i];
+            Point pj = p[index_after(n, i, 1)];
+
+            // Check if this edge crosses the vertical line x = _x
+            bool crosses = ((pi.x < _x && pj.x > _x) || (pi.x > _x && pj.x < _x));
+
+            if (fabs(pi.x - _x) <= eps && fabs(pj.x - _x) <= eps) {
+                // Vertical edge at x = _x
+                vec_y.push_back(pi.y);
+                vec_y.push_back(pj.y);
+            } else if (crosses) {
+                // Edge crosses x = _x, calculate intersection
+                Line l = Line(pi, pj);
                 Point inter_p = l.cross_point({{_x, 0},
                                                {_x, 1}});
                 vec_y.push_back(inter_p.y);
+            } else if (fabs(pi.x - _x) <= eps || fabs(pj.x - _x) <= eps) {
+                // One endpoint is exactly at x = _x
+                if (fabs(pi.x - _x) <= eps) vec_y.push_back(pi.y);
+                if (fabs(pj.x - _x) <= eps) vec_y.push_back(pj.y);
             }
+        }
+        if (vec_y.empty()) {
+            throw std::runtime_error("get_y_lim_at_certain_x: vec_y is empty for _x = " + std::to_string(_x));
         }
         std::sort(vec_y.begin(), vec_y.end());
         return pd(*vec_y.begin(), *vec_y.rbegin());
