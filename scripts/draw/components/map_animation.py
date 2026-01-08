@@ -1,5 +1,7 @@
 from utils import *
 from .base import BaseComponent
+import matplotlib.colors as mcolors
+import matplotlib.cm as mcm
 
 
 class MapAnimationComponent(BaseComponent):
@@ -19,6 +21,28 @@ class MapAnimationComponent(BaseComponent):
         self.bigTimeText = True
         self.shotList = []
         self.showCovarianceFormation = kwargs.get('show_covariance_formation', True)
+
+        params = kwargs.get('params', {})
+        self.colormap = params.get('colormap', 'coolwarm')
+
+        self.christmas_cmap = mcolors.LinearSegmentedColormap.from_list(
+            'christmas',
+            ['#1a5f1a', '#8b0000'],
+            N=256
+        )
+
+        if self.colormap == 'christmas':
+            self.search_cmap = self.christmas_cmap
+            self.cov_robot_color = 'green'
+            self.cov_base_color = '#8b0000'
+        elif self.colormap == 'coolwarm':
+            self.search_cmap = mcm.get_cmap('coolwarm')
+            self.cov_robot_color = 'blue'
+            self.cov_base_color = 'red'
+        else:
+            self.search_cmap = mcm.get_cmap(self.colormap)
+            self.cov_robot_color = 'blue'
+            self.cov_base_color = 'red'
 
         self.showPositionCovariance = (
             "position_covariance" in self.data["config"] and
@@ -59,7 +83,7 @@ class MapAnimationComponent(BaseComponent):
             self.updateZ(self.zUpdatedIndex)
             self.zUpdatedIndex += 1
 
-        self.ax.imshow(self.Z.T, alpha=0.2, extent=self.zExtent, origin='lower', cmap='coolwarm', vmin=0, vmax=1)
+        self.ax.imshow(self.Z.T, alpha=0.3, extent=self.zExtent, origin='lower', cmap=self.search_cmap, vmin=0, vmax=1)
 
         robotNum = self.data["para"]["swarm"]["num"]
         pos_charge = self.data["para"]["world"]["charge"]["pos"]
@@ -104,7 +128,7 @@ class MapAnimationComponent(BaseComponent):
                     if anchor_id in id2Position:
                         anchor_pos = id2Position[anchor_id]
                         self.ax.plot([myPosition[0], anchor_pos[0]], [myPosition[1], anchor_pos[1]],
-                                   'b-', alpha=0.4, linewidth=1.5, label='Covariance Robot' if myJson["id"] == 1 else "")
+                                   color=self.cov_robot_color, linestyle='-', alpha=0.4, linewidth=1.5, label='Covariance Robot' if myJson["id"] == 1 else "")
 
                 for base_id in myJson.get("baseIds", []):
                     if "config" in self.data and "cbfs" in self.data["config"] and "without-slack" in self.data["config"]["cbfs"] and "comm-fixed" in self.data["config"]["cbfs"]["without-slack"] and "bases" in self.data["config"]["cbfs"]["without-slack"]["comm-fixed"]:
@@ -112,7 +136,7 @@ class MapAnimationComponent(BaseComponent):
                         if base_id < len(bases):
                             base_pos = bases[base_id]
                             self.ax.plot([myPosition[0], base_pos[0]], [myPosition[1], base_pos[1]],
-                                       'r-', alpha=0.4, linewidth=1.5, label='Covariance Base' if myJson["id"] == 1 else "")
+                                       color=self.cov_base_color, linestyle='-', alpha=0.4, linewidth=1.5, label='Covariance Base' if myJson["id"] == 1 else "")
 
         for i, id in enumerate(self.id_list):
             if self.showYaw:

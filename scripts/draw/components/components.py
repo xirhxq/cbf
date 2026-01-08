@@ -20,7 +20,11 @@ REGISTRIED_COMPONENTS = {
     'map': {
         'class': 'MapAnimationComponent',
         'filename': 'map',
-        'figsize': (10, 10)
+        'figsize': (10, 10),
+        'params': {
+            '//colormap': ['coolwarm', 'christmas'],
+            'colormap': 'christmas'
+        }
     },
     'opt-ct': {
         'title': 'Opt Result',
