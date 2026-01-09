@@ -198,6 +198,8 @@ class MapAnimationComponent(BaseComponent):
                 self.ax.annotate(annoText, xy=(robotX[i], robotY[i]), fontsize=8)
 
             if self.data["config"]["cbfs"]["with-slack"]["cvt"]["on"] and self.showCVT:
+                if "cvt" not in dataNow["robots"][id]:
+                    continue
                 cvtPolygonX = [pos[0] for pos in dataNow["robots"][id]["cvt"]["pos"]]
                 cvtPolygonY = [pos[1] for pos in dataNow["robots"][id]["cvt"]["pos"]]
                 self.ax.plot(cvtPolygonX, cvtPolygonY, 'k')
