@@ -27,6 +27,8 @@
   },
   "num": 14,
   "dim": 4,
+  "//formation": ["chain", "scissor"],
+  "formation": "scissor",
   "initial": {
     "position": {
       "//method": ["specified", "random-in-polygon", "random-in-world"],
@@ -106,7 +108,7 @@
         "name": "cvtCBF",
         "on": true,
         "//exploration-mode": ["centroid", "intelligent", "nearest-unexplored"],
-        "exploration-mode": "intelligent",
+        "exploration-mode": "nearest-unexplored",
         "front-focus-distance": 400.0,
         "kp": 5.0,
         "alpha": {

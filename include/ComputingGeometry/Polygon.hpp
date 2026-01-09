@@ -353,6 +353,37 @@ public:
         return inside;
     }
 
+    Point clip(const Point& point) {
+        if (contains(point)) {
+            return point;
+        }
+
+        Point closest_point = p[1];
+        double min_dist = (point - p[1]).len();
+
+        for (int i = 1; i <= n; i++) {
+            Point p1 = p[i];
+            Point p2 = p[index_after(n, i, 1)];
+
+            Point edge = p2 - p1;
+            Point to_point = point - p1;
+            double edge_len_sq = edge.len() * edge.len();
+
+            double t = to_point * edge / edge_len_sq;
+            t = std::max(0.0, std::min(1.0, t));
+
+            Point projection = p1 + edge * t;
+            double dist = (point - projection).len();
+
+            if (dist < min_dist) {
+                min_dist = dist;
+                closest_point = projection;
+            }
+        }
+
+        return closest_point;
+    }
+
 
 };
 

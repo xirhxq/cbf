@@ -13,6 +13,7 @@ typedef std::pair<int, Point> intPoint;
 class Robot {
 public:
     int id = 0;
+    int n;
     MultiCBF cbfNoSlack;
     std::unordered_map<std::string, CBF> cbfSlack;
     std::unique_ptr<BaseModel> model;
@@ -36,12 +37,29 @@ public:
     double rangingSigma;
     double basePositionSigma;
     std::function<double(double)> rangingUncertaintyFunction;
+
+    std::string cvtExplorationMode;
+    double cvtFrontFocusDistance;
+
+    int numParts, numSquad;
+    std::function<int(int)> getPartId;
+    std::function<int(int)> getIdInPart;
+    std::function<bool(int)> isSamePartAsMe;
+
+    std::vector<int> idsInMyPart;
+    int idInMyPart;
+    int endInMyPart;
+    int partId;
+    std::vector<int> endIds;
+    std::map<int, int> endId2CvtId;
+    std::map<int, int> cvtId2EndId;
 public:
 
     Robot() = default;
 
     Robot(int id, json &settings)
             : id(id),
+              n(settings["num"]),
               world(settings["world"]),
               gridWorld(settings["world"]),
               settings(settings),
@@ -110,6 +128,63 @@ public:
                 rangingUncertaintyFunction = [this](double distance) { return rangingSigma; };
             }
         }
+
+        if (settings["cbfs"]["with-slack"]["cvt"]["on"]) {
+            auto config = settings["cbfs"]["with-slack"]["cvt"];
+            if (config.contains("exploration-mode")) {
+                cvtExplorationMode = config["exploration-mode"];
+            }
+            else {
+                throw std::invalid_argument("CVT: exploration-mode not specified");
+            }
+
+            if (config.contains("front-focus-distance")) {
+                cvtFrontFocusDistance = config["front-focus-distance"];
+            }
+            else {
+                throw std::invalid_argument("CVT: front-focus-distance not specified");
+            }
+        }
+
+        if (settings["formation"] == "chain") {
+            numParts = 1;
+        }
+        else if (settings["formation"] == "scissor") {
+            numParts = 2;
+        }
+        else if (settings["formation"] == "triplet") {
+            numParts = 3;
+        }
+        else {
+            throw std::invalid_argument("Invalid formation type");
+        }
+
+        numSquad = (n - 1) / numParts + 1;
+        getPartId = [this](int id) { return (id - 1) / numSquad + 1; };
+        getIdInPart = [this](int id) { return (id - 1) % numSquad + 1; };
+        partId = getPartId(id);
+        idInMyPart = getIdInPart(id);
+        isSamePartAsMe = [this](int id) { return getPartId(id) == partId; };
+
+        idsInMyPart.clear();
+        endId2CvtId.clear();
+        cvtId2EndId.clear();
+        endIds.clear();
+        for (int i = 1; i <= n; i++) {
+            if (isSamePartAsMe(i)) {
+                idsInMyPart.push_back(i);
+            }
+            if (i == n || getIdInPart(i) == numSquad) {
+                endIds.push_back(i);
+            }
+        }
+        for (int i = 0; i < endIds.size(); i++) {
+            int endId = endIds[i];
+            int cvtId = i + 1;
+            endId2CvtId[endId] = cvtId;
+            cvtId2EndId[cvtId] = endId;
+        }
+        endInMyPart = idsInMyPart.back();
 
         setup();
         cbfSlack.clear();
@@ -606,8 +681,55 @@ public:
         cbfNoSlack.cbfs[safetyCBF.name] = safetyCBF;
     }
 
+    Point getEndTargetPoint() {
+        cvt = CVT(2, world.boundary);
+        for (auto &[endId, cvtId]: endId2CvtId) {
+            cvt.pt[cvtId] = comm->_othersPos[endId];
+        }
+        cvt.cal_poly();
+        Point densityCentroid = gridWorld.getCentroidInPolygon(cvt.pl[partId]);
+
+        double heading = comm->_othersYawRad[endInMyPart];
+        Point focus = comm->_othersPos[endInMyPart] + cvtFrontFocusDistance * Point(std::cos(heading), std::sin(heading));
+
+        return getExplorationPoint(densityCentroid, focus, cvt.pl[partId]);
+    }
+
+    Point getExplorationPoint(const Point& densityCentroid, const Point& focus, const Polygon& poly) {
+        if (cvtExplorationMode == "centroid") {
+            return densityCentroid;
+        }
+        if (cvtExplorationMode == "intelligent") {
+            if (gridWorld.isExplored(densityCentroid)) {
+                return gridWorld.getNearestUnexploredPointInPolygon(
+                    poly, focus, densityCentroid
+                );
+            }
+            return densityCentroid;
+        }
+        if (cvtExplorationMode == "nearest-unexplored") {
+            return gridWorld.getNearestUnexploredPointInPolygon(
+                poly, focus, densityCentroid
+            );
+        }
+        throw std::invalid_argument("Invalid cvtExplorationMode");
+    }
+
+    Point getMyExplorationPoint(const Point& endExplorationPoint) {
+        int numTotalSection = (idsInMyPart.size() + 1) / 2;
+        Point origin = Point{0, 0};
+        Point sectionVector = (endExplorationPoint - origin) / numTotalSection;
+        int numSection = (idsInMyPart.size() - idInMyPart + 1) / 2;
+        Point explorationPoint = endExplorationPoint - sectionVector * numSection;
+        double rotateAngleRad = (pi / 3) * ((partId % 2 == 1)? -1: 1);
+        if ((idsInMyPart.size() - idInMyPart) % 2 == 1) {
+            explorationPoint = explorationPoint + sectionVector.rotate_around(origin, rotateAngleRad);
+        }
+        return explorationPoint;
+    }
+
     void setCVTCBF(const json& config) {
-        cvt = CVT(settings["num"], world.boundary);
+        cvt = CVT(n, world.boundary);
         for (auto &[id, pos2d]: comm->_othersPos) {
             if (id == this->id) continue;
             cvt.pt[id] = pos2d;
@@ -616,39 +738,12 @@ public:
         cvt.cal_poly();
         Point densityCentroid = gridWorld.getCentroidInPolygon(cvt.pl[this->id]);
 
-        std::string explorationMode = "intelligent";
-        if (config.contains("cvt") && config["cvt"].contains("exploration-mode")) {
-            explorationMode = config["cvt"]["exploration-mode"];
-        }
-
-        double frontFocusDistance;
-        if (config.contains("cvt") && config["cvt"].contains("front-focus-distance")) {
-            frontFocusDistance = config["cvt"]["front-focus-distance"];
-        }
-        else {
-            throw std::invalid_argument("CVT: front-focus-distance not specified");
-        }
-
         double heading = this->model->getStateVariable("yawRad");
-        Point focus = model->xy() + frontFocusDistance * Point(std::cos(heading), std::sin(heading));
+        Point focus = model->xy() + cvtFrontFocusDistance * Point(std::cos(heading), std::sin(heading));
 
-        if (explorationMode == "centroid") {
-            cvt.ct[this->id] = densityCentroid;
-        } else if (explorationMode == "intelligent") {
-            if (gridWorld.isExplored(densityCentroid)) {
-                cvt.ct[this->id] = gridWorld.getNearestUnexploredPointInPolygon(
-                    cvt.pl[this->id], focus, densityCentroid
-                );
-            } else {
-                cvt.ct[this->id] = densityCentroid;
-            }
-        } else if (explorationMode == "nearest-unexplored") {
-            cvt.ct[this->id] = gridWorld.getNearestUnexploredPointInPolygon(
-                cvt.pl[this->id], focus, densityCentroid
-            );
-        } else {
-            throw std::invalid_argument("Unknown exploration-mode: " + explorationMode);
-        }
+        cvt.ct[this->id] = getExplorationPoint(densityCentroid, focus, cvt.pl[this->id]);
+
+        cvt.ct[this->id] = world.boundary.clip(getMyExplorationPoint(getEndTargetPoint()));
 
         Point cvtCenter = cvt.ct[this->id];
 
