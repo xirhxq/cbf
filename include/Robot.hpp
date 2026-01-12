@@ -53,6 +53,11 @@ public:
     std::vector<int> endIds;
     std::map<int, int> endId2CvtId;
     std::map<int, int> cvtId2EndId;
+
+    std::vector<Point> bases;
+    std::vector<int> myBasesId;
+
+    std::set<int> myNeighboursId;
 public:
 
     Robot() = default;
@@ -146,19 +151,7 @@ public:
             }
         }
 
-        if (settings["formation"] == "chain") {
-            numParts = 1;
-        }
-        else if (settings["formation"] == "scissor") {
-            numParts = 2;
-        }
-        else if (settings["formation"] == "triplet") {
-            numParts = 3;
-        }
-        else {
-            throw std::invalid_argument("Invalid formation type");
-        }
-
+        numParts = settings["formation"]["parts"];
         numSquad = (n - 1) / numParts + 1;
         getPartId = [this](int id) { return (id - 1) / numSquad + 1; };
         getIdInPart = [this](int id) { return (id - 1) % numSquad + 1; };
@@ -177,6 +170,14 @@ public:
             if (i == n || getIdInPart(i) == numSquad) {
                 endIds.push_back(i);
             }
+            if (settings["cbfs"]["without-slack"]["comm-fixed"]["on"]) {
+                auto config = settings["cbfs"]["without-slack"]["comm-fixed"];
+                int minOffset = config["min-neighbour-id-offset"];
+                int maxOffset = config["max-neighbour-id-offset"];
+                if (i >= id + minOffset && i <= id + maxOffset && isSamePartAsMe(i) && i != id) {
+                    myNeighboursId.insert(i);
+                }
+            }
         }
         for (int i = 0; i < endIds.size(); i++) {
             int endId = endIds[i];
@@ -185,6 +186,11 @@ public:
             cvtId2EndId[cvtId] = endId;
         }
         endInMyPart = idsInMyPart.back();
+
+        bases = getPointsFromJson(settings["bases"]);
+        for (auto &id: settings["formation"]["bases-id"][partId - 1]) {
+            myBasesId.push_back(int(id));
+        }
 
         setup();
         cbfSlack.clear();
@@ -417,24 +423,90 @@ public:
         cbfNoSlack.cbfs[commCBF.name] = commCBF;
     }
 
-    void setFixedCommCBF(const json& config) {
-        int n = settings["num"];
-        double maxRange = config["max-range"];
-        std::string mode = config.value("mode", "scissor");
+    void getCovariance(json &config) {
+        if (!enablePositionCovariance) return;
 
-        auto getFormationInfo = [&](int robotId) -> std::pair<int, int> {
-            if (mode == "scissor") {
-                int idInPart = (robotId - 1) % (n / 2) + 1;
-                int partId = robotId > n / 2 ? 2 : 1;
-                return {partId, idInPart};
-            } else if (mode == "chain") {
-                return {1, robotId};
-            } else {
-                throw std::invalid_argument("Unknown formation mode: " + mode);
-            }
+        myCovarianceFormation = {
+            {"id", id},
+            {"anchorIds", json::array()},
+            {"baseIds", json::array()}
         };
 
-        auto [partId, idInPart] = getFormationInfo(id);
+        Point p = this->model->xy();
+        std::vector<Point> anchorPoints;
+        std::vector<Eigen::Matrix2d> anchorCovariances;
+
+        double maxRange = config["max-range"];
+
+        for (int i = 0; i < bases.size(); i++) {
+            Point& base = bases[i];
+            if (base.distance_to(p) > maxRange) continue;
+
+            anchorPoints.push_back(base);
+            anchorCovariances.push_back(Eigen::Matrix2d::Zero());
+            myCovarianceFormation["baseIds"].push_back(i);
+        }
+
+        for (auto &[otherId, otherPos] : comm->_othersPos) {
+            if (myNeighboursId.find(otherId) == myNeighboursId.end() && otherPos.distance_to(p) > maxRange) continue;
+            if (!isSamePartAsMe(otherId)) continue;
+            if (getIdInPart(otherId) >= getIdInPart(id)) continue;
+
+            anchorPoints.push_back(otherPos);
+            anchorCovariances.push_back(comm->_othersPositionCovariance[otherId]);
+            myCovarianceFormation["anchorIds"].push_back(otherId);
+        }
+
+        std::vector<double> angles;
+        std::vector<double> total_variances;
+
+        for (int i = 0; i < anchorPoints.size(); ++i) {
+            double angle = anchorPoints[i].angle_to(p);
+            double distance = p.distance_to(anchorPoints[i]);
+            double ranging_unc = rangingUncertaintyFunction(distance);
+
+            // ρ² = cos²θ·cov(0,0) + sin²θ·cov(1,1) + 2cosθ·sinθ·cov(0,1) + σ²_ranging
+            Eigen::Matrix2d anchor_cov = anchorCovariances[i];
+            double position_var = (std::cos(angle) * std::cos(angle) * anchor_cov(0, 0) +
+                                  std::sin(angle) * std::sin(angle) * anchor_cov(1, 1) +
+                                  2.0 * std::cos(angle) * std::sin(angle) * anchor_cov(0, 1));
+
+            double total_variance = position_var + ranging_unc * ranging_unc;
+
+            angles.push_back(angle);
+            total_variances.push_back(total_variance);
+        }
+
+        int n_anchors = angles.size();
+        if (n_anchors < 2) {
+            throw std::invalid_argument(
+                "#" + std::to_string(this->id) +
+                " has less than two anchor points for covariance calculation"
+            );
+        }
+
+        Eigen::MatrixXd J(n_anchors, 2);
+        Eigen::MatrixXd Sigma = Eigen::MatrixXd::Zero(n_anchors, n_anchors);
+
+        for (int i = 0; i < n_anchors; ++i) {
+            J(i, 0) = std::cos(angles[i]);
+            J(i, 1) = std::sin(angles[i]);
+            Sigma(i, i) = total_variances[i];
+        }
+
+        // Φ = J^T * Σ^(-1) * J (Fisher Information Matrix)
+        Eigen::Matrix2d Phi;
+        try {
+            Phi = J.transpose() * Sigma.inverse() * J;
+            positionCovariance = Phi.inverse();
+        } catch (...) {
+            throw std::invalid_argument("Covariance calculation failed");
+        }
+    }
+
+    void setFixedCommCBF(json& config) {
+        int n = settings["num"];
+        double maxRange = config["max-range"];
 
         myFormation = {
             {"id",           id},
@@ -447,148 +519,30 @@ public:
         std::vector<std::string> anchorCBFNames;
         std::vector<double> formationUncertainties;
 
-        double myUncertainty = getUncertaintyFromCovariance(positionCovariance);
-
-        std::vector<Point> anchorPoints;
-        std::vector<std::string> anchorCovNames;
-        std::vector<Eigen::Matrix2d> anchorCovariances;
-
         int minOffset = config["min-neighbour-id-offset"];
         int maxOffset = config["max-neighbour-id-offset"];
 
-        if (enablePositionCovariance) {
-            myCovarianceFormation = {
-                {"id", id},
-                {"anchorIds", json::array()},
-                {"baseIds", json::array()}
-            };
+        for (int i = 0; i < myBasesId.size(); i++) {
+            int baseId = myBasesId[i];
+            if (i > - idInMyPart - minOffset) continue;
+            auto base = bases[baseId];
+            myFormation["anchorPoints"].push_back({base.x, base.y});
+            formationPoints.push_back(base);
+            formationVels.emplace_back(0, 0);
+            anchorCBFNames.emplace_back("base-" + std::to_string(baseId));
+            formationUncertainties.push_back(0);
         }
 
-        if (config.contains("bases") && !config["bases"].empty()) {
-            std::vector<Point> bases = getPointsFromJson(config["bases"]);
-
-            if (mode == "chain") {
-                for (int baseIdx = 0; baseIdx < bases.size(); baseIdx++) {
-                    int virtualId = -baseIdx;
-
-                    if (virtualId >= this->id + minOffset && virtualId <= this->id + maxOffset) {
-                        myFormation["anchorPoints"].push_back({bases[baseIdx].x, bases[baseIdx].y});
-                        formationPoints.push_back(bases[baseIdx]);
-                        formationVels.emplace_back(0, 0);
-                        anchorCBFNames.emplace_back("base-" + std::to_string(virtualId));
-                        formationUncertainties.emplace_back(0);
-                    }
-                }
-            } else if (mode == "scissor") {
-                if (idInPart == 1 && partId <= 2 && minOffset <= -1) {
-                    myFormation["anchorPoints"].push_back({bases[partId].x, bases[partId].y});
-                    formationPoints.push_back(bases[partId]);
-                    formationVels.emplace_back(0, 0);
-                    anchorCBFNames.emplace_back("base-" + std::to_string(partId));
-                    formationUncertainties.emplace_back(0);
-                }
-
-                if (idInPart <= 2 && minOffset <= -2) {
-                    myFormation["anchorPoints"].push_back({bases[0].x, bases[0].y});
-                    formationPoints.push_back(bases[0]);
-                    formationVels.emplace_back(0, 0);
-                    anchorCBFNames.emplace_back("base-0");
-                    formationUncertainties.emplace_back(0);
-                }
-            }
-
-            for (int baseIdx = 0; baseIdx < bases.size(); baseIdx++) {
-                if (bases[baseIdx].distance_to(this->model->xy()) <= maxRange) {
-                    anchorPoints.push_back(bases[baseIdx]);
-                    anchorCovNames.push_back("base-" + std::to_string(baseIdx));
-                    anchorCovariances.push_back(Eigen::Matrix2d::Zero());
-
-                    if (enablePositionCovariance) {
-                        myCovarianceFormation["baseIds"].push_back(baseIdx);
-                    }
-                }
-            }
-        }
-
-        for (auto &[otherId, otherPos]: comm->_othersPos) {
-            if (otherId == this->id) continue;
-
-            if (otherId > this->id + maxOffset) continue;
-
-            auto [otherPartId, otherIdInPart] = getFormationInfo(otherId);
-
-            if (otherPartId != partId) continue;
-
-            if (otherPos.distance_to(this->model->xy()) <= maxRange || otherId >= this->id + minOffset) {
-                anchorPoints.push_back(otherPos);
-                anchorCovNames.push_back("#" + std::to_string(otherId));
-                anchorCovariances.push_back(comm->_othersPositionCovariance[otherId]);
-
-                if (enablePositionCovariance) {
-                    myCovarianceFormation["anchorIds"].push_back(otherId);
-                }
-            }
-
-            if (otherId < this->id + minOffset) continue;
-
+        for (auto &otherId: myNeighboursId) {
             myFormation["anchorIds"].push_back(otherId);
-            formationPoints.push_back(otherPos);
-            auto otherVel = comm->_othersVel[otherId];
-            formationVels.emplace_back(otherVel);
+            formationPoints.push_back(comm->_othersPos[otherId]);
+            formationVels.push_back(comm->_othersVel[otherId]);
             anchorCBFNames.push_back("#" + std::to_string(otherId));
             formationUncertainties.push_back(getUncertaintyFromCovariance(comm->_othersPositionCovariance[otherId]));
         }
 
-        if (enablePositionCovariance) {
-            Point p = this->model->xy();
-
-            std::vector<double> angles;
-            std::vector<double> total_variances;
-
-            for (int i = 0; i < anchorPoints.size(); ++i) {
-                double angle = anchorPoints[i].angle_to(p);
-                double distance = p.distance_to(anchorPoints[i]);
-
-                double ranging_unc = rangingUncertaintyFunction(distance);
-
-                // ρ² = cos²θ·cov(0,0) + sin²θ·cov(1,1) + 2cosθ·sinθ·cov(0,1) + σ²_ranging
-                Eigen::Matrix2d anchor_cov = anchorCovariances[i];
-                double position_var = (std::cos(angle) * std::cos(angle) * anchor_cov(0, 0) +
-                                      std::sin(angle) * std::sin(angle) * anchor_cov(1, 1) +
-                                      2.0 * std::cos(angle) * std::sin(angle) * anchor_cov(0, 1));
-
-                double total_variance = position_var + ranging_unc * ranging_unc;
-
-                angles.push_back(angle);
-                total_variances.push_back(total_variance);
-            }
-
-            int n_anchors = angles.size();
-            if (n_anchors < 2) {
-                throw std::invalid_argument(
-                    "#" + std::to_string(this->id) +
-                    " has less than two anchor points for covariance calculation"
-                );
-            } else {
-                Eigen::MatrixXd J(n_anchors, 2);
-                Eigen::MatrixXd Sigma = Eigen::MatrixXd::Zero(n_anchors, n_anchors);
-
-                for (int i = 0; i < n_anchors; ++i) {
-                    J(i, 0) = std::cos(angles[i]);
-                    J(i, 1) = std::sin(angles[i]);
-                    Sigma(i, i) = total_variances[i];
-                }
-
-                // Φ = J^T * Σ^(-1) * J (Fisher Information Matrix)
-                Eigen::Matrix2d Phi;
-                try {
-                    Phi = J.transpose() * Sigma.inverse() * J;
-                    positionCovariance = Phi.inverse();
-                } catch (...) {
-                    throw std::invalid_argument("Covariance calculation failed");
-                }
-            }
-        }
+        getCovariance(config);
+        double myUncertainty = getUncertaintyFromCovariance(positionCovariance);
 
         for (int i = 0; i < formationPoints.size(); i++) {
             auto otherPoint = formationPoints[i];

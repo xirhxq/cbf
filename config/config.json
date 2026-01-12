@@ -27,8 +27,18 @@
   },
   "num": 14,
   "dim": 4,
-  "//formation": ["chain", "scissor"],
-  "formation": "scissor",
+  "formation": {
+    "parts": 2,
+    "bases-id": [
+      [1, 0],
+      [2, 0]
+    ]
+  },
+  "bases": [
+    [0, 0],
+    [-300, 0],
+    [300, 0]
+  ],
   "initial": {
     "position": {
       "//method": ["specified", "random-in-polygon", "random-in-world"],
@@ -171,11 +181,6 @@
         "min-neighbour-id-offset": -2,
         "max-neighbour-id-offset": 0,
         "compensate-velocity": true,
-        "bases": [
-          [0, 0],
-          [-300, 0],
-          [300, 0]
-        ],
         "alpha": {
           "coe": 0.1,
           "pow": 3
@@ -197,7 +202,7 @@
   "execute": {
     "//execution-mode": ["distributed", "centralized"],
     "execution-mode": "distributed",
-    "time-total": 500,
+    "time-total": 350,
     "time-step": 0.5
   },
   "debug": {
