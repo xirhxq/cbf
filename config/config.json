@@ -30,8 +30,8 @@
   "formation": {
     "parts": 2,
     "bases-id": [
-      [1, 0],
-      [2, 0]
+      [0, 1],
+      [0, 2]
     ]
   },
   "bases": [
@@ -202,7 +202,7 @@
   "execute": {
     "//execution-mode": ["distributed", "centralized"],
     "execution-mode": "distributed",
-    "time-total": 350,
+    "time-total": 500,
     "time-step": 0.5
   },
   "debug": {

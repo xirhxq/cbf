@@ -636,7 +636,7 @@ public:
     }
 
     Point getEndTargetPoint() {
-        cvt = CVT(2, world.boundary);
+        cvt = CVT(endIds.size(), world.boundary);
         for (auto &[endId, cvtId]: endId2CvtId) {
             cvt.pt[cvtId] = comm->_othersPos[endId];
         }
@@ -671,7 +671,7 @@ public:
 
     Point getMyExplorationPoint(const Point& endExplorationPoint) {
         int numTotalSection = (idsInMyPart.size() + 1) / 2;
-        Point origin = Point{0, 0};
+        Point origin = bases[myBasesId[0]];
         Point sectionVector = (endExplorationPoint - origin) / numTotalSection;
         int numSection = (idsInMyPart.size() - idInMyPart + 1) / 2;
         Point explorationPoint = endExplorationPoint - sectionVector * numSection;
