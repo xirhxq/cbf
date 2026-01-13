@@ -2,6 +2,7 @@ from utils import *
 from .base import BaseComponent
 import matplotlib.colors as mcolors
 import matplotlib.cm as mcm
+from matplotlib.patches import Wedge, Circle, Ellipse
 
 
 class MapAnimationComponent(BaseComponent):
@@ -72,8 +73,6 @@ class MapAnimationComponent(BaseComponent):
             self.Z[*zip(*dataNow["update"])] = 1
 
     def update(self, num, dataNow=None):
-        from matplotlib.patches import Wedge, Circle
-
         if dataNow is None:
             dataNow = self.data["state"][num]
 
@@ -92,10 +91,9 @@ class MapAnimationComponent(BaseComponent):
 
         robotX = [dataNow["robots"][i]["state"]["x"] for i in self.id_list]
         robotY = [dataNow["robots"][i]["state"]["y"] for i in self.id_list]
-        robotBattery = [dataNow["robots"][i]["state"]["battery"] for i in self.id_list]
         robotYawDeg = [math.degrees(dataNow["robots"][i]["state"]["yawRad"]) for i in self.id_list]
 
-        self.ax.scatter(robotX, robotY, c=robotBattery, cmap='RdYlGn', s=100, alpha=0.5)
+        self.ax.scatter(robotX, robotY, c='r', s=100, alpha=0.5)
 
         if "formation" in dataNow and dataNow["formation"] != [None]:
             id2Position = {robot["id"]: (robot["state"]["x"], robot["state"]["y"]) for robot in dataNow["robots"]}
@@ -131,21 +129,72 @@ class MapAnimationComponent(BaseComponent):
                                    color=self.cov_robot_color, linestyle='-', alpha=0.4, linewidth=1.5, label='Covariance Robot' if myJson["id"] == 1 else "")
 
                 for base_id in myJson.get("baseIds", []):
-                    if "config" in self.data and "cbfs" in self.data["config"] and "without-slack" in self.data["config"]["cbfs"] and "comm-fixed" in self.data["config"]["cbfs"]["without-slack"] and "bases" in self.data["config"]["cbfs"]["without-slack"]["comm-fixed"]:
-                        bases = self.data["config"]["cbfs"]["without-slack"]["comm-fixed"]["bases"]
+                    if "config" in self.data and "bases" in self.data["config"]:
+                        bases = self.data["config"]["bases"]
                         if base_id < len(bases):
                             base_pos = bases[base_id]
                             self.ax.plot([myPosition[0], base_pos[0]], [myPosition[1], base_pos[1]],
                                        color=self.cov_base_color, linestyle='-', alpha=0.4, linewidth=1.5, label='Covariance Base' if myJson["id"] == 1 else "")
 
+        searching_method = self.data["config"]["searching"]["method"]
+        searching_params = self.data["config"]["searching"][searching_method]
+
         for i, id in enumerate(self.id_list):
             if self.showYaw:
-                self.ax.add_patch(Wedge(center=[robotX[i], robotY[i]], r=self.wedge_radius,
-                                        theta1=robotYawDeg[i] - 15, theta2=robotYawDeg[i] + 15, alpha=0.3))
+                if searching_method == "downward":
+                    radius = searching_params["radius"]
+                    self.ax.add_patch(Circle(xy=(robotX[i], robotY[i]), radius=radius, alpha=0.3))
+
+                elif searching_method == "front-sector":
+                    outer_radius = searching_params["outer-radius"]
+                    inner_radius = searching_params["inner-radius"]
+                    half_angle_deg = searching_params["half-angle-deg"]
+                    if inner_radius > 0:
+                        width = outer_radius - inner_radius
+                        self.ax.add_patch(Wedge(center=[robotX[i], robotY[i]], r=outer_radius,
+                                                theta1=robotYawDeg[i] - half_angle_deg, theta2=robotYawDeg[i] + half_angle_deg,
+                                                width=width, alpha=0.3))
+                    else:
+                        self.ax.add_patch(Wedge(center=[robotX[i], robotY[i]], r=outer_radius,
+                                                theta1=robotYawDeg[i] - half_angle_deg, theta2=robotYawDeg[i] + half_angle_deg, alpha=0.3))
+
+                elif searching_method == "front-cone":
+                    height = searching_params["height"]
+                    downward_radius = searching_params["downward-radius"]
+                    camera_pitch_deg = searching_params["camera-pitch-deg"]
+
+                    pitch_rad = math.radians(camera_pitch_deg)
+                    yaw_rad = math.radians(robotYawDeg[i])
+                    alpha = math.atan(downward_radius / height)
+
+                    d1 = height / math.tan(pitch_rad + alpha)
+                    d2 = height / math.tan(pitch_rad - alpha)
+                    semi_major = (d2 - d1) / 2
+                    distance_to_center = (d1 + d2) / 2
+                    semi_minor = height / math.sin(pitch_rad) * math.tan(alpha)
+
+                    if semi_minor > semi_major:
+                        semi_major, semi_minor = semi_minor, semi_major
+
+                    ellipse_cx = robotX[i] + distance_to_center * math.cos(yaw_rad)
+                    ellipse_cy = robotY[i] + distance_to_center * math.sin(yaw_rad)
+
+                    ellipse = Ellipse(
+                        xy=(ellipse_cx, ellipse_cy),
+                        width=semi_major * 2,
+                        height=semi_minor * 2,
+                        angle=robotYawDeg[i],
+                        alpha=0.3,
+                        facecolor='gray',
+                        edgecolor='none'
+                    )
+                    self.ax.add_patch(ellipse)
+
+                else:
+                    raise ValueError(f"Unknown searching method: {searching_method}")
 
             if (self.showPositionCovariance and
                 "position_covariance" in dataNow["robots"][id]):
-                from matplotlib.patches import Ellipse
                 import numpy as np
 
                 cov_data = dataNow["robots"][id]["position_covariance"]
