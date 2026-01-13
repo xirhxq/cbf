@@ -1,5 +1,6 @@
 from utils import *
 from .base import BaseComponent
+import numpy as np
 import matplotlib.colors as mcolors
 import matplotlib.cm as mcm
 from matplotlib.patches import Wedge, Circle, Ellipse
@@ -58,6 +59,12 @@ class MapAnimationComponent(BaseComponent):
         self.Z = np.zeros((self.gridWorldJson["xNum"], self.gridWorldJson["yNum"]))
         self.zExtent = self.gridWorldJson["xLim"] + self.gridWorldJson["yLim"]
 
+        if "valid" in self.gridWorldJson:
+            valid_2d = np.array(self.gridWorldJson["valid"])
+            self.valid_mask = valid_2d.T
+        else:
+            self.valid_mask = np.ones((self.gridWorldJson["xNum"], self.gridWorldJson["yNum"]), dtype=bool)
+
         self.zUpdatedIndex = 0
 
         world_x_size = self.data["para"]["world"]["lim"][0][1] - self.data["para"]["world"]["lim"][0][0]
@@ -82,7 +89,9 @@ class MapAnimationComponent(BaseComponent):
             self.updateZ(self.zUpdatedIndex)
             self.zUpdatedIndex += 1
 
-        self.ax.imshow(self.Z.T, alpha=0.3, extent=self.zExtent, origin='lower', cmap=self.search_cmap, vmin=0, vmax=1)
+        Z_masked = self.Z.copy()
+        Z_masked[~self.valid_mask] = np.nan
+        self.ax.imshow(Z_masked.T, alpha=0.3, extent=self.zExtent, origin='lower', cmap=self.search_cmap, vmin=0, vmax=1)
 
         robotNum = self.data["para"]["swarm"]["num"]
         pos_charge = self.data["para"]["world"]["charge"]["pos"]
@@ -195,8 +204,6 @@ class MapAnimationComponent(BaseComponent):
 
             if (self.showPositionCovariance and
                 "position_covariance" in dataNow["robots"][id]):
-                import numpy as np
-
                 cov_data = dataNow["robots"][id]["position_covariance"]
                 cov_xx = cov_data["cov_xx"]
                 cov_xy = cov_data["cov_xy"]

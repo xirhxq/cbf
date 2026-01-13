@@ -11,7 +11,18 @@ def search_percentage_interpreter(data):
     grid_world = data["para"]["gridWorld"]
     x_num = grid_world["xNum"]
     y_num = grid_world["yNum"]
-    total_cells = x_num * y_num
+
+    if "valid" in grid_world:
+        valid_2d = np.array(grid_world["valid"])
+        total_valid_cells = int(np.sum(valid_2d))
+        valid_cells = set()
+        for y in range(y_num):
+            for x in range(x_num):
+                if valid_2d[y][x]:
+                    valid_cells.add((x, y))
+    else:
+        total_valid_cells = x_num * y_num
+        valid_cells = None
 
     searched_cells = set()
     percentages = []
@@ -22,9 +33,10 @@ def search_percentage_interpreter(data):
         if "update" in frame and len(frame["update"]) > 0:
             for grid in frame["update"]:
                 cell_id = (grid[0], grid[1])
-                searched_cells.add(cell_id)
+                if valid_cells is None or cell_id in valid_cells:
+                    searched_cells.add(cell_id)
 
-        percentage = len(searched_cells) / total_cells
+        percentage = len(searched_cells) / total_valid_cells if total_valid_cells > 0 else 0.0
         percentages.append(percentage)
 
     processed_data['search_percentages'] = percentages

@@ -8,6 +8,8 @@ public:
     std::pair<double, double> xLim, yLim;
     int xNum{}, yNum{};
     std::vector<bool> vis;
+    std::vector<bool> valid;
+    int validCount = 0;
     double trueWeight = 0.0, falseWeight = 1.0;
 
 public:
@@ -15,6 +17,8 @@ public:
 
     GridWorld(pd xLim, int xNum, pd yLim, int yNum): xLim(xLim), yLim(yLim), xNum(xNum), yNum(yNum) {
         vis.resize(xNum * yNum);
+        valid.resize(xNum * yNum, true);
+        validCount = xNum * yNum;
         reset();
     }
 
@@ -24,7 +28,31 @@ public:
         xNum = (xLim.second - xLim.first) / double(worldSettings["spacing"]);
         yNum = (yLim.second - yLim.first) / double(worldSettings["spacing"]);
         vis.resize(xNum * yNum);
+        valid.resize(xNum * yNum, false);
+        validCount = 0;
+
+        initializeValidCells(tmpWorld.boundary);
+
         reset();
+    }
+
+    void initializeValidCells(Polygon boundary) {
+        pd xLimit = boundary.get_x_limit(1.0), yLimit;
+        pd xIndexes, yIndexes;
+        xIndexes.first = getNumInXLim(xLimit.first, "ceil");
+        xIndexes.second = getNumInXLim(xLimit.second, "floor");
+
+        for (int xIndex = xIndexes.first; xIndex <= xIndexes.second; xIndex++) {
+            double x = getXPositionInXLimit(xIndex);
+            yLimit = boundary.get_y_lim_at_certain_x(x);
+            yIndexes.first = getNumInYLim(yLimit.first, "ceil");
+            yIndexes.second = getNumInYLim(yLimit.second, "floor");
+
+            for (int yIndex = yIndexes.first; yIndex <= yIndexes.second; yIndex++) {
+                valid[getIndex(xIndex, yIndex)] = true;
+                validCount++;
+            }
+        }
     }
 
     void reset(bool value = false) {
@@ -50,12 +78,14 @@ public:
     }
 
     double getPercentage() {
-        // count the number of true values
         int num = 0;
-        for (auto a: vis) {
-            num += a;
+        for (size_t i = 0; i < vis.size(); i++) {
+            if (valid[i] && vis[i]) {
+                num++;
+            }
         }
-        return 1.0 * num / vis.size();
+        if (validCount == 0) return 0.0;
+        return 1.0 * num / validCount;
     }
 
     int getNumInLim(double coordinate, pd lim, int size, std::string mode = "round") {

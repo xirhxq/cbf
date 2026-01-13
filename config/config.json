@@ -1,10 +1,12 @@
 {
   "world": {
     "boundary": [
-      [-1500, 0],
-      [1500, 0],
-      [1500, 3000],
-      [-1500, 3000]
+      [-1500, 500],
+      [0, 0],
+      [1500, 500],
+      [1500, 2000],
+      [0, 3000],
+      [-1500, 2000]
     ],
     "charge":[
       {
@@ -202,7 +204,7 @@
   "execute": {
     "//execution-mode": ["distributed", "centralized"],
     "execution-mode": "distributed",
-    "time-total": 350,
+    "time-total": 250,
     "time-step": 0.5
   },
   "debug": {

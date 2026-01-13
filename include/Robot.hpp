@@ -966,6 +966,14 @@ public:
             gridWorldJson["yNum"] = gridWorld.yNum;
             gridWorldJson["xLim"] = {gridWorld.xLim.first, gridWorld.xLim.second};
             gridWorldJson["yLim"] = {gridWorld.yLim.first, gridWorld.yLim.second};
+            std::vector<std::vector<bool>> validArray(gridWorld.yNum, std::vector<bool>(gridWorld.xNum));
+            for (int y = 0; y < gridWorld.yNum; y++) {
+                for (int x = 0; x < gridWorld.xNum; x++) {
+                    int index = gridWorld.getIndex(x, y);
+                    validArray[y][x] = gridWorld.valid[index];
+                }
+            }
+            gridWorldJson["valid"] = validArray;
             paraJson["gridWorld"] = gridWorldJson;
         }
         return paraJson;
