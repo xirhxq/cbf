@@ -14,11 +14,9 @@ def commcbf_uncertainty_interpreter(data):
 
     # Extract anchor points from config
     anchor_points = {}
-    if 'config' in data and 'cbfs' in data['config']:
-        comm_fixed_config = data['config']['cbfs']['without-slack']['comm-fixed']
-        if comm_fixed_config.get('on', False) and 'bases' in comm_fixed_config:
-            for i, base in enumerate(comm_fixed_config['bases']):
-                anchor_points[f"anchor_{i}"] = base
+    if 'config' in data and 'bases' in data['config']:
+        for i, base in enumerate(data['config']['bases']):
+            anchor_points[f"anchor_{i}"] = base
 
     # Infer commCBF relationships from formation data (works for both centralized and distributed)
     commcbf_relationships = set()
@@ -47,8 +45,8 @@ def commcbf_uncertainty_interpreter(data):
                             commcbf_relationships.add(f"commCBF_{max(robot_id, anchor_id)}_{min(robot_id, anchor_id)}")
 
             # Infer robot-to-anchor relationships from anchorPoints and bases config
-            if 'bases' in comm_fixed_config:
-                bases = comm_fixed_config['bases']
+            if 'config' in data and 'bases' in data['config']:
+                bases = data['config']['bases']
                 for robot in formations:
                     if 'anchorPoints' in robot:
                         robot_id = robot['id']
@@ -160,7 +158,14 @@ class CommCBFUncertaintyComponent(BaseComponent):
         self.uncertainty_mode = params.get('uncertainty_mode', 'stacked')
 
         # Max range for uncertainty reference line (if uncertainty_mode is 'from_max_range')
-        self.max_range = params.get('max_range', 850)  # Default from comm-fixed config
+        if 'config' in data and 'cbfs' in data['config']:
+            comm_fixed_config = data['config']['cbfs'].get('without-slack', {}).get('comm-fixed', {})
+            if comm_fixed_config.get('on', False) and 'max-range' in comm_fixed_config:
+                self.max_range = comm_fixed_config['max-range']
+            else:
+                raise ValueError("max-range not found in config['cbfs']['without-slack']['comm-fixed']")
+        else:
+            raise ValueError("config not available or max-range not found")
 
         # Visual style
         self.distance_alpha = kwargs.get('distance_alpha', 0.7)

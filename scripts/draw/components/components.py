@@ -185,8 +185,7 @@ REGISTRIED_COMPONENTS = {
         'figsize': (12, 8),
         'params': {
             'cbf_filter': 'all',
-            'uncertainty_mode': 'stacked',
-            'max_range': 850
+            'uncertainty_mode': 'stacked'
         }
     },
     'comm-uncertainty-maxrange': {
@@ -196,8 +195,7 @@ REGISTRIED_COMPONENTS = {
         'figsize': (12, 8),
         'params': {
             'cbf_filter': 'all',
-            'uncertainty_mode': 'from_max_range',
-            'max_range': 850
+            'uncertainty_mode': 'from_max_range'
         }
     },
     'optimization-failure': {
