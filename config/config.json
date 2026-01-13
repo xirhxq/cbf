@@ -25,19 +25,21 @@
     ],
     "spacing": 10.0
   },
-  "num": 14,
+  "num": 21,
   "dim": 4,
   "formation": {
-    "parts": 2,
+    "parts": 3,
     "bases-id": [
-      [0, 1],
-      [0, 2]
+      [1, 0],
+      [1, 2],
+      [2, 3]
     ]
   },
   "bases": [
-    [0, 0],
-    [-300, 0],
-    [300, 0]
+    [-300, -50],
+    [-100, -50],
+    [100, -50],
+    [300, -50]
   ],
   "initial": {
     "position": {
@@ -57,6 +59,13 @@
         [-160, 90],
         [-170, 110],
         [-180, 130],
+        [0, 10],
+        [0, 30],
+        [0, 50],
+        [0, 70],
+        [0, 90],
+        [0, 110],
+        [0, 130],
         [120, 10],
         [130, 30],
         [140, 50],
@@ -89,7 +98,7 @@
   },
   "position_covariance": {
     "enable": true,
-    "ranging_sigma": 0.1
+    "ranging_sigma": 5
   },
   "searching": {
     "//method": ["downward", "front-sector", "front-cone"],
@@ -176,7 +185,7 @@
         "name": "commFixedCBF",
         "on": true,
         "mode": "scissor",
-        "max-range": 850.0,
+        "max-range": 1000.0,
         "k": 1.0,
         "min-neighbour-id-offset": -2,
         "max-neighbour-id-offset": 0,
@@ -202,7 +211,7 @@
   "execute": {
     "//execution-mode": ["distributed", "centralized"],
     "execution-mode": "distributed",
-    "time-total": 500,
+    "time-total": 350,
     "time-step": 0.5
   },
   "debug": {
