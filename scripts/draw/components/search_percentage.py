@@ -52,6 +52,7 @@ class SearchPercentageComponent(Lines):
         self.show_milestones = params.get('show_milestones', True)
         self.milestones = params.get('milestones', [0.25, 0.5, 0.75, 1.0])
         self.milestone_colors = params.get('milestone_colors', ['orange', 'red', 'purple', 'green'])
+        self.show_max_text = params.get('show_max_text', True)
 
         kwargs['data_interpreter'] = search_percentage_interpreter
 
@@ -75,11 +76,12 @@ class SearchPercentageComponent(Lines):
 
         self.ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{int(y*100)}%'))
 
-        max_pct = self.processed_data['search_percentages'][-1]
-        print(f"Search Percentage: Max {max_pct*100:.2f}%")
-        self.ax.text(0.02, 0.98, f'Max: {max_pct*100:.1f}%',
-                     transform=self.ax.transAxes, verticalalignment='top',
-                     bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        if self.show_max_text:
+            max_pct = self.processed_data['search_percentages'][-1]
+            print(f"Search Percentage: Max {max_pct*100:.2f}%")
+            self.ax.text(0.02, 0.98, f'Max: {max_pct*100:.1f}%',
+                         transform=self.ax.transAxes, verticalalignment='top',
+                         bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
 
         if self.show_milestones:
             self._add_milestones()

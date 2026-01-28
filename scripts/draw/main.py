@@ -281,12 +281,32 @@ if __name__ == '__main__':
             'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['cvt-center-density'])
         },
         {
-            'name': 'Position Covariance (Global) - Average Std Dev',
-            'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['position-uncertainty-std-avg'])
+            'name': 'Position Uncertainty Evolution (Global)',
+            'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['position-uncertainty'])
         },
         {
-            'name': 'Position Covariance (Per Robot) - Average Std Dev',
-            'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['position-uncertainty-std-avg'])
+            'name': 'Position Uncertainty Distribution (Global)',
+            'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['uncertainty-heatmap'])
+        },
+        {
+            'name': 'Localization Constraints h_loc (Global)',
+            'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['h_loc'])
+        },
+        {
+            'name': 'Safety Constraints h_safe (Global)',
+            'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['h_safe'])
+        },
+        {
+            'name': 'CBF Analysis - Constraint CBFs (Per Robot)',
+            'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['constraint_cbfs'])
+        },
+        {
+            'name': 'CBF Analysis - Task CBFs (Per Robot)',
+            'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['task_cbfs'])
+        },
+        {
+            'name': 'CBF Analysis - Slack Variables (Per Robot)',
+            'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['slack_vars'])
         }
     ]
 

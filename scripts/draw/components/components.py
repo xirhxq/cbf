@@ -15,6 +15,11 @@ from .commcbf_uncertainty import CommCBFUncertaintyComponent
 from .optimization_failure import OptimizationFailureComponent
 from .cvt_center_density import CVTCenterDensityComponent
 from .line_covariance_magnitude import LineCovarianceMagnitude
+from .cbf_analysis import ConstraintCBFsComponent, TaskCBFsComponent, SlackVarsComponent
+from .uncertainty_heatmap import UncertaintyHeatmapComponent
+from .formation_distance import FormationDistanceComponent
+from .h_loc_constraints import HLocComponent
+from .h_safe_constraints import HSafeComponent
 
 REGISTRIED_COMPONENTS = {
     'map': {
@@ -24,7 +29,11 @@ REGISTRIED_COMPONENTS = {
         'params': {
             '//colormap': ['coolwarm', 'christmas'],
             'colormap': 'coolwarm',
-            'shotList': [0, 50, 100, 200, 300, 310]
+            # 'show_time_title': False,
+            # 'show_cov_ellipse': False,
+            # 'show_cov_text': False,
+            # 'annotation_font_size': 12,
+            # 'shotList': [0, 50, 100, 200, 300, 322]
         }
     },
     'opt-ct': {
@@ -59,11 +68,12 @@ REGISTRIED_COMPONENTS = {
         'title': 'Search Percentage Over Time',
         'class': 'SearchPercentageComponent',
         'filename': 'search-percentage',
-        'figsize': (10, 6),
+        'figsize': (7, 4),
         'params': {
-            # 'show_milestones': False,
             'show_milestones': True,
-            'milestones': [0.25, 0.5, 0.75, 1.0]
+            'milestones': [0.25, 0.5, 0.75, 1.0],
+            '//show_max_text': [True, False],
+            'show_max_text': False,
         }
     },
     'heat': {
@@ -211,14 +221,54 @@ REGISTRIED_COMPONENTS = {
         'filename': 'cvt-center-density',
         'figsize': (12, 8)
     },
-    'position-uncertainty-std-avg': {
-        'title': 'Position Covariance (Average Std Dev)',
+    'position-uncertainty': {
+        'title': 'Position Uncertainty Evolution',
         'class': 'LineCovarianceMagnitude',
-        'filename': 'position-uncertainty-std-avg',
-        'figsize': (12, 8),
+        'filename': 'position-uncertainty',
+        'figsize': (7, 4),
         'params': {
-            'uncertainty_type': 'std_avg',
-            'yscale': 'log',
+            'yscale': 'linear',
         }
+    },
+    'uncertainty-heatmap': {
+        'title': 'Position Uncertainty Distribution',
+        'class': 'UncertaintyHeatmapComponent',
+        'filename': 'uncertainty-heatmap',
+        'figsize': (8, 8),
+        'params': {
+            'time_frame': 'final',
+            'show_trajectories': True,
+            'cmap': 'Greys',
+        }
+    },
+    'h_loc': {
+        'title': 'Localization Constraints (h_loc)',
+        'class': 'HLocComponent',
+        'filename': 'h_loc',
+        'figsize': (7, 4),
+    },
+    'h_safe': {
+        'title': 'Safety Constraints (h_safe)',
+        'class': 'HSafeComponent',
+        'filename': 'h_safe',
+        'figsize': (7, 4),
+    },
+    'constraint_cbfs': {
+        'title': 'Constraint CBFs',
+        'class': 'ConstraintCBFsComponent',
+        'filename': 'constraint_cbfs',
+        'figsize': (7, 3.5),
+    },
+    'task_cbfs': {
+        'title': 'Task CBFs',
+        'class': 'TaskCBFsComponent',
+        'filename': 'task_cbfs',
+        'figsize': (7, 3.5),
+    },
+    'slack_vars': {
+        'title': 'Slack Variables',
+        'class': 'SlackVarsComponent',
+        'filename': 'slack_vars',
+        'figsize': (7, 3.5),
     }
 }

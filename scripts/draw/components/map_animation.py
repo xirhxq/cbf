@@ -20,12 +20,16 @@ class MapAnimationComponent(BaseComponent):
         self.showYaw = True
         self.showCVT = True
         self.showAxis = False
-        self.bigTimeText = True
+        self.bigTimeText = kwargs.get('big_time_text', True)
         self.showCovarianceFormation = kwargs.get('show_covariance_formation', True)
 
         params = kwargs.get('params', {})
         self.colormap = params.get('colormap', 'coolwarm')
         self.shotList = params.get('shotList', [])
+        self.showTimeTitle = params.get('show_time_title', True)
+        self.showCovEllipse = params.get('show_cov_ellipse', True)
+        self.showCovText = params.get('show_cov_text', True)
+        self.annotationFontSize = params.get('annotation_font_size', 8)
 
         self.christmas_cmap = mcolors.LinearSegmentedColormap.from_list(
             'christmas',
@@ -202,7 +206,7 @@ class MapAnimationComponent(BaseComponent):
                 else:
                     raise ValueError(f"Unknown searching method: {searching_method}")
 
-            if (self.showPositionCovariance and
+            if self.showCovEllipse and (self.showPositionCovariance and
                 "position_covariance" in dataNow["robots"][id]):
                 cov_data = dataNow["robots"][id]["position_covariance"]
                 cov_xx = cov_data["cov_xx"]
@@ -235,7 +239,7 @@ class MapAnimationComponent(BaseComponent):
             if self.robotAnnotation:
                 annoText = f'#{id + 1}'
 
-                if (self.showPositionCovariance and
+                if self.showCovText and (self.showPositionCovariance and
                     "position_covariance" in dataNow["robots"][id]):
                     cov_data = dataNow["robots"][id]["position_covariance"]
                     cov_xx = cov_data["cov_xx"]
@@ -251,7 +255,7 @@ class MapAnimationComponent(BaseComponent):
                             if comm["id"] == id + 1:
                                 annoText += '->' + ', '.join([f'{id}' for id in comm["anchorIds"]])
                                 annoText += '-->' + ', '.join([f'o' for p in comm["anchorPoints"]])
-                self.ax.annotate(annoText, xy=(robotX[i], robotY[i]), fontsize=8)
+                self.ax.annotate(annoText, xy=(robotX[i], robotY[i]), fontsize=self.annotationFontSize)
 
             if self.data["config"]["cbfs"]["with-slack"]["cvt"]["on"] and self.showCVT:
                 if "cvt" not in dataNow["robots"][id]:
@@ -263,14 +267,15 @@ class MapAnimationComponent(BaseComponent):
                 cvtCenterY = [dataNow["robots"][id]["cvt"]["center"][1]]
                 self.ax.plot(cvtCenterX, cvtCenterY, '*', color='lime')
 
-            if self.bigTimeText:
-                self.ax.set_title(
-                    r'$\mathrm{Time}$' + f' $=$ ${dataNow["runtime"]:.2f}$' + r'$\mathrm{s}$',
-                    fontsize=25,
-                    y=0.95
-                )
-            else:
-                self.ax.text(0.05, 0.95, 'Time = {:.2f}s'.format(dataNow["runtime"]), transform=self.ax.transAxes)
+            if self.showTimeTitle:
+                if self.bigTimeText:
+                    self.ax.set_title(
+                        r'$\mathrm{Time}$' + f' $=$ ${dataNow["runtime"]:.2f}$' + r'$\mathrm{s}$',
+                        fontsize=25,
+                        y=0.95
+                    )
+                else:
+                    self.ax.text(0.05, 0.95, 'Time = {:.2f}s'.format(dataNow["runtime"]), transform=self.ax.transAxes)
         self.ax.set_xlim(self.data["para"]["world"]["lim"][0])
         self.ax.set_ylim(self.data["para"]["world"]["lim"][1])
         self.ax.plot(self.worldX, self.worldY, 'k')

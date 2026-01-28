@@ -6,7 +6,7 @@ class LineCovarianceMagnitude(Lines):
     def __init__(self, ax, data, **kwargs):
         # Parameters are nested under 'params' key in the component system
         params = kwargs.get('params', {})
-        self.uncertainty_type = params.get('uncertainty_type', 'std_avg')  # 'std_avg' - average standard deviation
+        self.uncertainty_type = params.get('uncertainty_type', 'max_eigenvalue')  # 'std_avg' or 'max_eigenvalue'
         self.yscale = params.get('yscale', 'linear')  # 'linear' or 'log'
         self.static_comparison = params.get('static_comparison', True)  # If True, show single frame comparison instead of time series
         self.show_value_text = params.get('show_value_text', True)
@@ -26,7 +26,7 @@ class LineCovarianceMagnitude(Lines):
         super().__init__(ax, data, **kwargs)
 
     def _default_data_processor(self):
-        """Process data to extract covariance uncertainty over time"""
+        """Process data to extract uncertainty directly from data field"""
         uncertainty_data = {}
 
         for robot_id in self.robot_ids:
@@ -34,21 +34,9 @@ class LineCovarianceMagnitude(Lines):
             timestamps = []
 
             for frame in self.data["state"]:
-                if robot_id < len(frame["robots"]) and "position_covariance" in frame["robots"][robot_id]:
-                    cov_data = frame["robots"][robot_id]["position_covariance"]
-                    cov_xx = cov_data["cov_xx"]
-                    cov_xy = cov_data["cov_xy"]
-                    cov_yy = cov_data["cov_yy"]
-
-                    # Create covariance matrix
-                    cov_matrix = np.array([[cov_xx, cov_xy], [cov_xy, cov_yy]])
-
-                    # Calculate average standard deviation: (σ_x + σ_y) / 2
-                    # where σ_x = sqrt(cov_xx) and σ_y = sqrt(cov_yy)
-                    std_x = np.sqrt(cov_xx)
-                    std_y = np.sqrt(cov_yy)
-                    uncertainty = (std_x + std_y) / 2.0
-
+                if robot_id < len(frame["robots"]) and "uncertainty" in frame["robots"][robot_id]:
+                    # Read uncertainty directly from data (already 3σ semi-major axis)
+                    uncertainty = frame["robots"][robot_id]["uncertainty"]
                     uncertainty_values.append(uncertainty)
                     timestamps.append(frame["runtime"])
 
@@ -85,11 +73,9 @@ class LineCovarianceMagnitude(Lines):
 
         # Set labels for time series plot
         self.ax.set_xlabel('Time (s)')
-
-        ylabel_text = 'Average Standard Deviation\n((σ_x + σ_y) / 2)'
-        self.ax.set_title('Position Covariance Evolution (Average Std Dev)')
-
-        self.ax.set_ylabel(ylabel_text)
+        # Position uncertainty: 3σ semi-major axis (ε_i = 3√(λ_max(Σ)))
+        self.ax.set_ylabel('Position Uncertainty\n$\\epsilon_i = 3\\sqrt{\\lambda_{\\max}(\\mathbf{\\Sigma}_i)}$ (m)')
+        self.ax.set_title('Position Uncertainty Evolution')
 
         # Set appropriate scale
         if self.yscale == 'log':
