@@ -1,12 +1,10 @@
 {
   "world": {
     "boundary": [
-      [-1500, 500],
-      [0, 0],
-      [1500, 500],
-      [1500, 2000],
-      [0, 3000],
-      [-1500, 2000]
+      [-1500, 0],
+      [1500, 0],
+      [1500, 3000],
+      [-1500, 3000]
     ],
     "charge":[
       {
@@ -37,9 +35,9 @@
     ]
   },
   "bases": [
-    [-300, -50],
-    [0, -50],
-    [300, -50]
+    [-300, 0],
+    [0, 0],
+    [300, 0]
   ],
   "initial": {
     "position": {
@@ -91,7 +89,9 @@
   },
   "position_covariance": {
     "enable": true,
-    "ranging_sigma": 5
+    "ranging_sigma": 0.5,
+    "//uncertainty-type": ["std_avg", "max_eigenvalue"],
+    "uncertainty-type": "max_eigenvalue"
   },
   "searching": {
     "//method": ["downward", "front-sector", "front-cone"],
@@ -167,8 +167,9 @@
       },
       "safety": {
         "name": "safetyCBF",
-        "on": false,
-        "safe-distance": 300.0,
+        "on": true,
+        "safe-distance": 10.0,
+        "k": 1.0,
         "alpha": {
           "coe": 0.1,
           "pow": 3
@@ -204,7 +205,7 @@
   "execute": {
     "//execution-mode": ["distributed", "centralized"],
     "execution-mode": "distributed",
-    "time-total": 250,
+    "time-total": 350,
     "time-step": 0.5
   },
   "debug": {

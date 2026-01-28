@@ -37,6 +37,7 @@ public:
     double rangingSigma;
     double basePositionSigma;
     std::function<double(double)> rangingUncertaintyFunction;
+    std::function<double(Eigen::Matrix2d)> uncertaintyFromCovarianceFunction;
 
     std::string cvtExplorationMode;
     double cvtFrontFocusDistance;
@@ -132,6 +133,27 @@ public:
                 rangingSigma = config["ranging_sigma"];
                 rangingUncertaintyFunction = [this](double distance) { return rangingSigma; };
             }
+
+            // Initialize uncertainty from covariance function
+            std::string uncertainty_type = config.value("uncertainty-type", "std_avg");
+            if (uncertainty_type == "max_eigenvalue") {
+                // Use 3-sigma ellipse semi-major axis: 3 * sqrt(lambda_max)
+                uncertaintyFromCovarianceFunction = [](Eigen::Matrix2d cov) {
+                    Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> solver(cov);
+                    double lambda_max = solver.eigenvalues().maxCoeff();
+                    return 3.0 * std::sqrt(lambda_max);
+                };
+            } else {
+                // Default method: average of standard deviations (std_avg)
+                uncertaintyFromCovarianceFunction = [](Eigen::Matrix2d cov) {
+                    return (std::sqrt(cov(0, 0)) + std::sqrt(cov(1, 1))) / 2;
+                };
+            }
+        } else {
+            // Default to std_avg if config not found
+            uncertaintyFromCovarianceFunction = [](Eigen::Matrix2d cov) {
+                return (std::sqrt(cov(0, 0)) + std::sqrt(cov(1, 1))) / 2;
+            };
         }
 
         if (settings["cbfs"]["with-slack"]["cvt"]["on"]) {
@@ -218,7 +240,7 @@ public:
     }
 
     void checkRobotsInsideWorld() {
-        auto xLim = world.boundary.get_x_limit(1.1), yLim = world.boundary.get_y_limit(1.1);
+        auto xLim = world.boundary.get_x_limit(1.5), yLim = world.boundary.get_y_limit(1.5);
         auto robotPosition = model->xy();
         if (robotPosition.x < xLim.first || robotPosition.x > xLim.second ||
             robotPosition.y < yLim.first || robotPosition.y > yLim.second) {
@@ -538,11 +560,11 @@ public:
             formationPoints.push_back(comm->_othersPos[otherId]);
             formationVels.push_back(comm->_othersVel[otherId]);
             anchorCBFNames.push_back("#" + std::to_string(otherId));
-            formationUncertainties.push_back(getUncertaintyFromCovariance(comm->_othersPositionCovariance[otherId]));
+            formationUncertainties.push_back(uncertaintyFromCovarianceFunction(comm->_othersPositionCovariance[otherId]));
         }
 
         getCovariance(config);
-        double myUncertainty = getUncertaintyFromCovariance(positionCovariance);
+        double myUncertainty = uncertaintyFromCovarianceFunction(positionCovariance);
 
         for (int i = 0; i < formationPoints.size(); i++) {
             auto otherPoint = formationPoints[i];
@@ -612,7 +634,10 @@ public:
 
     void setSafetyCBF(const json& config) {
         if (settings["num"] == 1) return;
-        auto safetyH = [&, config](VectorXd x, double t) {
+
+        double myUncertainty = uncertaintyFromCovarianceFunction(positionCovariance);
+
+        auto safetyH = [&, config, myUncertainty](VectorXd x, double t) {
             Point myPosition = model->extractXYFromVector(x);
 
             double safeDistance = config["safe-distance"];
@@ -621,10 +646,17 @@ public:
             double h = inf;
             for (auto &[id, pos2d]: comm->_othersPos) {
                 if (this->id == id) continue;
-                h = std::min(
-                        h,
-                        k * (myPosition.distance_to(pos2d) - safeDistance)
-                );
+
+                double otherUncertainty = 0.0;
+                if (enablePositionCovariance && comm->_othersPositionCovariance.find(id) != comm->_othersPositionCovariance.end()) {
+                    const Eigen::Matrix2d& otherCov = comm->_othersPositionCovariance[id];
+                    otherUncertainty = uncertaintyFromCovarianceFunction(otherCov);
+                }
+
+                double distance = myPosition.distance_to(pos2d);
+                double robust_h = k * (distance - safeDistance - myUncertainty - otherUncertainty);
+
+                h = std::min(h, robust_h);
             }
             return h;
         };
@@ -1011,8 +1043,7 @@ public:
         // Calculate current distance from origin and compute uncertainty
         Point currentPos = model->xy();
         double currentDistFromOrigin = currentPos.distance_to(Point(0, 0));
-        robotJson["uncertainty"] = getUncertaintyFromCovariance(positionCovariance);
-
+        robotJson["uncertainty"] = uncertaintyFromCovarianceFunction(positionCovariance);
         if (enablePositionCovariance) {
             Eigen::Matrix2d cov = positionCovariance;
             json covarianceJson = {
@@ -1032,10 +1063,6 @@ public:
 
     double getUncertaintyAtDistance(double distance) {
         return uncertaintyFunction(distance);
-    }
-
-    double getUncertaintyFromCovariance(Eigen::Matrix2d cov) {
-        return (std::sqrt(cov(0, 0)) + std::sqrt(cov(1, 1))) / 2;
     }
 
     };
