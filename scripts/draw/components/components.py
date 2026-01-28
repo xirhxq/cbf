@@ -23,7 +23,8 @@ REGISTRIED_COMPONENTS = {
         'figsize': (10, 10),
         'params': {
             '//colormap': ['coolwarm', 'christmas'],
-            'colormap': 'christmas'
+            'colormap': 'coolwarm',
+            'shotList': [0, 50, 100, 200, 300, 310]
         }
     },
     'opt-ct': {

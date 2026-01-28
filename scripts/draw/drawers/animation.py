@@ -1,4 +1,5 @@
 from .base import *
+import os
 
 
 class AnimationDrawer(BaseDrawer):
@@ -47,10 +48,29 @@ class AnimationDrawer(BaseDrawer):
 
         pbar = tqdm.tqdm(total=totalLength, bar_format=self.BAR_FORMAT)
 
+        shot_times = set()
+        for comp in components:
+            if hasattr(comp, 'shotList') and comp.shotList:
+                shot_times.update(comp.shotList)
+        shot_times = sorted(list(shot_times))
+
+        saved_shots = set()
+
         def update(num):
             pbar.update(1)
             for comp in components:
                 comp.update(num)
+
+            current_time = self.data["state"][num]["runtime"]
+            for shot_time in shot_times:
+                if abs(current_time - shot_time) < interval / 2 and shot_time not in saved_shots:
+                    saved_shots.add(shot_time)
+                    shot_filename = os.path.join(
+                        self.folder,
+                        f'shot_{suffix}_t{shot_time:.2f}s.png'
+                    )
+                    fig.savefig(shot_filename, dpi=150, bbox_inches='tight')
+                    print(f"\nSnapshot saved at t={shot_time:.2f}s: {shot_filename}")
 
         ani = animation.FuncAnimation(
             fig, update,

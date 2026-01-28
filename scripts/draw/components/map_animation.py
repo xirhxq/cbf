@@ -21,11 +21,11 @@ class MapAnimationComponent(BaseComponent):
         self.showCVT = True
         self.showAxis = False
         self.bigTimeText = True
-        self.shotList = []
         self.showCovarianceFormation = kwargs.get('show_covariance_formation', True)
 
         params = kwargs.get('params', {})
         self.colormap = params.get('colormap', 'coolwarm')
+        self.shotList = params.get('shotList', [])
 
         self.christmas_cmap = mcolors.LinearSegmentedColormap.from_list(
             'christmas',
