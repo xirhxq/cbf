@@ -185,6 +185,13 @@ public:
         endId2CvtId.clear();
         cvtId2EndId.clear();
         endIds.clear();
+
+        // Always set myNeighboursId for constraint violation detection
+        // regardless of whether comm-fixed CBF is enabled
+        auto commConfig = settings["cbfs"]["without-slack"]["comm-fixed"];
+        int minOffset = commConfig.value("min-neighbour-id-offset", -2);
+        int maxOffset = commConfig.value("max-neighbour-id-offset", 0);
+
         for (int i = 1; i <= n; i++) {
             if (isSamePartAsMe(i)) {
                 idsInMyPart.push_back(i);
@@ -192,13 +199,9 @@ public:
             if (i == n || getIdInPart(i) == numSquad) {
                 endIds.push_back(i);
             }
-            if (settings["cbfs"]["without-slack"]["comm-fixed"]["on"]) {
-                auto config = settings["cbfs"]["without-slack"]["comm-fixed"];
-                int minOffset = config["min-neighbour-id-offset"];
-                int maxOffset = config["max-neighbour-id-offset"];
-                if (i >= id + minOffset && i <= id + maxOffset && isSamePartAsMe(i) && i != id) {
-                    myNeighboursId.insert(i);
-                }
+            // Always calculate neighbours for constraint violation detection
+            if (i >= id + minOffset && i <= id + maxOffset && isSamePartAsMe(i) && i != id) {
+                myNeighboursId.insert(i);
             }
         }
         for (int i = 0; i < endIds.size(); i++) {
@@ -526,37 +529,57 @@ public:
         }
     }
 
-    void setFixedCommCBF(json& config) {
-        int n = settings["num"];
-        double maxRange = config["max-range"];
+    void setupFormation() {
+        // Setup formation information for constraint violation detection
+        // This should always be called, regardless of whether comm-fixed CBF is enabled
+        // Uses the already-initialized myNeighboursId and myBasesId
+
+        auto commConfig = settings["cbfs"]["without-slack"]["comm-fixed"];
+        int minOffset = commConfig.value("min-neighbour-id-offset", -2);
 
         myFormation = {
-            {"id",           id},
+            {"id", id},
             {"anchorPoints", json::array()},
-            {"anchorIds",    json::array()}
+            {"anchorIds", json::array()},
+            {"baseIds", json::array()}
         };
+
+        // Add base stations (from already-initialized myBasesId)
+        for (int i = 0; i < myBasesId.size(); i++) {
+            int baseId = myBasesId[i];
+            if (i > -idInMyPart - minOffset) continue;
+            auto base = bases[baseId];
+            myFormation["anchorPoints"].push_back({base.x, base.y});
+            myFormation["baseIds"].push_back(baseId);
+        }
+
+        // Add robot neighbours (from already-initialized myNeighboursId)
+        for (auto &otherId: myNeighboursId) {
+            myFormation["anchorIds"].push_back(otherId);
+        }
+    }
+
+    void setFixedCommCBF(json& config) {
+        // This function only creates the CBF constraints
+        // Formation information is already set by setupFormation()
+        double maxRange = config["max-range"];
 
         std::vector<Point> formationPoints;
         std::vector<Point> formationVels;
         std::vector<std::string> anchorCBFNames;
         std::vector<double> formationUncertainties;
 
-        int minOffset = config["min-neighbour-id-offset"];
-        int maxOffset = config["max-neighbour-id-offset"];
-
-        for (int i = 0; i < myBasesId.size(); i++) {
-            int baseId = myBasesId[i];
-            if (i > - idInMyPart - minOffset) continue;
-            auto base = bases[baseId];
-            myFormation["anchorPoints"].push_back({base.x, base.y});
+        for (auto &baseId : myFormation["baseIds"]) {
+            int id = baseId.get<int>();
+            auto base = bases[id];
             formationPoints.push_back(base);
             formationVels.emplace_back(0, 0);
-            anchorCBFNames.emplace_back("base-" + std::to_string(baseId));
+            anchorCBFNames.emplace_back("base-" + std::to_string(id));
             formationUncertainties.push_back(0);
         }
 
-        for (auto &otherId: myNeighboursId) {
-            myFormation["anchorIds"].push_back(otherId);
+        for (auto &anchorId : myFormation["anchorIds"]) {
+            int otherId = anchorId.get<int>();
             formationPoints.push_back(comm->_othersPos[otherId]);
             formationVels.push_back(comm->_othersVel[otherId]);
             anchorCBFNames.push_back("#" + std::to_string(otherId));
@@ -570,25 +593,20 @@ public:
             auto otherPoint = formationPoints[i];
             auto otherVel = config["compensate-velocity"] ? formationVels[i] : Point(0, 0);
             double k = config["k"];
-            bool isAnchor = anchorCBFNames[i].find("base-") != std::string::npos;  // Check if this is an anchor point
+            bool isAnchor = anchorCBFNames[i].find("base-") != std::string::npos;
             auto otherUncertainty = formationUncertainties[i];
+            bool considerUncertainty = config.value("consider-uncertainty", true);
 
-            auto fixedFormationCommH = [this, otherPoint, otherVel, maxRange, k, isAnchor, myUncertainty, otherUncertainty](VectorXd x, double t) {
+            auto fixedFormationCommH = [this, otherPoint, otherVel, maxRange, k, isAnchor, myUncertainty, otherUncertainty, considerUncertainty](VectorXd x, double t) {
                 Point myPosition = model->extractXYFromVector(x);
-
-                // Calculate distance between robots/anchor
                 double distance = myPosition.distance_to(otherPoint);
                 double h = k * (maxRange - distance);
 
-                // Robust CBF: ĥ = h - lε, where l = k for comm CBF
-
                 double robust_h;
                 if (isAnchor) {
-                    // Robot-to-anchor communication: only robot uncertainty
-                    robust_h = h - k * myUncertainty;
+                    robust_h = h - (considerUncertainty ? k * myUncertainty : 0);
                 } else {
-                    // Robot-to-robot communication: sum of both uncertainties
-                    robust_h = h - k * (myUncertainty + otherUncertainty);
+                    robust_h = h - (considerUncertainty ? k * (myUncertainty + otherUncertainty) : 0);
                 }
 
                 return robust_h;
@@ -636,8 +654,9 @@ public:
         if (settings["num"] == 1) return;
 
         double myUncertainty = uncertaintyFromCovarianceFunction(positionCovariance);
+        bool considerUncertainty = config.value("consider-uncertainty", true);
 
-        auto safetyH = [&, config, myUncertainty](VectorXd x, double t) {
+        auto safetyH = [&, config, myUncertainty, considerUncertainty](VectorXd x, double t) {
             Point myPosition = model->extractXYFromVector(x);
 
             double safeDistance = config["safe-distance"];
@@ -654,7 +673,7 @@ public:
                 }
 
                 double distance = myPosition.distance_to(pos2d);
-                double robust_h = k * (distance - safeDistance - myUncertainty - otherUncertainty);
+                double robust_h = k * (distance - safeDistance - (considerUncertainty ? myUncertainty + otherUncertainty : 0));
 
                 h = std::min(h, robust_h);
             }
@@ -698,6 +717,11 @@ public:
                 poly, focus, densityCentroid
             );
         }
+        if (cvtExplorationMode == "cvt") {
+            return gridWorld.getNearestUnexploredPointInPolygon(
+                poly, focus, densityCentroid
+            );
+        }
         throw std::invalid_argument("Invalid cvtExplorationMode");
     }
 
@@ -729,7 +753,11 @@ public:
 
         cvt.ct[this->id] = getExplorationPoint(densityCentroid, focus, cvt.pl[this->id]);
 
-        cvt.ct[this->id] = world.boundary.clip(getMyExplorationPoint(getEndTargetPoint()));
+        if (cvtExplorationMode == "cvt") {
+            cvt.ct[this->id] = world.boundary.clip(cvt.ct[this->id]);
+        } else {
+            cvt.ct[this->id] = world.boundary.clip(getMyExplorationPoint(getEndTargetPoint()));
+        }
 
         Point cvtCenter = cvt.ct[this->id];
 
@@ -769,6 +797,8 @@ public:
 
     void postsetCBF() {
         auto cbfConfig = settings["cbfs"];
+
+        setupFormation();
 
         if (cbfConfig["without-slack"]["comm-fixed"]["on"]) setFixedCommCBF(cbfConfig["without-slack"]["comm-fixed"]);
         if (cbfConfig["without-slack"]["comm-auto"]["on"]) setCommunicationAutoCBF(cbfConfig["without-slack"]["comm-auto"]);

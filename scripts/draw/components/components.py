@@ -20,6 +20,7 @@ from .uncertainty_heatmap import UncertaintyHeatmapComponent
 from .formation_distance import FormationDistanceComponent
 from .h_loc_constraints import HLocComponent
 from .h_safe_constraints import HSafeComponent
+from .comparison_search_percentage import ComparisonSearchPercentageComponent
 
 REGISTRIED_COMPONENTS = {
     'map': {
@@ -270,5 +271,21 @@ REGISTRIED_COMPONENTS = {
         'class': 'SlackVarsComponent',
         'filename': 'slack_vars',
         'figsize': (7, 3.5),
+    },
+    'comparison-sp': {
+        'title': 'Search Performance Comparison',
+        'class': 'ComparisonSearchPercentageComponent',
+        'filename': 'comparison-search-percentage',
+        'figsize': (7, 4.2),
+        'params': {
+            'comparison_data': {
+                'Ours (Robust CBF)': '../../data/2026-01-28_14-47-22',
+                'CVT+Formation': '../../data/2025-12-24_03-46-37',
+                'Conventional CBF': '../../data/2026-01-28_21-05-40',
+                'Pure CVT': '../../data/2026-01-28_21-27-24',
+            },
+            'method_colors': ['blue', 'orange', 'red', 'green'],
+            'show_violation_markers': True,
+        }
     }
 }

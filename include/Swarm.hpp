@@ -226,6 +226,12 @@ public:
                     for (auto &robot: robots) robot->optimise();
                 }
 
+                if (checkConstraintViolation()) {
+                    logOnce();
+                    std::cout << "\n[Simulation Terminated] Constraint violation detected at t=" << robots[0]->runtime << "s" << std::endl;
+                    break;
+                }
+
                 logOnce();
                 for (auto &robot: robots) robot->stepTimeForward(tStep);
             }
@@ -529,6 +535,91 @@ private:
             result.push_back(slack(i));
         }
         return result;
+    }
+
+    bool checkConstraintViolation() {
+        // Check h_loc constraints for violation
+        // Constraint: distance + uncertainty <= max_range
+        // Violation occurs when: distance + uncertainty1 + uncertainty2 > max_range
+        // Add buffer for numerical stability
+
+        // Get max_range from config
+        auto commConfig = config["cbfs"]["without-slack"]["comm-fixed"];
+        if (!commConfig.contains("max-range")) {
+            return false;  // No max-range specified, cannot check
+        }
+        double maxRange = commConfig["max-range"];
+        double buffer = maxRange * 0.1;  // 1% buffer for numerical stability
+        double violationThreshold = maxRange + buffer;
+
+        // Check all robots and their constrained pairs
+        for (auto &robot : robots) {
+            // Debug: Check if myFormation is properly set
+            if (!robot->myFormation.contains("anchorIds") && !robot->myFormation.contains("baseIds")) {
+                throw std::runtime_error("Robot " + std::to_string(robot->id) + " myFormation is empty! anchorIds and baseIds not found.");
+            }
+            if (robot->myFormation.contains("anchorIds") && robot->myFormation["anchorIds"].size() == 0 &&
+                robot->myFormation.contains("baseIds") && robot->myFormation["baseIds"].size() == 0) {
+                throw std::runtime_error("Robot " + std::to_string(robot->id) + " myFormation has empty anchorIds and baseIds!");
+            }
+
+            Point robotPos = robot->model->xy();
+            double robotUncertainty = robot->uncertaintyFromCovarianceFunction(robot->positionCovariance);
+
+            // Check robot-robot constraints (from anchorIds)
+            if (robot->myFormation.contains("anchorIds")) {
+                for (auto &anchorId : robot->myFormation["anchorIds"]) {
+                    int otherId = anchorId.get<int>();
+                    if (otherId <= 0 || otherId > n) continue;
+
+                    auto &otherRobot = robots[otherId - 1];
+                    Point otherPos = otherRobot->model->xy();
+                    double otherUncertainty = otherRobot->uncertaintyFromCovarianceFunction(otherRobot->positionCovariance);
+
+                    double distance = robotPos.distance_to(otherPos);
+                    double totalDistance = distance + robotUncertainty + otherUncertainty;
+
+                    if (totalDistance > violationThreshold) {
+                        std::cout << "\n[Constraint Violation] Robot " << robot->id
+                                  << " - Robot " << otherId
+                                  << ": distance=" << distance
+                                  << ", uncertainty=" << robotUncertainty << "+" << otherUncertainty
+                                  << ", total=" << totalDistance
+                                  << " > threshold=" << violationThreshold << " (maxRange=" << maxRange << " + buffer=" << buffer << ")"
+                                  << " at t=" << robot->runtime << std::endl;
+                        return true;
+                    }
+                }
+            }
+
+            // Check robot-base constraints (from baseIds)
+            if (robot->myFormation.contains("baseIds")) {
+                json bases = config["bases"];
+                for (auto &baseIdx : robot->myFormation["baseIds"]) {
+                    int baseId = baseIdx.get<int>();
+                    if (baseId < 0 || baseId >= bases.size()) continue;
+
+                    Point basePos(bases[baseId][0], bases[baseId][1]);
+                    double distance = robotPos.distance_to(basePos);
+
+                    // Base has no uncertainty, only robot uncertainty
+                    double totalDistance = distance + robotUncertainty;
+
+                    if (totalDistance > violationThreshold) {
+                        std::cout << "\n[Constraint Violation] Robot " << robot->id
+                                  << " - Base " << baseId
+                                  << ": distance=" << distance
+                                  << ", uncertainty=" << robotUncertainty
+                                  << ", total=" << totalDistance
+                                  << " > threshold=" << violationThreshold << " (maxRange=" << maxRange << " + buffer=" << buffer << ")"
+                                  << " at t=" << robot->runtime << std::endl;
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 };
 

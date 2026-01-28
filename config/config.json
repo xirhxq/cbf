@@ -119,7 +119,7 @@
       "cvt": {
         "name": "cvtCBF",
         "on": true,
-        "//exploration-mode": ["centroid", "intelligent", "nearest-unexplored"],
+        "//exploration-mode": ["centroid", "intelligent", "nearest-unexplored", "cvt"],
         "exploration-mode": "nearest-unexplored",
         "front-focus-distance": 400.0,
         "kp": 5.0,
@@ -170,6 +170,7 @@
         "on": true,
         "safe-distance": 10.0,
         "k": 1.0,
+        "consider-uncertainty": true,
         "alpha": {
           "coe": 0.1,
           "pow": 3
@@ -184,6 +185,7 @@
         "min-neighbour-id-offset": -2,
         "max-neighbour-id-offset": 0,
         "compensate-velocity": true,
+        "consider-uncertainty": true,
         "alpha": {
           "coe": 0.1,
           "pow": 3

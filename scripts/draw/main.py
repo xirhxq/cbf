@@ -307,6 +307,10 @@ if __name__ == '__main__':
         {
             'name': 'CBF Analysis - Slack Variables (Per Robot)',
             'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['slack_vars'])
+        },
+        {
+            'name': 'Comparison - Search Percentage (All Methods)',
+            'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['comparison-sp'])
         }
     ]
 
