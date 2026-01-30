@@ -4,6 +4,7 @@
 #include "utils.h"
 #include "OptimiserBase.hpp"
 #include "gurobi_c++.h"
+#include <chrono>
 
 class Gurobi : public OptimiserBase{
     GRBEnv env;
@@ -14,6 +15,7 @@ class Gurobi : public OptimiserBase{
     mutable bool has_error = false;
     mutable std::string last_error_message;
     mutable int last_error_code = 0;
+    mutable double last_solve_time_ms = 0.0;
 
 public:
     Gurobi(json &settings): OptimiserBase(settings), env(true) {
@@ -28,6 +30,7 @@ public:
         has_error = false;
         last_error_message = "";
         last_error_code = 0;
+        last_solve_time_ms = 0.0;
     }
 
     void start(int total_size, int u_size) override {
@@ -111,6 +114,7 @@ public:
                 status["objective_value"] = model->get(GRB_DoubleAttr_ObjVal);
                 status["vars_count"] = model->get(GRB_IntAttr_NumVars);
                 status["constraints_count"] = model->get(GRB_IntAttr_NumConstrs);
+                status["solve_time_ms"] = last_solve_time_ms;
             } catch (...) {
                 status["status"] = "error";
                 status["error"] = "Failed to get model status";
@@ -124,7 +128,14 @@ public:
 
     Eigen::VectorXd solve() override {
         try {
+            auto start = std::chrono::high_resolution_clock::now();
             model->optimize();
+            auto end = std::chrono::high_resolution_clock::now();
+
+            // Calculate solve time in milliseconds
+            auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+            last_solve_time_ms = duration.count() / 1000.0;
+
             Eigen::VectorXd u(vars.size());
             for (int i = 0; i < vars.size(); i++) {
                 u[i] = vars[i].get(GRB_DoubleAttr_X);
