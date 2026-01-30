@@ -5,10 +5,15 @@
 #include <ctime>
 
 
-int main() {
+int main(int argc, char* argv[]) {
     clock_t start = clock();
 
-    json settings = json::parse(std::ifstream("../config/config.json"));
+    std::string configPath = "../config/config.json";
+    if (argc > 1) {
+        configPath = argv[1];
+    }
+
+    json settings = json::parse(std::ifstream(configPath));
 
     Swarm(settings).run();
 

@@ -35,9 +35,9 @@
     ]
   },
   "bases": [
-    [-300, 0],
-    [0, 0],
-    [300, 0]
+    [-300, -50],
+    [0, -50],
+    [300, -50]
   ],
   "initial": {
     "position": {
@@ -167,7 +167,7 @@
       },
       "safety": {
         "name": "safetyCBF",
-        "on": true,
+        "on": false,
         "safe-distance": 10.0,
         "k": 1.0,
         "consider-uncertainty": true,

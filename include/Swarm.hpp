@@ -16,6 +16,7 @@ public:
     json updatedGridWorldGroundTruth;
     std::string folderName;
     std::string filename;
+    std::string customOutputPath;
     std::vector<int> all_ids;
 
     std::unique_ptr<CentralizedModel> centralizedModel;
@@ -29,6 +30,12 @@ public:
             : config(settings),
               n(settings["num"]),
               gridWorldGroundTruth(settings["world"]){
+        if (settings.contains("output_path")) {
+            customOutputPath = settings["output_path"];
+        } else {
+            customOutputPath = "";
+        }
+
         std::generate_n(std::back_inserter(all_ids), n, [i = 1]() mutable {
             return i++;
         });
@@ -114,10 +121,18 @@ public:
             << std::setw(2) << t->tm_min << "-"
             << std::setw(2) << t->tm_sec;
         folderName = oss.str();
-        if (mkdir(("../data/" + folderName).c_str(), 0777) == -1) {
+
+        std::string outputPath;
+        if (!customOutputPath.empty()) {
+            outputPath = customOutputPath + "/" + folderName;
+        } else {
+            outputPath = "../data/" + folderName;
+        }
+
+        if (mkdir(outputPath.c_str(), 0777) == -1) {
             std::cerr << "Error :  " << strerror(errno) << std::endl;
         }
-        filename = "../data/" + folderName + "/data.json";
+        filename = outputPath + "/data.json";
         ofstream.open(filename, std::ios::app);
     }
 
