@@ -116,7 +116,7 @@ public:
     }
 
     Point rotate(double &b) const {
-        double c = cos(this->angle()), s = sin(this->angle());
+        double c = cos(b), s = sin(b);
         return Point(x * c - y * s, x * s + y * c);
     }
 

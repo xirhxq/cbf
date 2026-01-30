@@ -733,7 +733,7 @@ public:
         Point explorationPoint = endExplorationPoint - sectionVector * numSection;
         double rotateAngleRad = (pi / 3) * ((partId % 2 == 1)? -1: 1);
         if ((idsInMyPart.size() - idInMyPart) % 2 == 1) {
-            explorationPoint = explorationPoint + sectionVector.rotate_around(origin, rotateAngleRad);
+            explorationPoint = explorationPoint + sectionVector.rotate(rotateAngleRad);
         }
         return explorationPoint;
     }
