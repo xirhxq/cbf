@@ -20,7 +20,7 @@ public:
     std::vector<int> all_ids;
 
     std::unique_ptr<CentralizedModel> centralizedModel;
-    std::unique_ptr<Gurobi> optimizer;
+    std::unique_ptr<OptimiserBase> optimizer;
 
     MultiCBF cbfNoSlack;
     std::unordered_map<std::string, CBF> cbfSlack;
@@ -430,7 +430,19 @@ private:
         }
 
         if (config.contains("cbfs") && config["cbfs"].contains("objective-function")) {
-            optimizer = std::make_unique<Gurobi>(config["cbfs"]["objective-function"]);
+#ifdef ENABLE_GUROBI
+            if (config["optimiser"] == "Gurobi") {
+                optimizer = std::make_unique<Gurobi>(config["cbfs"]["objective-function"]);
+            } else
+#endif
+#ifdef ENABLE_HIGHS
+            if (config["optimiser"] == "HiGHS") {
+                optimizer = std::make_unique<HiGHS>(config["cbfs"]["objective-function"]);
+            } else
+#endif
+            {
+                throw std::invalid_argument("Invalid optimiser type for centralized optimization");
+            }
         } else {
             printf("Warning: missing objective-function config\n");
         }
