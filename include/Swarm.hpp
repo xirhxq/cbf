@@ -109,7 +109,21 @@ public:
     }
 
     void initLog() {
-        mkdir("../data", 0777);
+        // Determine data directory path
+        std::string dataDir;
+        if (!customOutputPath.empty()) {
+            dataDir = customOutputPath;
+            std::cout << "[Swarm::initLog] Using custom output path: " << dataDir << std::endl;
+        } else {
+            dataDir = "../data";
+            std::cout << "[Swarm::initLog] Using default output path: " << dataDir << std::endl;
+        }
+
+        // Create data directory if not exists
+        if (mkdir(dataDir.c_str(), 0777) == -1 && errno != EEXIST) {
+            std::cerr << "[Swarm::initLog] Warning: Could not create data directory: " << strerror(errno) << std::endl;
+        }
+
         time_t now = time(nullptr);
         tm *t = localtime(&now);
         std::ostringstream oss;
@@ -122,12 +136,7 @@ public:
             << std::setw(2) << t->tm_sec;
         folderName = oss.str();
 
-        std::string outputPath;
-        if (!customOutputPath.empty()) {
-            outputPath = customOutputPath + "/" + folderName;
-        } else {
-            outputPath = "../data/" + folderName;
-        }
+        std::string outputPath = dataDir + "/" + folderName;
 
         if (mkdir(outputPath.c_str(), 0777) == -1) {
             std::cerr << "Error :  " << strerror(errno) << std::endl;
@@ -152,6 +161,13 @@ public:
                 otherRobot->comm->receivePositionCovariance(robot->id, positionCovariance);
             }
         };
+    }
+
+    // External data injection interface (for simulation environment)
+    void injectExternalVelocities(const std::vector<std::pair<double, double>>& velocities) {
+        for (size_t i = 0; i < robots.size() && i < velocities.size(); ++i) {
+            robots[i]->setExternalVelocity(velocities[i].first, velocities[i].second);
+        }
     }
 
     void checkInformationExchange() {
