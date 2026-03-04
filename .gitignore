@@ -6,3 +6,5 @@ plot/
 !.gitignore
 build
 QWEN.md
+__pycache__/
+*.pyc
