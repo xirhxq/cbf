@@ -59,6 +59,12 @@ public:
     std::vector<int> myBasesId;
 
     std::set<int> myNeighboursId;
+
+    // External velocity data (for simulation environment)
+    double externalVx = 0.0;
+    double externalVy = 0.0;
+    bool hasExternalVelocity = false;
+
 public:
 
     Robot() = default;
@@ -939,6 +945,13 @@ public:
         runtime += dt;
     }
 
+    // External velocity injection interface (for simulation environment)
+    void setExternalVelocity(double vx, double vy) {
+        externalVx = vx;
+        externalVy = vy;
+        hasExternalVelocity = true;
+    }
+
     void output() const {
         std::cout << "Robot " << id << ": ";
         model->output();
@@ -1088,6 +1101,12 @@ public:
         {
             robotJson["opt"] = opt;
         }
+
+        // Add external velocity data if available
+        if (hasExternalVelocity) {
+            robotJson["external_velocity"] = {externalVx, externalVy};
+        }
+
         return robotJson;
     }
 
