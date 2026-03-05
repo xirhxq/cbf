@@ -257,10 +257,17 @@ public:
                     for (auto &robot: robots) robot->optimise();
                 }
 
-                if (checkConstraintViolation()) {
-                    logOnce();
-                    std::cout << "\n[Simulation Terminated] Constraint violation detected at t=" << robots[0]->runtime << "s" << std::endl;
-                    break;
+                // if (checkConstraintViolation()) {
+                //     logOnce();
+                //     std::cout << "\n[Simulation Terminated] Constraint violation detected at t=" << robots[0]->runtime << "s" << std::endl;
+                //     break;
+                // }
+                if (settings.value("check-constraint-violation", false)) {
+                    if (checkConstraintViolation()) {
+                        logOnce();
+                        std::cout << "\n[Simulation Terminated] Constraint violation detected at t=" << robots[0]->runtime << "s" << std::endl;
+                        break;
+                    }
                 }
 
                 logOnce();
