@@ -70,7 +70,7 @@
       "min": 4100,
       "max": 4200
     },
-    "yawDeg": 0
+    "yawDeg": 90
   },
   "model": "SingleIntegrate2D",
   "model-params": {
@@ -207,8 +207,9 @@
   "execute": {
     "//execution-mode": ["distributed", "centralized"],
     "execution-mode": "distributed",
-    "time-total": 350,
-    "time-step": 0.5
+    "time-total": 1000,
+    "time-step": 0.5,
+    "check-constraint-violation": false
   },
   "debug": {
     "opt-cbc": false
