@@ -33,10 +33,15 @@ class GridLayout:
                 }
             ]
         else:
-            if self.expand:
-                total_grids = self.n * side_num
-            else:
-                total_grids = side_num
+            # Calculate total grids considering per-component expand setting
+            total_grids = 0
+            for item in side_list:
+                item_config = REGISTRIED_COMPONENTS.get(item, {})
+                if self.expand and item_config.get('expand', True):
+                    total_grids += self.n  # Expand for each robot
+                else:
+                    total_grids += 1  # Single plot for global component
+
             side_cols = math.ceil(math.sqrt(total_grids))
             side_rows = math.ceil(total_grids / side_cols)
 
@@ -54,20 +59,23 @@ class GridLayout:
             grids = [[i, j + map_cols] for i in range(side_rows) for j in range(side_cols)]
 
             for index, item in enumerate(side_list):
-                if self.expand:
+                item_config = REGISTRIED_COMPONENTS.get(item, {})
+                if self.expand and item_config.get('expand', True):
+                    # Expand for each robot
                     for id in self.id_list:
                         layout_config['components'].append(
                             {
                                 'robot_id': id,
-                                **REGISTRIED_COMPONENTS[item],
+                                **item_config,
                                 'id_list': [id],
                             }
                         )
                 else:
+                    # Single plot for global component
                     layout_config['components'].append(
                         {
                             'robot_id': self.robot_id,
-                            **REGISTRIED_COMPONENTS[item],
+                            **item_config,
                             'id_list': self.id_list
                         }
                     )
