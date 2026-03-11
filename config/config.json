@@ -70,7 +70,7 @@
       "min": 4100,
       "max": 4200
     },
-    "yawDeg": 0
+    "yawDeg": 90
   },
   "model": "SingleIntegrate2D",
   "model-params": {
