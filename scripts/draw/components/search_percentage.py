@@ -104,3 +104,6 @@ class SearchPercentageComponent(Lines):
         if frame < len(self.processed_data['search_percentages']):
             return self.processed_data['search_percentages'][frame]
         return None
+
+    def _format_marker_text(self, label, value):
+        return f"{value*100:.1f}%"
