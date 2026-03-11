@@ -21,6 +21,7 @@ from .formation_distance import FormationDistanceComponent
 from .h_loc_constraints import HLocComponent
 from .h_safe_constraints import HSafeComponent
 from .comparison_search_percentage import ComparisonSearchPercentageComponent
+from .valid_links import ValidLinksComponent
 
 REGISTRIED_COMPONENTS = {
     'map': {
@@ -30,11 +31,12 @@ REGISTRIED_COMPONENTS = {
         'params': {
             '//colormap': ['coolwarm', 'christmas'],
             'colormap': 'coolwarm',
-            # 'show_time_title': False,
-            # 'show_cov_ellipse': False,
-            # 'show_cov_text': False,
-            # 'annotation_font_size': 12,
-            # 'shotList': [0, 50, 100, 200, 300, 322]
+            'show_charge': False,
+            'show_time_title': False,
+            'show_cov_ellipse': False,
+            'show_cov_text': False,
+            'annotation_font_size': 12,
+            'shotList': [0.5, 100, 200, 300, 400, 500]
         }
     },
     'opt-ct': {
@@ -76,6 +78,22 @@ REGISTRIED_COMPONENTS = {
             '//show_max_text': [True, False],
             'show_max_text': False,
         }
+    },
+    'sp-anim': {
+        'title': 'Search Percentage Over Time',
+        'class': 'SearchPercentageComponent',
+        'filename': 'search-percentage-anim',
+        'figsize': (7, 4),
+        'expand': False,
+        'params': {
+            'show_milestones': False,
+            'show_max_text': False,
+        },
+        'show_legend': False,
+        'show_markers': True,
+        'show_value_text': True,
+        'marker_style': {'marker': 'o', 'color': 'red', 'markersize': 8},
+        'text_style': {'color': 'red', 'fontsize': 12, 'bbox': {'facecolor': 'white', 'alpha': 0.7, 'edgecolor': 'none'}},
     },
     'heat': {
         'title': 'Heatmap',
@@ -286,6 +304,27 @@ REGISTRIED_COMPONENTS = {
             },
             'method_colors': ['blue', 'orange', 'red', 'green'],
             'show_violation_markers': True,
+        }
+    },
+    'valid-links': {
+        'title': 'Valid Links (Safe Distance Range)',
+        'class': 'ValidLinksComponent',
+        'filename': 'valid-links',
+        'figsize': (10, 6),
+    },
+    'mbzirc-comparison-sp': {
+        'title': 'MBZIRC Simulation vs Numerical Simulation',
+        'class': 'ComparisonSearchPercentageComponent',
+        'filename': 'mbzirc-comparison-search-percentage',
+        'figsize': (7, 4.2),
+        'params': {
+            'comparison_data': {
+                'MBZIRC Simulation': '../../data/2026-03-07_00-42-23',
+                'Numerical Simulation': '../../data/2026-01-28_14-47-22',
+            },
+            'method_colors': ['blue', 'red'],
+            'show_violation_markers': True,
+            'extend_to_time': 500,  # Extend shorter simulations to 500s
         }
     }
 }

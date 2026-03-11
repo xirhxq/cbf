@@ -70,6 +70,7 @@ class ComparisonSearchPercentageComponent(BaseComponent):
             'blue', 'red', 'green', 'orange', 'purple', 'brown'
         ])
         self.show_violation_markers = self.params.get('show_violation_markers', True)
+        self.extend_to_time = self.params.get('extend_to_time', None)  # Extend data to this time if specified
 
         # Process all comparison data sources
         self.processed_data = {}
@@ -87,7 +88,17 @@ class ComparisonSearchPercentageComponent(BaseComponent):
             try:
                 with open(data_file, 'r') as f:
                     data = json.load(f)
-                self.processed_data[method_name] = search_percentage_interpreter(data)
+                processed = search_percentage_interpreter(data)
+
+                # Extend data to specified time if needed
+                if self.extend_to_time is not None:
+                    final_time = processed['runtime'][-1]
+                    if final_time < self.extend_to_time:
+                        # Extend with constant final percentage
+                        processed['runtime'].append(self.extend_to_time)
+                        processed['search_percentages'].append(processed['search_percentages'][-1])
+
+                self.processed_data[method_name] = processed
                 print(f"Loaded {method_name} from {folder_path}")
             except Exception as e:
                 print(f"Error loading {method_name}: {e}")

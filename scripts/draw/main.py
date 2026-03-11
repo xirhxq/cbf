@@ -221,6 +221,10 @@ if __name__ == '__main__':
             'action': lambda: AnimationDrawer(files).run_animation(['map', 'cvt'])
         },
         {
+            'name': 'Animation (Search Percentage)',
+            'action': lambda: AnimationDrawer(files).run_animation(['sp-anim'])
+        },
+        {
             'name': 'CBF Derivative, Certain Time Range',
             'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(
                 ['cbc-energy'],
@@ -297,6 +301,10 @@ if __name__ == '__main__':
             'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['h_safe'])
         },
         {
+            'name': 'Valid Links (Distance in Safe Range [d_safe, d_loc])',
+            'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['valid-links'])
+        },
+        {
             'name': 'CBF Analysis - Constraint CBFs (Per Robot)',
             'action': lambda: StaticSeparatePlotDrawer(files).draw_plots(['constraint_cbfs'])
         },
@@ -311,6 +319,10 @@ if __name__ == '__main__':
         {
             'name': 'Comparison - Search Percentage (All Methods)',
             'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['comparison-sp'])
+        },
+        {
+            'name': 'Comparison - MBZIRC vs Numerical Simulation',
+            'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['mbzirc-comparison-sp'])
         }
     ]
 
