@@ -30,6 +30,7 @@ class MapAnimationComponent(BaseComponent):
         self.showCovEllipse = params.get('show_cov_ellipse', True)
         self.showCovText = params.get('show_cov_text', True)
         self.annotationFontSize = params.get('annotation_font_size', 8)
+        self.showCharge = params.get('show_charge', False)
 
         self.christmas_cmap = mcolors.LinearSegmentedColormap.from_list(
             'christmas',
@@ -98,9 +99,10 @@ class MapAnimationComponent(BaseComponent):
         self.ax.imshow(Z_masked.T, alpha=0.3, extent=self.zExtent, origin='lower', cmap=self.search_cmap, vmin=0, vmax=1)
 
         robotNum = self.data["para"]["swarm"]["num"]
-        pos_charge = self.data["para"]["world"]["charge"]["pos"]
-        dist_charge = self.data["para"]["world"]["charge"]["dist"]
-        [self.ax.add_patch(Circle(xy=(pos[0], pos[1]), radius=dist, alpha=0.5)) for pos, dist in zip(pos_charge, dist_charge)]
+        if self.showCharge:
+            pos_charge = self.data["para"]["world"]["charge"]["pos"]
+            dist_charge = self.data["para"]["world"]["charge"]["dist"]
+            [self.ax.add_patch(Circle(xy=(pos[0], pos[1]), radius=dist, alpha=0.5)) for pos, dist in zip(pos_charge, dist_charge)]
 
         robotX = [dataNow["robots"][i]["state"]["x"] for i in self.id_list]
         robotY = [dataNow["robots"][i]["state"]["y"] for i in self.id_list]
