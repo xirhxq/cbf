@@ -115,7 +115,7 @@ public:
             dataDir = customOutputPath;
             std::cout << "[Swarm::initLog] Using custom output path: " << dataDir << std::endl;
         } else {
-            dataDir = "../data";
+            dataDir = PROJECT_ROOT "/data";
             std::cout << "[Swarm::initLog] Using default output path: " << dataDir << std::endl;
         }
 

@@ -70,7 +70,7 @@ file(GLOB SOURCES "src/*.cpp")
 foreach (SOURCE ${SOURCES})
     get_filename_component(EXECUTABLE ${SOURCE} NAME_WE)
     add_executable(${EXECUTABLE} ${SOURCE})
-
+    target_compile_definitions(${EXECUTABLE} PRIVATE PROJECT_ROOT="${CMAKE_SOURCE_DIR}")
     target_link_libraries(${EXECUTABLE} PRIVATE cbf_deps)
 endforeach ()
 
