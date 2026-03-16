@@ -10,39 +10,63 @@ We recommend using **CLion** for development, as it provides an intuitive interf
 
 ## Installation
 
-### Solver Configuration Guide
+### Solver Configuration
 
-#### Supported Solvers
-This project supports two optimization solvers: **Gurobi** and **HiGHS**. Both solvers need to be installed separately by the user, and you can choose to enable or disable them based on your installation.
+This project supports three QP solvers for the CBF optimization:
+
+| Solver | Type | Speed | Stability | License |
+|--------|------|-------|-----------|---------|
+| **OSQP** | Open-source | Fastest | Excellent | Apache 2.0 |
+| **Gurobi** | Commercial | Fast | Excellent | Commercial |
+| **HiGHS** | Open-source | Moderate | Good | MIT |
+
+**Recommendation**: Use **OSQP** for best performance and numerical stability with CBF constraints.
 
 #### Enabling Solvers
-Each solver has a corresponding `ENABLE_*` option in the CMake configuration. You can enable or disable them depending on the solver you have installed. For example:
-- If **Gurobi** is installed, set `ENABLE_GUROBI` to `ON` to enable Gurobi.
-- If **HiGHS** is installed, set `ENABLE_HIGHS` to `ON` to enable HiGHS.
 
-#### Installing Gurobi
-If you choose to use **Gurobi** as the solver, refer to the official Gurobi installation guide:  
-[Gurobi Installation Guide](https://support.gurobi.com/hc/en-us/articles/4534161999889-How-do-I-install-Gurobi-Optimizer)
+Each solver has a corresponding CMake option:
 
-After installing Gurobi, ensure to specify the Gurobi installation path using the `-DGUROBI_HOME` option during the CMake configuration:
 ```bash
-cmake -DGUROBI_HOME=/opt/gurobi1200/linux64 ..
+cmake -DENABLE_OSQP=ON -DENABLE_GUROBI=ON -DENABLE_HIGHS=ON ..
 ```
 
-It is recommended to use **CLion** for configuring and building the project, as it simplifies the setup process. If you need to set environment variables when using CMake in CLion, you can refer to the [CLion Environment Variables Guide](https://www.jetbrains.com/help/clion/cmake-profile.html#EnvVariables).
+#### Installing OSQP
+
+Install [OsqpEigen](https://github.com/robotology/osqp-eigen):
+
+```bash
+# macOS
+brew install osqp-eigen
+
+# Ubuntu
+sudo apt install libosqp-eigen-dev
+```
+
+#### Installing Gurobi
+
+Download from [Gurobi website](https://www.gurobi.com/downloads/) and specify the installation path:
+
+```bash
+cmake -DGUROBI_ROOT=/Library/gurobi1200/macos_universal2 ..
+```
 
 #### Installing HiGHS
-If you choose to use **HiGHS** as the solver, refer to the official HiGHS installation guide:  
-[HiGHS Installation Guide](https://github.com/ERGO-Code/HiGHS/tree/master/cmake#build)
 
-Once HiGHS is installed, CMake will automatically find and link the HiGHS library.
+```bash
+# macOS
+brew install highs
 
-#### CMake Configuration and Solver Integration
-The integration of Gurobi and HiGHS with CMake is based on their official documentation. Below are the relevant guides for integrating them:
-- [HiGHS Integration Guide for CMake Projects](https://github.com/ERGO-Code/HiGHS/tree/master/cmake#integrating-highs-in-your-cmake-project)
-- [Gurobi CMake Project Guide](https://support.gurobi.com/hc/en-us/articles/360039499751-How-do-I-use-CMake-to-build-Gurobi-C-C-projects)
+# Ubuntu
+sudo apt install libhighs-dev
+```
 
-These documents provide detailed integration methods and configuration options to help you correctly link and use both solvers in your project.
+#### Selecting Solver
+
+Set the `optimiser` field in `config/config.json`:
+
+```json
+"optimiser": "OSQP"
+```
 
 #### Common Issues
 - **How to ensure CMake finds the correct shared libraries (`.so` or `.dylib`)?**
