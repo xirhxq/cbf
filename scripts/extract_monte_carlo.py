@@ -81,55 +81,73 @@ def extract_stats_from_run(data_path):
 
 
 def main():
+    import sys
     results = []
 
-    # Find all run directories (each contains a timestamp subdirectory)
-    base_dir = Path('../data/monte_carlo')
+    base_dir = Path('../data')
+    if len(sys.argv) > 1:
+        base_dir = Path(sys.argv[1])
 
-    if not base_dir.exists():
-        print(f"Error: Directory {base_dir} does not exist!")
-        print("Please run Monte Carlo simulations first.")
-        return
+    monte_carlo_dirs = sorted(base_dir.glob('*_monte_carlo'), key=lambda p: p.name, reverse=True)
 
-    run_dirs = sorted(base_dir.glob('run_*'))
+    if not monte_carlo_dirs:
+        legacy_dir = Path('../data/monte_carlo')
+        if legacy_dir.exists():
+            monte_carlo_dirs = [legacy_dir]
+        else:
+            print(f"Error: No Monte Carlo directory found!")
+            print("Usage: python extract_monte_carlo.py [path/to/monte_carlo_dir]")
+            return
+
+    selected_dir = monte_carlo_dirs[0]
+    print(f"Analyzing: {selected_dir}\n")
+
+    run_dirs = sorted(selected_dir.glob('*_run_*'))
 
     if not run_dirs:
-        print(f"No run directories found in {base_dir}")
+        run_dirs = sorted(selected_dir.glob('run_*'))
+
+    if not run_dirs:
+        print(f"No run directories found in {selected_dir}")
         return
 
     print(f"Found {len(run_dirs)} run directories\n")
 
     for run_dir in run_dirs:
-        # Find the timestamp subdirectory
-        timestamp_dirs = list(run_dir.glob('20*'))  # Match 2026-XX-XX format
-        if not timestamp_dirs:
-            print(f"✗ No timestamp directory in {run_dir}")
-            continue
+        data_path = run_dir / 'data.json'
+        if not data_path.exists():
+            timestamp_dirs = list(run_dir.glob('20*'))
+            if timestamp_dirs:
+                data_path = timestamp_dirs[0] / 'data.json'
 
-        data_path = timestamp_dirs[0] / 'data.json'
         if data_path.exists():
             try:
                 stats = extract_stats_from_run(data_path)
                 if stats:
                     results.append(stats)
-                    print(f"✓ {run_dir.name}: completion={stats['completion_time']:.1f}s, "
-                          f"min_h_loc={stats['min_h_loc']:.1f}m, "
-                          f"min_h_col={stats['min_h_col']:.1f}m")
+                    coverage_status = "✓" if stats['final_coverage'] >= 99.9 else "✗"
+                    print(f"{coverage_status} {run_dir.name}: completion={stats['completion_time']:.1f}s, "
+                          f"coverage={stats['final_coverage']:.1f}%, "
+                          f"min_h_loc={stats['min_h_loc']:.1f}m")
             except Exception as e:
                 print(f"✗ Error reading {run_dir}: {e}")
         else:
-            print(f"✗ data.json not found in {timestamp_dirs[0]}")
+            print(f"✗ data.json not found in {run_dir}")
 
     if not results:
         print("\nNo valid results found!")
         return
 
-    # Calculate and print statistics
-    print(f"\n{'='*60}")
-    print(f"Monte Carlo Results (N={len(results)} successful runs)")
-    print(f"{'='*60}\n")
+    full_coverage = sum(1 for r in results if r['final_coverage'] >= 99.9)
+    near_full_coverage = sum(1 for r in results if r['final_coverage'] >= 95.0)
 
-    print("| Metric | Mean ± Std | [Min, Max] |")
+    print(f"\n{'='*60}")
+    print(f"Monte Carlo Results (N={len(results)} runs)")
+    print(f"{'='*60}")
+    print(f"\n100% Coverage: {full_coverage}/{len(results)} ({100*full_coverage/len(results):.0f}%)")
+    print(f"95%+ Coverage: {near_full_coverage}/{len(results)} ({100*near_full_coverage/len(results):.0f}%)")
+
+    print(f"\n| Metric | Mean ± Std | [Min, Max] |")
     print("|--------|------------|------------|")
 
     metrics = ['completion_time', 'min_h_loc', 'min_h_col', 'max_uncertainty', 'final_coverage']
