@@ -56,10 +56,16 @@ class AnimationDrawer(BaseDrawer):
 
         saved_shots = set()
 
+        def init():
+            return []
+
         def update(num):
             pbar.update(1)
+            all_artists = []
             for comp in components:
-                comp.update(num)
+                artists = comp.update(num)
+                if artists:
+                    all_artists.extend(artists)
 
             current_time = self.data["state"][num]["runtime"]
             for shot_time in shot_times:
@@ -72,11 +78,15 @@ class AnimationDrawer(BaseDrawer):
                     fig.savefig(shot_filename, dpi=150, bbox_inches='tight')
                     print(f"\nSnapshot saved at t={shot_time:.2f}s: {shot_filename}")
 
+            return all_artists
+
         ani = animation.FuncAnimation(
             fig, update,
+            init_func=init,
             frames=range(*self.index_range),
             interval=interval_ms,
-            blit=False
+            blit=True,
+            repeat=False
         )
 
         suffix = '-'.join(plot_list)

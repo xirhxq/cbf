@@ -151,7 +151,7 @@ class CBFValuesComponent(BaseComponent):
 
                     if not np.isnan(current_value):
                         if label in self.markers:
-                            self.markers[label].set_data(current_time, current_value)
+                            self.markers[label].set_data([current_time], [current_value])
 
                         if current_time < (x_limits[0] + x_limits[1]) / 2:
                             if label in self.value_texts:
@@ -174,3 +174,8 @@ class CBFValuesComponent(BaseComponent):
                     self.markers[label].set_data([], [])
                 if label in self.value_texts:
                     self.value_texts[label].set_text("")
+
+        artists = [self.vline]
+        artists.extend(self.markers.values())
+        artists.extend(self.value_texts.values())
+        return artists

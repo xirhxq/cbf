@@ -63,3 +63,8 @@ class OptimizationContourPlot(BaseComponent):
         self.cbf_ct = [self.ax.contour(self.xgrid, self.ygrid, cbf, [0], colors=name2Color(self.cbfName[ind])) for ind, cbf in enumerate(self.cbfList)]
         for ct in self.cbf_ct:
             plt.setp(ct.collections, path_effects=[patheffects.withTickedStroke(angle=60)])
+
+        artists = [self.markerNominal, self.markerResult, self.txt]
+        for ct in self.cbf_ct:
+            artists.extend(ct.collections)
+        return artists

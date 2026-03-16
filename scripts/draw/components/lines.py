@@ -273,6 +273,13 @@ class Lines(BaseComponent):
                 )
                 self._update_animation_markers(filtered_frame)
 
+        artists = []
+        if hasattr(self, 'vline'):
+            artists.append(self.vline)
+        artists.extend(self.markers.values())
+        artists.extend(self.value_texts.values())
+        return artists
+
     
     def _update_animation_markers(self, frame):
         if not hasattr(self, 'runtime'):

@@ -114,3 +114,9 @@ class OptimizationVectorComponent(BaseComponent):
             self.txt.set_text('Charging')
         else:
             self.txt.set_text('')
+
+        artists = [self.markerResult, self.markerNominal, self.resultText, self.txt]
+        for key in self.keys:
+            artists.extend(self.lines[key].values())
+            artists.extend(self.texts[key].values())
+        return artists

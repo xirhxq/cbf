@@ -109,7 +109,7 @@ class CBCComponent(BaseComponent):
 
             current_time = self.runtime[num]
 
-            self.markers[label].set_data(current_time, cbc)
+            self.markers[label].set_data([current_time], [cbc])
 
             if current_time < (x_limits[0] + x_limits[1]) / 2:
                 self.value_texts[label].set_horizontalalignment('left')
@@ -118,7 +118,11 @@ class CBCComponent(BaseComponent):
                 self.value_texts[label].set_horizontalalignment('right')
                 self.value_texts[label].set_position((current_time - time_offset, cbc))
 
-            # 设置文本内容
             self.value_texts[label].set_text(f"{self.get_abbv(label)}: {cbc:.4f}")
 
         self.ax.legend(loc='best')
+
+        artists = [self.vline]
+        artists.extend(self.markers.values())
+        artists.extend(self.value_texts.values())
+        return artists
