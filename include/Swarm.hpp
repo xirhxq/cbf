@@ -458,24 +458,7 @@ private:
         }
 
         if (config.contains("cbfs") && config["cbfs"].contains("objective-function")) {
-#ifdef ENABLE_GUROBI
-            if (config["optimiser"] == "Gurobi") {
-                optimizer = std::make_unique<Gurobi>(config["cbfs"]["objective-function"]);
-            } else
-#endif
-#ifdef ENABLE_HIGHS
-            if (config["optimiser"] == "HiGHS") {
-                optimizer = std::make_unique<HiGHS>(config["cbfs"]["objective-function"]);
-            } else
-#endif
-#ifdef ENABLE_OSQP
-            if (config["optimiser"] == "OSQP") {
-                optimizer = std::make_unique<OSQP>(config["cbfs"]["objective-function"]);
-            } else
-#endif
-            {
-                throw std::invalid_argument("Invalid optimiser type for centralized optimization");
-            }
+            optimizer = createOptimiser(config["optimiser"], config["cbfs"]["objective-function"]);
         } else {
             printf("Warning: missing objective-function config\n");
         }

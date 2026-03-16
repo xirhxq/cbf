@@ -2,6 +2,10 @@
 #define CBF_OPTIMISER_BASE_HPP
 
 #include "utils.h"
+#include <memory>
+#include <stdexcept>
+#include <vector>
+#include <string>
 
 class OptimiserBase {
 protected:
@@ -29,5 +33,31 @@ public:
 
     virtual ~OptimiserBase() = default;
 };
+
+inline std::vector<std::string> getAvailableOptimisers() {
+    std::vector<std::string> available;
+#ifdef ENABLE_GUROBI
+    available.push_back("Gurobi");
+#endif
+#ifdef ENABLE_HIGHS
+    available.push_back("HiGHS");
+#endif
+#ifdef ENABLE_OSQP
+    available.push_back("OSQP");
+#endif
+    return available;
+}
+
+inline std::string joinAvailableOptimisers() {
+    auto available = getAvailableOptimisers();
+    std::string result;
+    for (size_t i = 0; i < available.size(); i++) {
+        if (i > 0) result += ", ";
+        result += available[i];
+    }
+    return result;
+}
+
+std::unique_ptr<OptimiserBase> createOptimiser(const std::string& name, json& settings);
 
 #endif // CBF_OPTIMISER_BASE_HPP

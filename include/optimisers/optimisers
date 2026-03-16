@@ -17,3 +17,16 @@
 #include "OSQP.hpp"
 
 #endif
+
+inline std::unique_ptr<OptimiserBase> createOptimiser(const std::string& name, json& settings) {
+#ifdef ENABLE_GUROBI
+    if (name == "Gurobi") return std::make_unique<Gurobi>(settings);
+#endif
+#ifdef ENABLE_HIGHS
+    if (name == "HiGHS") return std::make_unique<HiGHS>(settings);
+#endif
+#ifdef ENABLE_OSQP
+    if (name == "OSQP") return std::make_unique<OSQP>(settings);
+#endif
+    throw std::invalid_argument("Unknown optimiser: " + name + ". Available: " + joinAvailableOptimisers());
+}

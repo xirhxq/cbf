@@ -84,24 +84,7 @@ public:
         } else {
             throw std::invalid_argument("Invalid model type");
         }
-#ifdef ENABLE_GUROBI
-        if (settings["optimiser"] == "Gurobi") {
-            optimiser = std::make_unique<Gurobi>(settings["cbfs"]["objective-function"]);
-        } else
-#endif
-#ifdef ENABLE_HIGHS
-        if (settings["optimiser"] == "HiGHS") {
-            optimiser = std::make_unique<HiGHS>(settings["cbfs"]["objective-function"]);
-        } else
-#endif
-#ifdef ENABLE_OSQP
-        if (settings["optimiser"] == "OSQP") {
-            optimiser = std::make_unique<OSQP>(settings["cbfs"]["objective-function"]);
-        } else
-#endif
-        {
-            throw std::invalid_argument("Invalid optimiser type");
-        }
+        optimiser = createOptimiser(settings["optimiser"], settings["cbfs"]["objective-function"]);
         if (settings.contains("uncertainty")) {
             auto unc_config = settings["uncertainty"];
             std::string method = unc_config.value("method", "const");
