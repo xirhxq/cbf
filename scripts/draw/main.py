@@ -107,9 +107,15 @@ def interactive_selection(options):
 def findNewestFiles(folder: str, ptn: str, num: int = 1):
     directories = glob.glob(os.path.join(folder, ptn))
     assert len(directories) > 0, "No directory found with pattern {}".format(ptn)
-    directories = [d for d in directories if len(glob.glob(d + '/data.json')) > 0]
-    num = min(num, len(directories))
-    return [os.path.join(d, 'data.json') for d in sorted(directories, reverse=True)[:num]]
+
+    data_files = []
+    for d in directories:
+        matches = glob.glob(os.path.join(d, '**/data.json'), recursive=True)
+        data_files.extend(matches)
+
+    data_files.sort(key=lambda f: os.path.getmtime(f), reverse=True)
+    num = min(num, len(data_files))
+    return data_files[:num]
 
 
 if __name__ == '__main__':
@@ -186,7 +192,7 @@ if __name__ == '__main__':
         },
         {
             'name': 'Animation (Map)',
-            'action': lambda: AnimationDrawer(files).run_animation(['map'])
+            'action': lambda: AnimationDrawer(files).run_animation(['map'], first_seconds=200)
         },
         {
             'name': 'Animation (Map, Last 5 Seconds)',
@@ -323,6 +329,10 @@ if __name__ == '__main__':
         {
             'name': 'Comparison - MBZIRC vs Numerical Simulation',
             'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['mbzirc-comparison-sp'])
+        },
+        {
+            'name': 'Monte Carlo - Search Percentage Comparison (20 runs)',
+            'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['monte-carlo-sp'])
         }
     ]
 

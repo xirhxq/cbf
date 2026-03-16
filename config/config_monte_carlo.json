@@ -41,29 +41,12 @@
   ],
   "initial": {
     "position": {
-      "//method": ["specified", "random-in-polygon", "random-in-world"],
-      "method": "specified",
+      "method": "random-in-polygon",
       "polygon": [
-        [-100, 0],
-        [-100, 100],
-        [100, 100],
-        [100, 0]
-      ],
-      "positions": [
-        [-1490, -120],
-        [-1470, -130],
-        [-1450, -140],
-        [-1430, -150],
-        [-1410, -160],
-        [-1390, -170],
-        [-1370, -180],
-        [-1490, 120],
-        [-1470, 130],
-        [-1450, 140],
-        [-1430, 150],
-        [-1410, 160],
-        [-1390, 170],
-        [-1370, 180]
+        [-1490, -200],
+        [-1490, 200],
+        [-1370, 200],
+        [-1370, -200]
       ]
     },
     "battery": {
@@ -77,11 +60,7 @@
     "discharge-rate": 0.5
   },
   "uncertainty": {
-    "//method": ["dist", "const"],
     "method": "dist",
-    "const": {
-      "epsilon": 100
-    },
     "dist": {
       "k": 0.05,
       "b": 1.0
@@ -90,24 +69,14 @@
   "position_covariance": {
     "enable": true,
     "ranging_sigma": 0.5,
-    "//uncertainty-type": ["std_avg", "max_eigenvalue"],
     "uncertainty-type": "max_eigenvalue"
   },
   "searching": {
-    "//method": ["downward", "front-sector", "front-cone"],
     "method": "front-sector",
-    "downward": {
-      "radius": 200.0
-    },
     "front-sector": {
       "inner-radius": 0.0,
       "outer-radius": 400.0,
       "half-angle-deg": 60.0
-    },
-    "front-cone": {
-      "height": 50.0,
-      "downward-radius": 20.0,
-      "camera-pitch-deg": 30.0
     }
   },
   "optimiser": "Gurobi",
@@ -119,7 +88,6 @@
       "cvt": {
         "name": "cvtCBF",
         "on": true,
-        "//exploration-mode": ["centroid", "intelligent", "nearest-unexplored", "cvt"],
         "exploration-mode": "nearest-unexplored",
         "front-focus-distance": 400.0,
         "kp": 5.0,
@@ -148,12 +116,10 @@
       }
     },
     "without-slack": {
-      "//method": ["all", "min"],
       "method": "all",
       "energy": {
         "name": "energyCBF",
         "on": false,
-        "//energy-value": ["self", "neighbour-min"],
         "energy-value": "neighbour-min",
         "normalize": {
           "on": false,
@@ -205,9 +171,8 @@
     }
   },
   "execute": {
-    "//execution-mode": ["distributed", "centralized"],
     "execution-mode": "distributed",
-    "time-total": 1000,
+    "time-total": 500,
     "time-step": 0.5,
     "check-constraint-violation": false
   },

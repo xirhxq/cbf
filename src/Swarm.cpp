@@ -6,6 +6,7 @@
 
 
 int main(int argc, char* argv[]) {
+    srand(time(NULL));  // Initialize random seed for Monte Carlo experiments
     clock_t start = clock();
 
     std::string configPath = "../config/config.json";

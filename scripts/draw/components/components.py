@@ -22,6 +22,7 @@ from .h_loc_constraints import HLocComponent
 from .h_safe_constraints import HSafeComponent
 from .comparison_search_percentage import ComparisonSearchPercentageComponent
 from .valid_links import ValidLinksComponent
+from .monte_carlo_sp import MonteCarloSearchPercentageComponent
 
 REGISTRIED_COMPONENTS = {
     'map': {
@@ -32,11 +33,11 @@ REGISTRIED_COMPONENTS = {
             '//colormap': ['coolwarm', 'christmas'],
             'colormap': 'coolwarm',
             'show_charge': False,
-            'show_time_title': False,
+            # 'show_time_title': False,
             'show_cov_ellipse': False,
             'show_cov_text': False,
             'annotation_font_size': 12,
-            'shotList': [0.5, 100, 200, 300, 400, 500]
+            # 'shotList': [0.5, 100, 200, 300, 400, 500]
         }
     },
     'opt-ct': {
@@ -325,6 +326,16 @@ REGISTRIED_COMPONENTS = {
             'method_colors': ['blue', 'red'],
             'show_violation_markers': True,
             'extend_to_time': 500,  # Extend shorter simulations to 500s
+        }
+    },
+    'monte-carlo-sp': {
+        'title': 'Monte Carlo Search Percentage Comparison',
+        'class': 'MonteCarloSearchPercentageComponent',
+        'filename': 'monte_carlo_sp',
+        'figsize': (10, 6),
+        'params': {
+            'data_folder': '../../data/monte_carlo',
+            'show_milestones': True,
         }
     }
 }
