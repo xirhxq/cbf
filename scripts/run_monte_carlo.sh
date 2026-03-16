@@ -6,43 +6,42 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="$PROJECT_ROOT/cmake-build-release"
 CONFIG_FILE="$PROJECT_ROOT/config/config_monte_carlo.json"
-OUTPUT_BASE="$PROJECT_ROOT/data/monte_carlo"
-LOG_DIR="$PROJECT_ROOT/logs"
 
-# Create directories
+BATCH_TIMESTAMP=$(date '+%Y-%m-%d_%H-%M-%S')
+OUTPUT_BASE="$PROJECT_ROOT/data/${BATCH_TIMESTAMP}_monte_carlo"
+
 mkdir -p "$OUTPUT_BASE"
-mkdir -p "$LOG_DIR"
 
 echo "Starting Monte Carlo experiments..."
 echo "Output directory: $OUTPUT_BASE"
-echo "Log directory: $LOG_DIR"
 echo ""
 
 for i in {1..20}; do
-    RUN_DIR="$OUTPUT_BASE/run_$i"
-    mkdir -p "$RUN_DIR"
+    RUN_SUFFIX="_run_$(printf '%02d' $i)"
 
-    # Create temp config with output_path set
     TEMP_CONFIG="/tmp/mc_config_$i.json"
     cat "$CONFIG_FILE" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
-data['output_path'] = '$RUN_DIR'
+data['output_path'] = '$OUTPUT_BASE'
+data['run_suffix'] = '$RUN_SUFFIX'
 print(json.dumps(data, indent=2))
 " > "$TEMP_CONFIG"
 
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting run $i..."
-    LOG_FILE="$LOG_DIR/mc_run_$i.log"
 
-    # Run simulation
     cd "$BUILD_DIR"
-    ./Swarm "$TEMP_CONFIG" > "$LOG_FILE" 2>&1
+    OUTPUT=$(./Swarm "$TEMP_CONFIG" 2>&1)
+    echo "$OUTPUT"
 
-    # Extract final search percentage from log
-    FINAL_PCT=$(grep -oE "[0-9]+\.[0-9]+%" "$LOG_FILE" | tail -1)
+    OUTPUT_DIR=$(echo "$OUTPUT" | grep -oE '\[OUTPUT_DIR\] .*' | sed 's/\[OUTPUT_DIR\] //')
+    if [ -n "$OUTPUT_DIR" ]; then
+        echo "$OUTPUT" > "$OUTPUT_DIR/output.log"
+    fi
+
+    FINAL_PCT=$(echo "$OUTPUT" | grep -oE "[0-9]+\.[0-9]+%" | tail -1)
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Run $i completed: ${FINAL_PCT} coverage"
 
-    # Small delay between runs
     sleep 1
 done
 

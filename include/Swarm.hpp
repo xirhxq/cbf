@@ -17,6 +17,7 @@ public:
     std::string folderName;
     std::string filename;
     std::string customOutputPath;
+    std::string outputDir;
     std::vector<int> all_ids;
 
     std::unique_ptr<CentralizedModel> centralizedModel;
@@ -109,17 +110,19 @@ public:
     }
 
     void initLog() {
-        // Determine data directory path
         std::string dataDir;
+        std::string runSuffix;
+
         if (!customOutputPath.empty()) {
             dataDir = customOutputPath;
-            std::cout << "[Swarm::initLog] Using custom output path: " << dataDir << std::endl;
         } else {
             dataDir = PROJECT_ROOT "/data";
-            std::cout << "[Swarm::initLog] Using default output path: " << dataDir << std::endl;
         }
 
-        // Create data directory if not exists
+        if (config.contains("run_suffix")) {
+            runSuffix = config["run_suffix"].get<std::string>();
+        }
+
         if (mkdir(dataDir.c_str(), 0777) == -1 && errno != EEXIST) {
             std::cerr << "[Swarm::initLog] Warning: Could not create data directory: " << strerror(errno) << std::endl;
         }
@@ -136,12 +139,13 @@ public:
             << std::setw(2) << t->tm_sec;
         folderName = oss.str();
 
-        std::string outputPath = dataDir + "/" + folderName;
+        std::string outputDirName = folderName + runSuffix;
+        outputDir = dataDir + "/" + outputDirName;
 
-        if (mkdir(outputPath.c_str(), 0777) == -1) {
+        if (mkdir(outputDir.c_str(), 0777) == -1) {
             std::cerr << "Error :  " << strerror(errno) << std::endl;
         }
-        filename = outputPath + "/data.json";
+        filename = outputDir + "/data.json";
         ofstream.open(filename, std::ios::app);
     }
 
@@ -296,6 +300,7 @@ public:
         endLog();
 
         printf("Data saved in %s\n", filename.c_str());
+        std::cout << "[OUTPUT_DIR] " << outputDir << std::endl;
 
     }
 
