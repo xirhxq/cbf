@@ -110,7 +110,7 @@
       "camera-pitch-deg": 30.0
     }
   },
-  "optimiser": "OSQP",
+  "optimiser": "Gurobi",
   "cbfs": {
     "objective-function": {
       "k_delta": 10.0
@@ -207,7 +207,7 @@
   "execute": {
     "//execution-mode": ["distributed", "centralized"],
     "execution-mode": "distributed",
-    "time-total": 1000,
+    "time-total": 500,
     "time-step": 0.5,
     "check-constraint-violation": false
   },
