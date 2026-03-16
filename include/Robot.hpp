@@ -94,6 +94,11 @@ public:
             optimiser = std::make_unique<HiGHS>(settings["cbfs"]["objective-function"]);
         } else
 #endif
+#ifdef ENABLE_OSQP
+        if (settings["optimiser"] == "OSQP") {
+            optimiser = std::make_unique<OSQP>(settings["cbfs"]["objective-function"]);
+        } else
+#endif
         {
             throw std::invalid_argument("Invalid optimiser type");
         }

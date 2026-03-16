@@ -48,6 +48,9 @@ public:
         obj_coeffs.clear();
         Q.resize(0, 0);
         model = HighsModel();
+        model.lp_.a_matrix_.format_ = MatrixFormat::kColwise;
+        model.lp_.sense_ = ObjSense::kMinimize;
+        highs.clearModel();
         has_error = false;
         last_error_message = "";
         last_error_code = 0;
@@ -150,6 +153,9 @@ public:
 
     Eigen::VectorXd solve() override {
         try {
+            A.prune([](const int&, const int&, const double& value) {
+                return std::abs(value) > 1e-9;
+            });
             A.makeCompressed();
             model.lp_.a_matrix_.start_.assign(A.outerIndexPtr(), A.outerIndexPtr() + A.outerSize() + 1);
             model.lp_.a_matrix_.index_.assign(A.innerIndexPtr(), A.innerIndexPtr() + A.nonZeros());
@@ -192,12 +198,14 @@ public:
             has_error = true;
             last_error_code = -1;
             last_error_message = std::string("HiGHS error: ") + e.what();
-            return Eigen::VectorXd::Zero(var_count);
+            // Debug mode: re-throw to stop program
+            throw;
         } catch (...) {
             has_error = true;
             last_error_code = -2;
             last_error_message = "Unknown HiGHS error";
-            return Eigen::VectorXd::Zero(var_count);
+            // Debug mode: re-throw to stop program
+            throw;
         }
     }
 };

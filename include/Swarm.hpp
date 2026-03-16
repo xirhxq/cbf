@@ -463,6 +463,11 @@ private:
                 optimizer = std::make_unique<HiGHS>(config["cbfs"]["objective-function"]);
             } else
 #endif
+#ifdef ENABLE_OSQP
+            if (config["optimiser"] == "OSQP") {
+                optimizer = std::make_unique<OSQP>(config["cbfs"]["objective-function"]);
+            } else
+#endif
             {
                 throw std::invalid_argument("Invalid optimiser type for centralized optimization");
             }

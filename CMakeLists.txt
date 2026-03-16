@@ -9,11 +9,9 @@ endif()
 
 set(CMAKE_CXX_STANDARD 17)
 
-unset(ENABLE_GUROBI CACHE)
-unset(ENABLE_HIGHS CACHE)
-
 option(ENABLE_GUROBI "Enable Gurobi Optimizer" ON)
 option(ENABLE_HIGHS "Enable HiGHS Optimizer" ON)
+option(ENABLE_OSQP "Enable OSQP Optimizer" ON)
 
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 if(NOT CMAKE_BUILD_TYPE)
@@ -52,6 +50,19 @@ if (ENABLE_HIGHS)
     endif ()
 endif ()
 
+if (ENABLE_OSQP)
+    message(STATUS "Looking for OsqpEigen...")
+    find_package(OsqpEigen REQUIRED)
+    if (OsqpEigen_FOUND)
+        message(STATUS "Found OsqpEigen")
+        target_compile_definitions(cbf_deps INTERFACE ENABLE_OSQP)
+        target_link_libraries(cbf_deps INTERFACE OsqpEigen::OsqpEigen)
+    else()
+        message(WARNING "OsqpEigen not found. Disabling ENABLE_OSQP.")
+        set(ENABLE_OSQP OFF)
+    endif()
+endif()
+
 target_include_directories(cbf_deps INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/external
@@ -63,6 +74,10 @@ endif ()
 
 if (ENABLE_HIGHS AND HIGHS_FOUND)
     add_definitions(-DENABLE_HIGHS)
+endif ()
+
+if (ENABLE_OSQP AND OsqpEigen_FOUND)
+    add_definitions(-DENABLE_OSQP)
 endif ()
 
 include_directories(include external)

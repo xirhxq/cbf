@@ -59,6 +59,10 @@ TEST_CASE("RandomSolvePerformanceComparison") {
     json highs_settings = {{"k_delta", 100.0}};
     optimisers.emplace_back(std::make_unique<HiGHS>(highs_settings));
 #endif
+#ifdef ENABLE_OSQP
+    json osqp_settings = {{"k_delta", 100.0}};
+    optimisers.emplace_back(std::make_unique<OSQP>(osqp_settings));
+#endif
 
     std::vector<double> total_times(optimisers.size(), 0.0);
 

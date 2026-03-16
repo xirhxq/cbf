@@ -11,3 +11,9 @@
 #include "HiGHS.hpp"
 
 #endif
+
+#ifdef ENABLE_OSQP
+
+#include "OSQP.hpp"
+
+#endif
