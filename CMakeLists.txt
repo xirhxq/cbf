@@ -1,8 +1,9 @@
 cmake_minimum_required(VERSION 3.16)
 project(cbf)
 
-option(CXX "enable C++ compilation" ON)
+include(FeatureSummary)
 
+option(CXX "enable C++ compilation" ON)
 if(CXX)
     enable_language(CXX)
 endif()
@@ -21,45 +22,56 @@ message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 
 add_library(cbf_deps INTERFACE)
 
-if (ENABLE_GUROBI)
+set_package_properties(GUROBI PROPERTIES
+    DESCRIPTION "Commercial high-performance optimizer"
+    TYPE RECOMMENDED)
+
+if(ENABLE_GUROBI)
     message(STATUS "Looking for Gurobi...")
-    find_package(GUROBI REQUIRED)
+    find_package(GUROBI)
     if(GUROBI_FOUND)
         message(STATUS "Found Gurobi: ${GUROBI_LIBRARY}")
-        include_directories(${GUROBI_INCLUDE_DIRS})
         target_compile_definitions(cbf_deps INTERFACE ENABLE_GUROBI)
         target_include_directories(cbf_deps INTERFACE ${GUROBI_INCLUDE_DIRS})
         target_link_libraries(cbf_deps INTERFACE ${GUROBI_CXX_LIBRARY} ${GUROBI_LIBRARY})
     else()
-        message(WARNING "Gurobi not found. Disabling ENABLE_GUROBI.")
-        set(ENABLE_GUROBI OFF)
+        message(STATUS "Gurobi not found - disabled")
+        set(ENABLE_GUROBI OFF CACHE BOOL "Enable Gurobi Optimizer" FORCE)
     endif()
-endif ()
+endif()
 
-if (ENABLE_HIGHS)
+set_package_properties(HIGHS PROPERTIES
+    DESCRIPTION "Open-source linear optimization solver"
+    TYPE RECOMMENDED)
+
+if(ENABLE_HIGHS)
     message(STATUS "Looking for HiGHS...")
-    find_package(HIGHS REQUIRED)
-    if (HIGHS_FOUND)
+    find_package(HIGHS)
+    if(HIGHS_FOUND)
         message(STATUS "Found HiGHS: ${HIGHS_LIBRARY}")
         target_compile_definitions(cbf_deps INTERFACE ENABLE_HIGHS)
         target_include_directories(cbf_deps INTERFACE ${HIGHS_DIRS})
         target_link_libraries(cbf_deps INTERFACE highs::highs)
-    else ()
-        message(WARNING "HiGHS not found. Disabling ENABLE_HIGHS.")
-        set(ENABLE_HIGHS OFF)
-    endif ()
-endif ()
+    else()
+        message(STATUS "HiGHS not found - disabled")
+        set(ENABLE_HIGHS OFF CACHE BOOL "Enable HiGHS Optimizer" FORCE)
+    endif()
+endif()
 
-if (ENABLE_OSQP)
+set_package_properties(OsqpEigen PROPERTIES
+    DESCRIPTION "OSQP QP solver with Eigen wrapper"
+    TYPE RECOMMENDED)
+
+if(ENABLE_OSQP)
     message(STATUS "Looking for OsqpEigen...")
-    find_package(OsqpEigen REQUIRED)
-    if (OsqpEigen_FOUND)
+    find_package(OsqpEigen)
+    if(OsqpEigen_FOUND)
         message(STATUS "Found OsqpEigen")
         target_compile_definitions(cbf_deps INTERFACE ENABLE_OSQP)
         target_link_libraries(cbf_deps INTERFACE OsqpEigen::OsqpEigen)
     else()
-        message(WARNING "OsqpEigen not found. Disabling ENABLE_OSQP.")
-        set(ENABLE_OSQP OFF)
+        message(STATUS "OsqpEigen not found - disabled")
+        set(ENABLE_OSQP OFF CACHE BOOL "Enable OSQP Optimizer" FORCE)
     endif()
 endif()
 
@@ -68,31 +80,49 @@ target_include_directories(cbf_deps INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/external
 )
 
-if (ENABLE_GUROBI AND GUROBI_FOUND)
-    add_definitions(-DENABLE_GUROBI)
-endif ()
-
-if (ENABLE_HIGHS AND HIGHS_FOUND)
-    add_definitions(-DENABLE_HIGHS)
-endif ()
-
-if (ENABLE_OSQP AND OsqpEigen_FOUND)
-    add_definitions(-DENABLE_OSQP)
-endif ()
-
 include_directories(include external)
+
 file(GLOB SOURCES "src/*.cpp")
-foreach (SOURCE ${SOURCES})
+foreach(SOURCE ${SOURCES})
     get_filename_component(EXECUTABLE ${SOURCE} NAME_WE)
     add_executable(${EXECUTABLE} ${SOURCE})
     target_compile_definitions(${EXECUTABLE} PRIVATE PROJECT_ROOT="${CMAKE_SOURCE_DIR}")
     target_link_libraries(${EXECUTABLE} PRIVATE cbf_deps)
-endforeach ()
+endforeach()
 
 file(GLOB TEST_SOURCES "tests/*.cpp")
-foreach (TEST_SOURCE ${TEST_SOURCES})
+foreach(TEST_SOURCE ${TEST_SOURCES})
     get_filename_component(TEST_EXECUTABLE ${TEST_SOURCE} NAME_WE)
     add_executable(${TEST_EXECUTABLE} ${TEST_SOURCE})
-
     target_link_libraries(${TEST_EXECUTABLE} PRIVATE cbf_deps)
-endforeach ()
+endforeach()
+
+message(STATUS "")
+message(STATUS "=== Optimizer Summary ===")
+if(ENABLE_GUROBI)
+    message(STATUS "  Gurobi: ENABLED")
+else()
+    message(STATUS "  Gurobi: disabled (not found)")
+endif()
+if(ENABLE_HIGHS)
+    message(STATUS "  HiGHS:  ENABLED")
+else()
+    message(STATUS "  HiGHS:  disabled (not found)")
+endif()
+if(ENABLE_OSQP)
+    message(STATUS "  OSQP:   ENABLED")
+else()
+    message(STATUS "  OSQP:   disabled (not found)")
+endif()
+message(STATUS "")
+
+if(NOT ENABLE_GUROBI AND NOT ENABLE_HIGHS AND NOT ENABLE_OSQP)
+    message(WARNING "
+===============================================================================
+WARNING: No optimizer found! Please install at least one of:
+  - Gurobi (commercial): https://www.gurobi.com/
+  - HiGHS (open-source): brew install highs
+  - OSQP (open-source): brew install osqp && install osqp-eigen
+===============================================================================
+")
+endif()
