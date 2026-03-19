@@ -76,7 +76,7 @@ def plot_parametric_comparison(folder_path, save_path=None):
     param_display = format_parameter_name(param_name)
 
     # Setup plot
-    fig, ax = plt.subplots(figsize=(7, 4.2))
+    fig, ax = plt.subplots(figsize=(5, 3))
 
     # Colors and linestyles for different runs
     colors = ['blue', 'red', 'green', 'orange', 'purple', 'brown']
@@ -102,7 +102,7 @@ def plot_parametric_comparison(folder_path, save_path=None):
         else:
             display_value = param_value
 
-        label = f'{param_display} = {display_value}'
+        label = f'{display_value}'
         ax.plot(runtimes, percentages, color=color, linestyle=linestyle,
                linewidth=2, label=label)
 
@@ -121,9 +121,9 @@ def plot_parametric_comparison(folder_path, save_path=None):
     ax.set_ylabel('Search Coverage (%)', fontsize=12)
     ax.set_title(title, fontsize=14)
     ax.grid(True, alpha=0.3)
-    ax.legend(loc='best', fontsize=10)
+    ax.legend(loc='lower right', fontsize=10)
 
-    ax.set_xlim([0, 400])  # Up to 400 seconds
+    ax.set_xlim([0, 350])  # Up to 350 seconds
     ax.set_ylim([0, 105])
 
     plt.tight_layout()

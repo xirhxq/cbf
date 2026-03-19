@@ -72,7 +72,7 @@ REGISTRIED_COMPONENTS = {
         'title': 'Search Percentage Over Time',
         'class': 'SearchPercentageComponent',
         'filename': 'search-percentage',
-        'figsize': (7, 4),
+        'figsize': (5, 3),
         'params': {
             'show_milestones': True,
             'milestones': [0.25, 0.5, 0.75, 1.0],
@@ -245,7 +245,7 @@ REGISTRIED_COMPONENTS = {
         'title': 'Position Uncertainty Evolution',
         'class': 'LineCovarianceMagnitude',
         'filename': 'position-uncertainty',
-        'figsize': (7, 4),
+        'figsize': (5, 3),
         'params': {
             'yscale': 'linear',
         }
@@ -265,37 +265,37 @@ REGISTRIED_COMPONENTS = {
         'title': 'Localization Constraints (h_loc)',
         'class': 'HLocComponent',
         'filename': 'h_loc',
-        'figsize': (7, 4),
+        'figsize': (5, 3),
     },
     'h_safe': {
         'title': 'Safety Constraints (h_safe)',
         'class': 'HSafeComponent',
         'filename': 'h_safe',
-        'figsize': (7, 4),
+        'figsize': (5, 3),
     },
     'constraint_cbfs': {
         'title': 'Constraint CBFs',
         'class': 'ConstraintCBFsComponent',
         'filename': 'constraint_cbfs',
-        'figsize': (7, 3.5),
+        'figsize': (5, 2.5),
     },
     'task_cbfs': {
         'title': 'Task CBFs',
         'class': 'TaskCBFsComponent',
         'filename': 'task_cbfs',
-        'figsize': (7, 3.5),
+        'figsize': (5, 2.5),
     },
     'slack_vars': {
         'title': 'Slack Variables',
         'class': 'SlackVarsComponent',
         'filename': 'slack_vars',
-        'figsize': (7, 3.5),
+        'figsize': (5, 2.5),
     },
     'comparison-sp': {
         'title': 'Search Performance Comparison',
         'class': 'ComparisonSearchPercentageComponent',
         'filename': 'comparison-search-percentage',
-        'figsize': (7, 4.2),
+        'figsize': (5, 3),
         'params': {
             'comparison_data': {
                 'Ours (Robust CBF)': '../../data/2026-01-28_14-47-22',
@@ -311,13 +311,13 @@ REGISTRIED_COMPONENTS = {
         'title': 'Valid Links (Safe Distance Range)',
         'class': 'ValidLinksComponent',
         'filename': 'valid-links',
-        'figsize': (10, 6),
+        'figsize': (7, 4.2),
     },
     'mbzirc-comparison-sp': {
         'title': 'MBZIRC Simulation vs Numerical Simulation',
         'class': 'ComparisonSearchPercentageComponent',
         'filename': 'mbzirc-comparison-search-percentage',
-        'figsize': (7, 4.2),
+        'figsize': (5, 3),
         'params': {
             'comparison_data': {
                 'MBZIRC Simulation': '../../data/2026-03-07_00-42-23',
