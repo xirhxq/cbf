@@ -84,6 +84,10 @@ class LineCovarianceMagnitude(Lines):
         # Add grid
         self.ax.grid(True, alpha=0.3)
 
+        # Override legend with ncol for better layout
+        if self.show_legend:
+            self.ax.legend(loc='upper left', ncol=2, fontsize=8)
+
     def _apply_custom_styling(self):
         """Apply custom styling for the uncertainty plot"""
         # No special styling needed for time series plot
