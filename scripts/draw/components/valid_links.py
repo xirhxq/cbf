@@ -157,7 +157,7 @@ class ValidLinksComponent(BaseComponent):
         # Labels and styling
         self.ax.set_xlabel('Time (s)')
         self.ax.set_ylabel('Distance (m)')
-        self.ax.set_title('Loc. & Safety Constraint Satisfaction')
+        self.ax.set_title('Localization & Safety Constraint Satisfaction')
         self.ax.grid(True, alpha=0.3)
 
         # Create custom legend
