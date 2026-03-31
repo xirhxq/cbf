@@ -88,7 +88,11 @@ def main():
     if len(sys.argv) > 1:
         base_dir = Path(sys.argv[1])
 
-    monte_carlo_dirs = sorted(base_dir.glob('*_monte_carlo'), key=lambda p: p.name, reverse=True)
+    # Check if the provided path is already a Monte Carlo directory
+    if base_dir.name.endswith('_monte_carlo') or base_dir.name == 'monte_carlo':
+        monte_carlo_dirs = [base_dir]
+    else:
+        monte_carlo_dirs = sorted(base_dir.glob('*_monte_carlo'), key=lambda p: p.name, reverse=True)
 
     if not monte_carlo_dirs:
         legacy_dir = Path('../data/monte_carlo')
@@ -102,7 +106,7 @@ def main():
     selected_dir = monte_carlo_dirs[0]
     print(f"Analyzing: {selected_dir}\n")
 
-    run_dirs = sorted(selected_dir.glob('*_run_*'))
+    run_dirs = sorted(selected_dir.glob('*run*'))
 
     if not run_dirs:
         run_dirs = sorted(selected_dir.glob('run_*'))

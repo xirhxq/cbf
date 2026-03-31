@@ -38,7 +38,7 @@ public:
         solver.settings()->setPrimalInfeasibilityTolerance(1e-3);
         solver.settings()->setDualInfeasibilityTolerance(1e-3);
         solver.settings()->setMaxIteration(100000);
-        solver.settings()->setPolish(false);  // Disable polish for low-tolerance settings
+        solver.settings()->setPolish(true);  // Enable polish for better accuracy
         solver.settings()->setScaling(100);  // More aggressive scaling
         solver.settings()->setAdaptiveRho(true);
         solver.settings()->setAdaptiveRhoInterval(100);  // Update rho more frequently

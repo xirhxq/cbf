@@ -52,15 +52,15 @@ TEST_CASE("RandomSolvePerformanceComparison") {
 
     std::vector<std::unique_ptr<OptimiserBase> > optimisers;
 #ifdef ENABLE_GUROBI
-    json gurobi_settings = {{"k_delta", 100.0}};
+    json gurobi_settings = {{"k_delta", 10.0}};
     optimisers.emplace_back(std::make_unique<Gurobi>(gurobi_settings));
 #endif
 #ifdef ENABLE_HIGHS
-    json highs_settings = {{"k_delta", 100.0}};
+    json highs_settings = {{"k_delta", 10.0}};
     optimisers.emplace_back(std::make_unique<HiGHS>(highs_settings));
 #endif
 #ifdef ENABLE_OSQP
-    json osqp_settings = {{"k_delta", 100.0}};
+    json osqp_settings = {{"k_delta", 10.0}};
     optimisers.emplace_back(std::make_unique<OSQP>(osqp_settings));
 #endif
 
@@ -99,7 +99,7 @@ TEST_CASE("RandomSolvePerformanceComparison") {
             if (i == 0) {
                 reference_solution = solution;
             } else {
-                if ((reference_solution - solution).norm() >= 1e-3) {
+                if ((reference_solution - solution).norm() >= 1e-5) {
                     test_failed = true;
                 }
             }
