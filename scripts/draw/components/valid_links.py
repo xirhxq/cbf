@@ -12,6 +12,24 @@ def valid_links_interpreter(data):
 
     Only shows links that are defined in the CBF constraints (same as h_loc).
     """
+    # Get squad configuration from config
+    num_robots = data.get('config', {}).get('num', 0)
+    parts = data.get('config', {}).get('formation', {}).get('parts', 0)
+    squad_size = num_robots // parts if parts > 0 else num_robots
+
+    # Define color mapping for squads
+    SQUAD_COLORS = ['blue', 'green', 'red', 'orange', 'purple', 'brown']
+    SQUAD_NAMES = ['Squad 1', 'Squad 2', 'Squad 3', 'Squad 4', 'Squad 5', 'Squad 6']
+
+    def get_squad_info(robot_id):
+        squad_id = (robot_id - 1) // squad_size if squad_size > 0 else 0
+        return {
+            'id': squad_id,
+            'category': f'squad{squad_id + 1}',
+            'color': SQUAD_COLORS[squad_id] if squad_id < len(SQUAD_COLORS) else 'gray',
+            'name': SQUAD_NAMES[squad_id] if squad_id < len(SQUAD_NAMES) else f'Squad {squad_id + 1}'
+        }
+
     processed_data = {
         'runtime': [frame["runtime"] for frame in data["state"]],
         'links': {}
@@ -46,17 +64,18 @@ def valid_links_interpreter(data):
     for robot_id, cbf_name in all_constraints:
         # Determine category and color
         if '(base-' in cbf_name:
-            category = 'base'
-            color = 'red'
+            # Assign base link to robot's squad
+            squad_info = get_squad_info(robot_id)
+            category = squad_info['category']
+            color = squad_info['color']
         elif '(#' in cbf_name:
             other_id = int(cbf_name.split('(#')[1].split(')')[0])
             # Determine squad based on both robots
-            if robot_id <= 7 and other_id <= 7:
-                category = 'squad1'
-                color = 'blue'
-            elif robot_id >= 8 and other_id >= 8:
-                category = 'squad2'
-                color = 'green'
+            squad_info_i = get_squad_info(robot_id)
+            squad_info_j = get_squad_info(other_id)
+            if squad_info_i['id'] == squad_info_j['id']:
+                category = squad_info_i['category']
+                color = squad_info_i['color']
             else:
                 category = 'cross'
                 color = 'gray'
@@ -160,17 +179,43 @@ class ValidLinksComponent(BaseComponent):
         self.ax.set_title('Localization & Safety Constraint Satisfaction')
         self.ax.grid(True, alpha=0.3)
 
-        # Create custom legend
+        # Create custom legend (dynamic)
         from matplotlib.patches import Patch
         from matplotlib.lines import Line2D
+
+        # Get squad configuration for dynamic legend
+        num_robots = self.data.get('config', {}).get('num', 0)
+        parts = self.data.get('config', {}).get('formation', {}).get('parts', 0)
+        squad_size = num_robots // parts if parts > 0 else num_robots
+
+        SQUAD_COLORS = ['blue', 'green', 'red', 'orange', 'purple', 'brown']
+        SQUAD_NAMES = ['Squad 1', 'Squad 2', 'Squad 3', 'Squad 4', 'Squad 5', 'Squad 6']
+
+        def get_squad_info(robot_id):
+            squad_id = (robot_id - 1) // squad_size if squad_size > 0 else 0
+            return {
+                'id': squad_id,
+                'color': SQUAD_COLORS[squad_id] if squad_id < len(SQUAD_COLORS) else 'gray',
+                'name': SQUAD_NAMES[squad_id] if squad_id < len(SQUAD_NAMES) else f'Squad {squad_id + 1}'
+            }
+
         legend_elements = [
             Patch(facecolor='green', alpha=0.3, label='Valid range'),
-            Line2D([0], [0], color='blue', linewidth=1.5, label='Squad 1 (1-7)'),
-            Line2D([0], [0], color='green', linewidth=1.5, label='Squad 2 (8-14)'),
-            Line2D([0], [0], color='red', linewidth=1.5, label='Base links'),
-            Line2D([0], [0], color='red', linestyle='--', linewidth=2, label=f'$d_{{loc}}$ ({d_loc}m)'),
-            Line2D([0], [0], color='orange', linestyle='--', linewidth=2, label=f'$d_{{safe}}$ ({d_safe}m)'),
         ]
+        # Add squad entries dynamically
+        for i in range(parts):
+            squad_info = get_squad_info(i * squad_size + 1)
+            legend_elements.append(
+                Line2D([0], [0], color=squad_info['color'], linewidth=1.5, label=squad_info['name'])
+            )
+        # Add reference lines
+        legend_elements.append(
+            Line2D([0], [0], color='red', linestyle='--', linewidth=2, label=f'$d_{{loc}}$ ({d_loc}m)')
+        )
+        legend_elements.append(
+            Line2D([0], [0], color='orange', linestyle='--', linewidth=2, label=f'$d_{{safe}}$ ({d_safe}m)')
+        )
+
         self.ax.legend(handles=legend_elements, loc='best', fontsize=8)
 
         # Set y-axis limit

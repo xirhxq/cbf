@@ -7,6 +7,24 @@ def h_loc_interpreter(data):
     Extract ALL h_loc constraint data (fixedCommCBF constraints).
     Shows distance + combined uncertainty for ALL constrained pairs.
     """
+    # Get squad configuration from config
+    num_robots = data.get('config', {}).get('num', 0)
+    parts = data.get('config', {}).get('formation', {}).get('parts', 0)
+    squad_size = num_robots // parts if parts > 0 else num_robots
+
+    # Define color mapping for squads
+    SQUAD_COLORS = ['blue', 'green', 'red', 'orange', 'purple', 'brown']
+    SQUAD_NAMES = ['Squad 1', 'Squad 2', 'Squad 3', 'Squad 4', 'Squad 5', 'Squad 6']
+
+    def get_squad_info(robot_id):
+        squad_id = (robot_id - 1) // squad_size if squad_size > 0 else 0
+        return {
+            'id': squad_id,
+            'category': f'squad{squad_id + 1}',
+            'color': SQUAD_COLORS[squad_id] if squad_id < len(SQUAD_COLORS) else 'gray',
+            'name': SQUAD_NAMES[squad_id] if squad_id < len(SQUAD_NAMES) else f'Squad {squad_id + 1}'
+        }
+
     processed_data = {
         'runtime': [frame["runtime"] for frame in data["state"]],
         'constraints': {}
@@ -31,21 +49,21 @@ def h_loc_interpreter(data):
                     all_constraints.append((robot_id, cbf_name))
 
     # Determine color for each constraint
-    # Squad 1: robots 1-7, Squad 2: robots 8-14
     for robot_id, cbf_name in all_constraints:
         # Determine category and color
         if '(base-' in cbf_name:
-            category = 'base'
-            color = 'red'
+            # Assign base link to robot's squad
+            squad_info = get_squad_info(robot_id)
+            category = squad_info['category']
+            color = squad_info['color']
         elif '(#' in cbf_name:
             other_id = int(cbf_name.split('(#')[1].split(')')[0])
             # Determine squad based on both robots
-            if robot_id <= 7 and other_id <= 7:
-                category = 'squad1'
-                color = 'blue'
-            elif robot_id >= 8 and other_id >= 8:
-                category = 'squad2'
-                color = 'green'
+            squad_info_i = get_squad_info(robot_id)
+            squad_info_j = get_squad_info(other_id)
+            if squad_info_i['id'] == squad_info_j['id']:
+                category = squad_info_i['category']
+                color = squad_info_i['color']
             else:
                 # Cross-squad (shouldn't happen based on data)
                 category = 'cross'
@@ -129,12 +147,27 @@ class HLocComponent(BaseComponent):
         runtime = self.processed_data['runtime']
         max_range = self.processed_data['max_range']
 
-        # Group constraints by category for layered plotting
-        categories = {
-            'squad1': [],
-            'squad2': [],
-            'base': []
-        }
+        # Get squad configuration for dynamic categories
+        num_robots = self.data.get('config', {}).get('num', 0)
+        parts = self.data.get('config', {}).get('formation', {}).get('parts', 0)
+        squad_size = num_robots // parts if parts > 0 else num_robots
+
+        SQUAD_COLORS = ['blue', 'green', 'red', 'orange', 'purple', 'brown']
+        SQUAD_NAMES = ['Squad 1', 'Squad 2', 'Squad 3', 'Squad 4', 'Squad 5', 'Squad 6']
+
+        def get_squad_info(robot_id):
+            squad_id = (robot_id - 1) // squad_size if squad_size > 0 else 0
+            return {
+                'id': squad_id,
+                'category': f'squad{squad_id + 1}',
+                'color': SQUAD_COLORS[squad_id] if squad_id < len(SQUAD_COLORS) else 'gray',
+                'name': SQUAD_NAMES[squad_id] if squad_id < len(SQUAD_NAMES) else f'Squad {squad_id + 1}'
+            }
+
+        # Group constraints by category for layered plotting (dynamic)
+        categories = {}
+        for i in range(parts):
+            categories[f'squad{i+1}'] = []
 
         for key, constraint in self.processed_data['constraints'].items():
             category = constraint['category']
@@ -160,13 +193,14 @@ class HLocComponent(BaseComponent):
         self.ax.axhline(y=max_range, color='red', linestyle='--',
                        linewidth=2, alpha=0.8, label=f'$d_{{loc}}$ ({max_range}m)')
 
-        # Create custom legend with just category colors
+        # Create custom legend with just category colors (dynamic)
         from matplotlib.patches import Patch
-        legend_elements = [
-            Patch(facecolor='blue', alpha=0.3, label='Squad 1 (UAVs 1-7)'),
-            Patch(facecolor='green', alpha=0.3, label='Squad 2 (UAVs 8-14)'),
-            Patch(facecolor='red', alpha=0.3, label='Base links'),
-        ]
+        legend_elements = []
+        for i in range(parts):
+            squad_info = get_squad_info(i * squad_size + 1)  # Get first robot of this squad
+            legend_elements.append(
+                Patch(facecolor=squad_info['color'], alpha=0.3, label=squad_info['name'])
+            )
         legend_elements.append(
             self.ax.axhline(y=max_range, color='red', linestyle='--',
                           linewidth=2, alpha=0.8, label=f'$d_{{loc}}$ ({max_range}m)')
