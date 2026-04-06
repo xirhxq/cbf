@@ -57,7 +57,7 @@ class LineCovarianceMagnitude(Lines):
         if isinstance(self.processed_data, dict):
             for key, data in self.processed_data.items():
                 if key.startswith('robot_') and 'runtime' in data and 'value' in data:
-                    robot_label = key.replace('robot_', 'Robot #')
+                    robot_label = key.replace('robot_', 'UAV #')
                     line_data_list.append({
                         'label': robot_label,
                         'x': data['runtime'],
