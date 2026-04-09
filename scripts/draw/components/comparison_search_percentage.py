@@ -110,31 +110,22 @@ class ComparisonSearchPercentageComponent(BaseComponent):
             runtime = np.array(data['runtime'])
             percentages = np.array(data['search_percentages'])
 
-            # Check if simulation ended early due to constraint violation
-            # Use duration as indicator: if < 300s, likely terminated by violation
-            final_time = runtime[-1]
+            # Check if simulation completed successfully
             final_pct = percentages[-1]
-            is_violation = final_time < 300  # Early termination indicates violation
-            is_finished = not is_violation  # Completed full simulation
+            is_incomplete = final_pct < 0.95  # Less than 95% means incomplete
 
             # Plot line
             label = method_name
-            linestyle = '--' if is_violation else '-'
+            linestyle = '--' if is_incomplete else '-'
 
-            # Show final percentage for both violations and finished runs
-            if is_violation or is_finished:
-                label += f' ({final_pct*100:.1f}%)'
+            # Show final percentage
+            label += f' ({final_pct*100:.1f}%)'
 
-            self.ax.plot(runtime, percentages, color=color, linewidth=2,
+            self.ax.plot(runtime, percentages * 100, color=color, linewidth=2,
                         linestyle=linestyle, label=label, zorder=3)
 
             # Add fill with reduced transparency
-            self.ax.fill_between(runtime, 0, percentages, alpha=0.08, color=color, zorder=2)
-
-            # Mark violation point if simulation ended early
-            if is_violation and self.show_violation_markers:
-                self.ax.plot(runtime[-1], percentages[-1], 'x', color=color, markersize=10,
-                           markeredgewidth=2, label='_nolegend_', zorder=4)
+            self.ax.fill_between(runtime, 0, percentages * 100, alpha=0.08, color=color, zorder=2)
 
         # Add milestone lines
         if self.show_milestones:
@@ -147,11 +138,8 @@ class ComparisonSearchPercentageComponent(BaseComponent):
         self.ax.set_ylabel('Search Percentage (%)')
         self.ax.set_title('Search Performance Comparison')
 
-        # Format y-axis as percentage
-        self.ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{int(y*100)}%'))
-
         # Set limits
-        self.ax.set_ylim([0, 1.05])
+        self.ax.set_ylim([0, 105])
         self.ax.grid(True, alpha=0.3)
 
         # Legend

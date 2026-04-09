@@ -359,5 +359,23 @@ REGISTRIED_COMPONENTS = {
             'time_point': 150.0,
             'uav_range': list(range(7))
         }
+    },
+    'polygon-comparison-sp': {
+        'title': 'Search Performance Comparison (Polygon Shapes)',
+        'class': 'ComparisonSearchPercentageComponent',
+        'filename': 'polygon-comparison-search-percentage',
+        'figsize': (5, 2.5),
+        'params': {
+            'comparison_data': {
+                '(a)': '../../data/2026-01-30_15-54-44',
+                '(b)': '../../data/2026-01-30_15-57-50',
+                '(c)': '../../data/2026-01-30_16-00-13',
+                '(d)': '../../data/2026-03-25_14-46-37',
+                '(e)': '../../data/2026-03-25_14-46-46',
+                '(f)': '../../data/2026-03-25_14-47-31',
+            },
+            'method_colors': ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b'],
+            'show_violation_markers': False,
+        }
     }
 }
