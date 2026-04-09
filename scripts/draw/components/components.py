@@ -312,7 +312,7 @@ REGISTRIED_COMPONENTS = {
         'title': 'Valid Links (Safe Distance Range)',
         'class': 'ValidLinksComponent',
         'filename': 'valid-links',
-        'figsize': (7, 4.2),
+        'figsize': (5, 3),
     },
     'mbzirc-comparison-sp': {
         'title': 'MBZIRC Simulation vs Numerical Simulation',
