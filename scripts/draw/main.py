@@ -295,6 +295,14 @@ if __name__ == '__main__':
             'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['position-uncertainty'])
         },
         {
+            'name': 'Position Uncertainty (UAV 1, 4, 7)',
+            'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['position-uncertainty-representative'])
+        },
+        {
+            'name': 'Position Uncertainty Boxplot (t=100s)',
+            'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['position-uncertainty-boxplot'])
+        },
+        {
             'name': 'Position Uncertainty Distribution (Global)',
             'action': lambda: StaticGlobalPlotDrawer(files).draw_plots(['uncertainty-heatmap'])
         },

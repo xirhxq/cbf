@@ -23,6 +23,7 @@ from .h_safe_constraints import HSafeComponent
 from .comparison_search_percentage import ComparisonSearchPercentageComponent
 from .valid_links import ValidLinksComponent
 from .monte_carlo_sp import MonteCarloSearchPercentageComponent
+from .uncertainty_chain import PositionUncertaintyRepresentative, PositionUncertaintyBoxplot
 
 REGISTRIED_COMPONENTS = {
     'map': {
@@ -336,6 +337,27 @@ REGISTRIED_COMPONENTS = {
         'params': {
             'data_folder': '../../data/monte_carlo',
             'show_milestones': True,
+        }
+    },
+    'position-uncertainty-representative': {
+        'title': 'Position Uncertainty (UAV 1, 3, 5, 7)',
+        'class': 'PositionUncertaintyRepresentative',
+        'filename': 'position-uncertainty-uav-1-3-5-7',
+        'figsize': (5, 3),
+        'expand': False,
+        'params': {
+            'id_list': [0, 2, 4, 6]
+        }
+    },
+    'position-uncertainty-boxplot': {
+        'title': 'Position Uncertainty Boxplot (t=150s)',
+        'class': 'PositionUncertaintyBoxplot',
+        'filename': 'position-uncertainty-boxplot',
+        'figsize': (5, 3),
+        'expand': False,
+        'params': {
+            'time_point': 150.0,
+            'uav_range': list(range(7))
         }
     }
 }
