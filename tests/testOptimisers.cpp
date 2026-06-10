@@ -284,6 +284,22 @@ void saveModels(const std::vector<OptimiserCase> &optimisers, int test_id) {
     }
 }
 
+TEST_CASE("SlackConstraintCoefficientsAppendSingleActiveSlack") {
+    Eigen::VectorXd uCoe(3);
+    uCoe << 1.0, -2.0, 3.0;
+
+    Eigen::VectorXd coe = makeSlackConstraintCoefficients(uCoe, 4, 2);
+
+    REQUIRE(coe.size() == 7);
+    CHECK(coe(0) == doctest::Approx(1.0));
+    CHECK(coe(1) == doctest::Approx(-2.0));
+    CHECK(coe(2) == doctest::Approx(3.0));
+    CHECK(coe(3) == doctest::Approx(0.0));
+    CHECK(coe(4) == doctest::Approx(0.0));
+    CHECK(coe(5) == doctest::Approx(1.0));
+    CHECK(coe(6) == doctest::Approx(0.0));
+}
+
 TEST_CASE("RealDataReplayProblemsCanBeLoaded") {
     const auto data_path = std::filesystem::path("data/2025-11-24_14-33-29/data.json");
     if (!std::filesystem::exists(data_path)) {

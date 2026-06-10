@@ -513,10 +513,7 @@ private:
         int cnt = 0;
         for (auto &[name, cbf] : cbfSlack) {
             auto evaluation = cbf.evaluateConstraint(f, g, x, robots[0]->runtime);
-            Eigen::VectorXd sCoe = Eigen::VectorXd::Zero(slackSize);
-            sCoe(cnt) = 1.0;
-            Eigen::VectorXd coe(totalSize);
-            coe << evaluation.uCoe, sCoe;
+            Eigen::VectorXd coe = makeSlackConstraintCoefficients(evaluation.uCoe, slackSize, cnt);
 
             optimizer->addLinearConstraint(coe, -evaluation.constWithoutTime);
 

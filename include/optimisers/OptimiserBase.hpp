@@ -34,6 +34,22 @@ public:
     virtual ~OptimiserBase() = default;
 };
 
+inline Eigen::VectorXd makeSlackConstraintCoefficients(const Eigen::VectorXd &uCoe,
+                                                       int slackSize,
+                                                       int slackIndex) {
+    if (slackSize < 0) {
+        throw std::invalid_argument("slackSize must be non-negative");
+    }
+    if (slackIndex < 0 || slackIndex >= slackSize) {
+        throw std::out_of_range("slackIndex outside slack coefficient block");
+    }
+
+    Eigen::VectorXd coe = Eigen::VectorXd::Zero(uCoe.size() + slackSize);
+    coe.head(uCoe.size()) = uCoe;
+    coe(uCoe.size() + slackIndex) = 1.0;
+    return coe;
+}
+
 inline std::vector<std::string> getAvailableOptimisers() {
     std::vector<std::string> available;
 #ifdef ENABLE_GUROBI
