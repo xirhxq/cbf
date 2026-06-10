@@ -184,10 +184,29 @@ public:
         return sqrt(dx * dx + dy * dy);
     }
 
+    double squaredDistanceToCellCenter(int xIndex, int yIndex, const Point &center) {
+        double dx = getXPositionInXLimit(xIndex) - center.x;
+        double dy = getYPositionInYLimit(yIndex) - center.y;
+        return dx * dx + dy * dy;
+    }
+
     double angleFromCellCenter(int xIndex, int yIndex, const Point &center) {
         double dx = getXPositionInXLimit(xIndex) - center.x;
         double dy = getYPositionInYLimit(yIndex) - center.y;
         return atan2(dy, dx);
+    }
+
+    static double normalizeAngle(double angle) {
+        double normalized = fmod(angle, 2 * M_PI);
+        if (normalized < 0) normalized += 2 * M_PI;
+        return normalized;
+    }
+
+    static bool isAngleBetweenWrapped(double angle, double start, double end) {
+        if (start < end) {
+            return angle >= start && angle <= end;
+        }
+        return angle >= start || angle <= end;
     }
 
     bool isExplored(Point point) {
@@ -339,8 +358,10 @@ public:
 
         json ret = json::array();
 
-        double startAngle = centerAngleRad - halfAngleRad;
-        double endAngle = centerAngleRad + halfAngleRad;
+        double innerRadiusSq = innerRadius * innerRadius;
+        double outerRadiusSq = outerRadius * outerRadius;
+        double startAngle = normalizeAngle(centerAngleRad - halfAngleRad);
+        double endAngle = normalizeAngle(centerAngleRad + halfAngleRad);
 
         for (int i = xIndexes.first; i <= xIndexes.second; i++) {
             double x = getXPositionInXLimit(i);
@@ -352,25 +373,12 @@ public:
             yIndexes.second = getNumInYLim(yLimit.second, "floor");
 
             for (int j = yIndexes.first; j <= yIndexes.second; j++) {
-                double distance = distanceToCellCenter(i, j, center);
-                if (distance < innerRadius || distance > outerRadius) continue;
+                double distanceSq = squaredDistanceToCellCenter(i, j, center);
+                if (distanceSq < innerRadiusSq || distanceSq > outerRadiusSq) continue;
 
-                double theta = angleFromCellCenter(i, j, center);
-                if (theta < 0) theta += 2 * M_PI;
+                double theta = normalizeAngle(angleFromCellCenter(i, j, center));
 
-                double start = fmod(startAngle, 2 * M_PI);
-                if (start < 0) start += 2 * M_PI;
-                double end = fmod(endAngle, 2 * M_PI);
-                if (end < 0) end += 2 * M_PI;
-                bool inSector = false;
-
-                if (start < end) {
-                    inSector = (theta >= start && theta <= end);
-                } else {
-                    inSector = (theta >= start || theta <= end);
-                }
-
-                if (!inSector) continue;
+                if (!isAngleBetweenWrapped(theta, startAngle, endAngle)) continue;
 
                 if (updateJson && getValue(i, j) != value) {
                     ret.push_back({i, j});

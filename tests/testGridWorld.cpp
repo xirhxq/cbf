@@ -10,3 +10,16 @@ TEST_CASE("GridWorldCellGeometryMatchesPointDistanceAndAngle") {
     CHECK(grid.distanceToCellCenter(5, 7, center) == doctest::Approx(5.0));
     CHECK(grid.angleFromCellCenter(5, 7, center) == doctest::Approx(std::atan2(4.0, 3.0)));
 }
+
+TEST_CASE("GridWorldSectorAngleHelpersHandleWrappedIntervals") {
+    CHECK(GridWorld::normalizeAngle(-M_PI / 2.0) == doctest::Approx(3.0 * M_PI / 2.0));
+    CHECK(GridWorld::normalizeAngle(5.0 * M_PI) == doctest::Approx(M_PI));
+
+    const double start = GridWorld::normalizeAngle(11.0 * M_PI / 6.0);
+    const double end = GridWorld::normalizeAngle(M_PI / 6.0);
+
+    CHECK(GridWorld::isAngleBetweenWrapped(0.0, start, end));
+    CHECK(GridWorld::isAngleBetweenWrapped(GridWorld::normalizeAngle(23.0 * M_PI / 12.0), start, end));
+    CHECK(GridWorld::isAngleBetweenWrapped(M_PI / 12.0, start, end));
+    CHECK_FALSE(GridWorld::isAngleBetweenWrapped(M_PI / 2.0, start, end));
+}
