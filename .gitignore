@@ -8,3 +8,5 @@ build
 QWEN.md
 __pycache__/
 *.pyc
+_*
+papers
