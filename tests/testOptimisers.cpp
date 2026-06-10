@@ -1,7 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 
 #include "doctest.h"
-#include "optimisers/optimisers"
+#include "Robot.hpp"
 #include <Eigen/Dense>
 #include <chrono>
 #include <random>
@@ -25,6 +25,68 @@ struct ReplayProblem {
     double expected_objective = 0.0;
     double k_delta = 1.0;
 };
+
+std::string selectRobotTestOptimiser() {
+    auto available = getAvailableOptimisers();
+    if (std::find(available.begin(), available.end(), "OSQP") != available.end()) {
+        return "OSQP";
+    }
+    REQUIRE(!available.empty());
+    return available.front();
+}
+
+json makeSingleRobotNoCbfConfig(const std::string &optimiser_name) {
+    return {
+        {"world", {
+            {"boundary", {{0.0, 0.0}, {10.0, 0.0}, {10.0, 10.0}, {0.0, 10.0}}},
+            {"charge", json::array()},
+            {"spacing", 1.0}
+        }},
+        {"num", 1},
+        {"all", {1}},
+        {"formation", {
+            {"parts", 1},
+            {"bases-id", {json::array()}}
+        }},
+        {"bases", json::array()},
+        {"initial", {
+            {"position", {
+                {"method", "specified"},
+                {"positions", {{5.0, 5.0}}}
+            }},
+            {"battery", {
+                {"min", 4100.0},
+                {"max", 4100.0}
+            }},
+            {"yawDeg", 0.0}
+        }},
+        {"model", "SingleIntegrate2D"},
+        {"model-params", {
+            {"discharge-rate", 0.0}
+        }},
+        {"optimiser", optimiser_name},
+        {"cbfs", {
+            {"objective-function", {
+                {"k_delta", 10.0}
+            }},
+            {"with-slack", {
+                {"cvt", {{"on", false}}},
+                {"cvt-yaw", {{"on", false}}},
+                {"target-yaw", {{"on", false}}}
+            }},
+            {"without-slack", {
+                {"method", "all"},
+                {"energy", {{"on", false}}},
+                {"safety", {{"on", false}}},
+                {"comm-fixed", {{"on", false}}},
+                {"comm-auto", {{"on", false}}}
+            }}
+        }},
+        {"debug", {
+            {"opt-cbc", false}
+        }}
+    };
+}
 
 double objectiveValue(const Eigen::VectorXd &nominal,
                       const Eigen::VectorXd &solution,
@@ -257,6 +319,24 @@ TEST_CASE("RealDataReplaySolversMatchSavedGurobiSolution") {
             CHECK((solution.head(3) - problem.expected_solution.head(3)).norm() < 1e-2);
         }
     }
+}
+
+TEST_CASE("RobotOptimiseUsesZeroNominalControlWhenNoNominalPolicyConfigured") {
+    const std::string optimiser_name = selectRobotTestOptimiser();
+    json settings = makeSingleRobotNoCbfConfig(optimiser_name);
+
+    Robot robot(1, settings);
+    robot.optimise();
+
+    Eigen::VectorXd control = robot.model->getControlInput();
+    REQUIRE(control.size() == 3);
+    CHECK(control[0] == doctest::Approx(0.0).epsilon(1e-12));
+    CHECK(control[1] == doctest::Approx(0.0).epsilon(1e-12));
+    CHECK(control[2] == doctest::Approx(0.0).epsilon(1e-12));
+
+    CHECK(robot.opt.at("nominal").at("vx").get<double>() == doctest::Approx(0.0).epsilon(1e-12));
+    CHECK(robot.opt.at("nominal").at("vy").get<double>() == doctest::Approx(0.0).epsilon(1e-12));
+    CHECK(robot.opt.at("nominal").at("yawRateRad").get<double>() == doctest::Approx(0.0).epsilon(1e-12));
 }
 
 TEST_CASE("RandomSolvePerformanceComparison") {

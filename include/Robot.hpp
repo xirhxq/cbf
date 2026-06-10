@@ -802,6 +802,7 @@ public:
 
     void optimise() {
         VectorXd uNominal(model->uSize());
+        uNominal.setZero();
         opt = {
                 {"nominal",    model->control2Json(uNominal)},
                 {"result",     model->control2Json(uNominal)},
