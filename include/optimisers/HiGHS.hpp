@@ -94,7 +94,7 @@ public:
 
     }
 
-    void addLinearConstraint(Eigen::VectorXd coe, double rhs_value) override {
+    void addLinearConstraint(const Eigen::VectorXd &coe, double rhs_value) override {
         if (constraint_count == 0) {
             A.resize(1, var_count);
             rhs.resize(1);

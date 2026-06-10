@@ -21,7 +21,7 @@ public:
     virtual void start(int total_size, int u_size) = 0;
 
     virtual void setObjective(Eigen::VectorXd &uNominal) = 0;
-    virtual void addLinearConstraint(Eigen::VectorXd coe, double rhs) = 0;
+    virtual void addLinearConstraint(const Eigen::VectorXd &coe, double rhs) = 0;
 
     virtual Eigen::VectorXd solve() = 0;
 

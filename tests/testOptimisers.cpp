@@ -15,6 +15,12 @@
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
+#include <type_traits>
+
+static_assert(std::is_same_v<
+    decltype(&OptimiserBase::addLinearConstraint),
+    void (OptimiserBase::*)(const Eigen::VectorXd &, double)
+>);
 
 struct OptimiserCase {
     std::string name;

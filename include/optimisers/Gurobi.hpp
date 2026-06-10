@@ -65,7 +65,7 @@ public:
         model->setObjective(obj, GRB_MINIMIZE);
     }
 
-    void addLinearConstraint(Eigen::VectorXd coe, double rhs) override {
+    void addLinearConstraint(const Eigen::VectorXd &coe, double rhs) override {
         GRBLinExpr ln = 0.0;
         for (int i = 0; i < coe.size(); i++) {
             ln += coe[i] * vars[i];

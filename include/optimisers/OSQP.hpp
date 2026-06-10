@@ -104,7 +104,7 @@ public:
         H.makeCompressed();
     }
 
-    void addLinearConstraint(Eigen::VectorXd coe, double rhs_value) override {
+    void addLinearConstraint(const Eigen::VectorXd &coe, double rhs_value) override {
         if (user_constraint_count == 0) {
             A.resize(1, var_count);
             lowerBound.resize(1);
