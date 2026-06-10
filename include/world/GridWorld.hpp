@@ -257,7 +257,7 @@ public:
         return ret;
     }
 
-    json setValueInCircle(Point center, json params, bool value, bool updateJson = false) {
+    json setValueInCircle(Point center, const json &params, bool value, bool updateJson = false) {
         double radius = params["radius"];
         json ret = json::array();
         pd xLimit = {center.x - radius, center.x + radius};
@@ -281,7 +281,7 @@ public:
         return ret;
     }
 
-    json setValueInTiltedCone(Point center, json params, bool value, bool updateJson = false) {
+    json setValueInTiltedCone(Point center, const json &params, bool value, bool updateJson = false) {
         double h = params["height"];
         double r = params["downward-radius"];
         double yawRad = params["yaw-rad"];
@@ -345,7 +345,7 @@ public:
         return ret;
     }
 
-    json setValueInSectorRing(Point center, json params, bool value, bool updateJson = false) {
+    json setValueInSectorRing(Point center, const json &params, bool value, bool updateJson = false) {
         double outerRadius = params["outer-radius"];
         double innerRadius = params["inner-radius"];
         double halfAngleRad = static_cast<double>(params["half-angle-deg"]) * M_PI / 180.0;

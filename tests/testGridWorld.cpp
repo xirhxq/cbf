@@ -23,3 +23,15 @@ TEST_CASE("GridWorldSectorAngleHelpersHandleWrappedIntervals") {
     CHECK(GridWorld::isAngleBetweenWrapped(M_PI / 12.0, start, end));
     CHECK_FALSE(GridWorld::isAngleBetweenWrapped(M_PI / 2.0, start, end));
 }
+
+TEST_CASE("GridWorldSearchAreaFunctionsAcceptParamsByConstReference") {
+    using SearchAreaFunction = json (GridWorld::*)(Point, const json&, bool, bool);
+
+    auto circle = static_cast<SearchAreaFunction>(&GridWorld::setValueInCircle);
+    auto tiltedCone = static_cast<SearchAreaFunction>(&GridWorld::setValueInTiltedCone);
+    auto sectorRing = static_cast<SearchAreaFunction>(&GridWorld::setValueInSectorRing);
+
+    CHECK(circle != nullptr);
+    CHECK(tiltedCone != nullptr);
+    CHECK(sectorRing != nullptr);
+}
