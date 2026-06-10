@@ -339,6 +339,25 @@ TEST_CASE("RobotOptimiseUsesZeroNominalControlWhenNoNominalPolicyConfigured") {
     CHECK(robot.opt.at("nominal").at("yawRateRad").get<double>() == doctest::Approx(0.0).epsilon(1e-12));
 }
 
+TEST_CASE("RobotCachesSearchConfigurationAtConstruction") {
+    const std::string optimiser_name = selectRobotTestOptimiser();
+    json settings = makeSingleRobotNoCbfConfig(optimiser_name);
+    settings["searching"] = {
+        {"method", "front-sector"},
+        {"front-sector", {
+            {"inner-radius", 0.0},
+            {"outer-radius", 400.0},
+            {"half-angle-deg", 60.0}
+        }}
+    };
+
+    Robot robot(1, settings);
+
+    CHECK(robot.searchMethod == "front-sector");
+    CHECK(robot.searchParams.at("outer-radius").get<double>() == doctest::Approx(400.0));
+    CHECK(robot.searchParams.at("half-angle-deg").get<double>() == doctest::Approx(60.0));
+}
+
 TEST_CASE("RandomSolvePerformanceComparison") {
     const int num_variables = 10;
     const int num_slack_variables = 3;

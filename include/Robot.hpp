@@ -55,6 +55,9 @@ public:
     std::map<int, int> endId2CvtId;
     std::map<int, int> cvtId2EndId;
 
+    std::string searchMethod;
+    json searchParams;
+
     std::vector<Point> bases;
     std::vector<int> myBasesId;
 
@@ -109,6 +112,14 @@ public:
         } else {
             // Default constant function (zero uncertainty)
             uncertaintyFunction = [](double distance) { return 0.0; };
+        }
+
+        if (settings.contains("searching")) {
+            const json &searchSettings = settings["searching"];
+            searchMethod = searchSettings.value("method", "");
+            if (!searchMethod.empty() && searchSettings.contains(searchMethod)) {
+                searchParams = searchSettings[searchMethod];
+            }
         }
 
         // Initialize Scissor uncertainty propagation
@@ -948,10 +959,8 @@ public:
 
     void updateGridWorld() {
         updatedGridWorld = json::array();
-        json searchSettings = settings["searching"];
-        std::string method = searchSettings["method"];
-        json params = searchSettings[method];
-        if (method == "front-sector") {
+        json params = searchParams;
+        if (searchMethod == "front-sector") {
             for (auto &[id, position2D]: comm->_othersPos) {
                 params["centerAngleRad"] = comm->_othersYawRad[id];
                 auto updatedFor1 = gridWorld.setValueInSectorRing(
@@ -962,7 +971,7 @@ public:
                 updatedGridWorld.insert(updatedGridWorld.end(), updatedFor1.begin(), updatedFor1.end());
             }
         }
-        else if (method == "front-cone") {
+        else if (searchMethod == "front-cone") {
             for (auto &[id, position2D]: comm->_othersPos) {
                 params["yaw-rad"] = comm->_othersYawRad[id];
                 auto updatedFor1 = gridWorld.setValueInTiltedCone(
@@ -973,7 +982,7 @@ public:
                 updatedGridWorld.insert(updatedGridWorld.end(), updatedFor1.begin(), updatedFor1.end());
             }
         }
-        else if (method == "downward") {
+        else if (searchMethod == "downward") {
             for (auto &[id, position2D]: comm->_othersPos) {
                 auto updatedFor1 = gridWorld.setValueInCircle(position2D, params, true, true);
                 updatedGridWorld.insert(updatedGridWorld.end(), updatedFor1.begin(), updatedFor1.end());
