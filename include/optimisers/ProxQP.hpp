@@ -80,7 +80,7 @@ public:
         gradient.setZero();
     }
 
-    void setObjective(Eigen::VectorXd &uNominal) override {
+    void setObjective(const Eigen::VectorXd &uNominal) override {
         H = Eigen::MatrixXd::Zero(var_count, var_count);
         gradient = Eigen::VectorXd::Zero(var_count);
 

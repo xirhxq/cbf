@@ -75,7 +75,7 @@ public:
         gradient.setZero();
     }
 
-    void setObjective(Eigen::VectorXd &uNominal) override {
+    void setObjective(const Eigen::VectorXd &uNominal) override {
         // Objective: minimize ||u - uNominal||^2 + k_delta * sum(slack)
         // = 0.5 * x' * P * x + q' * x + constant
         // where P = 2I (diagonal matrix with 2's for control vars, 0 for slack)

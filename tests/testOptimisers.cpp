@@ -21,6 +21,10 @@ static_assert(std::is_same_v<
     decltype(&OptimiserBase::addLinearConstraint),
     void (OptimiserBase::*)(const Eigen::VectorXd &, double)
 >);
+static_assert(std::is_same_v<
+    decltype(&OptimiserBase::setObjective),
+    void (OptimiserBase::*)(const Eigen::VectorXd &)
+>);
 
 struct OptimiserCase {
     std::string name;

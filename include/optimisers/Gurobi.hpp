@@ -54,7 +54,7 @@ public:
         }
     }
 
-    void setObjective(Eigen::VectorXd &uNominal) override {
+    void setObjective(const Eigen::VectorXd &uNominal) override {
         obj = 0.0;
         for (int i = 0; i < uNominal.size(); i++) {
             obj += (vars[i] - uNominal[i]) * (vars[i] - uNominal[i]);

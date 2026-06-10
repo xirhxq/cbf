@@ -67,7 +67,7 @@ public:
         }
     }
 
-    void setObjective(Eigen::VectorXd &uNominal) override {
+    void setObjective(const Eigen::VectorXd &uNominal) override {
         Q.resize(var_count, var_count);
         Q.setZero();
 
