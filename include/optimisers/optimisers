@@ -18,6 +18,12 @@
 
 #endif
 
+#ifdef ENABLE_PROXQP
+
+#include "ProxQP.hpp"
+
+#endif
+
 inline std::unique_ptr<OptimiserBase> createOptimiser(const std::string& name, json& settings) {
 #ifdef ENABLE_GUROBI
     if (name == "Gurobi") return std::make_unique<Gurobi>(settings);
@@ -27,6 +33,9 @@ inline std::unique_ptr<OptimiserBase> createOptimiser(const std::string& name, j
 #endif
 #ifdef ENABLE_OSQP
     if (name == "OSQP") return std::make_unique<OSQP>(settings);
+#endif
+#ifdef ENABLE_PROXQP
+    if (name == "ProxQP") return std::make_unique<ProxQP>(settings);
 #endif
     throw std::invalid_argument("Unknown optimiser: " + name + ". Available: " + joinAvailableOptimisers());
 }

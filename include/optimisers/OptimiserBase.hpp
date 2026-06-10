@@ -45,6 +45,9 @@ inline std::vector<std::string> getAvailableOptimisers() {
 #ifdef ENABLE_OSQP
     available.push_back("OSQP");
 #endif
+#ifdef ENABLE_PROXQP
+    available.push_back("ProxQP");
+#endif
     return available;
 }
 

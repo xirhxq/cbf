@@ -13,6 +13,13 @@ set(CMAKE_CXX_STANDARD 17)
 option(ENABLE_GUROBI "Enable Gurobi Optimizer" ON)
 option(ENABLE_HIGHS "Enable HiGHS Optimizer" ON)
 option(ENABLE_OSQP "Enable OSQP Optimizer" ON)
+option(ENABLE_PROXQP "Enable ProxQP Optimizer" ON)
+
+set(CBF_EXTERNAL_INCLUDE_DIRS
+    ${CMAKE_CURRENT_SOURCE_DIR}/external
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/doctest
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/nlohmann
+)
 
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 if(NOT CMAKE_BUILD_TYPE)
@@ -75,12 +82,39 @@ if(ENABLE_OSQP)
     endif()
 endif()
 
+set_package_properties(proxsuite PROPERTIES
+    DESCRIPTION "ProxSuite ProxQP QP solver"
+    TYPE RECOMMENDED)
+
+if(ENABLE_PROXQP)
+    message(STATUS "Looking for ProxSuite...")
+    find_package(proxsuite)
+    if(proxsuite_FOUND)
+        message(STATUS "Found ProxSuite")
+        if(TARGET Eigen3::Eigen)
+            get_target_property(PROXQP_EIGEN_INCLUDE_DIRS Eigen3::Eigen INTERFACE_INCLUDE_DIRECTORIES)
+            include_directories(BEFORE ${PROXQP_EIGEN_INCLUDE_DIRS})
+            target_include_directories(cbf_deps BEFORE INTERFACE ${PROXQP_EIGEN_INCLUDE_DIRS})
+        endif()
+        set(CBF_EXTERNAL_INCLUDE_DIRS
+            ${CMAKE_CURRENT_SOURCE_DIR}/external/doctest
+            ${CMAKE_CURRENT_SOURCE_DIR}/external/nlohmann
+        )
+        target_compile_definitions(cbf_deps INTERFACE ENABLE_PROXQP)
+        include_directories(BEFORE ${proxsuite_INCLUDE_DIRS})
+        target_include_directories(cbf_deps BEFORE INTERFACE ${proxsuite_INCLUDE_DIRS})
+    else()
+        message(STATUS "ProxSuite not found - disabled")
+        set(ENABLE_PROXQP OFF CACHE BOOL "Enable ProxQP Optimizer" FORCE)
+    endif()
+endif()
+
 target_include_directories(cbf_deps INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/external
+    ${CBF_EXTERNAL_INCLUDE_DIRS}
 )
 
-include_directories(include external)
+include_directories(include ${CBF_EXTERNAL_INCLUDE_DIRS})
 
 file(GLOB SOURCES "src/*.cpp")
 foreach(SOURCE ${SOURCES})
@@ -114,15 +148,21 @@ if(ENABLE_OSQP)
 else()
     message(STATUS "  OSQP:   disabled (not found)")
 endif()
+if(ENABLE_PROXQP)
+    message(STATUS "  ProxQP: ENABLED")
+else()
+    message(STATUS "  ProxQP: disabled (not found)")
+endif()
 message(STATUS "")
 
-if(NOT ENABLE_GUROBI AND NOT ENABLE_HIGHS AND NOT ENABLE_OSQP)
+if(NOT ENABLE_GUROBI AND NOT ENABLE_HIGHS AND NOT ENABLE_OSQP AND NOT ENABLE_PROXQP)
     message(WARNING "
 ===============================================================================
 WARNING: No optimizer found! Please install at least one of:
   - Gurobi (commercial): https://www.gurobi.com/
   - HiGHS (open-source): brew install highs
   - OSQP (open-source): brew install osqp && install osqp-eigen
+  - ProxQP (open-source): brew install proxsuite
 ===============================================================================
 ")
 endif()

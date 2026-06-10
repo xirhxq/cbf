@@ -10,7 +10,7 @@
 #include <utility>
 #include <sys/stat.h>
 
-#include "nlohmann/json.hpp"
+#include "json.hpp"
 #include "Eigen/Dense"
 
 #include "ComputingGeometry/ComputingGeometry"
