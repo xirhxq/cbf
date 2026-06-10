@@ -88,15 +88,14 @@ public:
             json centralizedData = opt;
 
             json cbfValues = json::object();
+            auto x = centralizedModel->getX();
 
             for (const auto& [name, cbf] : cbfNoSlack.cbfs) {
-                auto x = centralizedModel->getX();
                 double value = cbf.h(x, robots[0]->runtime);
                 cbfValues[name] = value;
             }
 
             for (const auto& [name, cbf] : cbfSlack) {
-                auto x = centralizedModel->getX();
                 double value = cbf.h(x, robots[0]->runtime);
                 cbfValues[name] = value;
             }

@@ -1,7 +1,11 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#ifndef PROJECT_ROOT
+#define PROJECT_ROOT "."
+#endif
 
 #include "doctest.h"
 #include "Robot.hpp"
+#include "Swarm.hpp"
 #include <Eigen/Dense>
 #include <chrono>
 #include <random>
@@ -384,6 +388,42 @@ TEST_CASE("RobotGetStateEvaluatesCbfLogsFromSingleStateSnapshot") {
     CHECK(state.at("state").at("x").get<double>() == doctest::Approx(5.0));
     CHECK(state.at("cbfNoSlack").at("mutatingCBF").get<double>() == doctest::Approx(5.0));
     CHECK(state.at("cbfSlack").at("snapshotCBF").get<double>() == doctest::Approx(5.0));
+}
+
+TEST_CASE("SwarmLogOnceEvaluatesCentralizedCbfsFromSingleStateSnapshot") {
+    const std::string optimiser_name = selectRobotTestOptimiser();
+    json settings = makeSingleRobotNoCbfConfig(optimiser_name);
+    settings["execute"] = {
+        {"execution-mode", "centralized"},
+        {"time-step", 0.5},
+        {"time-total", 0.5}
+    };
+
+    Swarm swarm(settings);
+    swarm.centralizedModel->updateConcatenatedStates();
+
+    CBF mutatingCBF;
+    mutatingCBF.name = "centralMutatingCBF";
+    mutatingCBF.h = [&](VectorXd x, double) {
+        Eigen::VectorXd robotState = swarm.centralizedModel->getRobotState(0);
+        robotState[0] = 9.0;
+        swarm.centralizedModel->setRobotStates(0, robotState);
+        return x[0];
+    };
+    swarm.cbfNoSlack.cbfs[mutatingCBF.name] = mutatingCBF;
+
+    CBF snapshotCBF;
+    snapshotCBF.name = "centralSnapshotCBF";
+    snapshotCBF.h = [&](VectorXd x, double) {
+        return x[0];
+    };
+    swarm.cbfSlack[snapshotCBF.name] = snapshotCBF;
+
+    swarm.logOnce();
+
+    const json &cbfs = swarm.data.at("state").at(0).at("centralized").at("cbfs");
+    CHECK(cbfs.at("centralMutatingCBF").get<double>() == doctest::Approx(5.0));
+    CHECK(cbfs.at("centralSnapshotCBF").get<double>() == doctest::Approx(5.0));
 }
 
 TEST_CASE("RandomSolvePerformanceComparison") {
