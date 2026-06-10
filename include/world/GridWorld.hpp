@@ -178,6 +178,18 @@ public:
         return {getXPositionInXLimit(getXIndex(index)), getYPositionInYLimit(getYIndex(index))};
     }
 
+    double distanceToCellCenter(int xIndex, int yIndex, const Point &center) {
+        double dx = getXPositionInXLimit(xIndex) - center.x;
+        double dy = getYPositionInYLimit(yIndex) - center.y;
+        return sqrt(dx * dx + dy * dy);
+    }
+
+    double angleFromCellCenter(int xIndex, int yIndex, const Point &center) {
+        double dx = getXPositionInXLimit(xIndex) - center.x;
+        double dy = getYPositionInYLimit(yIndex) - center.y;
+        return atan2(dy, dx);
+    }
+
     bool isExplored(Point point) {
         return getValue(point);
     }
@@ -240,8 +252,7 @@ public:
             yIndexes.first = getNumInYLim(yLimit.first, "ceil");
             yIndexes.second = getNumInYLim(yLimit.second, "floor");
             for (int j = yIndexes.first; j <= yIndexes.second; j++) {
-                Point p = getPointInArea(i, j);
-                if (p.distance_to(center) > radius) continue;
+                if (distanceToCellCenter(i, j, center) > radius) continue;
                 if (updateJson && getValue(i, j) != value) {
                     ret.push_back({i, j});
                 }
@@ -341,14 +352,10 @@ public:
             yIndexes.second = getNumInYLim(yLimit.second, "floor");
 
             for (int j = yIndexes.first; j <= yIndexes.second; j++) {
-                Point p = getPointInArea(i, j);
-
-                double distance = p.distance_to(center);
+                double distance = distanceToCellCenter(i, j, center);
                 if (distance < innerRadius || distance > outerRadius) continue;
 
-                double dx = p.x - center.x;
-                double dy = p.y - center.y;
-                double theta = atan2(dy, dx);
+                double theta = angleFromCellCenter(i, j, center);
                 if (theta < 0) theta += 2 * M_PI;
 
                 double start = fmod(startAngle, 2 * M_PI);
