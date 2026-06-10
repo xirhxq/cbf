@@ -1053,12 +1053,13 @@ public:
     }
 
     json getState() {
-        json robotJson = {{"state", model->state2Json()},
+        VectorXd x = model->getX();
+        json robotJson = {{"state", model->state2Json(x)},
                           {"id",    id}};
         if (!cbfNoSlack.cbfs.empty()) {
             json cbfNoSlackJson;
             for (auto &[name, cbf]: cbfNoSlack.cbfs) {
-                cbfNoSlackJson[cbf.name] = cbf.h(model->getX(), runtime);
+                cbfNoSlackJson[cbf.name] = cbf.h(x, runtime);
             }
             // cbfNoSlackJson[cbfNoSlack.getName()] = cbfNoSlack.h(model->getX(), runtime);
             robotJson["cbfNoSlack"] = cbfNoSlackJson;
@@ -1066,7 +1067,7 @@ public:
         {
             json cbfSlackJson;
             for (auto &[name, cbf]: cbfSlack) {
-                cbfSlackJson[cbf.name] = cbf.h(model->getX(), runtime);
+                cbfSlackJson[cbf.name] = cbf.h(x, runtime);
             }
             robotJson["cbfSlack"] = cbfSlackJson;
         }

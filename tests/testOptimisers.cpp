@@ -358,6 +358,34 @@ TEST_CASE("RobotCachesSearchConfigurationAtConstruction") {
     CHECK(robot.searchParams.at("half-angle-deg").get<double>() == doctest::Approx(60.0));
 }
 
+TEST_CASE("RobotGetStateEvaluatesCbfLogsFromSingleStateSnapshot") {
+    const std::string optimiser_name = selectRobotTestOptimiser();
+    json settings = makeSingleRobotNoCbfConfig(optimiser_name);
+
+    Robot robot(1, settings);
+
+    CBF mutatingCBF;
+    mutatingCBF.name = "mutatingCBF";
+    mutatingCBF.h = [&](VectorXd x, double) {
+        robot.model->setStateVariable("x", 9.0);
+        return x[0];
+    };
+    robot.cbfNoSlack.cbfs[mutatingCBF.name] = mutatingCBF;
+
+    CBF snapshotCBF;
+    snapshotCBF.name = "snapshotCBF";
+    snapshotCBF.h = [&](VectorXd x, double) {
+        return x[0];
+    };
+    robot.cbfSlack[snapshotCBF.name] = snapshotCBF;
+
+    json state = robot.getState();
+
+    CHECK(state.at("state").at("x").get<double>() == doctest::Approx(5.0));
+    CHECK(state.at("cbfNoSlack").at("mutatingCBF").get<double>() == doctest::Approx(5.0));
+    CHECK(state.at("cbfSlack").at("snapshotCBF").get<double>() == doctest::Approx(5.0));
+}
+
 TEST_CASE("RandomSolvePerformanceComparison") {
     const int num_variables = 10;
     const int num_slack_variables = 3;
