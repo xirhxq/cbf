@@ -8,6 +8,7 @@
 #include <iomanip>
 #include <iostream>
 #include <utility>
+#include <cstdlib>
 #include <sys/stat.h>
 
 #include "json.hpp"
@@ -40,6 +41,19 @@ std::string vecToString(const VectorXd& vec) {
     }
     oss << ")";
     return oss.str();
+}
+
+unsigned int resolveRandomSeed(const json &settings, unsigned int fallbackSeed) {
+    if (settings.contains("execute") && settings["execute"].contains("random-seed")) {
+        return settings["execute"]["random-seed"].get<unsigned int>();
+    }
+    return fallbackSeed;
+}
+
+unsigned int seedRandomFromConfig(const json &settings, unsigned int fallbackSeed) {
+    unsigned int seed = resolveRandomSeed(settings, fallbackSeed);
+    srand(seed);
+    return seed;
 }
 
 #endif //CBF_UTILS_H

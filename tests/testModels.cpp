@@ -13,3 +13,14 @@ TEST_CASE("BaseModelVectorJsonConversionsAcceptVectorsByConstReference") {
     CHECK(stateToJson != nullptr);
     CHECK(controlToJson != nullptr);
 }
+
+TEST_CASE("RandomSeedResolutionUsesConfiguredExecuteSeedWhenPresent") {
+    json settings = {
+        {"execute", {
+            {"random-seed", 1234}
+        }}
+    };
+
+    CHECK(resolveRandomSeed(settings, 99) == 1234u);
+    CHECK(resolveRandomSeed(json::object(), 99) == 99u);
+}

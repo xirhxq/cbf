@@ -6,7 +6,6 @@
 
 
 int main(int argc, char* argv[]) {
-    srand(time(NULL));  // Initialize random seed for Monte Carlo experiments
     clock_t start = clock();
 
     std::string configPath = "../config/config.json";
@@ -15,6 +14,7 @@ int main(int argc, char* argv[]) {
     }
 
     json settings = json::parse(std::ifstream(configPath));
+    seedRandomFromConfig(settings, static_cast<unsigned int>(time(NULL)));
 
     Swarm(settings).run();
 
