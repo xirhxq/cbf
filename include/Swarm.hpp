@@ -500,33 +500,31 @@ private:
         std::string cbf_method = config["cbfs"]["without-slack"].value("method", "all");
         if (cbf_method == "all") {
             for (auto &[name, cbf] : cbfNoSlack.cbfs) {
-                VectorXd uCoe = cbf.constraintUCoe(f, g, x, robots[0]->runtime);
-                double constraintConstWithTime = cbf.constraintConstWithTime(f, g, x, robots[0]->runtime);
-                optimizer->addLinearConstraint(uCoe, -constraintConstWithTime);
+                auto evaluation = cbf.evaluateConstraint(f, g, x, robots[0]->runtime);
+                optimizer->addLinearConstraint(evaluation.uCoe, -evaluation.constWithTime);
 
                 jsonCBFNoSlack.emplace_back(json{
                     {"name",  cbf.name},
-                    {"coe",   convertCentralizedControlToJson(uCoe)},
-                    {"const", constraintConstWithTime}
+                    {"coe",   convertCentralizedControlToJson(evaluation.uCoe)},
+                    {"const", evaluation.constWithTime}
                 });
             }
         }
 
         int cnt = 0;
         for (auto &[name, cbf] : cbfSlack) {
-            VectorXd uCoe = cbf.constraintUCoe(f, g, x, robots[0]->runtime);
+            auto evaluation = cbf.evaluateConstraint(f, g, x, robots[0]->runtime);
             Eigen::VectorXd sCoe = Eigen::VectorXd::Zero(slackSize);
             sCoe(cnt) = 1.0;
             Eigen::VectorXd coe(totalSize);
-            coe << uCoe, sCoe;
-            double constraintConst = cbf.constraintConstWithoutTime(f, g, x, robots[0]->runtime);
+            coe << evaluation.uCoe, sCoe;
 
-            optimizer->addLinearConstraint(coe, -constraintConst);
+            optimizer->addLinearConstraint(coe, -evaluation.constWithoutTime);
 
             jsonCBFSlack.emplace_back(json{
                 {"name",  cbf.name},
-                {"coe",   convertCentralizedControlToJson(uCoe)},
-                {"const", constraintConst}
+                {"coe",   convertCentralizedControlToJson(evaluation.uCoe)},
+                {"const", evaluation.constWithoutTime}
             });
             ++cnt;
         }

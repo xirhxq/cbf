@@ -810,6 +810,7 @@ public:
                 {"cbfSlack",   json::array()}
         };
         json jsonCBFNoSlack = json::array(), jsonCBFSlack = json::array();
+        std::unordered_map<std::string, CBFConstraintEvaluation> cbfNoSlackEvaluations;
         double chargeRate = 1.0;
         if (world.isCharging(model->xy(), chargeRate) && model->getStateVariable("battery") < model->BATTERY_MAX) {
             model->startCharge();
@@ -835,26 +836,25 @@ public:
 
             if (cbf_method == "all") {
                 for (auto &[name, cbf]: cbfNoSlack.cbfs) {
-                    VectorXd uCoe = cbf.constraintUCoe(f, g, x, runtime);
-                    double constraintConstWithTime = cbf.constraintConstWithTime(f, g, x, runtime);
-                    optimiser->addLinearConstraint(uCoe, -constraintConstWithTime);
+                    auto evaluation = cbf.evaluateConstraint(f, g, x, runtime);
+                    cbfNoSlackEvaluations[name] = evaluation;
+                    optimiser->addLinearConstraint(evaluation.uCoe, -evaluation.constWithTime);
                     jsonCBFNoSlack.emplace_back(json{
                             {"name",  cbf.name},
-                            {"coe",   model->control2Json(uCoe)},
-                            {"const", constraintConstWithTime}
+                            {"coe",   model->control2Json(evaluation.uCoe)},
+                            {"const", evaluation.constWithTime}
                     });
                 }
             } else if (cbf_method == "min") {
                 if (!cbfNoSlack.cbfs.empty()) {
-                    VectorXd uCoe = cbfNoSlack.constraintUCoe(f, g, x, runtime);
-                    double constraintConstWithTime = cbfNoSlack.constraintConstWithTime(f, g, x, runtime);
+                    auto evaluation = cbfNoSlack.evaluateConstraint(f, g, x, runtime);
 
-                    optimiser->addLinearConstraint(uCoe, -constraintConstWithTime);
+                    optimiser->addLinearConstraint(evaluation.uCoe, -evaluation.constWithTime);
 
                     jsonCBFNoSlack.emplace_back(json{
                             {"name",  cbfNoSlack.getName()},
-                            {"coe",   model->control2Json(uCoe)},
-                            {"const", constraintConstWithTime}
+                            {"coe",   model->control2Json(evaluation.uCoe)},
+                            {"const", evaluation.constWithTime}
                     });
                 }
             }
@@ -865,19 +865,18 @@ public:
 
             int cnt = 0;
             for (auto &[name, cbf]: cbfSlack) {
-                VectorXd uCoe = cbf.constraintUCoe(f, g, x, runtime);
+                auto evaluation = cbf.evaluateConstraint(f, g, x, runtime);
                 Eigen::VectorXd sCoe = Eigen::VectorXd::Zero(slackSize);
                 sCoe(cnt) = 1.0;
                 Eigen::VectorXd coe(totalSize);
-                coe << uCoe, sCoe;
-                double constraintConst = cbf.constraintConstWithoutTime(f, g, x, runtime);
+                coe << evaluation.uCoe, sCoe;
 
-                optimiser->addLinearConstraint(coe, -constraintConst);
+                optimiser->addLinearConstraint(coe, -evaluation.constWithoutTime);
 
                 jsonCBFSlack.emplace_back(json{
                         {"name",  cbf.name},
-                        {"coe",   model->control2Json(uCoe)},
-                        {"const", constraintConst}
+                        {"coe",   model->control2Json(evaluation.uCoe)},
+                        {"const", evaluation.constWithoutTime}
                 });
                 ++cnt;
             }
@@ -911,14 +910,15 @@ public:
                 for (auto &[name, cbf]: cbfNoSlack.cbfs) {
                     for (auto &item : opt["cbfNoSlack"]) {
                         if (item["name"] == cbf.name) {
-                            item["lhs"] = cbf.hdot(f, g, x, u, runtime);
-                            item["rhs"] = -cbf.alpha(cbf.h(x, runtime));
-                            item["lfh"] = cbf.dhdx(x, runtime).dot(VectorXd(f)) + cbf.dhdt(x, runtime);
-                            item["dhdt"] = cbf.dhdt(x, runtime);
-                            item["lgh"] = cbf.constraintUCoe(f, g, x, runtime);
+                            auto evaluation = cbfNoSlackEvaluations.at(name);
+                            item["lhs"] = evaluation.hdot(u);
+                            item["rhs"] = -cbf.alpha(evaluation.h);
+                            item["lfh"] = evaluation.drift + evaluation.dhdt;
+                            item["dhdt"] = evaluation.dhdt;
+                            item["lgh"] = evaluation.uCoe;
                             double dt = settings["execute"]["time-step"];
                             item["expected-position"] = model->xy().vec() + u * dt;
-                            item["expected-h"] = cbf.hdot(f, g, x, u, runtime) * dt + cbf.h(x, runtime);
+                            item["expected-h"] = evaluation.hdot(u) * dt + evaluation.h;
                             break;
                         }
                     }

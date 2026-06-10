@@ -60,6 +60,19 @@ public:
         return v;
     }
 
+    CBFConstraintEvaluation evaluateConstraint(const VectorXd & f, const MatrixXd & g, const VectorXd & x, double t) {
+        CBFConstraintEvaluation evaluation;
+        evaluation.gradient = dhdx(x, t);
+        evaluation.uCoe = evaluation.gradient.transpose() * g;
+        evaluation.h = h(x, t);
+        evaluation.dhdt = dhdt(x, t);
+        evaluation.drift = evaluation.gradient.dot(f);
+        double alphaH = alpha(evaluation.h);
+        evaluation.constWithTime = evaluation.dhdt + evaluation.drift + alphaH;
+        evaluation.constWithoutTime = evaluation.drift + alphaH;
+        return evaluation;
+    }
+
     double constraintConstWithTime(const VectorXd & f, const MatrixXd & g, const VectorXd & x, double t) {
         return dhdt(x, t) + dhdx(x, t).dot(f) + alpha(h(x, t));
     }
@@ -69,14 +82,15 @@ public:
     }
 
     double hdot(const VectorXd & f, const MatrixXd & g, const VectorXd & x, const VectorXd & u, double t) {
-        return dhdt(x, t) + dhdx(x, t).dot(f) + dhdx(x, t).transpose() * g * u;
+        return evaluateConstraint(f, g, x, t).hdot(u);
     }
 
     void checkInequality(const VectorXd & f, const MatrixXd & g, const VectorXd & x, const VectorXd & u, double t) {
+        auto evaluation = evaluateConstraint(f, g, x, t);
         std::cout << std::setprecision(4)
             << "Checking " << getName() << ": "
-            << hdot(f, g, x, u, t) << " >= "
-            << -alpha(h(x, t)) << std::endl;
+            << evaluation.hdot(u) << " >= "
+            << -alpha(evaluation.h) << std::endl;
         for (auto &[name, cbf] : cbfs) {
             cbf.checkInequality(f, g, x, u, t);
         }
