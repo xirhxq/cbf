@@ -180,7 +180,7 @@ public:
         return j;
     }
 
-    json state2Json(VectorXd x) {
+    json state2Json(const VectorXd &x) const {
         json j;
         for (const auto &[name, index] : xMap) {
             j[name] = x[index];
@@ -196,7 +196,7 @@ public:
         return j;
     }
 
-    json control2Json(VectorXd u) {
+    json control2Json(const VectorXd &u) const {
         json j;
         for (const auto &[name, index] : uMap) {
             j[name] = u[index];
