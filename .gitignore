@@ -5,8 +5,10 @@ plot/
 .*
 !.gitignore
 build
+build-codex/
 QWEN.md
 __pycache__/
 *.pyc
 _*
-papers
+papers/
+config/generated_*

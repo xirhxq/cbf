@@ -93,6 +93,16 @@ public:
         }
     }
 
+    VectorXd getAcceleration() const {
+        VectorXd a = VectorXd::Zero(2);
+        auto ax = uMap.find("ax");
+        auto ay = uMap.find("ay");
+        if (ax != uMap.end() && ay != uMap.end()) {
+            a << u[ax->second], u[ay->second];
+        }
+        return a;
+    }
+
     void setStateVariable(const std::string &name, double value) {
         auto it = xMap.find(name);
         if (it != xMap.end()) {

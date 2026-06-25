@@ -1,0 +1,172 @@
+{
+  "world": {
+    "boundary": [[0.0, 0.0], [3000.0, 0.0], [3000.0, 3000.0], [0.0, 3000.0]],
+    "charge": [],
+    "spacing": 100.0
+  },
+  "num": 4,
+  "dim": 4,
+  "formation": {
+    "parts": 1,
+    "bases-id": [[0]]
+  },
+  "bases": [[250.0, 1500.0]],
+  "initial": {
+    "position": {
+      "method": "specified",
+      "positions": [[300.0, 1500.0], [900.0, 1500.0], [1400.0, 1200.0], [1400.0, 1800.0]]
+    },
+    "velocity": {
+      "values": [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]
+    },
+    "battery": {
+      "min": 4100.0,
+      "max": 4100.0
+    },
+    "yawDeg": 0.0
+  },
+  "model": "SingleIntegrate2D",
+  "model-params": {
+    "discharge-rate": 0.0
+  },
+  "uncertainty": {
+    "method": "const",
+    "const": {
+      "epsilon": 0.0
+    }
+  },
+  "position_covariance": {
+    "enable": false,
+    "uncertainty-type": "max_eigenvalue"
+  },
+  "searching": {
+    "method": "front-sector",
+    "front-sector": {
+      "inner-radius": 0.0,
+      "outer-radius": 260.0,
+      "half-angle-deg": 35.0
+    },
+    "downward": {
+      "radius": 160.0
+    },
+    "front-cone": {
+      "height": 80.0,
+      "downward-radius": 180.0,
+      "camera-pitch-deg": 25.0
+    }
+  },
+  "optimiser": "OSQP",
+  "cbfs": {
+    "objective-function": {
+      "k_delta": 10.0
+    },
+    "high-order": {
+      "enabled": false,
+      "lambda1": 1.0,
+      "lambda2": 1.0,
+      "sampled-data-reserve": 0.0,
+      "acceleration-bound": 5.0
+    },
+    "with-slack": {
+      "cvt": {
+        "name": "cvtCBF",
+        "on": false,
+        "kp": 1.0,
+        "exploration-mode": "nearest-unexplored",
+        "front-focus-distance": 300.0
+      },
+      "cvt-yaw": {
+        "name": "cvtYawCBF",
+        "on": false
+      },
+      "target-yaw": {
+        "name": "yawCBF",
+        "on": false
+      }
+    },
+    "without-slack": {
+      "method": "all",
+      "energy": {
+        "on": false
+      },
+      "safety": {
+        "name": "safetyCBF",
+        "on": true,
+        "safe-distance": 80.0,
+        "safe-distance-tightening-margin": 5.0,
+        "k": 1.0,
+        "consider-uncertainty": false
+      },
+      "comm-fixed": {
+        "name": "commFixedCBF",
+        "on": true,
+        "max-range": 1200.0,
+        "range-tightening-margin": 10.0,
+        "k": 1.0,
+        "min-neighbour-id-offset": -1,
+        "max-neighbour-id-offset": 0,
+        "compensate-velocity": true,
+        "consider-uncertainty": false
+      },
+      "comm-auto": {
+        "name": "commAutoCBF",
+        "on": false
+      }
+    }
+  },
+  "bridge": {
+    "enabled": true,
+    "row": "base",
+    "search-policy": "coverage",
+    "topology-policy": "fixed",
+    "safety-filter": "first-order-cbf",
+    "report-cadence": 1.0,
+    "target": {
+      "x": 2450.0,
+      "y": 2050.0,
+      "radius": 180.0
+    },
+    "nominal": {
+      "max-speed": 8.0,
+      "max-acceleration": 2.0,
+      "max-yaw-rate": 0.35,
+      "guard": {
+        "enabled": false,
+        "mode": "hocbf-feasible-projection",
+        "tolerance": 1e-9
+      }
+    },
+    "search": {
+      "negative-detection-factor": 0.85,
+      "positive-detection-factor": 3.0,
+      "clarity-weight": 1.0,
+      "belief-weight": 4.0,
+      "travel-weight": 0.0005,
+      "target-prior-strength": 1000.0,
+      "target-prior-sigma": 250.0,
+      "goal-boundary-margin": 250.0
+    },
+    "topology": {
+      "max-range": 1200.0,
+      "denial-center": [1650.0, 1500.0],
+      "denial-half-size": [450.0, 700.0],
+      "healthy-quality": 0.95,
+      "denied-quality": 0.15,
+      "sigma0": 20.0,
+      "reference-variance": 25.0,
+      "uncertainty-multiplier": 3.0,
+      "physical-switch-margin": 10.0
+    }
+  },
+  "execute": {
+    "execution-mode": "distributed",
+    "time-total": 400.0,
+    "time-step": 1.0,
+    "random-seed": 20260617,
+    "check-constraint-violation": true
+  },
+  "debug": {
+    "opt-cbc": false
+  },
+  "run_suffix": "_bridge_base"
+}

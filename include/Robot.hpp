@@ -7,6 +7,10 @@
 #include "models/models"
 #include "optimisers/optimisers"
 #include "communicators/communicators"
+#include "bridge/HocbfFeasibilityGuard.hpp"
+#include <array>
+#include <cmath>
+#include <limits>
 
 typedef std::pair<int, Point> intPoint;
 
@@ -16,6 +20,7 @@ public:
     int n;
     MultiCBF cbfNoSlack;
     std::unordered_map<std::string, CBF> cbfSlack;
+    std::unordered_map<std::string, SecondOrderCBF> secondOrderCbfNoSlack;
     std::unique_ptr<BaseModel> model;
     json opt;
     std::unique_ptr<OptimiserBase> optimiser;
@@ -62,11 +67,18 @@ public:
     std::vector<int> myBasesId;
 
     std::set<int> myNeighboursId;
+    bool hasBridgeFormationOverride = false;
+    std::vector<int> bridgeAnchorIds;
+    std::vector<int> bridgeBaseIds;
 
     // External velocity data (for simulation environment)
     double externalVx = 0.0;
     double externalVy = 0.0;
     bool hasExternalVelocity = false;
+    Eigen::VectorXd nominalControlOverride;
+    bool hasNominalControlOverride = false;
+    json nominalGuardDiagnostic = json::object();
+    bool hasNominalGuardDiagnostic = false;
 
 public:
 
@@ -245,6 +257,15 @@ public:
         double bMin = settings["initial"]["battery"]["min"], bMax = settings["initial"]["battery"]["max"];
         model->setStateVariable("battery", bMin + (bMax - bMin) * rand() / RAND_MAX);
         model->setYawDeg(settings["initial"]["yawDeg"]);
+
+        if (settings["initial"].contains("velocity") &&
+            settings["initial"]["velocity"].contains("values")) {
+            auto velocities = settings["initial"]["velocity"]["values"];
+            if (id - 1 < velocities.size()) {
+                model->setStateVariable("vx", velocities[id - 1][0]);
+                model->setStateVariable("vy", velocities[id - 1][1]);
+            }
+        }
     }
 
     void checkRobotsInsideWorld() {
@@ -549,6 +570,22 @@ public:
             {"baseIds", json::array()}
         };
 
+        if (hasBridgeFormationOverride) {
+            for (int baseId : bridgeBaseIds) {
+                if (baseId >= 0 && baseId < bases.size()) {
+                    auto base = bases[baseId];
+                    myFormation["anchorPoints"].push_back({base.x, base.y});
+                    myFormation["baseIds"].push_back(baseId);
+                }
+            }
+            for (int anchorId : bridgeAnchorIds) {
+                if (anchorId != id) {
+                    myFormation["anchorIds"].push_back(anchorId);
+                }
+            }
+            return;
+        }
+
         // Add base stations (from already-initialized myBasesId)
         for (int i = 0; i < myBasesId.size(); i++) {
             int baseId = myBasesId[i];
@@ -568,6 +605,14 @@ public:
         // This function only creates the CBF constraints
         // Formation information is already set by setupFormation()
         double maxRange = config["max-range"];
+        double rangeTighteningMargin = config.value("range-tightening-margin", 0.0);
+        if (!std::isfinite(rangeTighteningMargin) || rangeTighteningMargin < 0.0) {
+            throw std::invalid_argument("comm-fixed.range-tightening-margin must be non-negative and finite");
+        }
+        if (rangeTighteningMargin >= maxRange) {
+            throw std::invalid_argument("comm-fixed.range-tightening-margin must be smaller than max-range");
+        }
+        double effectiveMaxRange = maxRange - rangeTighteningMargin;
 
         std::vector<Point> formationPoints;
         std::vector<Point> formationVels;
@@ -602,10 +647,10 @@ public:
             auto otherUncertainty = formationUncertainties[i];
             bool considerUncertainty = config.value("consider-uncertainty", true);
 
-            auto fixedFormationCommH = [this, otherPoint, otherVel, maxRange, k, isAnchor, myUncertainty, otherUncertainty, considerUncertainty](VectorXd x, double t) {
+            auto fixedFormationCommH = [this, otherPoint, otherVel, effectiveMaxRange, k, isAnchor, myUncertainty, otherUncertainty, considerUncertainty](VectorXd x, double t) {
                 Point myPosition = model->extractXYFromVector(x);
                 double distance = myPosition.distance_to(otherPoint);
-                double h = k * (maxRange - distance);
+                double h = k * (effectiveMaxRange - distance);
 
                 double robust_h;
                 if (isAnchor) {
@@ -655,16 +700,167 @@ public:
         }
     }
 
+    void setSecondOrderFixedCommCBF(json& config) {
+        double maxRange = config["max-range"];
+        double rangeTighteningMargin = config.value("range-tightening-margin", 0.0);
+        if (!std::isfinite(rangeTighteningMargin) || rangeTighteningMargin < 0.0) {
+            throw std::invalid_argument("comm-fixed.range-tightening-margin must be non-negative and finite");
+        }
+        if (rangeTighteningMargin >= maxRange) {
+            throw std::invalid_argument("comm-fixed.range-tightening-margin must be smaller than max-range");
+        }
+        double effectiveMaxRange = maxRange - rangeTighteningMargin;
+        double k = config.contains("k") ? static_cast<double>(config["k"]) : 1.0;
+        bool considerUncertainty = config.value("consider-uncertainty", true);
+        double lambda1 = secondOrderLambda1();
+        double lambda2 = secondOrderLambda2();
+        double sampledDataReserve = secondOrderSampledDataReserve();
+        bool useStateDependentReserve = false;
+        double stateReserveVelocityGain = 0.0;
+        double stateReserveSampleTime = settings.value("execute", json::object()).value("time-step", 0.0);
+        double stateReserveAccelerationGain = 0.0;
+        double stateReserveNeighborAccelerationBound = 0.0;
+        double stateReserveMax = std::numeric_limits<double>::infinity();
+        if (config.contains("state-dependent-reserve")) {
+            const json& stateReserveConfig = config["state-dependent-reserve"];
+            useStateDependentReserve = stateReserveConfig.value("enabled", false);
+            stateReserveVelocityGain = stateReserveConfig.value("velocity-gain", 0.0);
+            stateReserveSampleTime = stateReserveConfig.value("sample-time", stateReserveSampleTime);
+            stateReserveAccelerationGain = stateReserveConfig.value("acceleration-gain", 0.0);
+            stateReserveNeighborAccelerationBound = stateReserveConfig.value("neighbor-acceleration-bound", 0.0);
+            stateReserveMax = stateReserveConfig.value("max-reserve", stateReserveMax);
+            const std::array<std::pair<const char*, double>, 5> stateReserveValues = {{
+                {"comm-fixed.state-dependent-reserve.velocity-gain", stateReserveVelocityGain},
+                {"comm-fixed.state-dependent-reserve.sample-time", stateReserveSampleTime},
+                {"comm-fixed.state-dependent-reserve.acceleration-gain", stateReserveAccelerationGain},
+                {"comm-fixed.state-dependent-reserve.neighbor-acceleration-bound", stateReserveNeighborAccelerationBound},
+                {"comm-fixed.state-dependent-reserve.max-reserve", stateReserveMax}
+            }};
+            for (const auto& [name, value] : stateReserveValues) {
+                if (!std::isfinite(value) || value < 0.0) {
+                    throw std::invalid_argument(std::string(name) + " must be non-negative and finite");
+                }
+            }
+        }
+
+        std::vector<Point> formationPoints;
+        std::vector<VectorXd> formationVels;
+        std::vector<VectorXd> formationAccs;
+        std::vector<std::string> anchorCBFNames;
+        std::vector<double> formationUncertainties;
+
+        for (auto &baseId : myFormation["baseIds"]) {
+            int id = baseId.get<int>();
+            auto base = bases[id];
+            formationPoints.push_back(base);
+            formationVels.push_back(VectorXd::Zero(2));
+            formationAccs.push_back(VectorXd::Zero(2));
+            anchorCBFNames.emplace_back("base-" + std::to_string(id));
+            formationUncertainties.push_back(0.0);
+        }
+
+        for (auto &anchorId : myFormation["anchorIds"]) {
+            int otherId = anchorId.get<int>();
+            formationPoints.push_back(comm->_othersPos[otherId]);
+            formationVels.push_back(
+                    comm->_othersVel.find(otherId) == comm->_othersVel.end()
+                    ? VectorXd::Zero(2)
+                    : comm->_othersVel[otherId]);
+            formationAccs.push_back(
+                    comm->_othersAcc.find(otherId) == comm->_othersAcc.end()
+                    ? VectorXd::Zero(2)
+                    : comm->_othersAcc[otherId]);
+            anchorCBFNames.push_back("#" + std::to_string(otherId));
+            formationUncertainties.push_back(uncertaintyFromCovarianceFunction(comm->_othersPositionCovariance[otherId]));
+        }
+
+        getCovariance(config);
+        double myUncertainty = uncertaintyFromCovarianceFunction(positionCovariance);
+
+        for (int i = 0; i < formationPoints.size(); i++) {
+            Point otherPoint = formationPoints[i];
+            VectorXd otherVelocity = config.value("compensate-velocity", true)
+                                     ? formationVels[i]
+                                     : VectorXd::Zero(2);
+            VectorXd otherAcceleration = formationAccs[i];
+            bool isAnchor = anchorCBFNames[i].find("base-") != std::string::npos;
+            double otherUncertainty = formationUncertainties[i];
+            double uncertainty = 0.0;
+            if (considerUncertainty) {
+                uncertainty = isAnchor ? myUncertainty : myUncertainty + otherUncertainty;
+            }
+
+            SecondOrderCBF commCBF;
+            commCBF.name = "secondOrderFixedCommCBF(" + anchorCBFNames[i] + ")";
+            commCBF.lambda1 = lambda1;
+            commCBF.k1 = lambda1 + lambda2;
+            commCBF.k0 = lambda1 * lambda2;
+            commCBF.sampledDataReserve = sampledDataReserve;
+            commCBF.h = [this, otherPoint, effectiveMaxRange, k, uncertainty](const VectorXd &x, double) {
+                Point myPosition = model->extractXYFromVector(x);
+                VectorXd myVelocity = extractPlanarVelocityFromState(x);
+                VectorXd otherVelocity = VectorXd::Zero(2);
+                auto terms = computePairwiseDistanceKinematics(myPosition, otherPoint, myVelocity, otherVelocity);
+                return k * (effectiveMaxRange - terms.distance - uncertainty);
+            };
+            commCBF.hdot = [this, otherPoint, otherVelocity, k](const VectorXd &x, double) {
+                Point myPosition = model->extractXYFromVector(x);
+                VectorXd myVelocity = extractPlanarVelocityFromState(x);
+                auto terms = computePairwiseDistanceKinematics(myPosition, otherPoint, myVelocity, otherVelocity);
+                return -k * terms.radialVelocity;
+            };
+            commCBF.hddotConst = [this, otherPoint, otherVelocity, otherAcceleration, k](const VectorXd &x, double) {
+                Point myPosition = model->extractXYFromVector(x);
+                VectorXd myVelocity = extractPlanarVelocityFromState(x);
+                auto terms = computePairwiseDistanceKinematics(myPosition, otherPoint, myVelocity, otherVelocity);
+                return k * (terms.normal.dot(otherAcceleration) - terms.curvature);
+            };
+            commCBF.uCoe = [this, otherPoint, otherVelocity, k](const VectorXd &x, double) {
+                Point myPosition = model->extractXYFromVector(x);
+                VectorXd myVelocity = extractPlanarVelocityFromState(x);
+                auto terms = computePairwiseDistanceKinematics(myPosition, otherPoint, myVelocity, otherVelocity);
+                VectorXd coe = VectorXd::Zero(model->uSize());
+                coe(0) = -k * terms.normal.x();
+                coe(1) = -k * terms.normal.y();
+                return coe;
+            };
+            if (useStateDependentReserve) {
+                commCBF.stateDependentReserve = [
+                    this,
+                    otherVelocity,
+                    stateReserveVelocityGain,
+                    stateReserveSampleTime,
+                    stateReserveAccelerationGain,
+                    stateReserveNeighborAccelerationBound,
+                    stateReserveMax
+                ](const VectorXd &x, double) {
+                    VectorXd myVelocity = extractPlanarVelocityFromState(x);
+                    double reserve = stateReserveVelocityGain * (myVelocity - otherVelocity).norm() * stateReserveSampleTime
+                                     + 0.5 * stateReserveAccelerationGain * stateReserveNeighborAccelerationBound
+                                     * stateReserveSampleTime * stateReserveSampleTime;
+                    return std::min(reserve, stateReserveMax);
+                };
+            }
+
+            secondOrderCbfNoSlack[commCBF.name] = commCBF;
+        }
+    }
+
     void setSafetyCBF(const json& config) {
         if (settings["num"] == 1) return;
 
         double myUncertainty = uncertaintyFromCovarianceFunction(positionCovariance);
         bool considerUncertainty = config.value("consider-uncertainty", true);
+        double safeDistance = config["safe-distance"];
+        double tighteningMargin = config.value("safe-distance-tightening-margin", 0.0);
+        if (!std::isfinite(tighteningMargin) || tighteningMargin < 0.0) {
+            throw std::invalid_argument("safety.safe-distance-tightening-margin must be non-negative and finite");
+        }
+        double effectiveSafeDistance = safeDistance + tighteningMargin;
 
-        auto safetyH = [&, config, myUncertainty, considerUncertainty](VectorXd x, double t) {
+        auto safetyH = [&, config, myUncertainty, considerUncertainty, effectiveSafeDistance](VectorXd x, double t) {
             Point myPosition = model->extractXYFromVector(x);
 
-            double safeDistance = config["safe-distance"];
             double k = config.contains("k") ? static_cast<double>(config["k"]) : 1.0;
 
             double h = inf;
@@ -678,7 +874,7 @@ public:
                 }
 
                 double distance = myPosition.distance_to(pos2d);
-                double robust_h = k * (distance - safeDistance - (considerUncertainty ? myUncertainty + otherUncertainty : 0));
+                double robust_h = k * (distance - effectiveSafeDistance - (considerUncertainty ? myUncertainty + otherUncertainty : 0));
 
                 h = std::min(h, robust_h);
             }
@@ -689,6 +885,211 @@ public:
         safetyCBF.name = "safetyCBF";
         safetyCBF.h = safetyH;
         cbfNoSlack.cbfs[safetyCBF.name] = safetyCBF;
+    }
+
+    bool isSecondOrderCbfEnabled() const {
+        if (settings.value("model", "") != "DoubleIntegrate2D") {
+            return false;
+        }
+        if (!settings.contains("cbfs") || !settings["cbfs"].contains("high-order")) {
+            return false;
+        }
+        return settings["cbfs"]["high-order"].value("enabled", false);
+    }
+
+    double secondOrderLambda1() const {
+        return settings["cbfs"]["high-order"].value("lambda1", 1.0);
+    }
+
+    double secondOrderLambda2() const {
+        return settings["cbfs"]["high-order"].value("lambda2", 1.0);
+    }
+
+    double secondOrderSampledDataReserve() const {
+        double reserve = settings["cbfs"]["high-order"].value("sampled-data-reserve", 0.0);
+        if (!std::isfinite(reserve) || reserve < 0.0) {
+            throw std::invalid_argument("cbfs.high-order.sampled-data-reserve must be a non-negative finite number");
+        }
+        return reserve;
+    }
+
+    bool hasSecondOrderAccelerationBound() const {
+        return isSecondOrderCbfEnabled()
+               && settings["cbfs"]["high-order"].contains("acceleration-bound");
+    }
+
+    double secondOrderAccelerationBound() const {
+        double bound = settings["cbfs"]["high-order"].value("acceleration-bound", 0.0);
+        if (!std::isfinite(bound) || bound < 0.0) {
+            throw std::invalid_argument("cbfs.high-order.acceleration-bound must be a non-negative finite number");
+        }
+        return bound;
+    }
+
+    void addSecondOrderAccelerationBounds(json &jsonControlBounds) {
+        if (!hasSecondOrderAccelerationBound()) {
+            return;
+        }
+
+        double bound = secondOrderAccelerationBound();
+        const std::array<std::string, 2> names = {"ax", "ay"};
+        for (int axis = 0; axis < 2 && axis < model->uSize(); ++axis) {
+            VectorXd lower = VectorXd::Zero(model->uSize());
+            lower(axis) = 1.0;
+            optimiser->addLinearConstraint(lower, -bound);
+            jsonControlBounds.emplace_back(json{
+                    {"name", names[axis] + "-lower"},
+                    {"coe", model->control2Json(lower)},
+                    {"rhs", -bound}
+            });
+
+            VectorXd upper = VectorXd::Zero(model->uSize());
+            upper(axis) = -1.0;
+            optimiser->addLinearConstraint(upper, -bound);
+            jsonControlBounds.emplace_back(json{
+                    {"name", names[axis] + "-upper"},
+                    {"coe", model->control2Json(upper)},
+                    {"rhs", -bound}
+            });
+        }
+    }
+
+    VectorXd extractPlanarVelocityFromState(const VectorXd &x) const {
+        VectorXd velocity(2);
+        velocity << model->extractFromVector(x, "vx"), model->extractFromVector(x, "vy");
+        return velocity;
+    }
+
+    void setSecondOrderSafetyCBF(const json& config) {
+        if (settings["num"] == 1) return;
+
+        double safeDistance = config["safe-distance"];
+        double tighteningMargin = config.value("safe-distance-tightening-margin", 0.0);
+        if (!std::isfinite(tighteningMargin) || tighteningMargin < 0.0) {
+            throw std::invalid_argument("safety.safe-distance-tightening-margin must be non-negative and finite");
+        }
+        double effectiveSafeDistance = safeDistance + tighteningMargin;
+        double k = config.contains("k") ? static_cast<double>(config["k"]) : 1.0;
+        bool considerUncertainty = config.value("consider-uncertainty", true);
+        double myUncertainty = uncertaintyFromCovarianceFunction(positionCovariance);
+        double lambda1 = secondOrderLambda1();
+        double lambda2 = secondOrderLambda2();
+        double sampledDataReserve = secondOrderSampledDataReserve();
+
+        bool usePairStateReserve = false;
+        double pairStateReserveDistance = 0.0;
+        double pairStateReserveRadial = 0.0;
+        double pairStateReserveVelocityGain = 0.0;
+        double pairStateReserveSampleTime = settings.value("execute", json::object()).value("time-step", 0.0);
+        double pairStateReserveMax = std::numeric_limits<double>::infinity();
+        if (config.contains("pair-state-reserve")) {
+            const json& pairReserveConfig = config["pair-state-reserve"];
+            usePairStateReserve = pairReserveConfig.value("enabled", false);
+            pairStateReserveDistance = pairReserveConfig.value("distance-threshold", 0.0);
+            pairStateReserveRadial = pairReserveConfig.value("radial-threshold", 0.0);
+            pairStateReserveVelocityGain = pairReserveConfig.value("velocity-gain", 0.0);
+            pairStateReserveSampleTime = pairReserveConfig.value("sample-time", pairStateReserveSampleTime);
+            pairStateReserveMax = pairReserveConfig.value("max-reserve", pairStateReserveMax);
+            const std::array<std::pair<const char*, double>, 5> pairReserveValues = {{
+                {"safety.pair-state-reserve.distance-threshold", pairStateReserveDistance},
+                {"safety.pair-state-reserve.radial-threshold", pairStateReserveRadial},
+                {"safety.pair-state-reserve.velocity-gain", pairStateReserveVelocityGain},
+                {"safety.pair-state-reserve.sample-time", pairStateReserveSampleTime},
+                {"safety.pair-state-reserve.max-reserve", pairStateReserveMax}
+            }};
+            for (const auto& [name, value] : pairReserveValues) {
+                if (!std::isfinite(value) || value < 0.0) {
+                    throw std::invalid_argument(std::string(name) + " must be non-negative and finite");
+                }
+            }
+        }
+
+        for (auto &[otherId, otherPoint]: comm->_othersPos) {
+            if (this->id == otherId) continue;
+            Point otherPosition = otherPoint;
+
+            double otherUncertainty = 0.0;
+            if (enablePositionCovariance && comm->_othersPositionCovariance.find(otherId) != comm->_othersPositionCovariance.end()) {
+                const Eigen::Matrix2d& otherCov = comm->_othersPositionCovariance[otherId];
+                otherUncertainty = uncertaintyFromCovarianceFunction(otherCov);
+            }
+
+            VectorXd otherVelocity = VectorXd::Zero(2);
+            if (comm->_othersVel.find(otherId) != comm->_othersVel.end()) {
+                otherVelocity = comm->_othersVel[otherId];
+            }
+
+            VectorXd otherAcceleration = VectorXd::Zero(2);
+            if (comm->_othersAcc.find(otherId) != comm->_othersAcc.end()) {
+                otherAcceleration = comm->_othersAcc[otherId];
+            }
+
+            double uncertainty = considerUncertainty ? myUncertainty + otherUncertainty : 0.0;
+
+            SecondOrderCBF safetyCBF;
+            safetyCBF.name = "secondOrderSafetyCBF(#" + std::to_string(otherId) + ")";
+            safetyCBF.lambda1 = lambda1;
+            safetyCBF.k1 = lambda1 + lambda2;
+            safetyCBF.k0 = lambda1 * lambda2;
+            safetyCBF.sampledDataReserve = sampledDataReserve;
+            safetyCBF.h = [this, otherPosition, effectiveSafeDistance, k, uncertainty](const VectorXd &x, double) {
+                Point myPosition = model->extractXYFromVector(x);
+                VectorXd myVelocity = extractPlanarVelocityFromState(x);
+                VectorXd otherVelocity = VectorXd::Zero(2);
+                auto terms = computePairwiseDistanceKinematics(myPosition, otherPosition, myVelocity, otherVelocity);
+                return k * (terms.distance - effectiveSafeDistance - uncertainty);
+            };
+            safetyCBF.hdot = [this, otherPosition, otherVelocity, k](const VectorXd &x, double) {
+                Point myPosition = model->extractXYFromVector(x);
+                VectorXd myVelocity = extractPlanarVelocityFromState(x);
+                auto terms = computePairwiseDistanceKinematics(myPosition, otherPosition, myVelocity, otherVelocity);
+                return k * terms.radialVelocity;
+            };
+            safetyCBF.hddotConst = [this, otherPosition, otherVelocity, otherAcceleration, k](const VectorXd &x, double) {
+                Point myPosition = model->extractXYFromVector(x);
+                VectorXd myVelocity = extractPlanarVelocityFromState(x);
+                auto terms = computePairwiseDistanceKinematics(myPosition, otherPosition, myVelocity, otherVelocity);
+                return k * (-terms.normal.dot(otherAcceleration) + terms.curvature);
+            };
+            safetyCBF.uCoe = [this, otherPosition, otherVelocity, k](const VectorXd &x, double) {
+                Point myPosition = model->extractXYFromVector(x);
+                VectorXd myVelocity = extractPlanarVelocityFromState(x);
+                auto terms = computePairwiseDistanceKinematics(myPosition, otherPosition, myVelocity, otherVelocity);
+                VectorXd coe = VectorXd::Zero(model->uSize());
+                coe(0) = k * terms.normal.x();
+                coe(1) = k * terms.normal.y();
+                return coe;
+            };
+            if (usePairStateReserve) {
+                safetyCBF.stateDependentReserve = [
+                    this,
+                    otherPosition,
+                    otherVelocity,
+                    k,
+                    pairStateReserveDistance,
+                    pairStateReserveRadial,
+                    pairStateReserveVelocityGain,
+                    pairStateReserveSampleTime,
+                    pairStateReserveMax
+                ](const VectorXd &x, double) {
+                    Point myPosition = model->extractXYFromVector(x);
+                    VectorXd myVelocity = extractPlanarVelocityFromState(x);
+                    auto terms = computePairwiseDistanceKinematics(myPosition, otherPosition, myVelocity, otherVelocity);
+                    double radial = terms.radialVelocity;
+                    if (!(terms.distance < pairStateReserveDistance && radial < -pairStateReserveRadial)) {
+                        return 0.0;
+                    }
+                    double closingRate = std::max(0.0, -radial);
+                    double reserve = pairStateReserveVelocityGain * closingRate * pairStateReserveSampleTime;
+                    if (reserve > pairStateReserveMax) {
+                        reserve = pairStateReserveMax;
+                    }
+                    return reserve;
+                };
+            }
+
+            secondOrderCbfNoSlack[safetyCBF.name] = safetyCBF;
+        }
     }
 
     Point getEndTargetPoint() {
@@ -800,27 +1201,75 @@ public:
         }
     }
 
+    void setBridgeFormationOverride(const std::vector<int> &anchorIds, const std::vector<int> &baseIds) {
+        bridgeAnchorIds = anchorIds;
+        bridgeBaseIds = baseIds;
+        hasBridgeFormationOverride = true;
+    }
+
+    void clearBridgeFormationOverride() {
+        bridgeAnchorIds.clear();
+        bridgeBaseIds.clear();
+        hasBridgeFormationOverride = false;
+    }
+
+    void clearPerStepNoSlackCbfs() {
+        for (auto it = cbfNoSlack.cbfs.begin(); it != cbfNoSlack.cbfs.end();) {
+            const std::string &name = it->first;
+            bool isPerStepCbf = name == "commCBF"
+                                || name == "safetyCBF"
+                                || name.find("fixedCommCBF(") == 0;
+            if (isPerStepCbf) {
+                it = cbfNoSlack.cbfs.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
     void postsetCBF() {
         auto cbfConfig = settings["cbfs"];
+        bool useSecondOrder = isSecondOrderCbfEnabled();
 
         setupFormation();
+        clearPerStepNoSlackCbfs();
+        secondOrderCbfNoSlack.clear();
 
-        if (cbfConfig["without-slack"]["comm-fixed"]["on"]) setFixedCommCBF(cbfConfig["without-slack"]["comm-fixed"]);
+        if (cbfConfig["without-slack"]["comm-fixed"]["on"]) {
+            if (useSecondOrder) {
+                setSecondOrderFixedCommCBF(cbfConfig["without-slack"]["comm-fixed"]);
+            } else {
+                setFixedCommCBF(cbfConfig["without-slack"]["comm-fixed"]);
+            }
+        }
         if (cbfConfig["without-slack"]["comm-auto"]["on"]) setCommunicationAutoCBF(cbfConfig["without-slack"]["comm-auto"]);
         if (cbfConfig["with-slack"]["cvt"]["on"] || cbfConfig["with-slack"]["cvt-yaw"]["on"]) setCVTCBF(cbfConfig["with-slack"]);
-        if (cbfConfig["without-slack"]["safety"]["on"]) setSafetyCBF(cbfConfig["without-slack"]["safety"]);
+        if (cbfConfig["without-slack"]["safety"]["on"]) {
+            if (useSecondOrder) {
+                setSecondOrderSafetyCBF(cbfConfig["without-slack"]["safety"]);
+            } else {
+                setSafetyCBF(cbfConfig["without-slack"]["safety"]);
+            }
+        }
     }
 
     void optimise() {
         VectorXd uNominal(model->uSize());
-        uNominal.setZero();
+        if (hasNominalControlOverride) {
+            uNominal = nominalControlOverride;
+        } else {
+            uNominal.setZero();
+        }
         opt = {
                 {"nominal",    model->control2Json(uNominal)},
                 {"result",     model->control2Json(uNominal)},
                 {"cbfNoSlack", json::array()},
-                {"cbfSlack",   json::array()}
+                {"cbfSlack",   json::array()},
+                {"controlBounds", json::array()},
+                {"nominalGuard", hasNominalGuardDiagnostic ? nominalGuardDiagnostic : json{{"enabled", false}}}
         };
-        json jsonCBFNoSlack = json::array(), jsonCBFSlack = json::array();
+        json jsonCBFNoSlack = json::array(), jsonCBFSlack = json::array(), jsonSecondOrderCBFNoSlack = json::array();
+        json jsonControlBounds = json::array();
         std::unordered_map<std::string, CBFConstraintEvaluation> cbfNoSlackEvaluations;
         double chargeRate = 1.0;
         if (world.isCharging(model->xy(), chargeRate) && model->getStateVariable("battery") < model->BATTERY_MAX) {
@@ -842,6 +1291,8 @@ public:
             optimiser->start(totalSize, uSize);
 
             optimiser->setObjective(uNominal);
+            addSecondOrderAccelerationBounds(jsonControlBounds);
+            opt["controlBounds"] = jsonControlBounds;
 
             std::string cbf_method = settings["cbfs"]["without-slack"].value("method", "all");
 
@@ -874,6 +1325,25 @@ public:
             }
             opt["cbfNoSlack"] = jsonCBFNoSlack;
 
+            std::unordered_map<std::string, SecondOrderCBFConstraintEvaluation> secondOrderEvaluations;
+            for (auto &[name, cbf]: secondOrderCbfNoSlack) {
+                auto evaluation = cbf.evaluateConstraint(x, runtime);
+                secondOrderEvaluations[name] = evaluation;
+                optimiser->addLinearConstraint(evaluation.uCoe, -evaluation.constTerm);
+
+                jsonSecondOrderCBFNoSlack.emplace_back(json{
+                        {"name",  cbf.name},
+                        {"coe",   model->control2Json(evaluation.uCoe)},
+                        {"const", evaluation.constTerm},
+                        {"h", evaluation.h},
+                        {"hdot", evaluation.hdot},
+                        {"psi1", evaluation.psi1},
+                        {"sampledDataReserve", evaluation.sampledDataReserve},
+                        {"hocbf", evaluation.constTerm}
+                });
+            }
+            opt["hocbfNoSlack"] = jsonSecondOrderCBFNoSlack;
+
             int cnt = 0;
             for (auto &[name, cbf]: cbfSlack) {
                 auto evaluation = cbf.evaluateConstraint(f, g, x, runtime);
@@ -896,6 +1366,12 @@ public:
             model->setControlInput(u);
             opt["result"] = model->control2Json(u);
             opt["slacks"] = result.tail(slackSize);
+            for (auto &item: opt["hocbfNoSlack"]) {
+                std::string name = item.at("name").get<std::string>();
+                if (secondOrderEvaluations.find(name) != secondOrderEvaluations.end()) {
+                    item["hocbf"] = secondOrderEvaluations.at(name).value(u);
+                }
+            }
 
             try {
                 json solver_status = optimiser->getStatus();
@@ -947,6 +1423,68 @@ public:
         externalVx = vx;
         externalVy = vy;
         hasExternalVelocity = true;
+    }
+
+    void applySecondOrderNominalFeasibilityGuard(double tolerance = 1.0e-9) {
+        nominalGuardDiagnostic = {
+                {"enabled", true},
+                {"active", false},
+                {"feasible", false},
+                {"projection_norm", 0.0},
+                {"polygon_vertices", 0},
+                {"margin_before", nullptr},
+                {"margin_after", nullptr}
+        };
+        hasNominalGuardDiagnostic = true;
+
+        if (!hasNominalControlOverride || model->uSize() < 2 || !hasSecondOrderAccelerationBound()) {
+            return;
+        }
+
+        std::vector<BridgeHocbfHalfspace2D> constraints;
+        VectorXd x = model->getX();
+        for (auto &[name, cbf]: secondOrderCbfNoSlack) {
+            auto evaluation = cbf.evaluateConstraint(x, runtime);
+            if (evaluation.uCoe.size() < 2) {
+                continue;
+            }
+            constraints.push_back({evaluation.uCoe(0), evaluation.uCoe(1), -evaluation.constTerm});
+        }
+
+        BridgeHocbfProjectionResult result = projectBridgeHocbfNominalAcceleration(
+                nominalControlOverride(0),
+                nominalControlOverride(1),
+                secondOrderAccelerationBound(),
+                constraints,
+                tolerance);
+
+        nominalGuardDiagnostic = {
+                {"enabled", true},
+                {"active", result.active},
+                {"feasible", result.feasible},
+                {"projection_norm", result.projection_norm},
+                {"polygon_vertices", result.vertex_count},
+                {"margin_before", std::isfinite(result.margin_before) ? json(result.margin_before) : json(nullptr)},
+                {"margin_after", std::isfinite(result.margin_after) ? json(result.margin_after) : json(nullptr)}
+        };
+
+        if (result.feasible && result.active) {
+            nominalControlOverride(0) = result.projected_ax;
+            nominalControlOverride(1) = result.projected_ay;
+        }
+    }
+
+    void setNominalControlOverride(const Eigen::VectorXd &control) {
+        if (control.size() != model->uSize()) {
+            throw std::invalid_argument("Nominal control override size mismatch");
+        }
+        nominalControlOverride = control;
+        hasNominalControlOverride = true;
+    }
+
+    void clearNominalControlOverride() {
+        hasNominalControlOverride = false;
+        nominalControlOverride.resize(0);
     }
 
     void output() const {

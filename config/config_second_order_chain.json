@@ -1,0 +1,127 @@
+{
+  "world": {
+    "boundary": [
+      [0.0, 0.0],
+      [35.0, 0.0],
+      [35.0, 20.0],
+      [0.0, 20.0]
+    ],
+    "charge": [],
+    "spacing": 1.0
+  },
+  "num": 3,
+  "dim": 4,
+  "formation": {
+    "parts": 1,
+    "bases-id": [
+      [0]
+    ]
+  },
+  "bases": [
+    [5.0, 8.0]
+  ],
+  "initial": {
+    "position": {
+      "method": "specified",
+      "positions": [
+        [5.0, 5.0],
+        [14.0, 5.0],
+        [22.5, 5.0]
+      ]
+    },
+    "velocity": {
+      "values": [
+        [0.0, 0.0],
+        [0.6, 0.0],
+        [1.0, 0.0]
+      ]
+    },
+    "battery": {
+      "min": 4100.0,
+      "max": 4100.0
+    },
+    "yawDeg": 0.0
+  },
+  "model": "DoubleIntegrate2D",
+  "model-params": {
+    "discharge-rate": 0.0
+  },
+  "uncertainty": {
+    "method": "const",
+    "const": {
+      "epsilon": 0.0
+    }
+  },
+  "position_covariance": {
+    "enable": false
+  },
+  "searching": {
+    "method": "downward",
+    "downward": {
+      "radius": 1.0
+    }
+  },
+  "optimiser": "OSQP",
+  "cbfs": {
+    "objective-function": {
+      "k_delta": 10.0
+    },
+    "high-order": {
+      "enabled": true,
+      "lambda1": 1.0,
+      "lambda2": 1.0,
+      "acceleration-bound": 5.0
+    },
+    "with-slack": {
+      "cvt": {
+        "name": "cvtCBF",
+        "on": false
+      },
+      "cvt-yaw": {
+        "name": "cvtYawCBF",
+        "on": false
+      },
+      "target-yaw": {
+        "name": "yawCBF",
+        "on": false
+      }
+    },
+    "without-slack": {
+      "method": "all",
+      "energy": {
+        "on": false
+      },
+      "safety": {
+        "name": "safetyCBF",
+        "on": true,
+        "safe-distance": 1.0,
+        "consider-uncertainty": false
+      },
+      "comm-fixed": {
+        "name": "commFixedCBF",
+        "on": true,
+        "max-range": 10.0,
+        "k": 1.0,
+        "min-neighbour-id-offset": -1,
+        "max-neighbour-id-offset": 0,
+        "compensate-velocity": true,
+        "consider-uncertainty": false
+      },
+      "comm-auto": {
+        "name": "commAutoCBF",
+        "on": false
+      }
+    }
+  },
+  "execute": {
+    "execution-mode": "distributed",
+    "time-total": 4.0,
+    "time-step": 0.5,
+    "random-seed": 20260615,
+    "check-constraint-violation": true
+  },
+  "debug": {
+    "opt-cbc": false
+  },
+  "run_suffix": "_second_order_chain"
+}

@@ -25,6 +25,14 @@ public:
         _othersVel[id] = velocity2D;
     }
 
+    void sendAcceleration2D(int id, const VectorXd acceleration2D) override {
+        _othersAcc[id] = acceleration2D;
+    }
+
+    void receiveAcceleration2D(int id, const VectorXd acceleration2D) override {
+        _othersAcc[id] = acceleration2D;
+    }
+
     void sendYawRad(int id, double yawRad) override {
         _othersYawRad[id] = yawRad;
     }

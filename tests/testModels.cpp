@@ -2,6 +2,7 @@
 
 #include "doctest.h"
 #include "models/BaseModel.hpp"
+#include "models/DoubleIntegrate2D.hpp"
 
 TEST_CASE("BaseModelVectorJsonConversionsAcceptVectorsByConstReference") {
     using StateToJson = json (BaseModel::*)(const VectorXd&) const;
@@ -23,4 +24,22 @@ TEST_CASE("RandomSeedResolutionUsesConfiguredExecuteSeedWhenPresent") {
 
     CHECK(resolveRandomSeed(settings, 99) == 1234u);
     CHECK(resolveRandomSeed(json::object(), 99) == 99u);
+}
+
+TEST_CASE("DoubleIntegratorExposesPlanarAccelerationControl") {
+    json settings = {
+        {"model-params", {
+            {"discharge-rate", 0.1}
+        }}
+    };
+    DoubleIntegrate2D model(settings);
+
+    VectorXd u(3);
+    u << 1.5, -0.25, 0.3;
+    model.setControlInput(u);
+
+    VectorXd acceleration = model.getAcceleration();
+    CHECK(acceleration.size() == 2);
+    CHECK(acceleration(0) == doctest::Approx(1.5));
+    CHECK(acceleration(1) == doctest::Approx(-0.25));
 }

@@ -19,6 +19,9 @@ public:
     virtual void sendVelocity2D(int id, const VectorXd velocity2D) = 0;
     virtual void receiveVelocity2D(int id, const VectorXd velocity2D) = 0;
 
+    virtual void sendAcceleration2D(int id, const VectorXd acceleration2D) = 0;
+    virtual void receiveAcceleration2D(int id, const VectorXd acceleration2D) = 0;
+
     virtual void sendYawRad(int id, double yawRad) = 0;
     virtual void receiveYawRad(int id, double yawRad) = 0;
 
@@ -33,6 +36,7 @@ public:
             std::cout << "Robot " << i << ": ";
             std::cout << "Pos (" << std::setprecision(4) << _othersPos[i].x << ", " << _othersPos[i].y << "), ";
             std::cout << "Vel" <<  vecToString(_othersVel[i]) << ", ";
+            std::cout << "Acc" <<  vecToString(_othersAcc[i]) << ", ";
             std::cout << "YawDeg" << std::setprecision(2) << _othersYawRad[i] * 180 / M_PI << ", ";
             std::cout << "Battery" << std::setprecision(2) << _othersBatteryLevel[i] << std::endl;
         }
@@ -46,6 +50,7 @@ protected:
 public:
     std::unordered_map<int, Point> _othersPos;
     std::unordered_map<int, VectorXd> _othersVel;
+    std::unordered_map<int, VectorXd> _othersAcc;
     std::unordered_map<int, double> _othersYawRad;
     std::unordered_map<int, double> _othersBatteryLevel;
     std::unordered_map<int, Eigen::Matrix2d> _othersPositionCovariance;

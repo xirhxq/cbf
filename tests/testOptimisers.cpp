@@ -416,6 +416,566 @@ TEST_CASE("RobotGetStateEvaluatesCbfLogsFromSingleStateSnapshot") {
     CHECK(state.at("cbfSlack").at("snapshotCBF").get<double>() == doctest::Approx(5.0));
 }
 
+TEST_CASE("RobotBuildsSecondOrderSafetyCbfForDoubleIntegrator") {
+    const std::string optimiser_name = selectRobotTestOptimiser();
+    json settings = makeSingleRobotNoCbfConfig(optimiser_name);
+    settings["num"] = 2;
+    settings["all"] = {1, 2};
+    settings["model"] = "DoubleIntegrate2D";
+    settings["initial"]["position"]["positions"] = {{5.0, 5.0}, {8.0, 5.0}};
+    settings["cbfs"]["without-slack"]["safety"] = {
+        {"on", true},
+        {"safe-distance", 1.0},
+        {"consider-uncertainty", false}
+    };
+    settings["cbfs"]["high-order"] = {
+        {"enabled", true},
+        {"lambda1", 1.0},
+        {"lambda2", 1.0}
+    };
+
+    Robot robot(1, settings);
+    robot.model->setStateVariable("vx", 0.5);
+    robot.model->setStateVariable("vy", 0.0);
+
+    VectorXd otherVelocity(2);
+    otherVelocity << 0.0, 0.0;
+    VectorXd otherAcceleration(2);
+    otherAcceleration << 0.1, 0.0;
+
+    robot.comm->receivePosition2D(2, Point(8.0, 5.0));
+    robot.comm->receiveVelocity2D(2, otherVelocity);
+    robot.comm->receiveAcceleration2D(2, otherAcceleration);
+
+    robot.postsetCBF();
+
+    REQUIRE(robot.secondOrderCbfNoSlack.count("secondOrderSafetyCBF(#2)") == 1);
+    VectorXd x = robot.model->getX();
+    auto evaluation = robot.secondOrderCbfNoSlack.at("secondOrderSafetyCBF(#2)").evaluateConstraint(x, 0.0);
+
+    CHECK(evaluation.h == doctest::Approx(2.0));
+    CHECK(evaluation.hdot == doctest::Approx(-0.5));
+    CHECK(evaluation.psi1 == doctest::Approx(1.5));
+    CHECK(evaluation.uCoe.size() == 3);
+    CHECK(evaluation.uCoe(0) == doctest::Approx(-1.0));
+    CHECK(evaluation.uCoe(1) == doctest::Approx(0.0));
+    CHECK(evaluation.uCoe(2) == doctest::Approx(0.0));
+    CHECK(evaluation.constTerm == doctest::Approx(1.1));
+}
+
+TEST_CASE("RobotAppliesTighteningMarginToFirstOrderSafetyCbf") {
+    const std::string optimiser_name = selectRobotTestOptimiser();
+    json settings = makeSingleRobotNoCbfConfig(optimiser_name);
+    settings["num"] = 2;
+    settings["all"] = {1, 2};
+    settings["initial"]["position"]["positions"] = {{5.0, 5.0}, {8.0, 5.0}};
+    settings["cbfs"]["without-slack"]["safety"] = {
+        {"on", true},
+        {"safe-distance", 1.0},
+        {"safe-distance-tightening-margin", 0.5},
+        {"k", 1.0},
+        {"consider-uncertainty", false}
+    };
+
+    Robot robot(1, settings);
+    robot.comm->receivePosition2D(2, Point(8.0, 5.0));
+
+    robot.postsetCBF();
+
+    REQUIRE(robot.cbfNoSlack.cbfs.count("safetyCBF") == 1);
+    VectorXd x = robot.model->getX();
+    auto evaluation = robot.cbfNoSlack.cbfs.at("safetyCBF").evaluateConstraint(
+        robot.model->f(), robot.model->g(), x, 0.0);
+
+    CHECK(evaluation.h == doctest::Approx(1.5));
+}
+
+TEST_CASE("RobotInitializesDoubleIntegratorVelocityFromConfig") {
+    const std::string optimiser_name = selectRobotTestOptimiser();
+    json settings = makeSingleRobotNoCbfConfig(optimiser_name);
+    settings["model"] = "DoubleIntegrate2D";
+    settings["initial"]["velocity"] = {
+        {"values", {{1.25, -0.5}}}
+    };
+
+    Robot robot(1, settings);
+
+    CHECK(robot.model->getStateVariable("vx") == doctest::Approx(1.25));
+    CHECK(robot.model->getStateVariable("vy") == doctest::Approx(-0.5));
+}
+
+TEST_CASE("RobotLogsSolvedSecondOrderHocbfValue") {
+    const std::string optimiser_name = selectRobotTestOptimiser();
+    json settings = makeSingleRobotNoCbfConfig(optimiser_name);
+    settings["model"] = "DoubleIntegrate2D";
+
+    Robot robot(1, settings);
+
+    SecondOrderCBF cbf;
+    cbf.name = "manualSecondOrderCBF";
+    cbf.k0 = 0.0;
+    cbf.k1 = 0.0;
+    cbf.lambda1 = 1.0;
+    cbf.h = [](const VectorXd&, double) { return 0.0; };
+    cbf.hdot = [](const VectorXd&, double) { return 0.0; };
+    cbf.hddotConst = [](const VectorXd&, double) { return -1.0; };
+    cbf.uCoe = [](const VectorXd&, double) {
+        VectorXd coe = VectorXd::Zero(3);
+        coe(0) = 1.0;
+        return coe;
+    };
+    robot.secondOrderCbfNoSlack[cbf.name] = cbf;
+
+    robot.optimise();
+
+    CHECK(robot.model->getControlInput()(0) == doctest::Approx(1.0).epsilon(1e-5));
+    REQUIRE(robot.opt.at("hocbfNoSlack").size() == 1);
+    CHECK(robot.opt.at("hocbfNoSlack").at(0).at("hocbf").get<double>() == doctest::Approx(0.0).epsilon(1e-5));
+}
+
+TEST_CASE("RobotUsesBridgeNominalControlOverride") {
+    const std::string optimiser_name = selectRobotTestOptimiser();
+    json settings = makeSingleRobotNoCbfConfig(optimiser_name);
+    settings["cbfs"]["without-slack"]["safety"]["on"] = false;
+    settings["cbfs"]["without-slack"]["comm-fixed"]["on"] = false;
+    settings["cbfs"]["with-slack"]["cvt"]["on"] = false;
+    settings["cbfs"]["with-slack"]["cvt-yaw"]["on"] = false;
+    settings["initial"]["position"]["positions"] = {{1.0, 1.0}};
+
+    Robot robot(1, settings);
+    Eigen::VectorXd nominal(3);
+    nominal << 0.4, -0.2, 0.1;
+    robot.setNominalControlOverride(nominal);
+    robot.optimise();
+
+    CHECK(robot.opt.at("nominal").at("vx").get<double>() == doctest::Approx(0.4));
+    CHECK(robot.opt.at("nominal").at("vy").get<double>() == doctest::Approx(-0.2));
+    CHECK(robot.opt.at("nominal").at("yawRateRad").get<double>() == doctest::Approx(0.1));
+    CHECK(robot.opt.at("result").at("vx").get<double>() == doctest::Approx(0.4).epsilon(1e-4));
+}
+
+TEST_CASE("RobotProjectsNominalAccelerationThroughHocbfGuardAndPreservesYawRate") {
+    const std::string optimiser_name = selectRobotTestOptimiser();
+    json settings = makeSingleRobotNoCbfConfig(optimiser_name);
+    settings["model"] = "DoubleIntegrate2D";
+    settings["cbfs"]["high-order"] = {
+        {"enabled", true},
+        {"acceleration-bound", 2.0}
+    };
+
+    Robot robot(1, settings);
+    Eigen::VectorXd nominal(3);
+    nominal << -1.0, 0.5, 0.25;
+    robot.setNominalControlOverride(nominal);
+
+    SecondOrderCBF cbf;
+    cbf.name = "manualGuardCBF";
+    cbf.k0 = 0.0;
+    cbf.k1 = 0.0;
+    cbf.lambda1 = 1.0;
+    cbf.h = [](const VectorXd&, double) { return 0.0; };
+    cbf.hdot = [](const VectorXd&, double) { return 0.0; };
+    cbf.hddotConst = [](const VectorXd&, double) { return 0.0; };
+    cbf.uCoe = [](const VectorXd&, double) {
+        VectorXd coe = VectorXd::Zero(3);
+        coe(0) = 1.0;
+        return coe;
+    };
+    robot.secondOrderCbfNoSlack[cbf.name] = cbf;
+
+    robot.applySecondOrderNominalFeasibilityGuard(1.0e-9);
+    robot.optimise();
+
+    CHECK(robot.opt.at("nominal").at("ax").get<double>() == doctest::Approx(0.0));
+    CHECK(robot.opt.at("nominal").at("ay").get<double>() == doctest::Approx(0.5));
+    CHECK(robot.opt.at("nominal").at("yawRateRad").get<double>() == doctest::Approx(0.25));
+    REQUIRE(robot.opt.contains("nominalGuard"));
+    CHECK(robot.opt.at("nominalGuard").at("enabled").get<bool>());
+    CHECK(robot.opt.at("nominalGuard").at("active").get<bool>());
+    CHECK(robot.opt.at("nominalGuard").at("feasible").get<bool>());
+    CHECK(robot.opt.at("nominalGuard").at("margin_before").get<double>() == doctest::Approx(-1.0));
+    CHECK(robot.opt.at("nominalGuard").at("margin_after").get<double>() == doctest::Approx(0.0));
+}
+
+TEST_CASE("RobotHocbfGuardReportsEmptyFeasibleSetWithoutChangingYawRate") {
+    const std::string optimiser_name = selectRobotTestOptimiser();
+    json settings = makeSingleRobotNoCbfConfig(optimiser_name);
+    settings["model"] = "DoubleIntegrate2D";
+    settings["cbfs"]["high-order"] = {
+        {"enabled", true},
+        {"acceleration-bound", 2.0}
+    };
+
+    Robot robot(1, settings);
+    Eigen::VectorXd nominal(3);
+    nominal << 0.0, 0.0, -0.2;
+    robot.setNominalControlOverride(nominal);
+
+    SecondOrderCBF lower;
+    lower.name = "guardLower";
+    lower.k0 = 0.0;
+    lower.k1 = 0.0;
+    lower.lambda1 = 1.0;
+    lower.h = [](const VectorXd&, double) { return 0.0; };
+    lower.hdot = [](const VectorXd&, double) { return 0.0; };
+    lower.hddotConst = [](const VectorXd&, double) { return -1.0; };
+    lower.uCoe = [](const VectorXd&, double) {
+        VectorXd coe = VectorXd::Zero(3);
+        coe(0) = 1.0;
+        return coe;
+    };
+    SecondOrderCBF upper = lower;
+    upper.name = "guardUpper";
+    upper.hddotConst = [](const VectorXd&, double) { return -1.0; };
+    upper.uCoe = [](const VectorXd&, double) {
+        VectorXd coe = VectorXd::Zero(3);
+        coe(0) = -1.0;
+        return coe;
+    };
+    robot.secondOrderCbfNoSlack[lower.name] = lower;
+    robot.secondOrderCbfNoSlack[upper.name] = upper;
+
+    robot.applySecondOrderNominalFeasibilityGuard(1.0e-9);
+
+    CHECK(robot.nominalControlOverride(2) == doctest::Approx(-0.2));
+    REQUIRE(robot.nominalGuardDiagnostic.contains("enabled"));
+    CHECK(robot.nominalGuardDiagnostic.at("enabled").get<bool>());
+    CHECK_FALSE(robot.nominalGuardDiagnostic.at("feasible").get<bool>());
+    CHECK_FALSE(robot.nominalGuardDiagnostic.at("active").get<bool>());
+}
+
+TEST_CASE("RobotAppliesSecondOrderAccelerationBounds") {
+    auto available = getAvailableOptimisers();
+    if (std::find(available.begin(), available.end(), "OSQP") == available.end()) {
+        return;
+    }
+
+    json settings = makeSingleRobotNoCbfConfig("OSQP");
+    settings["model"] = "DoubleIntegrate2D";
+    settings["cbfs"]["high-order"] = {
+        {"enabled", true},
+        {"acceleration-bound", 0.25}
+    };
+
+    Robot robot(1, settings);
+
+    SecondOrderCBF cbf;
+    cbf.name = "manualInfeasibleSecondOrderCBF";
+    cbf.k0 = 0.0;
+    cbf.k1 = 0.0;
+    cbf.lambda1 = 1.0;
+    cbf.h = [](const VectorXd&, double) { return 0.0; };
+    cbf.hdot = [](const VectorXd&, double) { return 0.0; };
+    cbf.hddotConst = [](const VectorXd&, double) { return -1.0; };
+    cbf.uCoe = [](const VectorXd&, double) {
+        VectorXd coe = VectorXd::Zero(3);
+        coe(0) = 1.0;
+        return coe;
+    };
+    robot.secondOrderCbfNoSlack[cbf.name] = cbf;
+
+    CHECK_THROWS_AS(robot.optimise(), std::runtime_error);
+}
+
+TEST_CASE("RobotBuildsSecondOrderFixedCommunicationCbfForDoubleIntegrator") {
+    const std::string optimiser_name = selectRobotTestOptimiser();
+    json settings = makeSingleRobotNoCbfConfig(optimiser_name);
+    settings["num"] = 2;
+    settings["all"] = {1, 2};
+    settings["model"] = "DoubleIntegrate2D";
+    settings["initial"]["position"]["positions"] = {{5.0, 5.0}, {8.0, 5.0}};
+    settings["cbfs"]["without-slack"]["comm-fixed"] = {
+        {"on", true},
+        {"max-range", 10.0},
+        {"k", 1.0},
+        {"min-neighbour-id-offset", -1},
+        {"max-neighbour-id-offset", 0},
+        {"compensate-velocity", true},
+        {"consider-uncertainty", false}
+    };
+    settings["cbfs"]["high-order"] = {
+        {"enabled", true},
+        {"lambda1", 1.0},
+        {"lambda2", 1.0}
+    };
+
+    Robot robot(2, settings);
+    robot.model->setStateVariable("vx", 0.5);
+    robot.model->setStateVariable("vy", 0.0);
+
+    VectorXd otherVelocity(2);
+    otherVelocity << 0.0, 0.0;
+    VectorXd otherAcceleration(2);
+    otherAcceleration << 0.1, 0.0;
+
+    robot.comm->receivePosition2D(1, Point(5.0, 5.0));
+    robot.comm->receiveVelocity2D(1, otherVelocity);
+    robot.comm->receiveAcceleration2D(1, otherAcceleration);
+
+    robot.postsetCBF();
+
+    REQUIRE(robot.secondOrderCbfNoSlack.count("secondOrderFixedCommCBF(#1)") == 1);
+    VectorXd x = robot.model->getX();
+    auto evaluation = robot.secondOrderCbfNoSlack.at("secondOrderFixedCommCBF(#1)").evaluateConstraint(x, 0.0);
+
+    CHECK(evaluation.h == doctest::Approx(7.0));
+    CHECK(evaluation.hdot == doctest::Approx(-0.5));
+    CHECK(evaluation.psi1 == doctest::Approx(6.5));
+    CHECK(evaluation.uCoe.size() == 3);
+    CHECK(evaluation.uCoe(0) == doctest::Approx(-1.0));
+    CHECK(evaluation.uCoe(1) == doctest::Approx(0.0));
+    CHECK(evaluation.uCoe(2) == doctest::Approx(0.0));
+    CHECK(evaluation.constTerm == doctest::Approx(6.1));
+}
+
+TEST_CASE("SecondOrderCbfCombinesConstantAndStateDependentReserve") {
+    SecondOrderCBF cbf;
+    cbf.k0 = 1.0;
+    cbf.k1 = 2.0;
+    cbf.lambda1 = 1.0;
+    cbf.sampledDataReserve = 1.0;
+    cbf.h = [](const VectorXd&, double) { return 4.0; };
+    cbf.hdot = [](const VectorXd&, double) { return -0.5; };
+    cbf.hddotConst = [](const VectorXd&, double) { return 3.0; };
+    cbf.uCoe = [](const VectorXd& x, double) { return VectorXd::Zero(x.size()); };
+    cbf.stateDependentReserve = [](const VectorXd&, double) { return 2.5; };
+
+    VectorXd x = VectorXd::Zero(3);
+    auto evaluation = cbf.evaluateConstraint(x, 0.0);
+
+    CHECK(evaluation.sampledDataReserve == doctest::Approx(1.0));
+    CHECK(evaluation.stateDependentReserve == doctest::Approx(2.5));
+    CHECK(evaluation.totalReserve == doctest::Approx(3.5));
+    CHECK(evaluation.constTerm == doctest::Approx(2.5));
+}
+
+TEST_CASE("RobotAppliesRangeTighteningMarginToFirstOrderCommunicationCbf") {
+    const std::string optimiser_name = selectRobotTestOptimiser();
+    json settings = makeSingleRobotNoCbfConfig(optimiser_name);
+    settings["num"] = 2;
+    settings["all"] = {1, 2};
+    settings["initial"]["position"]["positions"] = {{5.0, 5.0}, {8.0, 5.0}};
+    settings["cbfs"]["without-slack"]["comm-fixed"] = {
+        {"on", true},
+        {"max-range", 10.0},
+        {"range-tightening-margin", 2.0},
+        {"k", 1.0},
+        {"min-neighbour-id-offset", -1},
+        {"max-neighbour-id-offset", 0},
+        {"compensate-velocity", true},
+        {"consider-uncertainty", false}
+    };
+
+    Robot robot(2, settings);
+    VectorXd otherVelocity(2);
+    otherVelocity << 0.0, 0.0;
+    robot.comm->receivePosition2D(1, Point(5.0, 5.0));
+    robot.comm->receiveVelocity2D(1, otherVelocity);
+
+    robot.postsetCBF();
+
+    REQUIRE(robot.cbfNoSlack.cbfs.count("fixedCommCBF(#1)") == 1);
+    VectorXd x = robot.model->getX();
+    auto evaluation = robot.cbfNoSlack.cbfs.at("fixedCommCBF(#1)").evaluateConstraint(
+        robot.model->f(), robot.model->g(), x, 0.0);
+
+    CHECK(evaluation.h == doctest::Approx(5.0));
+    CHECK(evaluation.constWithTime == doctest::Approx(0.5));
+}
+
+TEST_CASE("RobotClearsStaleFixedCommunicationCbfsWhenBridgeAnchorsChange") {
+    const std::string optimiser_name = selectRobotTestOptimiser();
+    json settings = makeSingleRobotNoCbfConfig(optimiser_name);
+    settings["num"] = 3;
+    settings["all"] = {1, 2, 3};
+    settings["initial"]["position"]["positions"] = {{5.0, 5.0}, {8.0, 5.0}, {11.0, 5.0}};
+    settings["cbfs"]["without-slack"]["comm-fixed"] = {
+        {"on", true},
+        {"max-range", 10.0},
+        {"range-tightening-margin", 0.0},
+        {"k", 1.0},
+        {"min-neighbour-id-offset", -1},
+        {"max-neighbour-id-offset", 0},
+        {"compensate-velocity", true},
+        {"consider-uncertainty", false}
+    };
+
+    Robot robot(3, settings);
+    VectorXd zeroVelocity(2);
+    zeroVelocity << 0.0, 0.0;
+    robot.comm->receivePosition2D(1, Point(5.0, 5.0));
+    robot.comm->receivePosition2D(2, Point(8.0, 5.0));
+    robot.comm->receiveVelocity2D(1, zeroVelocity);
+    robot.comm->receiveVelocity2D(2, zeroVelocity);
+
+    robot.setBridgeFormationOverride({1}, {});
+    robot.postsetCBF();
+    REQUIRE(robot.cbfNoSlack.cbfs.count("fixedCommCBF(#1)") == 1);
+
+    robot.setBridgeFormationOverride({2}, {});
+    robot.postsetCBF();
+
+    CHECK(robot.cbfNoSlack.cbfs.count("fixedCommCBF(#1)") == 0);
+    CHECK(robot.cbfNoSlack.cbfs.count("fixedCommCBF(#2)") == 1);
+}
+
+TEST_CASE("RobotAppliesRangeTighteningMarginToSecondOrderCommunicationCbf") {
+    const std::string optimiser_name = selectRobotTestOptimiser();
+    json settings = makeSingleRobotNoCbfConfig(optimiser_name);
+    settings["num"] = 2;
+    settings["all"] = {1, 2};
+    settings["model"] = "DoubleIntegrate2D";
+    settings["initial"]["position"]["positions"] = {{5.0, 5.0}, {8.0, 5.0}};
+    settings["cbfs"]["without-slack"]["comm-fixed"] = {
+        {"on", true},
+        {"max-range", 10.0},
+        {"range-tightening-margin", 2.0},
+        {"k", 1.0},
+        {"min-neighbour-id-offset", -1},
+        {"max-neighbour-id-offset", 0},
+        {"compensate-velocity", true},
+        {"consider-uncertainty", false}
+    };
+    settings["cbfs"]["high-order"] = {
+        {"enabled", true},
+        {"lambda1", 1.0},
+        {"lambda2", 1.0}
+    };
+
+    Robot robot(2, settings);
+    robot.model->setStateVariable("vx", 0.5);
+    robot.model->setStateVariable("vy", 0.0);
+
+    VectorXd otherVelocity(2);
+    otherVelocity << 0.0, 0.0;
+    VectorXd otherAcceleration(2);
+    otherAcceleration << 0.1, 0.0;
+
+    robot.comm->receivePosition2D(1, Point(5.0, 5.0));
+    robot.comm->receiveVelocity2D(1, otherVelocity);
+    robot.comm->receiveAcceleration2D(1, otherAcceleration);
+
+    robot.postsetCBF();
+
+    REQUIRE(robot.secondOrderCbfNoSlack.count("secondOrderFixedCommCBF(#1)") == 1);
+    VectorXd x = robot.model->getX();
+    auto evaluation = robot.secondOrderCbfNoSlack.at("secondOrderFixedCommCBF(#1)").evaluateConstraint(x, 0.0);
+
+    CHECK(evaluation.h == doctest::Approx(5.0));
+    CHECK(evaluation.hdot == doctest::Approx(-0.5));
+    CHECK(evaluation.psi1 == doctest::Approx(4.5));
+    CHECK(evaluation.constTerm == doctest::Approx(4.1));
+}
+
+TEST_CASE("RobotAppliesSampledDataReserveToSecondOrderCommunicationCbf") {
+    const std::string optimiser_name = selectRobotTestOptimiser();
+    json settings = makeSingleRobotNoCbfConfig(optimiser_name);
+    settings["num"] = 2;
+    settings["all"] = {1, 2};
+    settings["model"] = "DoubleIntegrate2D";
+    settings["initial"]["position"]["positions"] = {{5.0, 5.0}, {8.0, 5.0}};
+    settings["cbfs"]["without-slack"]["comm-fixed"] = {
+        {"on", true},
+        {"max-range", 10.0},
+        {"range-tightening-margin", 2.0},
+        {"k", 1.0},
+        {"min-neighbour-id-offset", -1},
+        {"max-neighbour-id-offset", 0},
+        {"compensate-velocity", true},
+        {"consider-uncertainty", false}
+    };
+    settings["cbfs"]["high-order"] = {
+        {"enabled", true},
+        {"lambda1", 1.0},
+        {"lambda2", 1.0},
+        {"sampled-data-reserve", 1.25}
+    };
+
+    Robot robot(2, settings);
+    robot.model->setStateVariable("vx", 0.5);
+    robot.model->setStateVariable("vy", 0.0);
+
+    VectorXd otherVelocity(2);
+    otherVelocity << 0.0, 0.0;
+    VectorXd otherAcceleration(2);
+    otherAcceleration << 0.1, 0.0;
+
+    robot.comm->receivePosition2D(1, Point(5.0, 5.0));
+    robot.comm->receiveVelocity2D(1, otherVelocity);
+    robot.comm->receiveAcceleration2D(1, otherAcceleration);
+
+    robot.postsetCBF();
+
+    REQUIRE(robot.secondOrderCbfNoSlack.count("secondOrderFixedCommCBF(#1)") == 1);
+    VectorXd x = robot.model->getX();
+    auto evaluation = robot.secondOrderCbfNoSlack.at("secondOrderFixedCommCBF(#1)").evaluateConstraint(x, 0.0);
+
+    CHECK(evaluation.sampledDataReserve == doctest::Approx(1.25));
+    CHECK(evaluation.constTerm == doctest::Approx(2.85));
+
+    robot.optimise();
+
+    REQUIRE(robot.opt.at("hocbfNoSlack").size() == 1);
+    CHECK(robot.opt.at("hocbfNoSlack").at(0).at("sampledDataReserve").get<double>() == doctest::Approx(1.25));
+}
+
+TEST_CASE("RobotAppliesStateDependentReserveToSecondOrderCommunicationCbf") {
+    const std::string optimiser_name = selectRobotTestOptimiser();
+    json settings = makeSingleRobotNoCbfConfig(optimiser_name);
+    settings["num"] = 2;
+    settings["all"] = {1, 2};
+    settings["model"] = "DoubleIntegrate2D";
+    settings["initial"]["position"]["positions"] = {{5.0, 5.0}, {8.0, 5.0}};
+    settings["cbfs"]["without-slack"]["comm-fixed"] = {
+        {"on", true},
+        {"max-range", 10.0},
+        {"range-tightening-margin", 2.0},
+        {"k", 1.0},
+        {"min-neighbour-id-offset", -1},
+        {"max-neighbour-id-offset", 0},
+        {"compensate-velocity", true},
+        {"consider-uncertainty", false},
+        {"state-dependent-reserve", {
+            {"enabled", true},
+            {"velocity-gain", 2.0},
+            {"sample-time", 0.5},
+            {"acceleration-gain", 1.0},
+            {"neighbor-acceleration-bound", 4.0},
+            {"max-reserve", 20.0}
+        }}
+    };
+    settings["cbfs"]["high-order"] = {
+        {"enabled", true},
+        {"lambda1", 1.0},
+        {"lambda2", 1.0},
+        {"sampled-data-reserve", 1.25}
+    };
+
+    Robot robot(2, settings);
+    robot.model->setStateVariable("vx", 0.5);
+    robot.model->setStateVariable("vy", 0.0);
+
+    VectorXd otherVelocity(2);
+    otherVelocity << 0.0, 0.0;
+    VectorXd otherAcceleration(2);
+    otherAcceleration << 0.1, 0.0;
+
+    robot.comm->receivePosition2D(1, Point(5.0, 5.0));
+    robot.comm->receiveVelocity2D(1, otherVelocity);
+    robot.comm->receiveAcceleration2D(1, otherAcceleration);
+
+    robot.postsetCBF();
+
+    REQUIRE(robot.secondOrderCbfNoSlack.count("secondOrderFixedCommCBF(#1)") == 1);
+    VectorXd x = robot.model->getX();
+    auto evaluation = robot.secondOrderCbfNoSlack.at("secondOrderFixedCommCBF(#1)").evaluateConstraint(x, 0.0);
+
+    CHECK(evaluation.sampledDataReserve == doctest::Approx(1.25));
+    CHECK(evaluation.stateDependentReserve == doctest::Approx(1.0));
+    CHECK(evaluation.totalReserve == doctest::Approx(2.25));
+    CHECK(evaluation.constTerm == doctest::Approx(1.85));
+}
+
 TEST_CASE("SwarmLogOnceEvaluatesCentralizedCbfsFromSingleStateSnapshot") {
     const std::string optimiser_name = selectRobotTestOptimiser();
     json settings = makeSingleRobotNoCbfConfig(optimiser_name);
@@ -450,6 +1010,51 @@ TEST_CASE("SwarmLogOnceEvaluatesCentralizedCbfsFromSingleStateSnapshot") {
     const json &cbfs = swarm.data.at("state").at(0).at("centralized").at("cbfs");
     CHECK(cbfs.at("centralMutatingCBF").get<double>() == doctest::Approx(5.0));
     CHECK(cbfs.at("centralSnapshotCBF").get<double>() == doctest::Approx(5.0));
+}
+
+TEST_CASE("SwarmCentralizedRunLogsSecondOrderSafetyCbfForDoubleIntegrator") {
+    const std::string optimiser_name = selectRobotTestOptimiser();
+    json settings = makeSingleRobotNoCbfConfig(optimiser_name);
+    settings["num"] = 2;
+    settings["all"] = {1, 2};
+    settings["model"] = "DoubleIntegrate2D";
+    settings["output_path"] = "/private/tmp/cbf-second-order-test";
+    settings["initial"]["position"]["positions"] = {{5.0, 5.0}, {8.0, 5.0}};
+    settings["searching"] = {
+        {"method", "downward"},
+        {"downward", {
+            {"radius", 1.0}
+        }}
+    };
+    settings["execute"] = {
+        {"execution-mode", "centralized"},
+        {"time-step", 0.5},
+        {"time-total", 0.5},
+        {"check-constraint-violation", false}
+    };
+    settings["cbfs"]["without-slack"]["safety"] = {
+        {"on", true},
+        {"safe-distance", 1.0},
+        {"consider-uncertainty", false}
+    };
+    settings["cbfs"]["high-order"] = {
+        {"enabled", true},
+        {"lambda1", 1.0},
+        {"lambda2", 1.0}
+    };
+
+    Swarm swarm(settings);
+    swarm.robots[0]->model->setStateVariable("vx", 0.5);
+    swarm.robots[0]->model->setStateVariable("vy", 0.0);
+    swarm.run();
+
+    const json &centralized = swarm.data.at("state").at(0).at("centralized");
+    REQUIRE(centralized.contains("hocbfNoSlack"));
+    REQUIRE(centralized.at("hocbfNoSlack").size() >= 1);
+    const json &item = centralized.at("hocbfNoSlack").at(0);
+    CHECK(item.at("h").get<double>() == doctest::Approx(2.0));
+    CHECK(item.at("psi1").get<double>() == doctest::Approx(1.5));
+    CHECK(item.contains("hocbf"));
 }
 
 TEST_CASE("RandomSolvePerformanceComparison") {

@@ -1,1 +1,3 @@
 #include "MultiCBF.hpp"
+#include "PairwiseSecondOrderCBF.hpp"
+#include "SecondOrderCBF.hpp"

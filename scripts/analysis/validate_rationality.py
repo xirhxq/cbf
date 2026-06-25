@@ -12,6 +12,15 @@ except ImportError:  # pragma: no cover - typing is present in supported Python 
     Any = object
     Iterable = object
 
+BRIDGE_SCRIPTS_DIR = Path(__file__).resolve().parents[1]
+if str(BRIDGE_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(BRIDGE_SCRIPTS_DIR))
+
+try:
+    from bridge_experiments.extract_full_simulator_bridge import extract_bridge_metrics
+except ImportError:
+    extract_bridge_metrics = None
+
 
 class RationalityOptions:
     def __init__(
@@ -317,6 +326,48 @@ def validate_data(data: dict[str, Any], options: RationalityOptions | None = Non
                         f"exceeds control-implied limit {allowed_yaw_delta:.6g}"
                     )
 
+            if model_name == "DoubleIntegrate2D" and control:
+                current_state = current_robot.get("state", {})
+                next_state = next_robots[robot_id].get("state", {})
+                vx1 = float(current_state.get("vx", 0.0))
+                vy1 = float(current_state.get("vy", 0.0))
+                vx2 = float(next_state.get("vx", vx1))
+                vy2 = float(next_state.get("vy", vy1))
+                ax = float(control.get("ax", 0.0))
+                ay = float(control.get("ay", 0.0))
+
+                speed = norm2(vx1, vy1)
+                max_speed = max(max_speed, speed)
+                expected_x = x1 + vx1 * dt
+                expected_y = y1 + vy1 * dt
+                position_error = norm2(x2 - expected_x, y2 - expected_y)
+                if position_error > options.movement_tolerance:
+                    result.add_error(
+                        f"frame {frame_index}->{frame_index + 1} robot {robot_id} position propagation "
+                        f"error {position_error:.6g} exceeds {options.movement_tolerance:.6g}"
+                    )
+
+                expected_vx = vx1 + ax * dt
+                expected_vy = vy1 + ay * dt
+                velocity_error = norm2(vx2 - expected_vx, vy2 - expected_vy)
+                if velocity_error > options.movement_tolerance:
+                    result.add_error(
+                        f"frame {frame_index}->{frame_index + 1} robot {robot_id} velocity propagation "
+                        f"error {velocity_error:.6g} exceeds {options.movement_tolerance:.6g}"
+                    )
+
+                yaw1 = float(current_state.get("yawRad", 0.0))
+                yaw2 = float(next_state.get("yawRad", yaw1))
+                yaw_rate = abs(float(control.get("yawRateRad", 0.0)))
+                max_yaw_rate = max(max_yaw_rate, yaw_rate)
+                allowed_yaw_delta = yaw_rate * dt + options.yaw_tolerance
+                actual_yaw_delta = abs(angle_delta(yaw1, yaw2))
+                if actual_yaw_delta > allowed_yaw_delta:
+                    result.add_error(
+                        f"frame {frame_index}->{frame_index + 1} robot {robot_id} yaw change {actual_yaw_delta:.6g} "
+                        f"exceeds control-implied limit {allowed_yaw_delta:.6g}"
+                    )
+
     valid_grid = data.get("para", {}).get("gridWorld", {}).get("valid")
     valid_count = 0
     if isinstance(valid_grid, list):
@@ -338,6 +389,12 @@ def validate_data(data: dict[str, Any], options: RationalityOptions | None = Non
             "final_coverage": float(final_coverage),
         }
     )
+
+    if extract_bridge_metrics is not None and data.get("bridge", {}).get("metadata"):
+        bridge_metrics = extract_bridge_metrics(data)
+        for key, value in bridge_metrics.items():
+            if isinstance(value, (int, float)) and math.isfinite(float(value)):
+                result.metrics[f"bridge_{key}"] = float(value)
 
     return result
 
