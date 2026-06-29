@@ -406,6 +406,91 @@ private:
         for (auto &robot : robots) {
             positions[robot->id] = robot->model->xy();
         }
+        std::map<int, Eigen::VectorXd> goalDiversionVelocities;
+        if (bridgeConfig.goalDiversionEnabled) {
+            for (auto &robot : robots) {
+                goalDiversionVelocities[robot->id] = robot->model->getVelocity();
+            }
+        }
+        std::map<int, Point> goalDiversionOffsets;
+        json goalDiversionLinks = json::array();
+        int goalDiversionActiveCount = 0;
+        if (bridgeConfig.goalDiversionEnabled) {
+            std::vector<int> orderedIds;
+            orderedIds.reserve(positions.size());
+            for (const auto &entry : positions) {
+                orderedIds.push_back(entry.first);
+            }
+            for (size_t i = 0; i < orderedIds.size(); ++i) {
+                for (size_t j = i + 1; j < orderedIds.size(); ++j) {
+                    int idA = orderedIds[i];
+                    int idB = orderedIds[j];
+                    if (bridgeConfig.goalDiversionPairScope == "named-pair"
+                        && !(idA == bridgeConfig.goalDiversionPairIdA
+                             && idB == bridgeConfig.goalDiversionPairIdB)
+                        && !(idA == bridgeConfig.goalDiversionPairIdB
+                             && idB == bridgeConfig.goalDiversionPairIdA)) {
+                        continue;
+                    }
+                    Point posA = positions[idA];
+                    Point posB = positions[idB];
+                    Point rel = posB - posA;
+                    double dist = rel.len();
+                    if (dist < 1.0e-9 || dist >= bridgeConfig.goalDiversionDistance) {
+                        continue;
+                    }
+                    Point unit = rel / dist;
+                    const Eigen::VectorXd &velA = goalDiversionVelocities[idA];
+                    const Eigen::VectorXd &velB = goalDiversionVelocities[idB];
+                    double radialA = unit.x * velA(0) + unit.y * velA(1);
+                    double radialB = -unit.x * velB(0) - unit.y * velB(1);
+                    double closingRate = -(radialA + radialB) / 2.0;
+                    if (closingRate > -bridgeConfig.goalDiversionRadial) {
+                        continue;
+                    }
+                    int divergeId = radialA < radialB ? idA : idB;
+                    Point divergePos = positions[divergeId];
+                    Point awayDir = (divergePos - (divergeId == idA ? posB : posA));
+                    double awayLen = awayDir.len();
+                    if (awayLen < 1.0e-9) {
+                        continue;
+                    }
+                    Point awayUnit = awayDir / awayLen;
+                    double excess = bridgeConfig.goalDiversionDistance - dist;
+                    double magnitude = bridgeConfig.goalDiversionSeparationScale
+                                       * (excess + std::max(0.0, -closingRate) * 2.0);
+                    if (magnitude > bridgeConfig.goalDiversionMaxOffset) {
+                        magnitude = bridgeConfig.goalDiversionMaxOffset;
+                    }
+                    Point offset = awayUnit * magnitude;
+                    auto existing = goalDiversionOffsets.find(divergeId);
+                    if (existing == goalDiversionOffsets.end()
+                        || offset.len() > existing->second.len()) {
+                        goalDiversionOffsets[divergeId] = offset;
+                    }
+                    ++goalDiversionActiveCount;
+                    goalDiversionLinks.push_back({
+                        {"pair_id_a", idA},
+                        {"pair_id_b", idB},
+                        {"diverged_id", divergeId},
+                        {"distance", dist},
+                        {"radial_a", radialA},
+                        {"radial_b", radialB},
+                        {"closing_rate", closingRate},
+                        {"offset", {{"x", offset.x}, {"y", offset.y}}}
+                    });
+                }
+            }
+            stepData["bridge"]["nominal"]["goal_diversion"] = {
+                {"enabled", true},
+                {"active_count", goalDiversionActiveCount},
+                {"distance_threshold", bridgeConfig.goalDiversionDistance},
+                {"radial_threshold", bridgeConfig.goalDiversionRadial},
+                {"separation_scale", bridgeConfig.goalDiversionSeparationScale},
+                {"pair_scope", bridgeConfig.goalDiversionPairScope},
+                {"links", goalDiversionLinks}
+            };
+        }
         int relayId = positions.size() >= 2 ? std::next(positions.begin())->first : -1;
         double relaySupportMargin = bridgeRelaySupportMargin(positions, bridgeTopologyConfig);
         bool relaySupportGuardActive = bridgeConfig.relaySupportGuardEnabled
@@ -559,19 +644,28 @@ private:
                                 predictiveGateMinSelectedRobustMargin,
                                 decision.selectedMinRobustMargin);
                         }
-                        if (decision.predictiveChangedGoal || decision.exposureChangedGoal) {
+                        if (decision.predictiveChangedGoal || decision.exposureChangedGoal
+                            || decision.beliefConcentrationChangedGoal) {
                             ++predictiveGateActiveCount;
                         }
                         json link = {
                             {"robot", robot->id},
                             {"anchor", anchorId},
-                            {"active", decision.predictiveChangedGoal || decision.exposureChangedGoal},
+                            {"active", decision.predictiveChangedGoal || decision.exposureChangedGoal
+                                || decision.beliefConcentrationChangedGoal},
                             {"predictive_active", decision.predictiveChangedGoal},
                             {"exposure_active", decision.exposureChangedGoal},
+                            {"belief_concentration_active", decision.beliefConcentrationChangedGoal},
                             {"selected_penalty", decision.selectedPenalty},
                             {"max_penalty", decision.maxPenalty},
                             {"selected_exposure_utility", decision.selectedExposureUtility},
                             {"max_exposure_utility", decision.maxExposureUtility},
+                            {"belief_concentration_enabled", decision.beliefConcentrationEnabled},
+                            {"selected_belief_concentration_utility", decision.selectedBeliefConcentrationUtility},
+                            {"max_belief_concentration_utility", decision.maxBeliefConcentrationUtility},
+                            {"belief_centroid_x", decision.beliefCentroidX},
+                            {"belief_centroid_y", decision.beliefCentroidY},
+                            {"top_belief_mass", decision.topBeliefMass},
                             {"exposure_service_gate_enabled", decision.exposureServiceGateEnabled},
                             {"exposure_service_schedule_enabled", decision.exposureServiceScheduleEnabled},
                             {"service_schedule_due", decision.serviceScheduleDue},
@@ -697,6 +791,12 @@ private:
                             goal = gatedGoal;
                         }
                     }
+                }
+            }
+            if (bridgeConfig.goalDiversionEnabled) {
+                auto divertIt = goalDiversionOffsets.find(robot->id);
+                if (divertIt != goalDiversionOffsets.end()) {
+                    goal = goal + divertIt->second;
                 }
             }
             Point direction = goal - position;

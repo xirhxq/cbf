@@ -364,7 +364,25 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--max-states", type=int, default=24,
                         help="number of per-trial data.json files to scan for the temporal profile")
+    parser.add_argument("--trials-csv", type=str, default=None,
+                        help="override path to the trials CSV (relative to repo root)")
+    parser.add_argument("--focus-row", type=str, default=None,
+                        help="override focus row label in the trials CSV")
+    parser.add_argument("--out-dir", type=str, default=None,
+                        help="override output directory for the diagnostic CSV/JSON")
+    parser.add_argument("--fig-dir", type=str, default=None,
+                        help="override figure output directory")
     args = parser.parse_args()
+
+    global TRIALS_CSV, FOCUS_ROW, OUT_DIR, FIG_DIR
+    if args.trials_csv is not None:
+        TRIALS_CSV = REPO / args.trials_csv
+    if args.focus_row is not None:
+        FOCUS_ROW = args.focus_row
+    if args.out_dir is not None:
+        OUT_DIR = REPO / args.out_dir
+    if args.fig_dir is not None:
+        FIG_DIR = REPO / args.fig_dir
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     FIG_DIR.mkdir(parents=True, exist_ok=True)

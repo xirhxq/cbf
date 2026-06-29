@@ -30,6 +30,7 @@ struct BridgeSearchGoalDecision {
     bool predictiveChangedGoal = false;
     bool exposureEnabled = false;
     bool exposureChangedGoal = false;
+    bool beliefConcentrationChangedGoal = false;
     double selectedPenalty = 0.0;
     double maxPenalty = 0.0;
     double selectedMinRobustMargin = std::numeric_limits<double>::quiet_NaN();
@@ -50,6 +51,12 @@ struct BridgeSearchGoalDecision {
     int evaluatedCandidates = 0;
     int penalizedCandidates = 0;
     int serviceRejectedCandidates = 0;
+    bool beliefConcentrationEnabled = false;
+    double selectedBeliefConcentrationUtility = 0.0;
+    double maxBeliefConcentrationUtility = 0.0;
+    double beliefCentroidX = 0.0;
+    double beliefCentroidY = 0.0;
+    double topBeliefMass = 0.0;
 };
 
 class BridgeSearchTracker {
@@ -122,6 +129,52 @@ public:
                 1,
                 search.value("exposure-service-schedule-saturation-window",
                              exposureServiceScheduleSaturationWindow_));
+            exposureServiceScheduleCutFactor_ = search.value(
+                "exposure-service-schedule-cut-factor",
+                exposureServiceScheduleCutFactor_);
+            if (!std::isfinite(exposureServiceScheduleCutFactor_)
+                || exposureServiceScheduleCutFactor_ < 0.0
+                || exposureServiceScheduleCutFactor_ > 1.0) {
+                exposureServiceScheduleCutFactor_ = 0.5;
+            }
+            exposureServiceScheduleStallFactor_ = search.value(
+                "exposure-service-schedule-stall-factor",
+                exposureServiceScheduleStallFactor_);
+            if (!std::isfinite(exposureServiceScheduleStallFactor_)
+                || exposureServiceScheduleStallFactor_ < 0.0
+                || exposureServiceScheduleStallFactor_ > 1.0) {
+                exposureServiceScheduleStallFactor_ = 0.3;
+            }
+            beliefConcentrationWeight_ = search.value(
+                "belief-concentration-weight",
+                beliefConcentrationWeight_);
+            if (!std::isfinite(beliefConcentrationWeight_) || beliefConcentrationWeight_ < 0.0) {
+                beliefConcentrationWeight_ = 0.0;
+            }
+            beliefConcentrationRadiusM_ = search.value(
+                "belief-concentration-radius-m",
+                beliefConcentrationRadiusM_);
+            if (!std::isfinite(beliefConcentrationRadiusM_) || beliefConcentrationRadiusM_ <= 0.0) {
+                beliefConcentrationRadiusM_ = std::max(spacing_ * 3.0, 300.0);
+            }
+            beliefConcentrationSigmaM_ = search.value(
+                "belief-concentration-sigma-m",
+                beliefConcentrationSigmaM_);
+            if (!std::isfinite(beliefConcentrationSigmaM_) || beliefConcentrationSigmaM_ <= 0.0) {
+                beliefConcentrationSigmaM_ = beliefConcentrationRadiusM_ * 0.5;
+            }
+            beliefConcentrationMode_ = search.value(
+                "belief-concentration-mode",
+                beliefConcentrationMode_);
+            if (beliefConcentrationMode_ != "mass"
+                && beliefConcentrationMode_ != "ridge"
+                && beliefConcentrationMode_ != "gradient"
+                && beliefConcentrationMode_ != "information_gain"
+                && beliefConcentrationMode_ != "explore_mass"
+                && beliefConcentrationMode_ != "verify"
+                && beliefConcentrationMode_ != "hybrid") {
+                beliefConcentrationMode_ = "mass";
+            }
             if (search.contains("target-prior-center")) {
                 const json &center = search.at("target-prior-center");
                 targetPriorCenter_ = Point(
@@ -272,6 +325,23 @@ public:
         decision.exposureEnabled = useExposureUtility;
         decision.exposureServiceGateEnabled = useExposureServiceGate;
         decision.requiredRobustMargin = predictiveRobustMargin_;
+        bool useBeliefConcentration = useActiveBelief
+                                      && beliefConcentrationWeight_ > 0.0
+                                      && std::isfinite(beliefConcentrationWeight_)
+                                      && !decision.serviceScheduleDue;
+        decision.beliefConcentrationEnabled = useBeliefConcentration;
+        Point beliefCentroid(0.0, 0.0);
+        double topBeliefMass = 0.0;
+        double ridgeSigma = beliefConcentrationSigmaM_;
+        if (ridgeSigma <= 0.0 || !std::isfinite(ridgeSigma)) {
+            ridgeSigma = std::max(spacing_ * 1.5, 150.0);
+        }
+        if (useBeliefConcentration) {
+            beliefCentroidAndTopMass(beliefCentroid, topBeliefMass, ridgeSigma);
+            decision.beliefCentroidX = beliefCentroid.x;
+            decision.beliefCentroidY = beliefCentroid.y;
+            decision.topBeliefMass = topBeliefMass;
+        }
         if (useExposureServiceGate) {
             for (int y = 0; y < height_; ++y) {
                 for (int x = 0; x < width_; ++x) {
@@ -347,6 +417,16 @@ public:
                     }
                     decision.maxPenalty = std::max(decision.maxPenalty, penalty.penalty);
                 }
+                double concentrationUtility = 0.0;
+                if (useBeliefConcentration) {
+                    concentrationUtility = beliefConcentrationUtility(
+                        center, beliefCentroid, topBeliefMass, ridgeSigma,
+                        belief_[idx], searched_[idx]);
+                    decision.maxBeliefConcentrationUtility = std::max(
+                        decision.maxBeliefConcentrationUtility,
+                        concentrationUtility);
+                    score += beliefConcentrationWeight_ * concentrationUtility;
+                }
                 if (score > bestScore) {
                     bestScore = score;
                     bestX = x;
@@ -358,6 +438,7 @@ public:
                     decision.selectedExposureUtility = exposureUtility;
                     decision.selectedServiceUtility = serviceUtility;
                     decision.selectedExposureServiceEligible = serviceEligible;
+                    decision.selectedBeliefConcentrationUtility = concentrationUtility;
                 }
             }
         }
@@ -375,6 +456,9 @@ public:
         decision.exposureChangedGoal = useExposureUtility
                                        && decision.selectedExposureUtility > 0.0
                                        && decision.goal.distance_to(decision.baselineGoal) > 1.0e-6;
+        decision.beliefConcentrationChangedGoal = useBeliefConcentration
+                                                   && decision.selectedBeliefConcentrationUtility > 0.0
+                                                   && decision.goal.distance_to(decision.baselineGoal) > 1.0e-6;
         return decision;
     }
 
@@ -449,8 +533,9 @@ public:
         if (!entropySaturated) {
             return baseRate;
         }
-        double cut = coverageStall ? 0.70 : 0.50;
-        return floorRate + (1.0 - cut) * (baseRate - floorRate);
+        double retained = coverageStall ? exposureServiceScheduleStallFactor_
+                                        : exposureServiceScheduleCutFactor_;
+        return floorRate + retained * (baseRate - floorRate);
     }
 
     double rollingMedianCoverageGrowth(int window) const {
@@ -514,6 +599,12 @@ private:
     bool exposureServiceScheduleAdaptive_ = false;
     double exposureServiceScheduleRateMinCellsPerS_ = 0.0;
     int exposureServiceScheduleSaturationWindow_ = 4;
+    double exposureServiceScheduleCutFactor_ = 0.5;
+    double exposureServiceScheduleStallFactor_ = 0.3;
+    double beliefConcentrationWeight_ = 0.0;
+    double beliefConcentrationRadiusM_ = 300.0;
+    double beliefConcentrationSigmaM_ = 150.0;
+    std::string beliefConcentrationMode_ = "mass";
     std::deque<ScheduleSample> scheduleHistory_;
     bool detected_ = false;
     double detectionTime_ = -1.0;
@@ -823,6 +914,136 @@ private:
         const BridgeTopologyConfig &topologyConfig
     ) const {
         return predictiveFeasibilityDiagnostics(position, candidate, anchor, topologyConfig).penalty;
+    }
+
+    void beliefCentroidAndTopMass(Point &centroid, double &topMass, double sigma) const {
+        double totalMass = 0.0;
+        double sumX = 0.0;
+        double sumY = 0.0;
+        for (int y = 0; y < height_; ++y) {
+            for (int x = 0; x < width_; ++x) {
+                double mass = belief_[index(x, y)];
+                totalMass += mass;
+                sumX += mass * (static_cast<double>(x) + 0.5) * spacing_;
+                sumY += mass * (static_cast<double>(y) + 0.5) * spacing_;
+            }
+        }
+        if (totalMass <= 0.0 || !std::isfinite(totalMass)) {
+            centroid = Point(static_cast<double>(width_) * spacing_ * 0.5,
+                             static_cast<double>(height_) * spacing_ * 0.5);
+            topMass = 0.0;
+            return;
+        }
+        centroid = Point(sumX / totalMass, sumY / totalMass);
+        double cutoff = beliefConcentrationRadiusM_;
+        if (cutoff <= 0.0 || !std::isfinite(cutoff)) {
+            cutoff = std::max(spacing_ * 3.0, 300.0);
+        }
+        double cutoffSq = cutoff * cutoff;
+        double mass = 0.0;
+        for (int y = 0; y < height_; ++y) {
+            for (int x = 0; x < width_; ++x) {
+                Point center((static_cast<double>(x) + 0.5) * spacing_,
+                             (static_cast<double>(y) + 0.5) * spacing_);
+                double dx = center.x - centroid.x;
+                double dy = center.y - centroid.y;
+                if (dx * dx + dy * dy <= cutoffSq) {
+                    mass += belief_[index(x, y)];
+                }
+            }
+        }
+        topMass = mass;
+    }
+
+    double beliefConcentrationUtility(
+        const Point &candidate,
+        const Point &centroid,
+        double topMass,
+        double sigma,
+        double candidateBelief,
+        bool candidateSearched
+    ) const {
+        double dx = candidate.x - centroid.x;
+        double dy = candidate.y - centroid.y;
+        double distanceSq = dx * dx + dy * dy;
+        if (beliefConcentrationMode_ == "information_gain") {
+            if (candidateSearched) {
+                return 0.0;
+            }
+            double n = static_cast<double>(belief_.size());
+            double b = candidateBelief * n;
+            double variance = b * (1.0 - b);
+            if (variance <= 0.0 || !std::isfinite(variance)) {
+                return 0.0;
+            }
+            double sigmaSq = sigma * sigma;
+            if (sigmaSq <= 0.0 || !std::isfinite(sigmaSq)) {
+                sigmaSq = (std::max(spacing_ * 1.5, 150.0)) * (std::max(spacing_ * 1.5, 150.0));
+            }
+            double ridgeWeight = std::exp(-distanceSq / (2.0 * sigmaSq));
+            return variance * ridgeWeight;
+        }
+        if (beliefConcentrationMode_ == "verify") {
+            double n = static_cast<double>(belief_.size());
+            double b = candidateBelief * n;
+            double sigmaSq = sigma * sigma;
+            if (sigmaSq <= 0.0 || !std::isfinite(sigmaSq)) {
+                sigmaSq = (std::max(spacing_ * 1.5, 150.0)) * (std::max(spacing_ * 1.5, 150.0));
+            }
+            double ridgeWeight = std::exp(-distanceSq / (2.0 * sigmaSq));
+            return b * ridgeWeight;
+        }
+        if (beliefConcentrationMode_ == "hybrid") {
+            double n = static_cast<double>(belief_.size());
+            double b = candidateBelief * n;
+            double sigmaSq = sigma * sigma;
+            if (sigmaSq <= 0.0 || !std::isfinite(sigmaSq)) {
+                sigmaSq = (std::max(spacing_ * 1.5, 150.0)) * (std::max(spacing_ * 1.5, 150.0));
+            }
+            double ridgeWeight = std::exp(-distanceSq / (2.0 * sigmaSq));
+            if (candidateSearched) {
+                return b * ridgeWeight;
+            }
+            return std::max(b, topMass) * ridgeWeight;
+        }
+        if (beliefConcentrationMode_ == "explore_mass") {
+            if (candidateSearched) {
+                return 0.0;
+            }
+            double sigmaSq = sigma * sigma;
+            if (sigmaSq <= 0.0 || !std::isfinite(sigmaSq)) {
+                sigmaSq = (std::max(spacing_ * 1.5, 150.0)) * (std::max(spacing_ * 1.5, 150.0));
+            }
+            double ridgeWeight = std::exp(-distanceSq / (2.0 * sigmaSq));
+            return topMass * ridgeWeight;
+        }
+        if (beliefConcentrationMode_ == "gradient") {
+            double distance = std::sqrt(distanceSq);
+            if (distance <= 1.0e-9) {
+                return topMass;
+            }
+            double radius = beliefConcentrationRadiusM_;
+            if (radius <= 0.0 || !std::isfinite(radius)) {
+                radius = std::max(spacing_ * 3.0, 300.0);
+            }
+            return topMass * std::max(0.0, 1.0 - distance / radius);
+        }
+        if (beliefConcentrationMode_ == "ridge") {
+            double sigmaSq = sigma * sigma;
+            if (sigmaSq <= 0.0 || !std::isfinite(sigmaSq)) {
+                sigmaSq = (std::max(spacing_ * 1.5, 150.0)) * (std::max(spacing_ * 1.5, 150.0));
+            }
+            return topMass * std::exp(-distanceSq / (2.0 * sigmaSq));
+        }
+        double radius = beliefConcentrationRadiusM_;
+        if (radius <= 0.0 || !std::isfinite(radius)) {
+            radius = std::max(spacing_ * 3.0, 300.0);
+        }
+        double radiusSq = radius * radius;
+        if (distanceSq > radiusSq) {
+            return 0.0;
+        }
+        return topMass;
     }
 };
 

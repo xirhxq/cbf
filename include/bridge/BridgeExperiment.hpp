@@ -36,6 +36,14 @@ struct BridgeExperimentConfig {
     double supportChainStateReserveTightenMargin = 0.0;
     double supportChainStateReserveClosingRateGain = 0.0;
     double supportChainStateReserveMaxMargin = 0.0;
+    bool goalDiversionEnabled = false;
+    double goalDiversionDistance = 120.0;
+    double goalDiversionRadial = 4.0;
+    double goalDiversionSeparationScale = 1.0;
+    double goalDiversionMaxOffset = 200.0;
+    std::string goalDiversionPairScope = "all";
+    int goalDiversionPairIdA = 3;
+    int goalDiversionPairIdB = 4;
     BridgeTargetConfig target;
 };
 
@@ -131,6 +139,40 @@ inline BridgeExperimentConfig loadBridgeExperimentConfig(const json &config) {
         }
     }
 
+    if (source.contains("nominal") && source.at("nominal").contains("goal-diversion")) {
+        const json &diversion = source.at("nominal").at("goal-diversion");
+        bridge.goalDiversionEnabled = diversion.value("enabled", false);
+        bridge.goalDiversionDistance = diversion.value("distance-threshold", bridge.goalDiversionDistance);
+        bridge.goalDiversionRadial = diversion.value("radial-threshold", bridge.goalDiversionRadial);
+        bridge.goalDiversionSeparationScale = diversion.value("separation-scale", bridge.goalDiversionSeparationScale);
+        bridge.goalDiversionMaxOffset = diversion.value("max-offset", bridge.goalDiversionMaxOffset);
+        bridge.goalDiversionPairScope = diversion.value("pair-scope", bridge.goalDiversionPairScope);
+        bridge.goalDiversionPairIdA = diversion.value("pair-id-a", bridge.goalDiversionPairIdA);
+        bridge.goalDiversionPairIdB = diversion.value("pair-id-b", bridge.goalDiversionPairIdB);
+        auto assertPosFinite = [](double value, const char *field) {
+            if (value <= 0.0 || !std::isfinite(value)) {
+                throw std::invalid_argument(
+                    std::string("bridge.nominal.goal-diversion.") + field
+                    + " must be positive and finite");
+            }
+        };
+        assertPosFinite(bridge.goalDiversionDistance, "distance-threshold");
+        assertPosFinite(bridge.goalDiversionRadial, "radial-threshold");
+        if (bridge.goalDiversionSeparationScale < 0.0 || !std::isfinite(bridge.goalDiversionSeparationScale)) {
+            throw std::invalid_argument(
+                "bridge.nominal.goal-diversion.separation-scale must be non-negative and finite");
+        }
+        if (bridge.goalDiversionMaxOffset <= 0.0 || !std::isfinite(bridge.goalDiversionMaxOffset)) {
+            throw std::invalid_argument(
+                "bridge.nominal.goal-diversion.max-offset must be positive and finite");
+        }
+        if (bridge.goalDiversionPairScope != "all"
+            && bridge.goalDiversionPairScope != "named-pair") {
+            throw std::invalid_argument(
+                "unsupported bridge.nominal.goal-diversion.pair-scope (expected 'all' or 'named-pair')");
+        }
+    }
+
     if (source.contains("target")) {
         const json &target = source.at("target");
         bridge.target.x = target.value("x", 0.0);
@@ -161,6 +203,14 @@ inline json makeBridgeMetadata(const json &config, const BridgeExperimentConfig 
         {"support_chain_state_reserve_tighten_margin", bridge.supportChainStateReserveTightenMargin},
         {"support_chain_state_reserve_closing_rate_gain", bridge.supportChainStateReserveClosingRateGain},
         {"support_chain_state_reserve_max_margin", bridge.supportChainStateReserveMaxMargin},
+        {"goal_diversion_enabled", bridge.goalDiversionEnabled},
+        {"goal_diversion_distance_threshold", bridge.goalDiversionDistance},
+        {"goal_diversion_radial_threshold", bridge.goalDiversionRadial},
+        {"goal_diversion_separation_scale", bridge.goalDiversionSeparationScale},
+        {"goal_diversion_max_offset", bridge.goalDiversionMaxOffset},
+        {"goal_diversion_pair_scope", bridge.goalDiversionPairScope},
+        {"goal_diversion_pair_id_a", bridge.goalDiversionPairIdA},
+        {"goal_diversion_pair_id_b", bridge.goalDiversionPairIdB},
         {"area_width_m", bridgeWorldExtent(config, 0)},
         {"area_height_m", bridgeWorldExtent(config, 1)},
         {"horizon_s", config.at("execute").at("time-total").get<double>()},

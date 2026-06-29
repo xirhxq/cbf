@@ -36,6 +36,7 @@ class SuiteSpec:
     robust_switch_margin: float = 0.0
     enable_state_dependent_edge_reserve: bool = False
     enable_task_aware_reserve: bool = False
+    enable_goal_diversion: bool = False
     support_chain_guard_scope: str = "first-anchor"
 
 
@@ -49,8 +50,10 @@ def default_active_search_suite_specs(
     include_service_exposure_all_edge_gate: bool = False,
     include_scheduled_service_exposure_all_edge_gate: bool = False,
     include_scheduled_service_exposure_adaptive_all_edge_gate: bool = False,
+    include_belief_concentration_all_edge_gate: bool = False,
     include_task_aware_reserve: bool = False,
     include_task_aware_state_reserve: bool = False,
+    include_goal_diversion: bool = False,
     predictive_reserve_margin: float = 25.0,
     state_reserve_distance: float = 120.0,
     state_reserve_radial: float = 4.0,
@@ -101,6 +104,21 @@ def default_active_search_suite_specs(
                     topology_policy="adaptive-chain",
                     robust_switch_margin=predictive_reserve_margin,
                     enable_task_aware_reserve=True,
+                    support_chain_guard_scope="first-anchor",
+                )
+            )
+        if include_goal_diversion:
+            specs.append(
+                SuiteSpec(
+                    source_row="R4",
+                    label="AS_HOCBF_TASK_RESERVE_DIVERT",
+                    enable_nominal_guard=True,
+                    search_policy="active-predictive",
+                    enable_predictive_gate=True,
+                    topology_policy="adaptive-chain",
+                    robust_switch_margin=predictive_reserve_margin,
+                    enable_task_aware_reserve=True,
+                    enable_goal_diversion=True,
                     support_chain_guard_scope="first-anchor",
                 )
             )
@@ -193,6 +211,21 @@ def default_active_search_suite_specs(
                     support_chain_guard_scope="all-active-edges",
                 )
             )
+        if include_belief_concentration_all_edge_gate:
+            specs.append(
+                SuiteSpec(
+                    source_row="R4",
+                    label="AS_HOCBF_PRED_EXPOSE_SCHED_ADAPT_CONC_AE",
+                    enable_nominal_guard=True,
+                    search_policy="active-predictive-exposure",
+                    enable_predictive_gate=True,
+                    enable_exposure_gate=True,
+                    topology_policy="adaptive-relay-reserve",
+                    robust_switch_margin=predictive_reserve_margin,
+                    enable_state_dependent_edge_reserve=True,
+                    support_chain_guard_scope="all-active-edges",
+                )
+            )
     return specs
 
 
@@ -242,6 +275,8 @@ def apply_exposure_active_gate(
     service_schedule_adaptive: bool = False,
     service_schedule_rate_min_cells_per_s: float = 0.0,
     service_schedule_saturation_window: int = 4,
+    service_schedule_cut_factor: float = 0.5,
+    service_schedule_stall_factor: float = 0.3,
 ) -> None:
     if lookahead_steps <= 0:
         raise ValueError("exposure lookahead steps must be positive")
@@ -260,6 +295,10 @@ def apply_exposure_active_gate(
         raise ValueError("exposure service schedule rate min must be nonnegative")
     if service_schedule_saturation_window < 1:
         raise ValueError("exposure service schedule saturation window must be positive")
+    if not (0.0 <= service_schedule_cut_factor <= 1.0):
+        raise ValueError("exposure service schedule cut factor must be in [0,1]")
+    if not (0.0 <= service_schedule_stall_factor <= 1.0):
+        raise ValueError("exposure service schedule stall factor must be in [0,1]")
     front_sector = config.get("searching", {}).get("front-sector", {})
     if radius_m is None:
         radius_m = float(front_sector.get("outer-radius", 260.0))
@@ -281,6 +320,34 @@ def apply_exposure_active_gate(
     search["exposure-service-schedule-adaptive"] = bool(service_schedule_adaptive)
     search["exposure-service-schedule-rate-min-cells-per-s"] = float(service_schedule_rate_min_cells_per_s)
     search["exposure-service-schedule-saturation-window"] = int(service_schedule_saturation_window)
+    search["exposure-service-schedule-cut-factor"] = float(service_schedule_cut_factor)
+    search["exposure-service-schedule-stall-factor"] = float(service_schedule_stall_factor)
+
+
+def apply_belief_concentration_gate(
+    config: dict[str, Any],
+    weight: float = 8.0,
+    radius_m: float | None = None,
+    sigma_m: float | None = None,
+    mode: str = "mass",
+) -> None:
+    if weight < 0.0:
+        raise ValueError("belief concentration weight must be nonnegative")
+    if mode not in ("mass", "ridge", "gradient", "information_gain", "explore_mass", "verify", "hybrid"):
+        raise ValueError("belief concentration mode must be one of mass/ridge/gradient/information_gain/explore_mass/verify/hybrid")
+    search = config.setdefault("bridge", {}).setdefault("search", {})
+    if radius_m is None:
+        radius_m = float(search.get("exposure-radius-m", 260.0)) * 1.5
+    if sigma_m is None:
+        sigma_m = radius_m * 0.5
+    search["belief-concentration-weight"] = float(weight)
+    search["belief-concentration-radius-m"] = _validate_positive_finite(
+        "belief concentration radius", radius_m
+    )
+    search["belief-concentration-sigma-m"] = _validate_positive_finite(
+        "belief concentration sigma", sigma_m
+    )
+    search["belief-concentration-mode"] = str(mode)
 
 
 def apply_predictive_state_dependent_edge_reserve(config: dict[str, Any]) -> None:
@@ -313,6 +380,29 @@ def apply_pair_state_safety_reserve(
         "velocity-gain": float(velocity_gain),
         "sample-time": float(execute.get("time-step", 0.5)),
         "max-reserve": float(max_reserve),
+    }
+
+
+def apply_goal_diversion(
+    config: dict[str, Any],
+    distance_threshold: float = 120.0,
+    radial_threshold: float = 4.0,
+    separation_scale: float = 4.0,
+    max_offset: float = 200.0,
+    pair_scope: str = "all",
+    pair_id_a: int = 3,
+    pair_id_b: int = 4,
+) -> None:
+    nominal = config.setdefault("bridge", {}).setdefault("nominal", {})
+    nominal["goal-diversion"] = {
+        "enabled": True,
+        "distance-threshold": float(distance_threshold),
+        "radial-threshold": float(radial_threshold),
+        "separation-scale": float(separation_scale),
+        "max-offset": float(max_offset),
+        "pair-scope": str(pair_scope),
+        "pair-id-a": int(pair_id_a),
+        "pair-id-b": int(pair_id_b),
     }
 
 
@@ -385,8 +475,10 @@ def run_active_search_bridge_suite(
     include_service_exposure_all_edge_gate: bool = False,
     include_scheduled_service_exposure_all_edge_gate: bool = False,
     include_scheduled_service_exposure_adaptive_all_edge_gate: bool = False,
+    include_belief_concentration_all_edge_gate: bool = False,
     include_task_aware_reserve: bool = False,
     include_task_aware_state_reserve: bool = False,
+    include_goal_diversion: bool = False,
     predictive_reserve_margin: float = 25.0,
     state_reserve_distance: float = 120.0,
     state_reserve_radial: float = 4.0,
@@ -410,6 +502,19 @@ def run_active_search_bridge_suite(
     exposure_service_schedule_adaptive: bool = False,
     exposure_service_schedule_rate_min_cells_per_s: float = 0.3,
     exposure_service_schedule_saturation_window: int = 4,
+    exposure_service_schedule_cut_factor: float = 0.5,
+    exposure_service_schedule_stall_factor: float = 0.3,
+    belief_concentration_weight: float = 8.0,
+    belief_concentration_radius_m: float | None = None,
+    belief_concentration_sigma_m: float | None = None,
+    belief_concentration_mode: str = "mass",
+    goal_diversion_distance: float = 120.0,
+    goal_diversion_radial: float = 4.0,
+    goal_diversion_separation_scale: float = 4.0,
+    goal_diversion_max_offset: float = 200.0,
+    goal_diversion_pair_scope: str = "all",
+    goal_diversion_pair_id_a: int = 3,
+    goal_diversion_pair_id_b: int = 4,
     completion_stress: bool = False,
     dry_run: bool = False,
 ) -> list[dict[str, Any]]:
@@ -428,8 +533,10 @@ def run_active_search_bridge_suite(
             include_service_exposure_all_edge_gate=include_service_exposure_all_edge_gate,
             include_scheduled_service_exposure_all_edge_gate=include_scheduled_service_exposure_all_edge_gate,
             include_scheduled_service_exposure_adaptive_all_edge_gate=include_scheduled_service_exposure_adaptive_all_edge_gate,
+            include_belief_concentration_all_edge_gate=include_belief_concentration_all_edge_gate,
             include_task_aware_reserve=include_task_aware_reserve,
             include_task_aware_state_reserve=include_task_aware_state_reserve,
+            include_goal_diversion=include_goal_diversion,
             predictive_reserve_margin=predictive_reserve_margin,
             state_reserve_distance=state_reserve_distance,
             state_reserve_radial=state_reserve_radial,
@@ -466,7 +573,11 @@ def run_active_search_bridge_suite(
                 use_horizon_exposure = spec.label == "AS_HOCBF_PRED_EXPOSE_HORIZON_AE"
                 use_service_exposure = spec.label == "AS_HOCBF_PRED_EXPOSE_SERVICE_AE"
                 use_scheduled_service_exposure = spec.label == "AS_HOCBF_PRED_EXPOSE_SCHED_AE"
-                use_adaptive_scheduled_service_exposure = spec.label == "AS_HOCBF_PRED_EXPOSE_SCHED_ADAPT_AE"
+                use_adaptive_scheduled_service_exposure = spec.label in (
+                    "AS_HOCBF_PRED_EXPOSE_SCHED_ADAPT_AE",
+                    "AS_HOCBF_PRED_EXPOSE_SCHED_ADAPT_CONC_AE",
+                )
+                use_belief_concentration = spec.label == "AS_HOCBF_PRED_EXPOSE_SCHED_ADAPT_CONC_AE"
                 use_any_scheduled_service = use_scheduled_service_exposure or use_adaptive_scheduled_service_exposure
                 use_any_lookahead = use_horizon_exposure or use_service_exposure or use_any_scheduled_service
                 apply_exposure_active_gate(
@@ -485,7 +596,17 @@ def run_active_search_bridge_suite(
                     service_schedule_adaptive=use_adaptive_scheduled_service_exposure,
                     service_schedule_rate_min_cells_per_s=exposure_service_schedule_rate_min_cells_per_s,
                     service_schedule_saturation_window=exposure_service_schedule_saturation_window,
+                    service_schedule_cut_factor=exposure_service_schedule_cut_factor,
+                    service_schedule_stall_factor=exposure_service_schedule_stall_factor,
                 )
+                if use_belief_concentration:
+                    apply_belief_concentration_gate(
+                        config,
+                        weight=belief_concentration_weight,
+                        radius_m=belief_concentration_radius_m,
+                        sigma_m=belief_concentration_sigma_m,
+                        mode=belief_concentration_mode,
+                    )
             if spec.topology_policy is not None:
                 config["bridge"]["topology-policy"] = spec.topology_policy
             if spec.robust_switch_margin > 0.0:
@@ -511,6 +632,17 @@ def run_active_search_bridge_suite(
                     radial_threshold=state_reserve_radial,
                     velocity_gain=state_reserve_velocity_gain,
                     max_reserve=state_reserve_max,
+                )
+            if spec.enable_goal_diversion:
+                apply_goal_diversion(
+                    config,
+                    distance_threshold=goal_diversion_distance,
+                    radial_threshold=goal_diversion_radial,
+                    separation_scale=goal_diversion_separation_scale,
+                    max_offset=goal_diversion_max_offset,
+                    pair_scope=goal_diversion_pair_scope,
+                    pair_id_a=goal_diversion_pair_id_a,
+                    pair_id_b=goal_diversion_pair_id_b,
                 )
             if spec.enable_state_dependent_edge_reserve:
                 apply_predictive_state_dependent_edge_reserve(config)
@@ -556,6 +688,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--include-service-exposure-all-edge-gate", action="store_true")
     parser.add_argument("--include-scheduled-service-exposure-all-edge-gate", action="store_true")
     parser.add_argument("--include-scheduled-service-exposure-adaptive-all-edge-gate", action="store_true")
+    parser.add_argument("--include-belief-concentration-all-edge-gate", action="store_true")
     parser.add_argument("--include-task-aware-reserve", action="store_true")
     parser.add_argument("--include-task-aware-state-reserve", action="store_true")
     parser.add_argument("--predictive-reserve-margin", type=float, default=25.0)
@@ -580,6 +713,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--exposure-service-schedule-slack-cells", type=float, default=12.0)
     parser.add_argument("--exposure-service-schedule-rate-min-cells-per-s", type=float, default=0.3)
     parser.add_argument("--exposure-service-schedule-saturation-window", type=int, default=4)
+    parser.add_argument("--exposure-service-schedule-cut-factor", type=float, default=0.5)
+    parser.add_argument("--exposure-service-schedule-stall-factor", type=float, default=0.3)
+    parser.add_argument("--belief-concentration-weight", type=float, default=8.0)
+    parser.add_argument("--belief-concentration-radius-m", type=float, default=None)
+    parser.add_argument("--belief-concentration-sigma-m", type=float, default=None)
+    parser.add_argument("--belief-concentration-mode", type=str, default="mass", choices=["mass", "ridge", "gradient", "information_gain", "explore_mass", "verify", "hybrid"])
+    parser.add_argument("--include-goal-diversion", action="store_true")
+    parser.add_argument("--goal-diversion-distance", type=float, default=120.0)
+    parser.add_argument("--goal-diversion-radial", type=float, default=4.0)
+    parser.add_argument("--goal-diversion-separation-scale", type=float, default=4.0)
+    parser.add_argument("--goal-diversion-max-offset", type=float, default=200.0)
+    parser.add_argument("--goal-diversion-pair-scope", type=str, default="all")
+    parser.add_argument("--goal-diversion-pair-id-a", type=int, default=3)
+    parser.add_argument("--goal-diversion-pair-id-b", type=int, default=4)
     parser.add_argument("--completion-stress", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -607,8 +754,10 @@ def main() -> int:
         include_service_exposure_all_edge_gate=args.include_service_exposure_all_edge_gate,
         include_scheduled_service_exposure_all_edge_gate=args.include_scheduled_service_exposure_all_edge_gate,
         include_scheduled_service_exposure_adaptive_all_edge_gate=args.include_scheduled_service_exposure_adaptive_all_edge_gate,
+        include_belief_concentration_all_edge_gate=args.include_belief_concentration_all_edge_gate,
         include_task_aware_reserve=args.include_task_aware_reserve,
         include_task_aware_state_reserve=args.include_task_aware_state_reserve,
+        include_goal_diversion=args.include_goal_diversion,
         predictive_reserve_margin=args.predictive_reserve_margin,
         state_reserve_distance=args.state_reserve_distance,
         state_reserve_radial=args.state_reserve_radial,
@@ -631,6 +780,19 @@ def main() -> int:
         exposure_service_schedule_slack_cells=args.exposure_service_schedule_slack_cells,
         exposure_service_schedule_rate_min_cells_per_s=args.exposure_service_schedule_rate_min_cells_per_s,
         exposure_service_schedule_saturation_window=args.exposure_service_schedule_saturation_window,
+        exposure_service_schedule_cut_factor=args.exposure_service_schedule_cut_factor,
+        exposure_service_schedule_stall_factor=args.exposure_service_schedule_stall_factor,
+        belief_concentration_weight=args.belief_concentration_weight,
+        belief_concentration_radius_m=args.belief_concentration_radius_m,
+        belief_concentration_sigma_m=args.belief_concentration_sigma_m,
+        belief_concentration_mode=args.belief_concentration_mode,
+        goal_diversion_distance=args.goal_diversion_distance,
+        goal_diversion_radial=args.goal_diversion_radial,
+        goal_diversion_separation_scale=args.goal_diversion_separation_scale,
+        goal_diversion_max_offset=args.goal_diversion_max_offset,
+        goal_diversion_pair_scope=args.goal_diversion_pair_scope,
+        goal_diversion_pair_id_a=args.goal_diversion_pair_id_a,
+        goal_diversion_pair_id_b=args.goal_diversion_pair_id_b,
         completion_stress=args.completion_stress,
         dry_run=args.dry_run,
     )
