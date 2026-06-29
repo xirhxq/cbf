@@ -666,6 +666,7 @@ private:
                             {"belief_centroid_x", decision.beliefCentroidX},
                             {"belief_centroid_y", decision.beliefCentroidY},
                             {"top_belief_mass", decision.topBeliefMass},
+                            {"peak_searched_fraction", decision.peakSearchedFraction},
                             {"exposure_service_gate_enabled", decision.exposureServiceGateEnabled},
                             {"exposure_service_schedule_enabled", decision.exposureServiceScheduleEnabled},
                             {"service_schedule_due", decision.serviceScheduleDue},

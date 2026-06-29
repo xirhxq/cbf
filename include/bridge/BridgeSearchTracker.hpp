@@ -57,6 +57,7 @@ struct BridgeSearchGoalDecision {
     double beliefCentroidX = 0.0;
     double beliefCentroidY = 0.0;
     double topBeliefMass = 0.0;
+    double peakSearchedFraction = 0.0;
 };
 
 class BridgeSearchTracker {
@@ -341,6 +342,7 @@ public:
             decision.beliefCentroidX = beliefCentroid.x;
             decision.beliefCentroidY = beliefCentroid.y;
             decision.topBeliefMass = topBeliefMass;
+            decision.peakSearchedFraction = peakSearchedFraction(beliefCentroid);
         }
         if (useExposureServiceGate) {
             for (int y = 0; y < height_; ++y) {
@@ -421,7 +423,8 @@ public:
                 if (useBeliefConcentration) {
                     concentrationUtility = beliefConcentrationUtility(
                         center, beliefCentroid, topBeliefMass, ridgeSigma,
-                        belief_[idx], searched_[idx]);
+                        belief_[idx], searched_[idx],
+                        decision.peakSearchedFraction);
                     decision.maxBeliefConcentrationUtility = std::max(
                         decision.maxBeliefConcentrationUtility,
                         concentrationUtility);
@@ -955,13 +958,67 @@ private:
         topMass = mass;
     }
 
+    double peakSearchedFraction(const Point &centroid) const {
+        double cutoff = beliefConcentrationRadiusM_;
+        if (cutoff <= 0.0 || !std::isfinite(cutoff)) {
+            cutoff = std::max(spacing_ * 3.0, 300.0);
+        }
+        double cutoffSq = cutoff * cutoff;
+        double searchedMass = 0.0;
+        double totalMass = 0.0;
+        for (int y = 0; y < height_; ++y) {
+            for (int x = 0; x < width_; ++x) {
+                Point center((static_cast<double>(x) + 0.5) * spacing_,
+                             (static_cast<double>(y) + 0.5) * spacing_);
+                double dx = center.x - centroid.x;
+                double dy = center.y - centroid.y;
+                if (dx * dx + dy * dy > cutoffSq) {
+                    continue;
+                }
+                double m = belief_[index(x, y)];
+                if (m <= 0.0) {
+                    continue;
+                }
+                totalMass += m;
+                if (searched_[index(x, y)]) {
+                    searchedMass += m;
+                }
+            }
+        }
+        if (totalMass <= 0.0 || !std::isfinite(totalMass)) {
+            return 0.0;
+        }
+        double frac = searchedMass / totalMass;
+        if (!std::isfinite(frac)) {
+            return 0.0;
+        }
+        if (frac < 0.0) {
+            return 0.0;
+        }
+        if (frac > 1.0) {
+            return 1.0;
+        }
+        return frac;
+    }
+
+    double maxCellBelief() const {
+        double m = 0.0;
+        for (double v : belief_) {
+            if (v > m) {
+                m = v;
+            }
+        }
+        return m;
+    }
+
     double beliefConcentrationUtility(
         const Point &candidate,
         const Point &centroid,
         double topMass,
         double sigma,
         double candidateBelief,
-        bool candidateSearched
+        bool candidateSearched,
+        double peakSearchedFrac
     ) const {
         double dx = candidate.x - centroid.x;
         double dy = candidate.y - centroid.y;
@@ -994,17 +1051,49 @@ private:
             return b * ridgeWeight;
         }
         if (beliefConcentrationMode_ == "hybrid") {
-            double n = static_cast<double>(belief_.size());
-            double b = candidateBelief * n;
             double sigmaSq = sigma * sigma;
             if (sigmaSq <= 0.0 || !std::isfinite(sigmaSq)) {
                 sigmaSq = (std::max(spacing_ * 1.5, 150.0)) * (std::max(spacing_ * 1.5, 150.0));
             }
             double ridgeWeight = std::exp(-distanceSq / (2.0 * sigmaSq));
-            if (candidateSearched) {
-                return b * ridgeWeight;
+            double gate = peakSearchedFrac;
+            if (!std::isfinite(gate)) {
+                gate = 0.0;
             }
-            return std::max(b, topMass) * ridgeWeight;
+            if (gate < 0.0) {
+                gate = 0.0;
+            }
+            if (gate > 1.0) {
+                gate = 1.0;
+            }
+            double bRel = candidateBelief;
+            double maxB = maxCellBelief();
+            if (maxB > 0.0 && std::isfinite(maxB)) {
+                bRel = candidateBelief / maxB;
+            }
+            if (bRel < 0.0) {
+                bRel = 0.0;
+            }
+            if (bRel > 1.0) {
+                bRel = 1.0;
+            }
+            double verifyGate = 0.0;
+            if (gate >= 0.75) {
+                verifyGate = (gate - 0.75) / 0.25;
+                if (verifyGate > 1.0) {
+                    verifyGate = 1.0;
+                }
+            }
+            double exploreGate = 1.0 - verifyGate;
+            double verifyTerm = 0.0;
+            if (candidateSearched && verifyGate > 0.0) {
+                verifyTerm = verifyGate * bRel;
+            }
+            double exploreTerm = 0.0;
+            if (!candidateSearched && exploreGate > 0.0) {
+                exploreTerm = exploreGate * bRel * 0.25;
+            }
+            return (verifyTerm + exploreTerm) * ridgeWeight;
         }
         if (beliefConcentrationMode_ == "explore_mass") {
             if (candidateSearched) {
