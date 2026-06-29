@@ -436,16 +436,45 @@ private:
                     Point posB = positions[idB];
                     Point rel = posB - posA;
                     double dist = rel.len();
-                    if (dist < 1.0e-9 || dist >= bridgeConfig.goalDiversionDistance) {
+                    if (dist < 1.0e-9) {
                         continue;
                     }
-                    Point unit = rel / dist;
                     const Eigen::VectorXd &velA = goalDiversionVelocities[idA];
                     const Eigen::VectorXd &velB = goalDiversionVelocities[idB];
+                    int lookaheadSteps = bridgeConfig.goalDiversionLookaheadSteps;
+                    double horizon = static_cast<double>(lookaheadSteps) * dt;
+                    Point predPosA = posA;
+                    Point predPosB = posB;
+                    if (lookaheadSteps > 0) {
+                        predPosA = Point(posA.x + velA(0) * horizon, posA.y + velA(1) * horizon);
+                        predPosB = Point(posB.x + velB(0) * horizon, posB.y + velB(1) * horizon);
+                    }
+                    Point predRel = predPosB - predPosA;
+                    double predDist = predRel.len();
+                    Point unit = rel / dist;
                     double radialA = unit.x * velA(0) + unit.y * velA(1);
                     double radialB = -unit.x * velB(0) - unit.y * velB(1);
                     double closingRate = -(radialA + radialB) / 2.0;
-                    if (closingRate > -bridgeConfig.goalDiversionRadial) {
+                    bool currentDangerous = dist < bridgeConfig.goalDiversionDistance
+                                            && closingRate < -bridgeConfig.goalDiversionRadial;
+                    bool predictedDangerous = false;
+                    double predClosingRate = closingRate;
+                    if (lookaheadSteps > 0 && predDist > 1.0e-9) {
+                        Point predUnit = predRel / predDist;
+                        double predRadialA = predUnit.x * velA(0) + predUnit.y * velA(1);
+                        double predRadialB = -predUnit.x * velB(0) - predUnit.y * velB(1);
+                        predClosingRate = -(predRadialA + predRadialB) / 2.0;
+                        predictedDangerous = predDist < bridgeConfig.goalDiversionLookaheadDistance
+                                             && predClosingRate < -bridgeConfig.goalDiversionLookaheadRadial;
+                    }
+                    double scanCeil = lookaheadSteps > 0
+                                      ? std::max(bridgeConfig.goalDiversionDistance,
+                                                 bridgeConfig.goalDiversionLookaheadDistance)
+                                      : bridgeConfig.goalDiversionDistance;
+                    if (dist >= scanCeil && !predictedDangerous) {
+                        continue;
+                    }
+                    if (!currentDangerous && !predictedDangerous) {
                         continue;
                     }
                     int divergeId = radialA < radialB ? idA : idB;
@@ -456,9 +485,13 @@ private:
                         continue;
                     }
                     Point awayUnit = awayDir / awayLen;
-                    double excess = bridgeConfig.goalDiversionDistance - dist;
+                    double triggerDist = predictedDangerous ? std::min(dist, predDist) : dist;
+                    double triggerClosing = predictedDangerous
+                                            ? std::min(closingRate, predClosingRate)
+                                            : closingRate;
+                    double excess = bridgeConfig.goalDiversionDistance - triggerDist;
                     double magnitude = bridgeConfig.goalDiversionSeparationScale
-                                       * (excess + std::max(0.0, -closingRate) * 2.0);
+                                       * (excess + std::max(0.0, -triggerClosing) * 2.0);
                     if (magnitude > bridgeConfig.goalDiversionMaxOffset) {
                         magnitude = bridgeConfig.goalDiversionMaxOffset;
                     }
@@ -477,6 +510,9 @@ private:
                         {"radial_a", radialA},
                         {"radial_b", radialB},
                         {"closing_rate", closingRate},
+                        {"predicted_distance", predDist},
+                        {"predicted_closing_rate", predClosingRate},
+                        {"trigger_source", predictedDangerous ? "lookahead" : "current"},
                         {"offset", {{"x", offset.x}, {"y", offset.y}}}
                     });
                 }
@@ -488,6 +524,9 @@ private:
                 {"radial_threshold", bridgeConfig.goalDiversionRadial},
                 {"separation_scale", bridgeConfig.goalDiversionSeparationScale},
                 {"pair_scope", bridgeConfig.goalDiversionPairScope},
+                {"lookahead_steps", bridgeConfig.goalDiversionLookaheadSteps},
+                {"lookahead_distance_threshold", bridgeConfig.goalDiversionLookaheadDistance},
+                {"lookahead_radial_threshold", bridgeConfig.goalDiversionLookaheadRadial},
                 {"links", goalDiversionLinks}
             };
         }

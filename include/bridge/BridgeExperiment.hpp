@@ -44,6 +44,9 @@ struct BridgeExperimentConfig {
     std::string goalDiversionPairScope = "all";
     int goalDiversionPairIdA = 3;
     int goalDiversionPairIdB = 4;
+    int goalDiversionLookaheadSteps = 0;
+    double goalDiversionLookaheadDistance = 0.0;
+    double goalDiversionLookaheadRadial = 0.0;
     BridgeTargetConfig target;
 };
 
@@ -149,6 +152,9 @@ inline BridgeExperimentConfig loadBridgeExperimentConfig(const json &config) {
         bridge.goalDiversionPairScope = diversion.value("pair-scope", bridge.goalDiversionPairScope);
         bridge.goalDiversionPairIdA = diversion.value("pair-id-a", bridge.goalDiversionPairIdA);
         bridge.goalDiversionPairIdB = diversion.value("pair-id-b", bridge.goalDiversionPairIdB);
+        bridge.goalDiversionLookaheadSteps = diversion.value("lookahead-steps", bridge.goalDiversionLookaheadSteps);
+        bridge.goalDiversionLookaheadDistance = diversion.value("lookahead-distance-threshold", bridge.goalDiversionDistance);
+        bridge.goalDiversionLookaheadRadial = diversion.value("lookahead-radial-threshold", bridge.goalDiversionRadial);
         auto assertPosFinite = [](double value, const char *field) {
             if (value <= 0.0 || !std::isfinite(value)) {
                 throw std::invalid_argument(
@@ -170,6 +176,14 @@ inline BridgeExperimentConfig loadBridgeExperimentConfig(const json &config) {
             && bridge.goalDiversionPairScope != "named-pair") {
             throw std::invalid_argument(
                 "unsupported bridge.nominal.goal-diversion.pair-scope (expected 'all' or 'named-pair')");
+        }
+        if (bridge.goalDiversionLookaheadSteps < 0 || !std::isfinite(static_cast<double>(bridge.goalDiversionLookaheadSteps))) {
+            throw std::invalid_argument(
+                "bridge.nominal.goal-diversion.lookahead-steps must be non-negative and finite");
+        }
+        if (bridge.goalDiversionLookaheadSteps > 0) {
+            assertPosFinite(bridge.goalDiversionLookaheadDistance, "lookahead-distance-threshold");
+            assertPosFinite(bridge.goalDiversionLookaheadRadial, "lookahead-radial-threshold");
         }
     }
 
@@ -211,6 +225,9 @@ inline json makeBridgeMetadata(const json &config, const BridgeExperimentConfig 
         {"goal_diversion_pair_scope", bridge.goalDiversionPairScope},
         {"goal_diversion_pair_id_a", bridge.goalDiversionPairIdA},
         {"goal_diversion_pair_id_b", bridge.goalDiversionPairIdB},
+        {"goal_diversion_lookahead_steps", bridge.goalDiversionLookaheadSteps},
+        {"goal_diversion_lookahead_distance_threshold", bridge.goalDiversionLookaheadDistance},
+        {"goal_diversion_lookahead_radial_threshold", bridge.goalDiversionLookaheadRadial},
         {"area_width_m", bridgeWorldExtent(config, 0)},
         {"area_height_m", bridgeWorldExtent(config, 1)},
         {"horizon_s", config.at("execute").at("time-total").get<double>()},
