@@ -48,6 +48,14 @@ public:
     void receivePositionCovariance(int id, const Eigen::Matrix2d& covariance) override {
         _othersPositionCovariance[id] = covariance;
     }
+
+    void sendUncertaintyRate(int id, double uncertaintyRate) override {
+        _othersUncertaintyRate[id] = uncertaintyRate;
+    }
+
+    void receiveUncertaintyRate(int id, double uncertaintyRate) override {
+        _othersUncertaintyRate[id] = uncertaintyRate;
+    }
 };
 
 #endif //CBF_COMMUNICATOR_CENTRAL_H

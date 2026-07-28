@@ -156,6 +156,7 @@ public:
             double yawRad = robot->model->getStateVariable("yawRad");
             double batteryLevel = robot->model->getStateVariable("battery");
             Eigen::Matrix2d positionCovariance = robot->positionCovariance;
+            double uncertaintyRate = robot->uncertaintyRate;
 
             for (auto &otherRobot: robots) {
                 otherRobot->comm->receivePosition2D(robot->id, pos2d);
@@ -163,6 +164,7 @@ public:
                 otherRobot->comm->receiveYawRad(robot->id, yawRad);
                 otherRobot->comm->receiveBatteryLevel(robot->id, batteryLevel);
                 otherRobot->comm->receivePositionCovariance(robot->id, positionCovariance);
+                otherRobot->comm->receiveUncertaintyRate(robot->id, uncertaintyRate);
             }
         };
     }
@@ -245,6 +247,8 @@ public:
         double tTotal = settings["time-total"], tStep = settings["time-step"];
         while (robots[0]->runtime < tTotal) {
             try {
+                exchangeData();
+                for (auto &robot: robots) robot->updateCovarianceAndRate(tStep);
                 exchangeData();
                 checkInformationExchange();
                 for (auto &robot: robots) robot->checkRobotsInsideWorld();

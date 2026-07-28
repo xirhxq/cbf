@@ -39,6 +39,10 @@ public:
     double basePositionSigma;
     std::function<double(double)> rangingUncertaintyFunction;
     std::function<double(Eigen::Matrix2d)> uncertaintyFromCovarianceFunction;
+    double previousUncertainty = 0.0;
+    double currentUncertainty = 0.0;
+    double uncertaintyRate = 0.0;
+    bool hasUncertaintyHistory = false;
 
     std::string cvtExplorationMode;
     double cvtFrontFocusDistance;
@@ -523,6 +527,36 @@ public:
         }
     }
 
+    double positiveBackwardUncertaintyRate(double nextUncertainty, double dt) const {
+        if (dt <= 0.0) {
+            throw std::invalid_argument("Uncertainty rate requires a positive time step");
+        }
+        return std::max(0.0, (nextUncertainty - previousUncertainty) / dt);
+    }
+
+    void updateUncertaintyHistory(double nextUncertainty, double dt) {
+        if (dt <= 0.0) {
+            throw std::invalid_argument("Uncertainty history requires a positive time step");
+        }
+        if (!hasUncertaintyHistory) {
+            previousUncertainty = nextUncertainty;
+            currentUncertainty = nextUncertainty;
+            uncertaintyRate = 0.0;
+            hasUncertaintyHistory = true;
+            return;
+        }
+
+        previousUncertainty = currentUncertainty;
+        uncertaintyRate = positiveBackwardUncertaintyRate(nextUncertainty, dt);
+        currentUncertainty = nextUncertainty;
+    }
+
+    void updateCovarianceAndRate(double dt) {
+        auto& config = settings["cbfs"]["without-slack"]["comm-fixed"];
+        getCovariance(config);
+        updateUncertaintyHistory(uncertaintyFromCovarianceFunction(positionCovariance), dt);
+    }
+
     void setupFormation() {
         // Setup formation information for constraint violation detection
         // This should always be called, regardless of whether comm-fixed CBF is enabled
@@ -580,8 +614,7 @@ public:
             formationUncertainties.push_back(uncertaintyFromCovarianceFunction(comm->_othersPositionCovariance[otherId]));
         }
 
-        getCovariance(config);
-        double myUncertainty = uncertaintyFromCovarianceFunction(positionCovariance);
+        double myUncertainty = currentUncertainty;
 
         for (int i = 0; i < formationPoints.size(); i++) {
             auto otherPoint = formationPoints[i];
