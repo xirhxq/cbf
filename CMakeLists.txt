@@ -98,7 +98,7 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
     target_link_libraries(${TEST_EXECUTABLE} PRIVATE cbf_deps)
 endforeach()
 
-if(BUILD_TESTING)
+if(BUILD_TESTING AND ENABLE_GUROBI)
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
         add_test(

@@ -4,6 +4,59 @@
 #include "Robot.hpp"
 
 #include <exception>
+#include <utility>
+
+template<typename UpdateAction, typename LogAction>
+std::exception_ptr recoverFailedIteration(
+    std::exception_ptr originalFailure,
+    bool frameLogAttempted,
+    UpdateAction&& updateAction,
+    LogAction&& logAction,
+    std::ostream& warnings = std::cerr
+) noexcept {
+    auto runBestEffort = [&](const char* operation, auto&& action) {
+        try {
+            action();
+        } catch (const std::exception& error) {
+            try {
+                warnings
+                    << "[Swarm::run] Warning: failure recovery "
+                    << operation << " failed: " << error.what() << std::endl;
+            } catch (...) {
+            }
+        } catch (...) {
+            try {
+                warnings
+                    << "[Swarm::run] Warning: failure recovery "
+                    << operation << " failed: Unknown error" << std::endl;
+            } catch (...) {
+            }
+        }
+    };
+
+    runBestEffort("updateGridWorld", std::forward<UpdateAction>(updateAction));
+    if (!frameLogAttempted) {
+        runBestEffort("logOnce", std::forward<LogAction>(logAction));
+    }
+    return originalFailure;
+}
+
+template<typename SimulationAction>
+int runSimulationWithErrorGate(
+    SimulationAction&& simulationAction,
+    std::ostream& errors = std::cerr
+) {
+    try {
+        simulationAction();
+        return 0;
+    } catch (const std::exception& error) {
+        errors << "[SIMULATION_ERROR] " << error.what() << '\n';
+        return 1;
+    } catch (...) {
+        errors << "[SIMULATION_ERROR] Unknown error\n";
+        return 1;
+    }
+}
 
 class Swarm {
 public:
@@ -274,6 +327,7 @@ public:
 
         std::exception_ptr loopFailure;
         while (robots[0]->runtime < tTotal) {
+            bool frameLogAttempted = false;
             try {
                 if (robots[0]->runtime > 0.0) {
                     exchangeData();
@@ -304,19 +358,30 @@ public:
                 // }
                 if (settings.value("check-constraint-violation", false)) {
                     if (checkConstraintViolation()) {
+                        frameLogAttempted = true;
                         logOnce();
                         std::cout << "\n[Simulation Terminated] Constraint violation detected at t=" << robots[0]->runtime << "s" << std::endl;
                         break;
                     }
                 }
 
+                frameLogAttempted = true;
                 logOnce();
                 for (auto &robot: robots) robot->stepTimeForward(tStep);
             }
             catch (...) {
-                loopFailure = std::current_exception();
-                for (auto &robot: robots) robot->updateGridWorld();
-                logOnce();
+                loopFailure = recoverFailedIteration(
+                    std::current_exception(),
+                    frameLogAttempted,
+                    [&]() {
+                        for (auto &robot: robots) {
+                            robot->updateGridWorld();
+                        }
+                    },
+                    [&]() {
+                        logOnce();
+                    }
+                );
                 break;
             }
         }

@@ -16,7 +16,11 @@ SWARM_BINARY = Path(
 )
 
 
-def single_robot_config(output_root: Path, position: list[float]) -> dict:
+def single_robot_config(
+    output_root: Path,
+    position: list[float],
+    search_method: str | int = "downward",
+) -> dict:
     return {
         "world": {
             "boundary": [
@@ -60,7 +64,7 @@ def single_robot_config(output_root: Path, position: list[float]) -> dict:
             "enable": False,
         },
         "searching": {
-            "method": "downward",
+            "method": search_method,
             "downward": {
                 "radius": 1.0,
             },
@@ -130,10 +134,14 @@ def single_robot_config(output_root: Path, position: list[float]) -> dict:
     }
 
 
-def run_fixture(output_root: Path, position: list[float]) -> subprocess.CompletedProcess:
+def run_fixture(
+    output_root: Path,
+    position: list[float],
+    search_method: str | int = "downward",
+) -> subprocess.CompletedProcess:
     config_path = output_root / "config.json"
     config_path.write_text(
-        json.dumps(single_robot_config(output_root, position)),
+        json.dumps(single_robot_config(output_root, position, search_method)),
         encoding="utf-8",
     )
     return subprocess.run(
@@ -147,10 +155,12 @@ def run_fixture(output_root: Path, position: list[float]) -> subprocess.Complete
 
 
 def reported_output_directory(stdout: str) -> Path:
-    match = re.search(r"^\[OUTPUT_DIR\] (.+)$", stdout, re.MULTILINE)
-    if match is None:
-        raise AssertionError(f"missing [OUTPUT_DIR] line in stdout:\n{stdout}")
-    return Path(match.group(1))
+    matches = re.findall(r"^\[OUTPUT_DIR\] (.+)$", stdout, re.MULTILINE)
+    if len(matches) != 1:
+        raise AssertionError(
+            f"expected exactly one [OUTPUT_DIR] line in stdout:\n{stdout}"
+        )
+    return Path(matches[0])
 
 
 class SwarmFailureExitIntegrationTests(unittest.TestCase):
@@ -162,16 +172,17 @@ class SwarmFailureExitIntegrationTests(unittest.TestCase):
     def test_internal_loop_failure_is_nonzero_and_retains_partial_data(self):
         with tempfile.TemporaryDirectory(
             prefix="cbf-swarm-failure-exit-",
-            dir="/private/tmp",
+            dir=os.environ.get("CBF_TEST_TEMP_ROOT"),
         ) as temporary_directory:
             output_root = Path(temporary_directory)
             result = run_fixture(output_root, [100.0, 0.0])
 
-            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
             self.assertIn(
                 "[SIMULATION_ERROR] Robot is outside the world",
                 result.stderr,
             )
+            self.assertEqual(result.stderr.count("[SIMULATION_ERROR]"), 1)
 
             output_directory = reported_output_directory(result.stdout)
             self.assertEqual(output_directory.parent, output_root)
@@ -182,10 +193,36 @@ class SwarmFailureExitIntegrationTests(unittest.TestCase):
             self.assertEqual(len(partial_data["state"]), 1)
             self.assertEqual(partial_data["state"][0]["runtime"], 0.0)
 
+    def test_cleanup_failure_cannot_replace_original_or_skip_terminal_output(self):
+        with tempfile.TemporaryDirectory(
+            prefix="cbf-swarm-cleanup-failure-",
+            dir=os.environ.get("CBF_TEST_TEMP_ROOT"),
+        ) as temporary_directory:
+            output_root = Path(temporary_directory)
+            result = run_fixture(output_root, [100.0, 0.0], search_method=7)
+
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn(
+                "[SIMULATION_ERROR] Robot is outside the world",
+                result.stderr,
+            )
+            self.assertEqual(result.stderr.count("[SIMULATION_ERROR]"), 1)
+            self.assertIn(
+                "[Swarm::run] Warning: failure recovery "
+                "updateGridWorld failed:",
+                result.stderr,
+            )
+
+            output_directory = reported_output_directory(result.stdout)
+            data_path = output_directory / "data.json"
+            partial_data = json.loads(data_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(partial_data["state"]), 1)
+            self.assertEqual(partial_data["state"][0]["runtime"], 0.0)
+
     def test_successful_single_step_run_remains_zero(self):
         with tempfile.TemporaryDirectory(
             prefix="cbf-swarm-success-exit-",
-            dir="/private/tmp",
+            dir=os.environ.get("CBF_TEST_TEMP_ROOT"),
         ) as temporary_directory:
             output_root = Path(temporary_directory)
             result = run_fixture(output_root, [0.0, 0.0])

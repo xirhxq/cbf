@@ -8,7 +8,7 @@
 int main(int argc, char* argv[]) {
     clock_t start = clock();
 
-    try {
+    return runSimulationWithErrorGate([&]() {
         std::string configPath = "../config/config.json";
         if (argc > 1) {
             configPath = argv[1];
@@ -22,9 +22,5 @@ int main(int argc, char* argv[]) {
         clock_t finish = clock();
         double duration = (double) (finish - start) / CLOCKS_PER_SEC;
         printf("%.4lf seconds passed!\n", duration);
-        return 0;
-    } catch (const std::exception& error) {
-        std::cerr << "[SIMULATION_ERROR] " << error.what() << std::endl;
-        return 1;
-    }
+    });
 }
