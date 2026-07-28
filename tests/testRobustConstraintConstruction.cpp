@@ -9,6 +9,7 @@
 #include <cmath>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace {
@@ -505,7 +506,45 @@ TEST_CASE("covariance FIM excludes in-range references outside the fixed localiz
           == json::array());
 }
 
-TEST_CASE("covariance FIM retains declared base references beyond max range") {
+TEST_CASE("covariance FIM rejects collinear fixed lower-index references") {
+    auto robots = makeFourFixedGraphRobots();
+    robots.at(1)->model->setPosition2D(Point(2.0, 0.0));
+    robots.at(2)->model->setPosition2D(Point(4.0, 0.0));
+    robots.at(3)->model->setPosition2D(Point(6.0, 0.0));
+    exchangeDiagnosticData(robots);
+
+    Robot& robot = *robots.at(3);
+
+    bool threw = false;
+    try {
+        robot.getCovariance();
+    } catch (const std::invalid_argument& error) {
+        threw = true;
+        const std::string message = error.what();
+        CHECK(message.find("#4") != std::string::npos);
+        CHECK(message.find("FIM") != std::string::npos);
+    }
+    CHECK(threw);
+}
+
+TEST_CASE("covariance FIM rejects a non-positive configured ranging variance") {
+    json settings = makeDiagnosticSettings();
+    settings["position_covariance"]["ranging_sigma"] = 0.0;
+    Robot robot(1, settings);
+
+    bool threw = false;
+    try {
+        robot.getCovariance();
+    } catch (const std::invalid_argument& error) {
+        threw = true;
+        const std::string message = error.what();
+        CHECK(message.find("#1") != std::string::npos);
+        CHECK(message.find("total variance") != std::string::npos);
+    }
+    CHECK(threw);
+}
+
+TEST_CASE("covariance FIM retains the non-collinear hand calculation beyond max range") {
     json settings = makeDiagnosticSettings();
     settings["cbfs"]["without-slack"]["comm-fixed"]["max-range"] = 5.0;
     Robot robot(1, settings);

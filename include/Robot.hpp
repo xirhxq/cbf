@@ -538,6 +538,15 @@ public:
 
             double total_variance = position_var + ranging_unc * ranging_unc;
 
+            if (!std::isfinite(total_variance) || total_variance <= 0.0) {
+                throw std::invalid_argument(
+                    "#" + std::to_string(id)
+                    + " has invalid covariance validity: total variance for fixed reference "
+                    + std::to_string(i)
+                    + " must be finite and positive"
+                );
+            }
+
             angles.push_back(angle);
             total_variances.push_back(total_variance);
         }
@@ -561,11 +570,79 @@ public:
 
         // Φ = J^T * Σ^(-1) * J (Fisher Information Matrix)
         Eigen::Matrix2d Phi;
-        try {
-            Phi = J.transpose() * Sigma.inverse() * J;
-            positionCovariance = Phi.inverse();
-        } catch (...) {
-            throw std::invalid_argument("Covariance calculation failed");
+        Phi = J.transpose() * Sigma.inverse() * J;
+
+        // A relative eigenvalue floor of 1e-12 limits the FIM condition
+        // number to 1e12 while avoiding any regularization of its values.
+        constexpr double relativeSpectralThreshold = 1e-12;
+        if (!Phi.allFinite()) {
+            throw std::invalid_argument(
+                "#" + std::to_string(id)
+                + " has invalid covariance geometry: FIM contains non-finite values"
+            );
+        }
+        const double phiScale = Phi.cwiseAbs().maxCoeff();
+        if ((Phi - Phi.transpose()).cwiseAbs().maxCoeff()
+            > relativeSpectralThreshold * phiScale) {
+            throw std::invalid_argument(
+                "#" + std::to_string(id)
+                + " has invalid covariance geometry: FIM is not symmetric"
+            );
+        }
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> phiEigenSolver(Phi);
+        if (phiEigenSolver.info() != Eigen::Success
+            || !phiEigenSolver.eigenvalues().allFinite()) {
+            throw std::invalid_argument(
+                "#" + std::to_string(id)
+                + " has invalid covariance geometry: FIM eigenvalues are invalid"
+            );
+        }
+        const double minPhiEigenvalue = phiEigenSolver.eigenvalues().minCoeff();
+        const double maxPhiEigenvalue = phiEigenSolver.eigenvalues().maxCoeff();
+        if (maxPhiEigenvalue <= 0.0
+            || minPhiEigenvalue
+               <= relativeSpectralThreshold * maxPhiEigenvalue) {
+            throw std::invalid_argument(
+                "#" + std::to_string(id)
+                + " has invalid covariance geometry: FIM is not positive definite or exceeds the condition limit"
+            );
+        }
+
+        positionCovariance = Phi.inverse();
+        if (!positionCovariance.allFinite()) {
+            throw std::invalid_argument(
+                "#" + std::to_string(id)
+                + " has invalid covariance validity: covariance contains non-finite values"
+            );
+        }
+        const double covarianceScale = positionCovariance.cwiseAbs().maxCoeff();
+        if ((positionCovariance - positionCovariance.transpose()).cwiseAbs().maxCoeff()
+            > relativeSpectralThreshold * covarianceScale) {
+            throw std::invalid_argument(
+                "#" + std::to_string(id)
+                + " has invalid covariance validity: covariance is not symmetric"
+            );
+        }
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> covarianceEigenSolver(
+            positionCovariance
+        );
+        if (covarianceEigenSolver.info() != Eigen::Success
+            || !covarianceEigenSolver.eigenvalues().allFinite()
+            || covarianceEigenSolver.eigenvalues().minCoeff()
+               < -relativeSpectralThreshold * covarianceScale) {
+            throw std::invalid_argument(
+                "#" + std::to_string(id)
+                + " has invalid covariance validity: covariance is not positive semidefinite"
+            );
+        }
+
+        const double scalarEpsilon =
+            uncertaintyFromCovarianceFunction(positionCovariance);
+        if (!std::isfinite(scalarEpsilon) || scalarEpsilon < 0.0) {
+            throw std::invalid_argument(
+                "#" + std::to_string(id)
+                + " has invalid covariance validity: configured scalar epsilon is not finite and nonnegative"
+            );
         }
     }
 
