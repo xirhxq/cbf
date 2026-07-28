@@ -209,6 +209,48 @@ class WnlsAndFimTests(unittest.TestCase):
         self.assertIsNone(result["covariance"])
         self.assertIsNone(result["epsilon"])
 
+    def test_accepted_tiny_damped_step_requires_stationarity(self):
+        """Breaks if an accepted high-damping step bypasses the gradient gate."""
+        references = np.asarray(
+            [
+                [-0.12056416482955547, 2.7187170092356103],
+                [5.872335644685272, -0.477801917195226],
+                [-0.14520206798959212, 0.5954405813630369],
+            ]
+        )
+        covariances = np.asarray(
+            [
+                [
+                    [7.220460239885509, 8.011804237242888],
+                    [8.011804237242888, 12.373768616266027],
+                ],
+                [
+                    [0.29551573062296704, -1.4138111914715052],
+                    [-1.4138111914715052, 6.844642038867566],
+                ],
+                [
+                    [12.463450157301342, 0.377288367010776],
+                    [0.377288367010776, 2.189387646352776],
+                ],
+            ]
+        )
+        measurements = np.asarray(
+            [4.612572322975238, 11.18865210126454, 4.947081336786854]
+        )
+
+        result = solve_wnls(
+            references,
+            covariances,
+            measurements,
+            np.asarray([5.144692260836605, -1.1997999821356011]),
+            0.5,
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["iterations"], 50)
+        self.assertIsNone(result["covariance"])
+        self.assertIsNone(result["epsilon"])
+
     def test_third_non_collinear_reference_is_accepted_without_api_change(self):
         """Breaks if the estimator assumes exactly two measurements."""
         references = np.vstack((self.references, np.asarray([[0.0, 2.0]])))

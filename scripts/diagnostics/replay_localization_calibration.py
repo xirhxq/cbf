@@ -336,13 +336,14 @@ def solve_wnls(
             trial_estimate, references, covariances, ranges, sigma
         )
         if trial_terms is not None and trial_terms[-1] < cost:
-            trial_cost = trial_terms[-1]
+            trial_gradient = trial_terms[4]
+            trial_cost = trial_terms[5]
             estimate = trial_estimate
             damping /= 10.0
             if (
                 np.linalg.norm(delta) <= STEP_TOLERANCE
                 or cost - trial_cost <= COST_TOLERANCE
-            ):
+            ) and np.linalg.norm(trial_gradient) <= STEP_TOLERANCE:
                 final = fim_radius(estimate, references, covariances, sigma)
                 final["iterations"] = iteration
                 final["cost"] = trial_cost
