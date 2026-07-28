@@ -41,8 +41,10 @@
 
 - [ ] **Step 1: Add a non-collinear four-UAV test fixture**
 
-Add this fixture beside the existing diagnostic factories in
-`tests/testRobustConstraintConstruction.cpp`:
+Add `makeFourRobotFixedGraphSettings()` beside the existing diagnostic
+settings factories in `tests/testRobustConstraintConstruction.cpp`.
+Add `makeFourFixedGraphRobots()` immediately after
+`exchangeDiagnosticData()` so the helper is declared before use:
 
 ```cpp
 json makeFourRobotFixedGraphSettings() {
@@ -305,7 +307,7 @@ The commit must contain exactly these two files.
 
 - [ ] **Step 1: Write a failing analyzer test**
 
-Add a test to `DiagnosticAnalyzerTests`:
+Add a test to `RunAnalysisTests`:
 
 ```python
 def test_covariance_information_set_transitions_and_reference_mismatches_are_reported(self):
@@ -358,7 +360,7 @@ Run:
 
 ```bash
 conda run -n cbf_env python -m unittest \
-  tests.test_analyze_diagnostic.DiagnosticAnalyzerTests.test_covariance_information_set_transitions_and_reference_mismatches_are_reported -v
+  tests.test_analyze_diagnostic.RunAnalysisTests.test_covariance_information_set_transitions_and_reference_mismatches_are_reported -v
 ```
 
 Expected: `KeyError: 'covariance_information_set'`.
@@ -475,7 +477,7 @@ Run:
 
 ```bash
 conda run -n cbf_env python -m unittest \
-  tests.test_analyze_diagnostic.DiagnosticAnalyzerTests.test_covariance_information_set_transitions_and_reference_mismatches_are_reported -v
+  tests.test_analyze_diagnostic.RunAnalysisTests.test_covariance_information_set_transitions_and_reference_mismatches_are_reported -v
 conda run -n cbf_env python -m unittest \
   tests.test_analyze_diagnostic tests.test_run_diagnostic \
   tests.test_swarm_failure_exit tests.test_cmake_configuration -v
