@@ -357,6 +357,104 @@ class RunAnalysisTests(unittest.TestCase):
         self.assertEqual(audit["transitions"][0]["robot_id"], 2)
         self.assertEqual(audit["transitions"][0]["frame_index"], 1)
 
+    def test_missing_or_non_list_covariance_information_set_is_unavailable(self):
+        for label, covariance_formation in (
+            ("missing", None),
+            ("non-list", {"id": 1}),
+        ):
+            with self.subTest(label=label):
+                frame = {
+                    "runtime": 0.0,
+                    "formation": [],
+                    "update": [],
+                    "robots": [],
+                }
+                if label != "missing":
+                    frame["covariance_formation"] = covariance_formation
+                data = {
+                    "para": {"gridWorld": {"xNum": 1, "yNum": 1}},
+                    "config": {},
+                    "state": [frame],
+                }
+
+                audit = self.analyze_fixture(data)["covariance_information_set"]
+
+                self.assertEqual(
+                    audit["status"],
+                    "unavailable_no_covariance_formation_records",
+                )
+                self.assertEqual(audit["robot_frame_record_count"], 0)
+                self.assertEqual(audit["transition_count"], 0)
+
+    def test_invalid_covariance_information_set_entries_are_malformed(self):
+        data = {
+            "para": {"gridWorld": {"xNum": 1, "yNum": 1}},
+            "config": {},
+            "state": [
+                {
+                    "runtime": 0.0,
+                    "formation": [],
+                    "covariance_formation": [
+                        None,
+                        {"anchorIds": [], "baseIds": []},
+                        {"id": "1", "anchorIds": [], "baseIds": []},
+                        {"id": True, "anchorIds": [], "baseIds": []},
+                    ],
+                    "update": [],
+                    "robots": [],
+                }
+            ],
+        }
+
+        audit = self.analyze_fixture(data)["covariance_information_set"]
+
+        self.assertEqual(
+            audit["status"],
+            "unavailable_no_covariance_formation_records",
+        )
+        self.assertEqual(audit["robot_frame_record_count"], 0)
+        self.assertEqual(audit["transition_count"], 0)
+        self.assertEqual(audit["malformed_record_count"], 4)
+
+    def test_duplicate_same_frame_covariance_id_is_malformed_without_transition(self):
+        data = {
+            "para": {"gridWorld": {"xNum": 1, "yNum": 1}},
+            "config": {},
+            "state": [
+                {
+                    "runtime": 0.0,
+                    "formation": [
+                        {"id": 1, "anchorIds": [], "baseIds": [0]},
+                    ],
+                    "covariance_formation": [
+                        {"id": 1, "anchorIds": [], "baseIds": [0]},
+                    ],
+                    "update": [],
+                    "robots": [],
+                },
+                {
+                    "runtime": 0.5,
+                    "formation": [
+                        {"id": 1, "anchorIds": [], "baseIds": [0]},
+                    ],
+                    "covariance_formation": [
+                        {"id": 1, "anchorIds": [], "baseIds": [0]},
+                        {"id": 1, "anchorIds": [2], "baseIds": []},
+                    ],
+                    "update": [],
+                    "robots": [],
+                },
+            ],
+        }
+
+        audit = self.analyze_fixture(data)["covariance_information_set"]
+
+        self.assertEqual(audit["status"], "available")
+        self.assertEqual(audit["robot_frame_record_count"], 2)
+        self.assertEqual(audit["transition_count"], 0)
+        self.assertEqual(audit["required_reference_mismatch_count"], 0)
+        self.assertEqual(audit["malformed_record_count"], 1)
+
     def test_mc_first_two_frame_metrics_match_hand_derived_literals(self):
         summary = self.analyze_fixture(mc_first_two_frame_fixture())
 

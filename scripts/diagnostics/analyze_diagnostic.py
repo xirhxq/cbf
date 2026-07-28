@@ -573,19 +573,25 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
 
         covariance_formations = frame.get("covariance_formation")
         if isinstance(covariance_formations, list):
+            seen_covariance_robot_ids: set[int] = set()
             for covariance_formation in covariance_formations:
                 if (
                     not isinstance(covariance_formation, dict)
                     or not isinstance(covariance_formation.get("id"), int)
                     or isinstance(covariance_formation.get("id"), bool)
                 ):
+                    covariance_information_set_malformed_count += 1
                     continue
+                robot_id = covariance_formation["id"]
+                if robot_id in seen_covariance_robot_ids:
+                    covariance_information_set_malformed_count += 1
+                    continue
+                seen_covariance_robot_ids.add(robot_id)
                 normalized = _normalized_reference_ids(covariance_formation)
                 if normalized is None:
                     covariance_information_set_malformed_count += 1
                     continue
 
-                robot_id = covariance_formation["id"]
                 covariance_information_set_records += 1
                 previous = previous_covariance_references.get(robot_id)
                 if previous is not None and previous != normalized:
