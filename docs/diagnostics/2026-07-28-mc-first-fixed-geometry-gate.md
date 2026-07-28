@@ -200,9 +200,148 @@ interval.  The practical threshold remains `-0.5 m`, the observed geometry is
 retained, and the physical separation does not reclassify the failed robust
 margin.
 
-The next evidence-producing experiment is a matched 20 s `RGP` run: the same
-verified controller binary, seed, fixed geometry, and uncertainty semantics,
-changing only the collision-row mode from `minimum` to explicit pairwise.
-The runner/config source snapshot is necessarily provenance-distinct because
-it adds the `RGP` case.  A 250 s run remains blocked until that focused
-mechanism gate passes.
+The next evidence-producing experiment was pre-registered as a matched 20 s
+`RGP` run: the same verified controller binary, seed, fixed geometry, and
+uncertainty semantics, changing only the collision-row mode from `minimum` to
+explicit pairwise.  The runner/config source snapshot is necessarily
+provenance-distinct because it adds the `RGP` case.  The unique execution and
+its stop decision are recorded below.
+
+## RGP focused pairwise gate
+
+### Decision and execution lifecycle
+
+The unique 20 s `RGP` launch did not complete its requested horizon.  At frame
+3 (`t=1.5 s`), robot 11 returned `inf_or_unbounded`; the distributed
+optimization loop aborted before applying any frame-3 control or advancing the
+state.  The simulator returned one and the runner recorded
+`termination_reason=simulator_nonzero_exit`.  The evidence was preserved
+without a rerun, and no 250 s run was launched.  No threshold, geometry,
+uncertainty reserve, or controller parameter was changed after observing the
+failure.
+
+The corrected analyzer at commit `719252a`
+(`fix(diagnostics): classify aborted frame evidence`) separates the three
+confirmed-applied frames from the terminal partial frame:
+
+| Evidence class | Observed | Interpretation |
+| --- | ---: | --- |
+| Confirmed-applied frames / controls | 3 / 42 | Frames 0--2 only |
+| Applied hard rows / negative rows | 630 / 0 | Minimum residual `1.7497114868092467e-13` |
+| Applied pairwise rows | 546 / 546 | Complete directed all-pair coverage |
+| Fresh optimal but unapplied records / hard rows | 10 / 150 | Robots 1--10 in frame 3; all 150 logged residuals valid |
+| Failed record / hard rows | 1 / 15 | Robot 11; one result placeholder, not applied evidence |
+| Not-attempted records | 3 | Robots 12--14; logged solver values are stale |
+| Fresh partial-frame pairwise rows | 143 / 143 | Complete for the 11 fresh attempts, but unapplied |
+| Information-set records / transitions / mismatches / malformed | 56 / 0 / 0 / 0 | Includes the terminal diagnostic snapshot |
+
+The applied trajectory prefix retained positive state margins: the strict
+all-pair uncertainty-tightened collision minimum was
+`+6.070647948346206 m`.  Thus `RGP` stopped because the next local hard
+constraint set was infeasible, not because an applied robust margin or applied
+hard-row residual had already failed.  The partial frame is diagnostic only;
+its fresh optimal solutions were never applied, robot 11 has no feasible
+result, and the later three records do not represent new solve attempts.
+
+### Local infeasibility certificate
+
+At the terminal state, robot 11 lies between robots 9 and 13 in an almost
+collinear arrangement.  Its pairwise local QP freezes the neighbors'
+previously communicated commands and imposes, among the other rows, two nearly
+opposed half-spaces.  In radial form, the robot-9 row requires approximately
+\[
+(0.894087807,\ 0.447891721)^\top u_{11}
+\geq 11.611159469,
+\]
+whereas the robot-13 row gives an upper requirement of approximately
+`5.699770095` along the nearly same positive normal.  Their normals differ
+from exact antiparallel alignment by only `0.3347008506` degrees.
+
+The robot-9 and robot-13 rows alone still intersect, but only at an extreme
+command: their least feasible planar \(L_\infty\) norm is
+`899.538788`, with intersection approximately
+\((463.609,-899.539)\).  Adding any one of the 11 remaining safety rows
+present in the local problem produces a minimal infeasible triple with those
+two rows.  In particular, rows 9, 13, and 10 admit the nonnegative Farkas
+weights
+\[
+(0.497735042,\ 0.499064375,\ 0.003200583).
+\]
+The weighted velocity coefficient cancels while the weighted right-hand side
+is `+3.018300109`, yielding the contradiction \(0\geq3.018300109\).
+Removing the robot-9 or robot-13 row restores feasibility with least
+\(L_\infty\) norms `25.2168` and `26.1272`, respectively; removing any other
+single row does not restore feasibility.  This local half-space contradiction,
+rather than an information/FIM invalidity, explains the solver status.
+
+### Coupled-system counter-check
+
+The same frame does not make the corresponding globally coupled hard CBF
+system infeasible.  Substituting the explicit stacked witness
+\[
+v_i=0.2\left(p_i-p_{\mathrm{global\ centroid}}\right)
+\]
+into the complete 210-row hard-constraint system gives minimum residual
+`+3.947720614`.  More generally, the scalar family
+\(v_i=c(p_i-p_{\mathrm{global\ centroid}})\) is feasible for
+\[
+c\in[0.116870760,\ 0.380089824].
+\]
+The upper bound is set by robot 9's robot-to-base-1 `fixedCommCBF` row.
+Input limits are disabled in this gate, so this witness establishes
+unbounded-input feasibility of the stacked constraint system only; it is not
+a bounded-input feasibility claim.
+
+Consequently, `pairwise` local mode is not a drop-in repair for the
+minimum-row `RG` controller.  The failure does not negate a theorem stated for
+the coupled stacked CBF inequalities.  It does show that independent local
+QPs using frozen neighbor commands are not automatically equivalent to that
+stacked system, even when every local problem receives all pairwise rows.
+Before another simulation, the manuscript and controller contract should
+distinguish joint feasibility from local feasibility and choose a compatible
+architecture, such as a coupled solve or a provably feasible reciprocal
+allocation.  The evidence does not justify tuning the tolerance, geometry, or
+uncertainty reserve, and no new run is authorized by this gate.
+
+### RGP provenance, hashes, and disk guard
+
+The exact launch used seed `20260727`, horizon `20.0 s`, Gurobi, the
+provenance-distinct `RGP` materialization, and the same verified controller
+binary as `RG`:
+
+```sh
+conda run -n cbf_env python -m scripts.diagnostics.run_diagnostic \
+  --case RGP --horizon 20 --seed 20260727 \
+  --binary build-diagnostic/Swarm \
+  --output-root /private/tmp/cbf2026-results/mc-first-fixed-geometry-pairwise-smoke
+```
+
+The retained bundle is:
+
+```text
+/private/tmp/cbf2026-results/mc-first-fixed-geometry-pairwise-smoke/RGP/20260728T093412.839385Z_7f3c93231d394700af4c9c4bc72c0872
+```
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Evidence-producing binary `build-diagnostic/Swarm` | `19d76c88e4f777f3648e259807a90ace637d238926a0e391f966544fc2c1acc7` |
+| `manifest.json` | `ed333427859ea623525863f7df3fb9bed1d26a30f1e9e83a2e7ecf6af887d6c7` |
+| Raw `2026-07-28_17-34-13_RGP_seed_20260727_20s/data.json` | `30858f94983d4029696b4e6f55320d86fa3915ec7577d70caef2bc2035aee7bc` |
+| `config.materialized.json` | `a078fc41f28d451eda7db042968e72e8ece91702ff237f549a3dc71791a6f9d8` |
+| `source-snapshot.tar.gz` | `a3c408a2e5f7d1e0b20078bd74455f7350e13ddc453d39e12a80a97eab001896` |
+| `stdout.log` | `02537a379c3d20eadffd0cb3d47fa78039b981f7b816da7b28bd557964388a62` |
+| `stderr.log` | `a535fdfd0afe2606e1782703aba3543de716f4e538e8f588d189559b0534d63e` |
+| Analyzer-`719252a` `diagnostic-summary.json` | `074cef6ca0f0be2dc2c18e0ca9e1629431fddeff3df92221408d91df327f37a2` |
+| Analyzer-`719252a` `diagnostic-summary.md` | `d3a7351b43efa770621f80d0bb95cdc141651edceac817d404db99fd6c167d06` |
+
+The manifest anchors the trajectory to base commit
+`f27d4a3dc2590c6f186bfdcd4521575b25f5412a`, branch
+`codex/cbf2026-diagnostic`, and source-snapshot policy
+`cbf2026-source-snapshot-v1`; the regenerated summaries change only the
+analysis of the preserved raw evidence.  Free space was
+`9,858,990,080 / 9,856,696,320` bytes before/after the run, and the run and
+output-root allocation were both `2,183,168` bytes.  These values satisfy the
+8 GB launch guard, 6 GB live floor, 2 GB retained-cache cap, and 250 MB
+per-run cap.  The final workspace-wide disk reading is intentionally recorded
+separately because later analysis and documentation activity is not part of
+this run's manifest.
