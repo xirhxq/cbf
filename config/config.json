@@ -115,6 +115,10 @@
     "objective-function": {
       "k_delta": 10.0
     },
+    "uncertainty-rate": {
+      "//mode": ["off", "backward-difference-positive"],
+      "mode": "backward-difference-positive"
+    },
     "with-slack": {
       "cvt": {
         "name": "cvtCBF",
@@ -168,12 +172,14 @@
       "safety": {
         "name": "safetyCBF",
         "on": false,
+        "//mode": ["minimum", "pairwise"],
+        "mode": "minimum",
         "safe-distance": 10.0,
         "k": 1.0,
         "consider-uncertainty": true,
         "alpha": {
           "coe": 0.1,
-          "pow": 3
+          "pow": 1
         }
       },
       "comm-fixed": {
@@ -188,7 +194,7 @@
         "consider-uncertainty": true,
         "alpha": {
           "coe": 0.1,
-          "pow": 3
+          "pow": 1
         }
       },
       "comm-auto": {

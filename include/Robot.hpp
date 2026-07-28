@@ -596,6 +596,7 @@ public:
         std::vector<Point> formationVels;
         std::vector<std::string> anchorCBFNames;
         std::vector<double> formationUncertainties;
+        std::vector<double> formationUncertaintyRates;
 
         for (auto &baseId : myFormation["baseIds"]) {
             int id = baseId.get<int>();
@@ -604,6 +605,7 @@ public:
             formationVels.emplace_back(0, 0);
             anchorCBFNames.emplace_back("base-" + std::to_string(id));
             formationUncertainties.push_back(0);
+            formationUncertaintyRates.push_back(0);
         }
 
         for (auto &anchorId : myFormation["anchorIds"]) {
@@ -612,9 +614,20 @@ public:
             formationVels.push_back(comm->_othersVel[otherId]);
             anchorCBFNames.push_back("#" + std::to_string(otherId));
             formationUncertainties.push_back(uncertaintyFromCovarianceFunction(comm->_othersPositionCovariance[otherId]));
+            auto rateIt = comm->_othersUncertaintyRate.find(otherId);
+            formationUncertaintyRates.push_back(
+                rateIt == comm->_othersUncertaintyRate.end() ? 0.0 : rateIt->second
+            );
         }
 
         double myUncertainty = currentUncertainty;
+        std::string uncertaintyRateMode = "off";
+        if (settings["cbfs"].contains("uncertainty-rate")) {
+            uncertaintyRateMode =
+                settings["cbfs"]["uncertainty-rate"].value("mode", "off");
+        }
+        bool useUncertaintyRate =
+            uncertaintyRateMode == "backward-difference-positive";
 
         for (int i = 0; i < formationPoints.size(); i++) {
             auto otherPoint = formationPoints[i];
@@ -622,7 +635,12 @@ public:
             double k = config["k"];
             bool isAnchor = anchorCBFNames[i].find("base-") != std::string::npos;
             auto otherUncertainty = formationUncertainties[i];
+            auto otherUncertaintyRate = formationUncertaintyRates[i];
             bool considerUncertainty = config.value("consider-uncertainty", true);
+            double uncertaintyRateSum =
+                considerUncertainty && useUncertaintyRate
+                ? uncertaintyRate + otherUncertaintyRate
+                : 0.0;
 
             auto fixedFormationCommH = [this, otherPoint, otherVel, maxRange, k, isAnchor, myUncertainty, otherUncertainty, considerUncertainty](VectorXd x, double t) {
                 Point myPosition = model->extractXYFromVector(x);
@@ -654,15 +672,15 @@ public:
             };
 
             // Analytical temporal derivative: dhdt = k * (p - p_anchor_rel) · v_anchor / ||p - p_anchor_rel||
-            auto dhdt = [this, otherPoint, otherVel, k](VectorXd x, double t) -> double {
+            auto dhdt = [this, otherPoint, otherVel, k, uncertaintyRateSum](VectorXd x, double t) -> double {
                 Point myPosition = model->extractXYFromVector(x);
                 Point diff = myPosition - otherPoint;
                 double distance = diff.len();
                 if (distance < 1e-8) {
-                    return 0.0;
+                    return -k * uncertaintyRateSum;
                 }
                 double dotProduct = diff * otherVel;
-                return k * dotProduct / distance;
+                return k * dotProduct / distance - k * uncertaintyRateSum;
             };
 
             CBF commCBF;
@@ -679,39 +697,158 @@ public:
     void setSafetyCBF(const json& config) {
         if (settings["num"] == 1) return;
 
-        double myUncertainty = uncertaintyFromCovarianceFunction(positionCovariance);
-        bool considerUncertainty = config.value("consider-uncertainty", true);
-
-        auto safetyH = [&, config, myUncertainty, considerUncertainty](VectorXd x, double t) {
-            Point myPosition = model->extractXYFromVector(x);
-
-            double safeDistance = config["safe-distance"];
-            double k = config.contains("k") ? static_cast<double>(config["k"]) : 1.0;
-
-            double h = inf;
-            for (auto &[id, pos2d]: comm->_othersPos) {
-                if (this->id == id) continue;
-
-                double otherUncertainty = 0.0;
-                if (enablePositionCovariance && comm->_othersPositionCovariance.find(id) != comm->_othersPositionCovariance.end()) {
-                    const Eigen::Matrix2d& otherCov = comm->_othersPositionCovariance[id];
-                    otherUncertainty = uncertaintyFromCovarianceFunction(otherCov);
-                }
-
-                double distance = myPosition.distance_to(pos2d);
-                double robust_h = k * (distance - safeDistance - (considerUncertainty ? myUncertainty + otherUncertainty : 0));
-
-                h = std::min(h, robust_h);
+        for (auto it = cbfNoSlack.cbfs.begin(); it != cbfNoSlack.cbfs.end();) {
+            if (it->first == "safetyCBF" ||
+                it->first.rfind("safetyCBF(#", 0) == 0) {
+                it = cbfNoSlack.cbfs.erase(it);
+            } else {
+                ++it;
             }
-            return h;
-        };
+        }
 
-        CBF safetyCBF;
-        safetyCBF.name = "safetyCBF";
-        safetyCBF.h = safetyH;
-        ClassKParameters alphaParameters = readClassKParameters(config, 0.1, 3);
-        safetyCBF.setAlphaClassK(alphaParameters.coefficient, alphaParameters.power);
-        cbfNoSlack.cbfs[safetyCBF.name] = safetyCBF;
+        double myUncertainty = currentUncertainty;
+        bool considerUncertainty = config.value("consider-uncertainty", true);
+        double safeDistance = config["safe-distance"];
+        double k = config.value("k", 1.0);
+        std::string safetyMode = config.value("mode", "minimum");
+        std::string uncertaintyRateMode = "off";
+        if (settings["cbfs"].contains("uncertainty-rate")) {
+            uncertaintyRateMode =
+                settings["cbfs"]["uncertainty-rate"].value("mode", "off");
+        }
+        bool useUncertaintyRate =
+            considerUncertainty &&
+            uncertaintyRateMode == "backward-difference-positive";
+
+        struct SafetyPair {
+            int id;
+            Point position;
+            Point velocity;
+            double uncertainty;
+            double uncertaintyRate;
+            double currentRobustH;
+        };
+        std::vector<SafetyPair> safetyPairs;
+        Point myPosition = model->xy();
+        for (auto &[otherId, otherPosition]: comm->_othersPos) {
+            if (id == otherId) continue;
+
+            double otherUncertainty = 0.0;
+            auto covarianceIt = comm->_othersPositionCovariance.find(otherId);
+            if (enablePositionCovariance &&
+                covarianceIt != comm->_othersPositionCovariance.end()) {
+                otherUncertainty =
+                    uncertaintyFromCovarianceFunction(covarianceIt->second);
+            }
+
+            Point otherVelocity(0.0, 0.0);
+            auto velocityIt = comm->_othersVel.find(otherId);
+            if (velocityIt != comm->_othersVel.end()) {
+                otherVelocity = Point(velocityIt->second);
+            }
+
+            double otherUncertaintyRate = 0.0;
+            auto rateIt = comm->_othersUncertaintyRate.find(otherId);
+            if (rateIt != comm->_othersUncertaintyRate.end()) {
+                otherUncertaintyRate = rateIt->second;
+            }
+
+            double uncertaintySum =
+                considerUncertainty ? myUncertainty + otherUncertainty : 0.0;
+            safetyPairs.push_back({
+                otherId,
+                otherPosition,
+                otherVelocity,
+                otherUncertainty,
+                otherUncertaintyRate,
+                k * (
+                    myPosition.distance_to(otherPosition) -
+                    safeDistance -
+                    uncertaintySum
+                )
+            });
+        }
+
+        if (safetyMode == "minimum" && !safetyPairs.empty()) {
+            auto minimumIt = std::min_element(
+                safetyPairs.begin(),
+                safetyPairs.end(),
+                [](const SafetyPair& lhs, const SafetyPair& rhs) {
+                    if (lhs.currentRobustH == rhs.currentRobustH) {
+                        return lhs.id < rhs.id;
+                    }
+                    return lhs.currentRobustH < rhs.currentRobustH;
+                }
+            );
+            SafetyPair minimumPair = *minimumIt;
+            safetyPairs.assign(1, minimumPair);
+        }
+
+        for (const SafetyPair& pair : safetyPairs) {
+            double uncertaintySum =
+                considerUncertainty ? myUncertainty + pair.uncertainty : 0.0;
+            double uncertaintyRateSum =
+                useUncertaintyRate
+                ? uncertaintyRate + pair.uncertaintyRate
+                : 0.0;
+
+            CBF safetyCBF;
+            safetyCBF.name =
+                "safetyCBF(#" + std::to_string(pair.id) + ")";
+            safetyCBF.h = [
+                this,
+                otherPosition = pair.position,
+                safeDistance,
+                uncertaintySum,
+                k
+            ](VectorXd x, double t) {
+                Point currentPosition = model->extractXYFromVector(x);
+                return k * (
+                    currentPosition.distance_to(otherPosition) -
+                    safeDistance -
+                    uncertaintySum
+                );
+            };
+            safetyCBF.dhdx_analytical = [
+                this,
+                otherPosition = pair.position,
+                k
+            ](VectorXd x, double t) -> VectorXd {
+                Point currentPosition = model->extractXYFromVector(x);
+                Point diff = currentPosition - otherPosition;
+                double distance = diff.len();
+                if (distance < 1e-8) {
+                    return VectorXd::Zero(x.size());
+                }
+                VectorXd dhdx = VectorXd::Zero(x.size());
+                dhdx(0) = k * diff.x / distance;
+                dhdx(1) = k * diff.y / distance;
+                return dhdx;
+            };
+            safetyCBF.dhdt_analytical = [
+                this,
+                otherPosition = pair.position,
+                otherVelocity = pair.velocity,
+                uncertaintyRateSum,
+                k
+            ](VectorXd x, double t) -> double {
+                Point currentPosition = model->extractXYFromVector(x);
+                Point diff = currentPosition - otherPosition;
+                double distance = diff.len();
+                if (distance < 1e-8) {
+                    return -k * uncertaintyRateSum;
+                }
+                return -k * (diff * otherVelocity) / distance
+                       - k * uncertaintyRateSum;
+            };
+            ClassKParameters alphaParameters =
+                readClassKParameters(config, 0.1, 1);
+            safetyCBF.setAlphaClassK(
+                alphaParameters.coefficient,
+                alphaParameters.power
+            );
+            cbfNoSlack.cbfs[safetyCBF.name] = safetyCBF;
+        }
     }
 
     Point getEndTargetPoint() {

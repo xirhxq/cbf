@@ -49,6 +49,7 @@ json makeDiagnosticSettings() {
         }},
         {"cbfs", {
             {"objective-function", {{"k_delta", 1.0}}},
+            {"uncertainty-rate", {{"mode", "backward-difference-positive"}}},
             {"with-slack", {
                 {"cvt", {{"on", false}}},
                 {"cvt-yaw", {{"on", false}}},
@@ -67,7 +68,14 @@ json makeDiagnosticSettings() {
                     {"alpha", {{"coe", 0.1}, {"pow", 1}}}
                 }},
                 {"comm-auto", {{"on", false}}},
-                {"safety", {{"on", false}}}
+                {"safety", {
+                    {"on", false},
+                    {"mode", "minimum"},
+                    {"safe-distance", 1.0},
+                    {"k", 1.0},
+                    {"consider-uncertainty", true},
+                    {"alpha", {{"coe", 0.1}, {"pow", 1}}}
+                }}
             }}
         }},
         {"debug", {{"opt-cbc", false}}},
@@ -190,4 +198,172 @@ TEST_CASE("centralized startup refreshes snapshots before fixed CBF construction
         swarm.robots[0]->cbfNoSlack.cbfs.at("fixedCommCBF(base-0)");
     CHECK(initialFixedCbf.h(swarm.robots[0]->model->getX(), 0.0)
           == doctest::Approx(79.0));
+}
+
+TEST_CASE("rate-aware communication row uses the hand-derived neighbor projection") {
+    json settings = makeDiagnosticSettings();
+    settings["initial"]["position"]["positions"] =
+        json::array({json::array({0.0, 0.0}), json::array({3.0, 4.0})});
+    settings["cbfs"]["without-slack"]["comm-fixed"]["compensate-velocity"] = true;
+    Robot robot(2, settings);
+    robot.currentUncertainty = 0.5;
+    robot.uncertaintyRate = 0.4;
+
+    VectorXd neighborVelocity(2);
+    neighborVelocity << 2.0, -1.0;
+    robot.comm->receivePosition2D(1, Point(0.0, 0.0));
+    robot.comm->receiveVelocity2D(1, neighborVelocity);
+    robot.comm->receivePositionCovariance(1, Eigen::Matrix2d::Zero());
+    robot.comm->receiveUncertaintyRate(1, 0.3);
+    robot.setupFormation();
+    robot.setFixedCommCBF(
+        robot.settings["cbfs"]["without-slack"]["comm-fixed"]
+    );
+
+    CBF& localizationCBF =
+        robot.cbfNoSlack.cbfs.at("fixedCommCBF(#1)");
+    CHECK(localizationCBF.dhdt(robot.model->getX(), 0.0)
+          == doctest::Approx(-0.3));
+    CHECK(localizationCBF.getAlphaCoefficient() == doctest::Approx(0.1));
+    CHECK(localizationCBF.getAlphaPower() == 1);
+}
+
+TEST_CASE("rate-aware collision row matches the hand-derived closing derivative") {
+    json settings = makeDiagnosticSettings();
+    settings["initial"]["position"]["positions"] =
+        json::array({json::array({0.0, 0.0}), json::array({3.0, 4.0})});
+    Robot robot(2, settings);
+    robot.currentUncertainty = 0.5;
+    robot.uncertaintyRate = 0.4;
+
+    VectorXd neighborVelocity(2);
+    neighborVelocity << 2.0, -1.0;
+    robot.comm->receivePosition2D(1, Point(0.0, 0.0));
+    robot.comm->receiveVelocity2D(1, neighborVelocity);
+    robot.comm->receivePositionCovariance(1, Eigen::Matrix2d::Zero());
+    robot.comm->receiveUncertaintyRate(1, 0.3);
+    robot.setSafetyCBF(robot.settings["cbfs"]["without-slack"]["safety"]);
+
+    REQUIRE(robot.cbfNoSlack.cbfs.count("safetyCBF(#1)") == 1);
+    CBF& collisionCBF =
+        robot.cbfNoSlack.cbfs.at("safetyCBF(#1)");
+    CHECK(collisionCBF.dhdt(robot.model->getX(), 0.0)
+          == doctest::Approx(-1.1));
+    CHECK(collisionCBF.getAlphaCoefficient() == doctest::Approx(0.1));
+    CHECK(collisionCBF.getAlphaPower() == 1);
+}
+
+TEST_CASE("pairwise safety mode creates two stable named rows for three UAVs") {
+    json settings = makeDiagnosticSettings();
+    settings["num"] = 3;
+    settings["all"] = json::array({1, 2, 3});
+    settings["initial"]["position"]["positions"] = json::array({
+        json::array({3.0, 4.0}),
+        json::array({0.0, 0.0}),
+        json::array({9.0, 12.0})
+    });
+    settings["cbfs"]["without-slack"]["safety"]["mode"] = "pairwise";
+    Robot robot(1, settings);
+
+    VectorXd stopped = VectorXd::Zero(2);
+    for (int otherId : {2, 3}) {
+        const Point otherPosition =
+            otherId == 2 ? Point(0.0, 0.0) : Point(9.0, 12.0);
+        robot.comm->receivePosition2D(otherId, otherPosition);
+        robot.comm->receiveVelocity2D(otherId, stopped);
+        robot.comm->receivePositionCovariance(
+            otherId, Eigen::Matrix2d::Zero()
+        );
+        robot.comm->receiveUncertaintyRate(otherId, 0.0);
+    }
+    robot.setSafetyCBF(robot.settings["cbfs"]["without-slack"]["safety"]);
+
+    CHECK(robot.cbfNoSlack.cbfs.size() == 2);
+    CHECK(robot.cbfNoSlack.cbfs.count("safetyCBF(#2)") == 1);
+    CHECK(robot.cbfNoSlack.cbfs.count("safetyCBF(#3)") == 1);
+}
+
+TEST_CASE("minimum safety mode keeps only the smallest current robust pair") {
+    json settings = makeDiagnosticSettings();
+    settings["num"] = 3;
+    settings["all"] = json::array({1, 2, 3});
+    settings["initial"]["position"]["positions"] = json::array({
+        json::array({3.0, 4.0}),
+        json::array({0.0, 0.0}),
+        json::array({30.0, 40.0})
+    });
+    Robot robot(1, settings);
+
+    VectorXd stopped = VectorXd::Zero(2);
+    robot.comm->receivePosition2D(2, Point(0.0, 0.0));
+    robot.comm->receivePosition2D(3, Point(30.0, 40.0));
+    for (int otherId : {2, 3}) {
+        robot.comm->receiveVelocity2D(otherId, stopped);
+        robot.comm->receivePositionCovariance(
+            otherId, Eigen::Matrix2d::Zero()
+        );
+        robot.comm->receiveUncertaintyRate(otherId, 0.0);
+    }
+    robot.setSafetyCBF(robot.settings["cbfs"]["without-slack"]["safety"]);
+
+    CHECK(robot.cbfNoSlack.cbfs.size() == 1);
+    CHECK(robot.cbfNoSlack.cbfs.count("safetyCBF(#2)") == 1);
+}
+
+TEST_CASE("disabling uncertainty also disables rate tightening") {
+    json settings = makeDiagnosticSettings();
+    settings["initial"]["position"]["positions"] =
+        json::array({json::array({0.0, 0.0}), json::array({3.0, 4.0})});
+    settings["cbfs"]["without-slack"]["comm-fixed"]["compensate-velocity"] = true;
+    settings["cbfs"]["without-slack"]["comm-fixed"]["consider-uncertainty"] = false;
+    settings["cbfs"]["without-slack"]["safety"]["consider-uncertainty"] = false;
+    Robot robot(2, settings);
+    robot.currentUncertainty = 2.0;
+    robot.uncertaintyRate = 0.4;
+
+    VectorXd neighborVelocity(2);
+    neighborVelocity << 2.0, -1.0;
+    robot.comm->receivePosition2D(1, Point(0.0, 0.0));
+    robot.comm->receiveVelocity2D(1, neighborVelocity);
+    robot.comm->receivePositionCovariance(
+        1, 9.0 * Eigen::Matrix2d::Identity()
+    );
+    robot.comm->receiveUncertaintyRate(1, 0.3);
+    robot.setupFormation();
+    robot.setFixedCommCBF(
+        robot.settings["cbfs"]["without-slack"]["comm-fixed"]
+    );
+    robot.setSafetyCBF(robot.settings["cbfs"]["without-slack"]["safety"]);
+
+    const VectorXd x = robot.model->getX();
+    CBF& localizationCBF =
+        robot.cbfNoSlack.cbfs.at("fixedCommCBF(#1)");
+    REQUIRE(robot.cbfNoSlack.cbfs.count("safetyCBF(#1)") == 1);
+    CBF& collisionCBF =
+        robot.cbfNoSlack.cbfs.at("safetyCBF(#1)");
+    CHECK(localizationCBF.h(x, 0.0) == doctest::Approx(95.0));
+    CHECK(localizationCBF.dhdt(x, 0.0) == doctest::Approx(0.4));
+    CHECK(collisionCBF.h(x, 0.0) == doctest::Approx(4.0));
+    CHECK(collisionCBF.dhdt(x, 0.0) == doctest::Approx(-0.4));
+}
+
+TEST_CASE("base communication row treats anchor velocity and rate as zero") {
+    json settings = makeDiagnosticSettings();
+    settings["initial"]["position"]["positions"] =
+        json::array({json::array({0.0, 0.0}), json::array({3.0, 4.0})});
+    Robot robot(2, settings);
+    robot.currentUncertainty = 0.5;
+    robot.uncertaintyRate = 0.4;
+    robot.myFormation = {
+        {"baseIds", json::array({0})},
+        {"anchorIds", json::array()}
+    };
+    robot.setFixedCommCBF(
+        robot.settings["cbfs"]["without-slack"]["comm-fixed"]
+    );
+
+    CBF& baseCBF =
+        robot.cbfNoSlack.cbfs.at("fixedCommCBF(base-0)");
+    CHECK(baseCBF.dhdt(robot.model->getX(), 0.0)
+          == doctest::Approx(-0.4));
 }
