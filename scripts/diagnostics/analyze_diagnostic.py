@@ -144,6 +144,20 @@ def _load_json(path: Path, label: str) -> dict:
     return payload
 
 
+def _normalized_reference_ids(value: Any) -> tuple[tuple[int, ...], tuple[int, ...]] | None:
+    if not isinstance(value, dict):
+        return None
+    anchor_ids = value.get("anchorIds")
+    base_ids = value.get("baseIds")
+    if not isinstance(anchor_ids, list) or not isinstance(base_ids, list):
+        return None
+    if not all(isinstance(item, int) and not isinstance(item, bool) for item in anchor_ids):
+        return None
+    if not all(isinstance(item, int) and not isinstance(item, bool) for item in base_ids):
+        return None
+    return tuple(sorted(anchor_ids)), tuple(sorted(base_ids))
+
+
 def _record_nonfinite(failures: list[str], value: Any, path: str) -> float | None:
     number = _finite_number(value)
     if number is None:
@@ -363,6 +377,7 @@ def _write_markdown(summary: dict, path: Path) -> None:
     """Write a compact, human-readable counterpart of the JSON evidence."""
     hard = summary["hard_constraints"]
     coverage = summary["coverage"]
+    covariance_information_set = summary["covariance_information_set"]
     lines = [
         "# Diagnostic Summary",
         "",
@@ -374,6 +389,7 @@ def _write_markdown(summary: dict, path: Path) -> None:
         f"- Coverage: {coverage['fraction']} ({coverage['unique_cells']}/{coverage['total_cells']})",
         f"- Maximum uncertainty: {summary['uncertainty']['max']}",
         f"- Maximum positive uncertainty rate: {summary['uncertainty']['max_positive_one_step_rate']}",
+        f"- Covariance information set: {covariance_information_set['status']}; transitions={covariance_information_set['transition_count']}; required-reference mismatches={covariance_information_set['required_reference_mismatch_count']}; malformed={covariance_information_set['malformed_record_count']}",
         "",
         "## Metrics intentionally unavailable",
         "",
@@ -476,6 +492,13 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
     class_k_records: list[dict] = []
     covariance_consistency_records: list[dict] = []
     covariance_consistency_unavailable: Counter[str] = Counter()
+    previous_covariance_references: dict[
+        int, tuple[tuple[int, ...], tuple[int, ...]]
+    ] = {}
+    covariance_information_set_records = 0
+    covariance_information_set_transitions: list[dict] = []
+    covariance_reference_mismatches: list[dict] = []
+    covariance_information_set_malformed_count = 0
 
     without_slack = config.get("cbfs", {}).get("without-slack", {})
     comm_config = without_slack.get("comm-fixed", {}) if isinstance(without_slack, dict) else {}
@@ -547,6 +570,61 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
             for formation in formations:
                 if isinstance(formation, dict) and isinstance(formation.get("id"), int):
                     formation_by_id[formation["id"]] = formation
+
+        covariance_formations = frame.get("covariance_formation")
+        if isinstance(covariance_formations, list):
+            for covariance_formation in covariance_formations:
+                if (
+                    not isinstance(covariance_formation, dict)
+                    or not isinstance(covariance_formation.get("id"), int)
+                    or isinstance(covariance_formation.get("id"), bool)
+                ):
+                    continue
+                normalized = _normalized_reference_ids(covariance_formation)
+                if normalized is None:
+                    covariance_information_set_malformed_count += 1
+                    continue
+
+                robot_id = covariance_formation["id"]
+                covariance_information_set_records += 1
+                previous = previous_covariance_references.get(robot_id)
+                if previous is not None and previous != normalized:
+                    covariance_information_set_transitions.append(
+                        {
+                            "frame_index": frame_index,
+                            "runtime": runtime,
+                            "robot_id": robot_id,
+                            "previous": {
+                                "anchor_ids": list(previous[0]),
+                                "base_ids": list(previous[1]),
+                            },
+                            "current": {
+                                "anchor_ids": list(normalized[0]),
+                                "base_ids": list(normalized[1]),
+                            },
+                        }
+                    )
+
+                required = _normalized_reference_ids(formation_by_id.get(robot_id))
+                if required is None or required != normalized:
+                    covariance_reference_mismatches.append(
+                        {
+                            "frame_index": frame_index,
+                            "runtime": runtime,
+                            "robot_id": robot_id,
+                            "required": None
+                            if required is None
+                            else {
+                                "anchor_ids": list(required[0]),
+                                "base_ids": list(required[1]),
+                            },
+                            "covariance": {
+                                "anchor_ids": list(normalized[0]),
+                                "base_ids": list(normalized[1]),
+                            },
+                        }
+                    )
+                previous_covariance_references[robot_id] = normalized
 
         frame_robot_ids: set[int] = set()
         frame_applied_planar_controls: dict[int, tuple[float, float]] = {}
@@ -1589,6 +1667,19 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
                 sorted(covariance_consistency_unavailable.items())
             ),
             "records": covariance_consistency_records,
+        },
+        "covariance_information_set": {
+            "status": (
+                "available"
+                if covariance_information_set_records
+                else "unavailable_no_covariance_formation_records"
+            ),
+            "robot_frame_record_count": covariance_information_set_records,
+            "transition_count": len(covariance_information_set_transitions),
+            "transitions": covariance_information_set_transitions,
+            "required_reference_mismatch_count": len(covariance_reference_mismatches),
+            "required_reference_mismatches": covariance_reference_mismatches,
+            "malformed_record_count": covariance_information_set_malformed_count,
         },
         "unavailable_metrics": unavailable_metrics,
     }

@@ -314,6 +314,49 @@ class RunAnalysisTests(unittest.TestCase):
             manifest_path.write_text(json.dumps({"case": "C1"}))
             return analyze_run(data_path, manifest_path)
 
+    def test_covariance_information_set_transitions_and_reference_mismatches_are_reported(self):
+        data = {
+            "para": {"gridWorld": {"xNum": 1, "yNum": 1}},
+            "config": {},
+            "state": [
+                {
+                    "runtime": 0.0,
+                    "formation": [
+                        {"id": 1, "anchorIds": [], "baseIds": [0]},
+                        {"id": 2, "anchorIds": [1], "baseIds": []},
+                    ],
+                    "covariance_formation": [
+                        {"id": 1, "anchorIds": [], "baseIds": [0]},
+                        {"id": 2, "anchorIds": [1], "baseIds": []},
+                    ],
+                    "update": [],
+                    "robots": [],
+                },
+                {
+                    "runtime": 0.5,
+                    "formation": [
+                        {"id": 1, "anchorIds": [], "baseIds": [0]},
+                        {"id": 2, "anchorIds": [1], "baseIds": []},
+                    ],
+                    "covariance_formation": [
+                        {"id": 1, "anchorIds": [], "baseIds": [0]},
+                        {"id": 2, "anchorIds": [1, 3], "baseIds": []},
+                    ],
+                    "update": [],
+                    "robots": [],
+                },
+            ],
+        }
+
+        summary = self.analyze_fixture(data)
+        audit = summary["covariance_information_set"]
+        self.assertEqual(audit["status"], "available")
+        self.assertEqual(audit["robot_frame_record_count"], 4)
+        self.assertEqual(audit["transition_count"], 1)
+        self.assertEqual(audit["required_reference_mismatch_count"], 1)
+        self.assertEqual(audit["transitions"][0]["robot_id"], 2)
+        self.assertEqual(audit["transitions"][0]["frame_index"], 1)
+
     def test_mc_first_two_frame_metrics_match_hand_derived_literals(self):
         summary = self.analyze_fixture(mc_first_two_frame_fixture())
 
