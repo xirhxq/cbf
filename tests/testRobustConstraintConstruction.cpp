@@ -607,6 +607,62 @@ TEST_CASE("covariance FIM keeps assigned bases beyond range and gates unassigned
           == json::array({0}));
 }
 
+TEST_CASE("active covariance references deduplicate duplicated assigned bases") {
+    json settings = makeDiagnosticSettings();
+    settings["formation"]["bases-id"] = json::array({json::array({0, 0, 1})});
+    Robot robot(1, settings);
+
+    CHECK(robot.fixedLocalizationReferences().at("baseIds")
+          == json::array({0, 0}));
+
+    robot.getCovariance(settings["cbfs"]["without-slack"]["comm-fixed"]);
+
+    CHECK(robot.myCovarianceFormation.at("baseIds")
+          == json::array({0, 1}));
+}
+
+TEST_CASE("optional anchors change the covariance FIM while in range") {
+    json settings = makeFourRobotFixedGraphSettings();
+    settings["cbfs"]["without-slack"]["comm-fixed"]["max-range"] = 3.0;
+    auto robots = makeFourFixedGraphRobots();
+    Robot& robot = *robots.at(3);
+
+    robots.at(0)->model->setPosition2D(Point(2.0, 2.0));
+    robots.at(1)->model->setPosition2D(Point(0.0, 2.0));
+    robots.at(2)->model->setPosition2D(Point(2.0, 0.0));
+    robots.at(3)->model->setPosition2D(Point(0.0, 0.0));
+    robot.bases.at(0) = Point(1000.0, 1000.0);
+    robot.bases.at(1) = Point(1000.0, 1001.0);
+    robot.bases.at(2) = Point(1001.0, 1000.0);
+    exchangeDiagnosticData(robots);
+    for (int otherId : {1, 2, 3}) {
+        robot.comm->receivePositionCovariance(
+            otherId, Eigen::Matrix2d::Zero()
+        );
+    }
+
+    robot.getCovariance(settings["cbfs"]["without-slack"]["comm-fixed"]);
+
+    const Eigen::Matrix2d dynamicExpected =
+        (Eigen::Matrix2d() << 0.75, -0.25, -0.25, 0.75).finished();
+    CHECK(robot.myCovarianceFormation.at("anchorIds")
+          == json::array({2, 3, 1}));
+    CHECK(robot.positionCovariance.isApprox(dynamicExpected, 1e-12));
+
+    robots.at(0)->model->setPosition2D(Point(10.0, 10.0));
+    exchangeDiagnosticData(robots);
+    for (int otherId : {1, 2, 3}) {
+        robot.comm->receivePositionCovariance(
+            otherId, Eigen::Matrix2d::Zero()
+        );
+    }
+    robot.getCovariance(settings["cbfs"]["without-slack"]["comm-fixed"]);
+
+    CHECK(robot.myCovarianceFormation.at("anchorIds")
+          == json::array({2, 3}));
+    CHECK(robot.positionCovariance.isApprox(Eigen::Matrix2d::Identity(), 1e-12));
+}
+
 TEST_CASE("distributed frame zero logs only first-sample zero uncertainty rates") {
     json settings = makeThreeRobotChainSettings();
     settings["execute"]["execution-mode"] = "distributed";

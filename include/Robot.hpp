@@ -490,6 +490,17 @@ public:
             ids.push_back(candidate);
         };
 
+        auto deduplicate = [&appendUnique](json& ids) {
+            json uniqueIds = json::array();
+            for (const json& existing : ids) {
+                appendUnique(uniqueIds, existing.get<int>());
+            }
+            ids = uniqueIds;
+        };
+
+        deduplicate(references["anchorIds"]);
+        deduplicate(references["baseIds"]);
+
         for (std::size_t baseId = 0; baseId < bases.size(); ++baseId) {
             if (bases.at(baseId).distance_to(myPosition) <= maxRange) {
                 appendUnique(references["baseIds"], static_cast<int>(baseId));
