@@ -1,7 +1,10 @@
 #define EIGEN_INITIALIZE_MATRICES_BY_NAN
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#ifndef PROJECT_ROOT
+#define PROJECT_ROOT "."
+#endif
 #include "doctest/doctest.h"
-#include "Robot.hpp"
+#include "Swarm.hpp"
 
 #include <memory>
 #include <stdexcept>
@@ -164,4 +167,27 @@ TEST_CASE("covariance refresh is independent of comm-fixed enforcement") {
     exchangeDiagnosticData(robots);
     refreshDiagnosticUncertaintySnapshot(robots, 0.5);
     CHECK(robots[0]->hasUncertaintyHistory);
+}
+
+TEST_CASE("centralized startup refreshes snapshots before fixed CBF construction") {
+    json settings = makeDiagnosticSettings();
+    settings["execute"]["execution-mode"] = "centralized";
+    settings["execute"]["time-total"] = 0.0;
+    settings["output_path"] = "build-diagnostic";
+
+    Swarm swarm(settings);
+    swarm.run();
+
+    for (const auto& robot : swarm.robots) {
+        CHECK(robot->hasUncertaintyHistory);
+        CHECK(robot->currentUncertainty > 0.0);
+    }
+    CHECK(swarm.robots[0]->comm->_othersPositionCovariance.at(2).isApprox(
+        swarm.robots[1]->positionCovariance
+    ));
+    REQUIRE(swarm.robots[0]->cbfNoSlack.cbfs.count("fixedCommCBF(base-0)") == 1);
+    const CBF& initialFixedCbf =
+        swarm.robots[0]->cbfNoSlack.cbfs.at("fixedCommCBF(base-0)");
+    CHECK(initialFixedCbf.h(swarm.robots[0]->model->getX(), 0.0)
+          == doctest::Approx(79.0));
 }

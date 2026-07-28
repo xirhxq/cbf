@@ -229,6 +229,11 @@ public:
     }
 
     void run() {
+        auto settings = config["execute"];
+        double tTotal = settings["time-total"], tStep = settings["time-step"];
+
+        exchangeData();
+        for (auto &robot: robots) robot->updateCovarianceAndRate(tStep);
         exchangeData();
         checkInformationExchange();
         initLog();
@@ -242,9 +247,6 @@ public:
             for (auto &robot: robots) robot->presetCBF();
         }
 
-        auto settings = config["execute"];
-
-        double tTotal = settings["time-total"], tStep = settings["time-step"];
         while (robots[0]->runtime < tTotal) {
             try {
                 exchangeData();
