@@ -88,6 +88,14 @@ from the terminal output.
 | Stage 1 B | `completed` | 1,120 | `85340036bdd2b7b646c91657a7b2bd2cb63742d8c773d0190c599755494ab77d` | `1e2758bb1ad3f6234678371ca3a34a3d9d14f36eefc98823830168dcf9b1e982` | `fec93f2dbdbf99e88fbe292fde524b58f4fd46a42126ab29fd627e8abbca1f0e` |
 | Stage 2 | `completed` | 280,000 | `34a6045d4ac5d23f72ac6d049d4d98a8f927ac9835b71f3a3050a00f8efaf524` | `6e1d6ea42e3c65117d62a734f8771491e1ec4181ef5778503bb9ca65a2bd54c7` | `0dddcc119e00abbcdb7dfad6491f39bde6bbf4107fee81a09a556ecf53a1c2b6` |
 
+The exact collision-resistant Stage 1 bundle directories and their remaining
+output-file hashes are:
+
+| Run | Bundle directory | Manifest SHA-256 | Summary Markdown SHA-256 |
+| --- | --- | --- | --- |
+| Stage 1 A | `/private/tmp/cbf2026-localization-calibration/stage1/localization-calibration/20260728T164036.740337Z_36c8b0fcc66e4d6db93e00dd14c86c3d` | `8d118b7bc717e35d1ee8989d3fa0a5cd989789e975eee4940e16c1e864585ce3` | `6289376563a5a76ccf5ba38194fe1900be9d50baab085e170df275f9e1cca9a9` |
+| Stage 1 B | `/private/tmp/cbf2026-localization-calibration/stage1/localization-calibration/20260728T164101.774402Z_52a8641c802c461eb6af84f12775ef77` | `20b8378e86d0d69e3df41407209db7eaf76a8edd591c78207c57b32df3c9c45b` | `6289376563a5a76ccf5ba38194fe1900be9d50baab085e170df275f9e1cca9a9` |
+
 The two Stage 1 manifests also had identical settings and completion states;
 the process-row count, decompressed-process SHA-256, and summary SHA-256 all
 matched.  Thus the registered deterministic Stage 1 comparison passed.
