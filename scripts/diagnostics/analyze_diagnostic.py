@@ -568,7 +568,11 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
         formations = frame.get("formation")
         if isinstance(formations, list):
             for formation in formations:
-                if isinstance(formation, dict) and isinstance(formation.get("id"), int):
+                if (
+                    isinstance(formation, dict)
+                    and isinstance(formation.get("id"), int)
+                    and not isinstance(formation.get("id"), bool)
+                ):
                     formation_by_id[formation["id"]] = formation
 
         covariance_formations = frame.get("covariance_formation")

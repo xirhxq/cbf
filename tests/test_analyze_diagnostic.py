@@ -416,6 +416,32 @@ class RunAnalysisTests(unittest.TestCase):
         self.assertEqual(audit["transition_count"], 0)
         self.assertEqual(audit["malformed_record_count"], 4)
 
+    def test_boolean_formation_id_does_not_replace_robot_one_required_references(self):
+        data = {
+            "para": {"gridWorld": {"xNum": 1, "yNum": 1}},
+            "config": {},
+            "state": [
+                {
+                    "runtime": 0.0,
+                    "formation": [
+                        {"id": 1, "anchorIds": [], "baseIds": [0]},
+                        {"id": True, "anchorIds": [7], "baseIds": []},
+                    ],
+                    "covariance_formation": [
+                        {"id": 1, "anchorIds": [], "baseIds": [0]},
+                    ],
+                    "update": [],
+                    "robots": [],
+                }
+            ],
+        }
+
+        audit = self.analyze_fixture(data)["covariance_information_set"]
+
+        self.assertEqual(audit["robot_frame_record_count"], 1)
+        self.assertEqual(audit["required_reference_mismatch_count"], 0)
+        self.assertEqual(audit["required_reference_mismatches"], [])
+
     def test_duplicate_same_frame_covariance_id_is_malformed_without_transition(self):
         data = {
             "para": {"gridWorld": {"xNum": 1, "yNum": 1}},
