@@ -1,0 +1,34 @@
+{
+  "case": "C0",
+  "overrides": {
+    "initial": {"position": {"method": "specified"}},
+    "cbfs": {
+      "uncertainty-rate": {"mode": "off"},
+      "input-limits": {
+        "on": false,
+        "planar-component-max": 25.0,
+        "yaw-rate-max": 0.35
+      },
+      "without-slack": {
+        "method": "all",
+        "safety": {
+          "on": true,
+          "mode": "minimum",
+          "consider-uncertainty": true,
+          "alpha": {"coe": 0.1, "pow": 1}
+        },
+        "comm-fixed": {
+          "on": true,
+          "consider-uncertainty": true,
+          "alpha": {"coe": 0.1, "pow": 1}
+        }
+      }
+    },
+    "execute": {
+      "execution-mode": "distributed",
+      "random-seed": 20260727,
+      "check-constraint-violation": true
+    },
+    "debug": {"opt-cbc": false}
+  }
+}

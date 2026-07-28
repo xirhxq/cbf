@@ -12,7 +12,10 @@ from unittest.mock import patch
 from scripts.diagnostics.run_diagnostic import (
     DiskSpaceError,
     HARD_FLOOR_BYTES,
+    OUTPUT_ROOT_CAP_BYTES,
+    RUN_CAP_BYTES,
     START_BYTES,
+    allocated_bytes,
     deep_merge,
     main,
     materialize_config,
@@ -63,6 +66,17 @@ class CompletedAfterOnePollProcess(TerminatedProcess):
         return None if self.poll_count == 1 else 0
 
 
+class NeverCompletingProcess(TerminatedProcess):
+    def poll(self):
+        return self.returncode
+
+
+class ImmediatelyCompletedProcess(TerminatedProcess):
+    def __init__(self, returncode):
+        super().__init__()
+        self.returncode = returncode
+
+
 def write_minimal_project(project_root: Path) -> Path:
     base_config = {
         "initial": {"position": {"method": "random"}},
@@ -72,10 +86,32 @@ def write_minimal_project(project_root: Path) -> Path:
             "check-constraint-violation": False,
         },
         "cbfs": {
+            "uncertainty-rate": {"mode": "off"},
+            "input-limits": {
+                "on": False,
+                "planar-component-max": 25.0,
+                "yaw-rate-max": 0.35,
+            },
             "without-slack": {
-                "safety": {"on": False, "consider-uncertainty": True},
-                "comm-fixed": {"on": True, "consider-uncertainty": True},
+                "method": "all",
+                "safety": {
+                    "on": False,
+                    "mode": "minimum",
+                    "consider-uncertainty": True,
+                    "alpha": {"coe": 0.1, "pow": 1},
+                },
+                "comm-fixed": {
+                    "on": True,
+                    "consider-uncertainty": True,
+                    "alpha": {"coe": 0.1, "pow": 1},
+                },
             }
+        },
+        "execute": {
+            "execution-mode": "distributed",
+            "time-total": 500,
+            "random-seed": 1,
+            "check-constraint-violation": False,
         },
         "optimiser": "Gurobi",
     }
@@ -110,6 +146,124 @@ def write_minimal_project(project_root: Path) -> Path:
                         "safety": {"on": True, "consider-uncertainty": False},
                         "comm-fixed": {"on": True, "consider-uncertainty": False},
                     }
+                },
+            },
+        },
+        "c0_corrected.json": {
+            "case": "C0",
+            "overrides": {
+                "initial": {"position": {"method": "specified"}},
+                "cbfs": {
+                    "uncertainty-rate": {"mode": "off"},
+                    "input-limits": {"on": False},
+                    "without-slack": {
+                        "method": "all",
+                        "safety": {
+                            "on": True,
+                            "mode": "minimum",
+                            "consider-uncertainty": True,
+                            "alpha": {"coe": 0.1, "pow": 1},
+                        },
+                        "comm-fixed": {
+                            "on": True,
+                            "consider-uncertainty": True,
+                            "alpha": {"coe": 0.1, "pow": 1},
+                        },
+                    },
+                },
+                "execute": {
+                    "execution-mode": "distributed",
+                    "check-constraint-violation": True,
+                },
+            },
+        },
+        "r_rate_aware.json": {
+            "case": "R",
+            "overrides": {
+                "initial": {"position": {"method": "specified"}},
+                "cbfs": {
+                    "uncertainty-rate": {
+                        "mode": "backward-difference-positive"
+                    },
+                    "input-limits": {"on": False},
+                    "without-slack": {
+                        "method": "all",
+                        "safety": {
+                            "on": True,
+                            "mode": "minimum",
+                            "consider-uncertainty": True,
+                            "alpha": {"coe": 0.1, "pow": 1},
+                        },
+                        "comm-fixed": {
+                            "on": True,
+                            "consider-uncertainty": True,
+                            "alpha": {"coe": 0.1, "pow": 1},
+                        },
+                    },
+                },
+                "execute": {
+                    "execution-mode": "distributed",
+                    "check-constraint-violation": True,
+                },
+            },
+        },
+        "rb_bounded.json": {
+            "case": "RB",
+            "overrides": {
+                "initial": {"position": {"method": "specified"}},
+                "cbfs": {
+                    "uncertainty-rate": {
+                        "mode": "backward-difference-positive"
+                    },
+                    "input-limits": {"on": True},
+                    "without-slack": {
+                        "method": "all",
+                        "safety": {
+                            "on": True,
+                            "mode": "minimum",
+                            "consider-uncertainty": True,
+                            "alpha": {"coe": 0.1, "pow": 1},
+                        },
+                        "comm-fixed": {
+                            "on": True,
+                            "consider-uncertainty": True,
+                            "alpha": {"coe": 0.1, "pow": 1},
+                        },
+                    },
+                },
+                "execute": {
+                    "execution-mode": "distributed",
+                    "check-constraint-violation": True,
+                },
+            },
+        },
+        "rbp_pairwise.json": {
+            "case": "RBP",
+            "overrides": {
+                "initial": {"position": {"method": "specified"}},
+                "cbfs": {
+                    "uncertainty-rate": {
+                        "mode": "backward-difference-positive"
+                    },
+                    "input-limits": {"on": True},
+                    "without-slack": {
+                        "method": "all",
+                        "safety": {
+                            "on": True,
+                            "mode": "pairwise",
+                            "consider-uncertainty": True,
+                            "alpha": {"coe": 0.1, "pow": 1},
+                        },
+                        "comm-fixed": {
+                            "on": True,
+                            "consider-uncertainty": True,
+                            "alpha": {"coe": 0.1, "pow": 1},
+                        },
+                    },
+                },
+                "execute": {
+                    "execution-mode": "distributed",
+                    "check-constraint-violation": True,
                 },
             },
         },
@@ -210,6 +364,24 @@ class DiagnosticRunnerTests(unittest.TestCase):
             require_start_space(Path("/private/tmp")),
             9_000_000_000,
         )
+
+    def test_allocated_bytes_counts_blocks_recursively_without_following_symlinks(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            allocation_root = temporary_path / "allocation-root"
+            allocation_root.mkdir()
+            payload = allocation_root / "payload.bin"
+            payload.write_bytes(b"x" * 8192)
+            external = temporary_path / "external.bin"
+            external.write_bytes(b"y" * 16384)
+            external_link = allocation_root / "external-link"
+            external_link.symlink_to(external)
+
+            expected = sum(
+                path.lstat().st_blocks * 512
+                for path in (allocation_root, payload, external_link)
+            )
+            self.assertEqual(allocated_bytes(allocation_root), expected)
 
     def test_failed_start_guard_creates_no_output_directories(self):
         project_root = Path(__file__).resolve().parents[1]
@@ -345,6 +517,84 @@ class DiagnosticRunnerTests(unittest.TestCase):
                         ),
                         expected,
                     )
+
+    def test_mc_first_cases_materialize_exact_distinguishing_truth(self):
+        project_root = Path(__file__).resolve().parents[1]
+        expected = {
+            "C0": ("off", False, "minimum"),
+            "R": ("backward-difference-positive", False, "minimum"),
+            "RB": ("backward-difference-positive", True, "minimum"),
+            "RBP": ("backward-difference-positive", True, "pairwise"),
+        }
+        patch_names = {
+            "C0": "c0_corrected.json",
+            "R": "r_rate_aware.json",
+            "RB": "rb_bounded.json",
+            "RBP": "rbp_pairwise.json",
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            for case, expected_truth in expected.items():
+                with self.subTest(case=case):
+                    config = materialize_config(
+                        project_root / "config" / "config.json",
+                        project_root
+                        / "config"
+                        / "diagnostics"
+                        / patch_names[case],
+                        temporary_path / case / "config.materialized.json",
+                        horizon_s=20,
+                        seed=7,
+                    )
+                    without_slack = config["cbfs"]["without-slack"]
+                    actual_truth = (
+                        config["cbfs"]["uncertainty-rate"]["mode"],
+                        config["cbfs"]["input-limits"]["on"],
+                        without_slack["safety"]["mode"],
+                    )
+                    self.assertEqual(actual_truth, expected_truth)
+                    self.assertEqual(config["execute"]["execution-mode"], "distributed")
+                    self.assertEqual(without_slack["method"], "all")
+                    self.assertEqual(
+                        without_slack["safety"]["alpha"],
+                        {"coe": 0.1, "pow": 1},
+                    )
+                    self.assertEqual(
+                        without_slack["comm-fixed"]["alpha"],
+                        {"coe": 0.1, "pow": 1},
+                    )
+
+    def test_cli_accepts_every_mc_first_case(self):
+        for case in ("C0", "R", "RB", "RBP"):
+            with self.subTest(case=case):
+                completed_manifest = {
+                    "termination_reason": "completed",
+                    "output_dir": f"/private/tmp/results/{case}/run-id",
+                }
+                with (
+                    patch(
+                        "scripts.diagnostics.run_diagnostic.run_diagnostic",
+                        return_value=completed_manifest,
+                    ) as mocked_run,
+                    redirect_stdout(io.StringIO()),
+                ):
+                    returncode = main(
+                        [
+                            "--case",
+                            case,
+                            "--horizon",
+                            "20",
+                            "--seed",
+                            "7",
+                            "--binary",
+                            "/private/tmp/Swarm",
+                            "--output-root",
+                            "/private/tmp/results",
+                        ]
+                    )
+
+                self.assertEqual(returncode, 0)
+                self.assertEqual(mocked_run.call_args.kwargs["case"], case)
 
     def test_two_same_case_runs_preserve_distinct_complete_bundles(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -693,6 +943,205 @@ class DiagnosticRunnerTests(unittest.TestCase):
             self.assertTrue((run_root / "stdout.log").is_file())
             self.assertTrue((run_root / "stderr.log").is_file())
 
+    def test_snapshot_that_exceeds_run_cap_stops_before_launch_with_terminal_manifest(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            project_root = temporary_path / "project"
+            project_root.mkdir()
+            binary_path = write_minimal_project(project_root)
+            output_root = temporary_path / "results"
+
+            def over_cap_after_snapshot(path):
+                if path == output_root:
+                    return 100_000_000
+                return RUN_CAP_BYTES + 512
+
+            with (
+                patch(
+                    "scripts.diagnostics.run_diagnostic.available_bytes",
+                    return_value=START_BYTES,
+                ),
+                patch(
+                    "scripts.diagnostics.run_diagnostic.allocated_bytes",
+                    side_effect=over_cap_after_snapshot,
+                ),
+                patch(
+                    "scripts.diagnostics.run_diagnostic.subprocess.Popen",
+                ) as mocked_popen,
+                patch(
+                    "scripts.diagnostics.run_diagnostic._git_output",
+                    side_effect=fake_git_output,
+                ),
+            ):
+                manifest = run_diagnostic(
+                    case="H0",
+                    horizon_s=20,
+                    seed=7,
+                    binary_path=binary_path,
+                    output_root=output_root,
+                    project_root=project_root,
+                )
+
+            mocked_popen.assert_not_called()
+            self.assertEqual(manifest["termination_reason"], "cache_run_cap")
+            self.assertIsNone(manifest["returncode"])
+            self.assertEqual(
+                manifest["output_root_allocated_bytes"],
+                100_000_000,
+            )
+            self.assertEqual(
+                manifest["run_allocated_bytes"],
+                RUN_CAP_BYTES + 512,
+            )
+            self.assertEqual(
+                manifest["output_root_cap_bytes"],
+                OUTPUT_ROOT_CAP_BYTES,
+            )
+            self.assertEqual(manifest["run_cap_bytes"], RUN_CAP_BYTES)
+            self.assertEqual(
+                json.loads(
+                    (Path(manifest["output_dir"]) / "manifest.json").read_text()
+                ),
+                manifest,
+            )
+
+    def test_live_output_root_cap_stops_child_and_writes_terminal_manifest(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            project_root = temporary_path / "project"
+            project_root.mkdir()
+            binary_path = write_minimal_project(project_root)
+            output_root = temporary_path / "results"
+            process = NeverCompletingProcess()
+            root_probe_count = 0
+
+            def root_breaches_on_live_probe(path):
+                nonlocal root_probe_count
+                if path == output_root:
+                    root_probe_count += 1
+                    if root_probe_count == 1:
+                        return 100_000_000
+                    return OUTPUT_ROOT_CAP_BYTES + 512
+                return 50_000_000
+
+            with (
+                patch(
+                    "scripts.diagnostics.run_diagnostic.available_bytes",
+                    return_value=START_BYTES,
+                ),
+                patch(
+                    "scripts.diagnostics.run_diagnostic.allocated_bytes",
+                    side_effect=root_breaches_on_live_probe,
+                ),
+                patch(
+                    "scripts.diagnostics.run_diagnostic.subprocess.Popen",
+                    return_value=process,
+                ),
+                patch(
+                    "scripts.diagnostics.run_diagnostic._git_output",
+                    side_effect=fake_git_output,
+                ),
+            ):
+                manifest = run_diagnostic(
+                    case="H0",
+                    horizon_s=20,
+                    seed=7,
+                    binary_path=binary_path,
+                    output_root=output_root,
+                    project_root=project_root,
+                )
+
+            self.assertTrue(process.terminated)
+            self.assertFalse(process.killed)
+            self.assertEqual(manifest["termination_reason"], "cache_root_cap")
+            self.assertEqual(manifest["returncode"], -15)
+            self.assertEqual(
+                manifest["output_root_allocated_bytes"],
+                OUTPUT_ROOT_CAP_BYTES + 512,
+            )
+            self.assertEqual(manifest["run_allocated_bytes"], 50_000_000)
+            self.assertEqual(
+                manifest["output_root_cap_bytes"],
+                OUTPUT_ROOT_CAP_BYTES,
+            )
+            self.assertEqual(manifest["run_cap_bytes"], RUN_CAP_BYTES)
+            self.assertEqual(
+                json.loads(
+                    (Path(manifest["output_dir"]) / "manifest.json").read_text()
+                ),
+                manifest,
+            )
+
+    def test_live_run_cap_stops_child_and_writes_terminal_manifest(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            project_root = temporary_path / "project"
+            project_root.mkdir()
+            binary_path = write_minimal_project(project_root)
+            output_root = temporary_path / "results"
+            process = NeverCompletingProcess()
+            run_probe_count = 0
+
+            def run_breaches_on_live_probe(path):
+                nonlocal run_probe_count
+                if path == output_root:
+                    return 100_000_000
+                run_probe_count += 1
+                if run_probe_count == 1:
+                    return 50_000_000
+                return RUN_CAP_BYTES + 512
+
+            with (
+                patch(
+                    "scripts.diagnostics.run_diagnostic.available_bytes",
+                    return_value=START_BYTES,
+                ),
+                patch(
+                    "scripts.diagnostics.run_diagnostic.allocated_bytes",
+                    side_effect=run_breaches_on_live_probe,
+                ),
+                patch(
+                    "scripts.diagnostics.run_diagnostic.subprocess.Popen",
+                    return_value=process,
+                ),
+                patch(
+                    "scripts.diagnostics.run_diagnostic._git_output",
+                    side_effect=fake_git_output,
+                ),
+            ):
+                manifest = run_diagnostic(
+                    case="H0",
+                    horizon_s=20,
+                    seed=7,
+                    binary_path=binary_path,
+                    output_root=output_root,
+                    project_root=project_root,
+                )
+
+            self.assertTrue(process.terminated)
+            self.assertFalse(process.killed)
+            self.assertEqual(manifest["termination_reason"], "cache_run_cap")
+            self.assertEqual(manifest["returncode"], -15)
+            self.assertEqual(
+                manifest["output_root_allocated_bytes"],
+                100_000_000,
+            )
+            self.assertEqual(
+                manifest["run_allocated_bytes"],
+                RUN_CAP_BYTES + 512,
+            )
+            self.assertEqual(
+                manifest["output_root_cap_bytes"],
+                OUTPUT_ROOT_CAP_BYTES,
+            )
+            self.assertEqual(manifest["run_cap_bytes"], RUN_CAP_BYTES)
+            self.assertEqual(
+                json.loads(
+                    (Path(manifest["output_dir"]) / "manifest.json").read_text()
+                ),
+                manifest,
+            )
+
     def test_monitor_probe_error_kills_child_and_writes_terminal_manifest(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_path = Path(temporary_directory)
@@ -752,11 +1201,72 @@ class DiagnosticRunnerTests(unittest.TestCase):
                 manifest,
             )
 
+    def test_simulator_nonzero_and_signal_write_terminal_manifests(self):
+        cases = [
+            (7, "simulator_nonzero_exit"),
+            (-9, "simulator_signal"),
+        ]
+        for child_returncode, expected_reason in cases:
+            with self.subTest(child_returncode=child_returncode):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    temporary_path = Path(temporary_directory)
+                    project_root = temporary_path / "project"
+                    project_root.mkdir()
+                    binary_path = write_minimal_project(project_root)
+                    output_root = temporary_path / "results"
+                    process = ImmediatelyCompletedProcess(child_returncode)
+
+                    with (
+                        patch(
+                            "scripts.diagnostics.run_diagnostic.available_bytes",
+                            return_value=START_BYTES,
+                        ),
+                        patch(
+                            "scripts.diagnostics.run_diagnostic.allocated_bytes",
+                            return_value=50_000_000,
+                        ),
+                        patch(
+                            "scripts.diagnostics.run_diagnostic.subprocess.Popen",
+                            return_value=process,
+                        ),
+                        patch(
+                            "scripts.diagnostics.run_diagnostic._git_output",
+                            side_effect=fake_git_output,
+                        ),
+                    ):
+                        manifest = run_diagnostic(
+                            case="H0",
+                            horizon_s=20,
+                            seed=7,
+                            binary_path=binary_path,
+                            output_root=output_root,
+                            project_root=project_root,
+                        )
+
+                    self.assertEqual(
+                        manifest["termination_reason"],
+                        expected_reason,
+                    )
+                    self.assertEqual(manifest["returncode"], child_returncode)
+                    self.assertEqual(
+                        json.loads(
+                            (
+                                Path(manifest["output_dir"]) / "manifest.json"
+                            ).read_text()
+                        ),
+                        manifest,
+                    )
+
     def test_cli_returns_nonzero_after_complete_runner_failure_manifest(self):
         for termination_reason in (
             "runner_setup_error",
             "simulator_launch_error",
             "runner_monitor_error",
+            "simulator_nonzero_exit",
+            "simulator_signal",
+            "disk_hard_floor",
+            "cache_root_cap",
+            "cache_run_cap",
         ):
             with self.subTest(termination_reason=termination_reason):
                 failure_manifest = {
@@ -834,6 +1344,12 @@ class DiagnosticRunnerTests(unittest.TestCase):
             self.assertEqual(manifest["returncode"], -9)
             self.assertEqual(manifest["free_bytes_before"], START_BYTES)
             self.assertEqual(manifest["free_bytes_after"], HARD_FLOOR_BYTES - 2)
+            self.assertEqual(
+                json.loads(
+                    (Path(manifest["output_dir"]) / "manifest.json").read_text()
+                ),
+                manifest,
+            )
 
     def test_seven_gb_during_execution_is_above_live_hard_floor(self):
         project_root = Path(__file__).resolve().parents[1]

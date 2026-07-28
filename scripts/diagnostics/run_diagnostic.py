@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import tarfile
 import time
@@ -17,6 +18,8 @@ from pathlib import Path
 
 START_BYTES = 8_000_000_000
 HARD_FLOOR_BYTES = 6_000_000_000
+OUTPUT_ROOT_CAP_BYTES = 2_000_000_000
+RUN_CAP_BYTES = 250_000_000
 SOURCE_SNAPSHOT_NAME = "source-snapshot.tar.gz"
 SOURCE_SNAPSHOT_FORMAT = "tar.gz"
 SOURCE_SNAPSHOT_POLICY = "cbf2026-source-snapshot-v1"
@@ -24,6 +27,11 @@ RUNNER_FAILURE_REASONS = {
     "runner_setup_error",
     "simulator_launch_error",
     "runner_monitor_error",
+    "simulator_nonzero_exit",
+    "simulator_signal",
+    "disk_hard_floor",
+    "cache_root_cap",
+    "cache_run_cap",
 }
 
 
@@ -45,6 +53,23 @@ def deep_merge(base: dict, patch_value: dict) -> dict:
 def available_bytes(path: Path) -> int:
     """Return free bytes on the filesystem containing *path*."""
     return shutil.disk_usage(path).free
+
+
+def allocated_bytes(path: Path) -> int:
+    """Return recursively allocated bytes without following symbolic links."""
+    path = Path(path)
+
+    def allocated_at(current: Path) -> int:
+        metadata = current.lstat()
+        total = metadata.st_blocks * 512
+        if not stat.S_ISDIR(metadata.st_mode):
+            return total
+        with os.scandir(current) as entries:
+            for entry in entries:
+                total += allocated_at(Path(entry.path))
+        return total
+
+    return allocated_at(path)
 
 
 def require_start_space(path: Path, threshold_bytes: int = START_BYTES) -> int:
@@ -226,6 +251,14 @@ def _safe_available_bytes(path: Path) -> int | None:
         return None
 
 
+def _safe_allocated_bytes(path: Path) -> int | None:
+    """Return allocated bytes without hiding a terminal manifest on failure."""
+    try:
+        return allocated_bytes(path)
+    except Exception:
+        return None
+
+
 def _stop_process(process) -> None:
     """Best-effort stop with a five-second terminate-to-kill escalation."""
     try:
@@ -271,6 +304,10 @@ def run_diagnostic(
         "H0": project_root / "config" / "diagnostics" / "h0_historical.json",
         "C1": project_root / "config" / "diagnostics" / "c1_claim_aligned.json",
         "U0": project_root / "config" / "diagnostics" / "u0_uncertainty_ablation.json",
+        "C0": project_root / "config" / "diagnostics" / "c0_corrected.json",
+        "R": project_root / "config" / "diagnostics" / "r_rate_aware.json",
+        "RB": project_root / "config" / "diagnostics" / "rb_bounded.json",
+        "RBP": project_root / "config" / "diagnostics" / "rbp_pairwise.json",
     }
     if case not in patch_paths:
         raise ValueError(f"unknown diagnostic case: {case}")
@@ -322,6 +359,10 @@ def run_diagnostic(
             "source_snapshot_policy": SOURCE_SNAPSHOT_POLICY,
             "free_bytes_before": free_bytes_before,
             "free_bytes_after": _safe_available_bytes(output_root),
+            "output_root_allocated_bytes": _safe_allocated_bytes(output_root),
+            "run_allocated_bytes": _safe_allocated_bytes(run_root),
+            "output_root_cap_bytes": OUTPUT_ROOT_CAP_BYTES,
+            "run_cap_bytes": RUN_CAP_BYTES,
             "started_at": started_at,
             "ended_at": datetime.now(timezone.utc).isoformat(),
             "returncode": returncode,
@@ -351,6 +392,20 @@ def run_diagnostic(
         config_sha256 = _sha256(config_path)
         _create_source_snapshot(project_root, source_snapshot_path, output_root)
         source_snapshot_sha256 = _sha256(source_snapshot_path)
+        output_root_allocation = allocated_bytes(output_root)
+        run_allocation = allocated_bytes(run_root)
+        if output_root_allocation > OUTPUT_ROOT_CAP_BYTES:
+            setup_resources.close()
+            return finalize_manifest(
+                returncode=None,
+                termination_reason="cache_root_cap",
+            )
+        if run_allocation > RUN_CAP_BYTES:
+            setup_resources.close()
+            return finalize_manifest(
+                returncode=None,
+                termination_reason="cache_run_cap",
+            )
         stdout_file = setup_resources.enter_context(stdout_path.open("w"))
         stderr_file = setup_resources.enter_context(stderr_path.open("w"))
     except BaseException as error:
@@ -390,6 +445,14 @@ def run_diagnostic(
                 _stop_process(process)
                 termination_reason = "disk_hard_floor"
                 break
+            if allocated_bytes(output_root) > OUTPUT_ROOT_CAP_BYTES:
+                _stop_process(process)
+                termination_reason = "cache_root_cap"
+                break
+            if allocated_bytes(run_root) > RUN_CAP_BYTES:
+                _stop_process(process)
+                termination_reason = "cache_run_cap"
+                break
             time.sleep(0.5)
     except BaseException as error:
         monitor_error = error
@@ -416,7 +479,11 @@ def main(argv: list[str] | None = None) -> int:
     """Run the command-line diagnostic interface."""
     project_root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--case", required=True, choices=("H0", "C1", "U0"))
+    parser.add_argument(
+        "--case",
+        required=True,
+        choices=("H0", "C1", "U0", "C0", "R", "RB", "RBP"),
+    )
     parser.add_argument("--horizon", required=True, type=float, metavar="SECONDS")
     parser.add_argument("--seed", required=True, type=int)
     parser.add_argument("--binary", type=Path, default=project_root / "cmake-build-release" / "Swarm")

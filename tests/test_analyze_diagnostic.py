@@ -10,6 +10,280 @@ from scripts.diagnostics.analyze_diagnostic import analyze_run, minimum_linf_bou
 UNAVAILABLE = "unavailable_no_distinct_truth_estimate_or_input_bounds"
 
 
+def mc_first_two_frame_fixture():
+    return {
+        "para": {"gridWorld": {"xNum": 1, "yNum": 1}},
+        "config": {
+            "cbfs": {
+                "uncertainty-rate": {
+                    "mode": "backward-difference-positive"
+                },
+                "input-limits": {
+                    "on": True,
+                    "planar-component-max": 25.0,
+                    "yaw-rate-max": 0.35,
+                },
+                "without-slack": {
+                    "method": "all",
+                    "safety": {
+                        "mode": "pairwise",
+                        "safe-distance": 2.0,
+                        "consider-uncertainty": True,
+                        "alpha": {"coe": 0.1, "pow": 1},
+                    },
+                    "comm-fixed": {
+                        "alpha": {"coe": 0.1, "pow": 1}
+                    },
+                },
+            }
+        },
+        "state": [
+            {
+                "runtime": 0.0,
+                "formation": [],
+                "update": [],
+                "robots": [
+                    {
+                        "id": 1,
+                        "state": {"x": 3.0, "y": 4.0},
+                        "uncertainty": 1.0,
+                        "uncertainty_rate": 0.0,
+                        "opt": {
+                            "status": "success",
+                            "solver_info": {
+                                "status": "optimal",
+                                "solve_time_ms": 1.0,
+                            },
+                            "result": {
+                                "vx": 25.0,
+                                "vy": 0.0,
+                                "yawRateRad": 0.35,
+                            },
+                            "input_limits": {
+                                "enabled": True,
+                                "planar_component_max": 25.0,
+                                "yaw_rate_max": 0.35,
+                                "bound_row_count": 6,
+                                "saturation_tolerance": 1e-7,
+                                "saturated": {
+                                    "vx": True,
+                                    "vy": False,
+                                    "yawRateRad": True,
+                                    "any": True,
+                                },
+                            },
+                            "cbfNoSlack": [
+                                {
+                                    "name": "safetyCBF(#2)",
+                                    "coe": {
+                                        "vx": 0.0,
+                                        "vy": 0.0,
+                                        "yawRateRad": 0.0,
+                                    },
+                                    "const": 1.0,
+                                    "residual": 1.0,
+                                    "alpha_coe": 0.1,
+                                    "alpha_pow": 1,
+                                },
+                                {
+                                    "name": "diagnosticRequiredVx",
+                                    "coe": {
+                                        "vx": 1.0,
+                                        "vy": 0.0,
+                                        "yawRateRad": 0.0,
+                                    },
+                                    "const": -2.0,
+                                    "residual": 23.0,
+                                    "alpha_coe": 0.1,
+                                    "alpha_pow": 1,
+                                },
+                            ],
+                        },
+                    },
+                    {
+                        "id": 2,
+                        "state": {"x": 0.0, "y": 0.0},
+                        "uncertainty": 2.0,
+                        "uncertainty_rate": 0.0,
+                        "opt": {
+                            "status": "success",
+                            "solver_info": {
+                                "status": "optimal",
+                                "solve_time_ms": 1.0,
+                            },
+                            "result": {
+                                "vx": 2.0,
+                                "vy": -1.0,
+                                "yawRateRad": 0.0,
+                            },
+                            "input_limits": {
+                                "enabled": True,
+                                "planar_component_max": 25.0,
+                                "yaw_rate_max": 0.35,
+                                "bound_row_count": 6,
+                                "saturation_tolerance": 1e-7,
+                                "saturated": {
+                                    "vx": False,
+                                    "vy": False,
+                                    "yawRateRad": False,
+                                    "any": False,
+                                },
+                            },
+                            "cbfNoSlack": [
+                                {
+                                    "name": "safetyCBF(#1)",
+                                    "coe": {
+                                        "vx": 0.0,
+                                        "vy": 0.0,
+                                        "yawRateRad": 0.0,
+                                    },
+                                    "const": 1.0,
+                                    "residual": 1.0,
+                                    "alpha_coe": 0.1,
+                                    "alpha_pow": 1,
+                                },
+                                {
+                                    "name": "diagnosticRequiredVx",
+                                    "coe": {
+                                        "vx": 1.0,
+                                        "vy": 0.0,
+                                        "yawRateRad": 0.0,
+                                    },
+                                    "const": -2.0,
+                                    "residual": 0.0,
+                                    "alpha_coe": 0.1,
+                                    "alpha_pow": 1,
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+            {
+                "runtime": 0.5,
+                "formation": [],
+                "update": [],
+                "robots": [
+                    {
+                        "id": 1,
+                        "state": {"x": 3.0, "y": 4.0},
+                        "uncertainty": 1.75,
+                        "uncertainty_rate": 1.5,
+                        "opt": {
+                            "status": "success",
+                            "solver_info": {
+                                "status": "optimal",
+                                "solve_time_ms": 1.0,
+                            },
+                            "result": {
+                                "vx": 24.0,
+                                "vy": 0.1,
+                                "yawRateRad": 0.0,
+                            },
+                            "input_limits": {
+                                "enabled": True,
+                                "planar_component_max": 25.0,
+                                "yaw_rate_max": 0.35,
+                                "bound_row_count": 6,
+                                "saturation_tolerance": 1e-7,
+                                "saturated": {
+                                    "vx": False,
+                                    "vy": False,
+                                    "yawRateRad": False,
+                                    "any": False,
+                                },
+                            },
+                            "cbfNoSlack": [
+                                {
+                                    "name": "safetyCBF(#2)",
+                                    "coe": {
+                                        "vx": 0.0,
+                                        "vy": 0.0,
+                                        "yawRateRad": 0.0,
+                                    },
+                                    "const": 1.0,
+                                    "residual": 1.0,
+                                    "alpha_coe": 0.1,
+                                    "alpha_pow": 1,
+                                },
+                                {
+                                    "name": "diagnosticRequiredVx",
+                                    "coe": {
+                                        "vx": 1.0,
+                                        "vy": 0.0,
+                                        "yawRateRad": 0.0,
+                                    },
+                                    "const": -2.0,
+                                    "residual": 22.0,
+                                    "alpha_coe": 0.1,
+                                    "alpha_pow": 1,
+                                },
+                            ],
+                        },
+                    },
+                    {
+                        "id": 2,
+                        "state": {"x": 0.0, "y": 0.0},
+                        "uncertainty": 1.5,
+                        "uncertainty_rate": 0.0,
+                        "opt": {
+                            "status": "success",
+                            "solver_info": {
+                                "status": "optimal",
+                                "solve_time_ms": 1.0,
+                            },
+                            "result": {
+                                "vx": 5.0,
+                                "vy": 3.0,
+                                "yawRateRad": 0.0,
+                            },
+                            "input_limits": {
+                                "enabled": True,
+                                "planar_component_max": 25.0,
+                                "yaw_rate_max": 0.35,
+                                "bound_row_count": 6,
+                                "saturation_tolerance": 1e-7,
+                                "saturated": {
+                                    "vx": False,
+                                    "vy": False,
+                                    "yawRateRad": False,
+                                    "any": False,
+                                },
+                            },
+                            "cbfNoSlack": [
+                                {
+                                    "name": "safetyCBF(#1)",
+                                    "coe": {
+                                        "vx": 0.0,
+                                        "vy": 0.0,
+                                        "yawRateRad": 0.0,
+                                    },
+                                    "const": 1.0,
+                                    "residual": 1.0,
+                                    "alpha_coe": 0.1,
+                                    "alpha_pow": 1,
+                                },
+                                {
+                                    "name": "diagnosticRequiredVx",
+                                    "coe": {
+                                        "vx": 1.0,
+                                        "vy": 0.0,
+                                        "yawRateRad": 0.0,
+                                    },
+                                    "const": -2.0,
+                                    "residual": 3.0,
+                                    "alpha_coe": 0.1,
+                                    "alpha_pow": 1,
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        ],
+    }
+
+
 class FeasibilityBoundTests(unittest.TestCase):
     def test_single_axis_lower_bound(self):
         constraints = [{"coe": {"vx": 1.0, "vy": 0.0, "yawRateRad": 0.0}, "rhs": 2.0}]
@@ -39,6 +313,177 @@ class RunAnalysisTests(unittest.TestCase):
             data_path.write_text(json.dumps(data))
             manifest_path.write_text(json.dumps({"case": "C1"}))
             return analyze_run(data_path, manifest_path)
+
+    def test_mc_first_two_frame_metrics_match_hand_derived_literals(self):
+        summary = self.analyze_fixture(mc_first_two_frame_fixture())
+
+        self.assertEqual(
+            summary["uncertainty_jumps"],
+            {
+                "positive_count": 1,
+                "maximum": 0.75,
+                "source": "consecutive_logged_scalar_uncertainty",
+            },
+        )
+        self.assertEqual(
+            summary["uncertainty"]["logged_rate"],
+            {
+                "status": "available",
+                "count": 4,
+                "max": 1.5,
+                "missing_count": 0,
+                "nonfinite_count": 0,
+                "source": "robot.uncertainty_rate",
+            },
+        )
+
+        mismatch = summary["control_mismatch"]
+        self.assertEqual(mismatch["status"], "available")
+        self.assertEqual(mismatch["count"], 2)
+        self.assertAlmostEqual(mismatch["maximum"], 5.0)
+        self.assertEqual(
+            [
+                (
+                    record["frame_index"],
+                    record["owner_id"],
+                    record["neighbor_id"],
+                    record["projected_mismatch"],
+                )
+                for record in mismatch["records"]
+            ],
+            [(1, 1, 2, 5.0), (1, 2, 1, 0.52)],
+        )
+
+        coverage = summary["pairwise_row_coverage"]
+        self.assertEqual(coverage["status"], "available")
+        self.assertEqual(coverage["mode"], "pairwise")
+        self.assertEqual(coverage["expected_count"], 4)
+        self.assertEqual(coverage["observed_count"], 4)
+        self.assertEqual(coverage["missing_count"], 0)
+        self.assertEqual(coverage["unexpected_count"], 0)
+        self.assertEqual(coverage["missing_rows"], [])
+        self.assertEqual(coverage["unexpected_rows"], [])
+        self.assertTrue(coverage["complete"])
+
+        practical = summary["practical_tolerance"]["collision"]
+        self.assertEqual(
+            summary["practical_tolerance"]["negative_tolerance_m"],
+            -0.5,
+        )
+        self.assertAlmostEqual(practical["strict_nominal_min"], 3.0)
+        self.assertAlmostEqual(practical["strict_tightened_min"], -0.25)
+        self.assertEqual(practical["below_negative_tolerance_count"], 0)
+        self.assertEqual(practical["negative_observation_count"], 1)
+        self.assertEqual(practical["isolated_tolerance_event_count"], 1)
+        self.assertFalse(practical["has_consecutive_negative_frames"])
+        self.assertEqual(practical["classification"], "practical_tolerance_event")
+
+        limits = summary["input_limits"]
+        self.assertEqual(limits["status"], "enabled")
+        self.assertEqual(limits["planar_component_max"], 25.0)
+        self.assertEqual(limits["yaw_rate_max"], 0.35)
+        self.assertEqual(
+            limits["observed_saturation_counts"],
+            {
+                "vx": 1,
+                "vy": 0,
+                "yawRateRad": 1,
+                "planar_any": 1,
+                "any": 1,
+            },
+        )
+        self.assertEqual(
+            limits["logged_saturation_counts"],
+            {
+                "vx": 1,
+                "vy": 0,
+                "yawRateRad": 1,
+                "any": 1,
+            },
+        )
+        self.assertEqual(
+            limits["violation_counts"],
+            {"vx": 0, "vy": 0, "yawRateRad": 0, "total": 0},
+        )
+        self.assertAlmostEqual(limits["minimum_required_linf"], 2.0)
+        self.assertAlmostEqual(
+            limits["bounded_feasibility_headroom"],
+            23.0,
+        )
+        self.assertEqual(summary["finite_value_failures"]["count"], 0)
+
+    def test_input_limit_violations_use_the_declared_one_e_minus_seven_tolerance(self):
+        data = mc_first_two_frame_fixture()
+        result = data["state"][1]["robots"][1]["opt"]["result"]
+        result["vx"] = 25.0000002
+        result["vy"] = -25.0000002
+        result["yawRateRad"] = 0.3500002
+
+        limits = self.analyze_fixture(data)["input_limits"]
+
+        self.assertEqual(
+            limits["violation_counts"],
+            {"vx": 1, "vy": 1, "yawRateRad": 1, "total": 3},
+        )
+
+    def test_exact_negative_half_meter_is_an_event_not_a_below_tolerance_failure(self):
+        data = mc_first_two_frame_fixture()
+        data["state"][1]["robots"][0]["uncertainty"] = 2.0
+
+        collision = self.analyze_fixture(data)["practical_tolerance"]["collision"]
+
+        self.assertAlmostEqual(collision["strict_tightened_min"], -0.5)
+        self.assertEqual(collision["below_negative_tolerance_count"], 0)
+        self.assertEqual(collision["classification"], "practical_tolerance_event")
+
+    def test_consecutive_negative_detection_is_tracked_for_the_same_physical_pair(self):
+        data = mc_first_two_frame_fixture()
+        data["state"][0]["robots"][0]["uncertainty"] = 1.1
+
+        collision = self.analyze_fixture(data)["practical_tolerance"]["collision"]
+
+        self.assertTrue(collision["has_consecutive_negative_frames"])
+        self.assertEqual(collision["consecutive_negative_keys"], ["robots:1-2"])
+        self.assertEqual(collision["classification"], "failed_consecutive_negative")
+
+    def test_nonfinite_direct_logged_uncertainty_rate_is_an_input_failure(self):
+        data = mc_first_two_frame_fixture()
+        data["state"][1]["robots"][0]["uncertainty_rate"] = float("nan")
+
+        summary = self.analyze_fixture(data)
+
+        self.assertEqual(
+            summary["uncertainty"]["logged_rate"],
+            {
+                "status": "available_with_nonfinite_values",
+                "count": 3,
+                "max": 0.0,
+                "missing_count": 0,
+                "nonfinite_count": 1,
+                "source": "robot.uncertainty_rate",
+            },
+        )
+        self.assertIn(
+            "state[1].robots[0].uncertainty_rate",
+            summary["finite_value_failures"]["paths"],
+        )
+
+    def test_uncertainty_jump_does_not_bridge_a_missing_robot_frame(self):
+        data = mc_first_two_frame_fixture()
+        data["state"].insert(
+            1,
+            {
+                "runtime": 0.25,
+                "formation": [],
+                "update": [],
+                "robots": [],
+            },
+        )
+
+        jumps = self.analyze_fixture(data)["uncertainty_jumps"]
+
+        self.assertEqual(jumps["positive_count"], 0)
+        self.assertIsNone(jumps["maximum"])
 
     def test_failed_qp_placeholder_is_not_reported_as_applied_control_evidence(self):
         data = {
