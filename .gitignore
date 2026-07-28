@@ -9,4 +9,5 @@ QWEN.md
 __pycache__/
 *.pyc
 _*
+!scripts/diagnostics/__init__.py
 papers

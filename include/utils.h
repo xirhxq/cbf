@@ -2,6 +2,7 @@
 #define CBF_UTILS_H
 
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <algorithm>
 #include <set>
@@ -20,6 +21,17 @@ using namespace Eigen;
 using json = nlohmann::json;
 
 typedef std::pair<double, double> pd;
+
+inline unsigned int resolveRandomSeed(const json &settings, unsigned int fallback) {
+    const json execute = settings.value("execute", json::object());
+    return execute.value("random-seed", fallback);
+}
+
+inline unsigned int seedRandomFromConfig(const json &settings, unsigned int fallback) {
+    const unsigned int seed = resolveRandomSeed(settings, fallback);
+    srand(seed);
+    return seed;
+}
 
 std::vector<Point> getPointsFromJson(const json &j) {
     std::vector<Point> points;

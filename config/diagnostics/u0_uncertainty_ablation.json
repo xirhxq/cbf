@@ -1,0 +1,17 @@
+{
+  "case": "U0",
+  "overrides": {
+    "initial": {"position": {"method": "specified"}},
+    "cbfs": {
+      "without-slack": {
+        "safety": {"on": true, "consider-uncertainty": false},
+        "comm-fixed": {"on": true, "consider-uncertainty": false}
+      }
+    },
+    "execute": {
+      "random-seed": 20260727,
+      "check-constraint-violation": true
+    },
+    "debug": {"opt-cbc": false}
+  }
+}

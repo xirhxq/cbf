@@ -3,6 +3,7 @@
 
 #include "utils.h"
 #include "cbf/cbf"
+#include "cbf/CBFConfig.hpp"
 #include "world/world"
 #include "models/models"
 #include "optimisers/optimisers"
@@ -298,9 +299,8 @@ public:
         CBF energyCBF;
         energyCBF.name = config["name"];
         energyCBF.h = batteryH;
-        double alpha_coe = config.value("alpha/coe", 0.1);
-        int alpha_pow = config.value("alpha/pow", 1);
-        energyCBF.setAlphaClassK(alpha_coe, alpha_pow);
+        ClassKParameters alphaParameters = readClassKParameters(config, 0.1, 1);
+        energyCBF.setAlphaClassK(alphaParameters.coefficient, alphaParameters.power);
 
         energyCBF.dhdx_analytical = [&, config](VectorXd x, double t) -> VectorXd {
             bool normalize_on = config["normalize"]["on"];
@@ -637,9 +637,8 @@ public:
             commCBF.h = fixedFormationCommH;
             commCBF.dhdx_analytical = dhdx;
             commCBF.dhdt_analytical = dhdt;
-            double alpha_coe = config.value("alpha/coe", 0.1);
-            int alpha_pow = config.value("alpha/pow", 1);
-            commCBF.setAlphaClassK(alpha_coe, alpha_pow);
+            ClassKParameters alphaParameters = readClassKParameters(config, 0.1, 1);
+            commCBF.setAlphaClassK(alphaParameters.coefficient, alphaParameters.power);
             cbfNoSlack.cbfs[commCBF.name] = commCBF;
         }
     }
@@ -677,6 +676,8 @@ public:
         CBF safetyCBF;
         safetyCBF.name = "safetyCBF";
         safetyCBF.h = safetyH;
+        ClassKParameters alphaParameters = readClassKParameters(config, 0.1, 3);
+        safetyCBF.setAlphaClassK(alphaParameters.coefficient, alphaParameters.power);
         cbfNoSlack.cbfs[safetyCBF.name] = safetyCBF;
     }
 
@@ -764,9 +765,8 @@ public:
                 double distance = cvtCenter.distance_to(myPosition);
                 return -kp * distance;
             };
-            double cvt_alpha_coe = config["cvt"].value("alpha/coe", 1.0);
-            int cvt_alpha_pow = config["cvt"].value("alpha/pow", 1);
-            cvtDistanceCBF.setAlphaClassK(cvt_alpha_coe, cvt_alpha_pow);
+            ClassKParameters alphaParameters = readClassKParameters(config["cvt"], 1.0, 1);
+            cvtDistanceCBF.setAlphaClassK(alphaParameters.coefficient, alphaParameters.power);
             cbfSlack[cvtDistanceCBF.name] = cvtDistanceCBF;
         }
 
@@ -782,9 +782,8 @@ public:
                 yaw_error = atan2(sin(yaw_error), cos(yaw_error));
                 return k_yaw * (1.0 - cos(yaw_error)) / (-2.0);
             };
-            double cvt_yaw_alpha_coe = config["cvt-yaw"].value("alpha/coe", 1.0);
-            int cvt_yaw_alpha_pow = config["cvt-yaw"].value("alpha/pow", 1);
-            cvtYawCBF.setAlphaClassK(cvt_yaw_alpha_coe, cvt_yaw_alpha_pow);
+            ClassKParameters alphaParameters = readClassKParameters(config["cvt-yaw"], 1.0, 1);
+            cvtYawCBF.setAlphaClassK(alphaParameters.coefficient, alphaParameters.power);
             cbfSlack[cvtYawCBF.name] = cvtYawCBF;
         }
     }
@@ -801,7 +800,7 @@ public:
     }
 
     void optimise() {
-        VectorXd uNominal(model->uSize());
+        VectorXd uNominal = VectorXd::Zero(model->uSize());
         opt = {
                 {"nominal",    model->control2Json(uNominal)},
                 {"result",     model->control2Json(uNominal)},
@@ -809,6 +808,7 @@ public:
                 {"cbfSlack",   json::array()}
         };
         json jsonCBFNoSlack = json::array(), jsonCBFSlack = json::array();
+        std::vector<Eigen::VectorXd> hardConstraintCoefficients;
         double chargeRate = 1.0;
         if (world.isCharging(model->xy(), chargeRate) && model->getStateVariable("battery") < model->BATTERY_MAX) {
             model->startCharge();
@@ -840,8 +840,11 @@ public:
                     jsonCBFNoSlack.emplace_back(json{
                             {"name",  cbf.name},
                             {"coe",   model->control2Json(uCoe)},
-                            {"const", constraintConstWithTime}
+                            {"const", constraintConstWithTime},
+                            {"alpha_coe", cbf.getAlphaCoefficient()},
+                            {"alpha_pow", cbf.getAlphaPower()}
                     });
+                    hardConstraintCoefficients.push_back(uCoe);
                 }
             } else if (cbf_method == "min") {
                 if (!cbfNoSlack.cbfs.empty()) {
@@ -853,8 +856,12 @@ public:
                     jsonCBFNoSlack.emplace_back(json{
                             {"name",  cbfNoSlack.getName()},
                             {"coe",   model->control2Json(uCoe)},
-                            {"const", constraintConstWithTime}
+                            {"const", constraintConstWithTime},
+                            // MultiCBF applies its built-in identity alpha(h)=h.
+                            {"alpha_coe", 1.0},
+                            {"alpha_pow", 1}
                     });
+                    hardConstraintCoefficients.push_back(uCoe);
                 }
             }
             else {
@@ -884,27 +891,33 @@ public:
 
             auto result = optimiser->solve();
 
+            json solverStatus;
+            try {
+                solverStatus = optimiser->getStatus();
+            } catch (...) {
+                opt["status"] = "failed";
+                opt["error"] = "Status check failed";
+                opt["solver_info"] = {{"status", "status-check-error"}};
+                throw std::runtime_error("QP status check failed");
+            }
+            opt["solver_info"] = solverStatus;
+            const std::string status = solverStatus.value("status", "unknown");
+            if (status != "optimal") {
+                opt["status"] = "failed";
+                opt["error"] = solverStatus.value("error", status);
+                throw std::runtime_error("QP solve failed: " + status);
+            }
+
             auto u = result.head(uSize);
             model->setControlInput(u);
             opt["result"] = model->control2Json(u);
             opt["slacks"] = result.tail(slackSize);
-
-            try {
-                json solver_status = optimiser->getStatus();
-                opt["solver_info"] = solver_status;
-
-                std::string status = solver_status.value("status", "unknown");
-                if (status == "optimal") {
-                    opt["status"] = "success";
-                } else {
-                    opt["status"] = "failed";
-                    opt["error"] = solver_status.value("error", status);
-                }
-            } catch (...) {
-                opt["status"] = "failed";
-                opt["error"] = "Status check failed";
-                opt["solver_info"] = {{"status", "error"}};
+            for (size_t index = 0; index < hardConstraintCoefficients.size(); ++index) {
+                opt["cbfNoSlack"][index]["residual"] =
+                    opt["cbfNoSlack"][index]["const"].get<double>() +
+                    hardConstraintCoefficients[index].dot(u);
             }
+            opt["status"] = "success";
 
             if (settings["debug"]["opt-cbc"]) {
                 for (auto &[name, cbf]: cbfNoSlack.cbfs) {

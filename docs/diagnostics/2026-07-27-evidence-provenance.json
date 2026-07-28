@@ -1,0 +1,159 @@
+{
+  "schema": "cbf2026-evidence-provenance-index-v1",
+  "policy_version": "cbf2026-historical-source-binding-v1",
+  "created_at": "2026-07-27T14:53:45Z",
+  "evidence_root_current_path": "/private/tmp/cbf2026-results",
+  "source_binding": {
+    "base_commit": "47e7b3d6f5b1be74a3dfa32150b4246c619e9a0d",
+    "branch": "codex/cbf2026-diagnostic",
+    "working_tree_dirty": true,
+    "snapshot": {
+      "repository_relative_durable_intent_path": "docs/diagnostics/source-snapshots/2026-07-27-evidence-source.tar.gz",
+      "current_path": "/private/tmp/cbf2026-diagnostic/docs/diagnostics/source-snapshots/2026-07-27-evidence-source.tar.gz",
+      "sha256": "5d1be79f896f89c96840194255a14f2de2186419bbcaa3dc89d14269ffe21847",
+      "format": "tar.gz",
+      "capture_scope": "Tasks 1--4 evidence-producing working-tree source state, captured after the runs and before the Task 8 provenance-runner repair; includes the diagnostic C++ fixes, configuration/parser/logging/analyzer/runner source, package marker, and base repository source; excludes Git metadata, build products, hidden SDD coordination, and the snapshot directory; does not include the later Task 8 runner repair."
+    }
+  },
+  "historical_binding_policy": {
+    "mode": "non-destructive_post-run_sidecar",
+    "original_manifests": "byte-for-byte unchanged",
+    "sidecar_location": "beside each timestamped data.json",
+    "effect": "binds retained artifacts to the preserved evidence-producing source snapshot without adding an original manifest field or reinterpreting empirical evidence"
+  },
+  "future_run_policy": {
+    "effective_after_task": "Task 8",
+    "policy_version": "cbf2026-source-snapshot-v1",
+    "description": "Future runner invocations allocate collision-resistant per-run bundles, snapshot the dirty working-tree source before process launch, and bind the snapshot in the original run manifest. This policy is prospective and is not claimed to be present in the five historical manifests."
+  },
+  "durable_review_artifacts": [
+    {
+      "review": "Task 5 independent smoke-gate review",
+      "repository_relative_path": "docs/diagnostics/reviews/2026-07-27-task-5-smoke-gate-independent-review.md",
+      "sha256": "54d5438d92073dcaa54d18869faa9581f7be83048c923ba674400c6eb862c5ff",
+      "copy_status": "byte-for-byte identical to the approved SDD review; pending Git commit authorization"
+    },
+    {
+      "review": "Task 6 independent full-gate review",
+      "repository_relative_path": "docs/diagnostics/reviews/2026-07-27-task-6-full-gate-independent-review.md",
+      "sha256": "f450a92334d283442641c3659c502d568fb4a7be186229d5e51841b399cffc59",
+      "copy_status": "byte-for-byte identical to the approved SDD review; pending Git commit authorization"
+    }
+  ],
+  "durability": {
+    "status": "pending_git_integration_and_commit_approval",
+    "statement": "The source archive, central index, compact reports, durable-intent review copies, README amendment, reviewed source, and DRA record remain uncommitted. They must be versioned before temporary worktree cleanup. The raw evidence and its per-run sidecars remain under /private/tmp and are not a durable archival repository."
+  },
+  "runs": [
+    {
+      "id": "smoke-H0-2026-07-27_21-26-16",
+      "case": "H0",
+      "horizon_s": 20.0,
+      "seed": 20260727,
+      "timestamped_run_path": "/private/tmp/cbf2026-results/smoke/H0/2026-07-27_21-26-16_H0_seed_20260727_20s",
+      "sidecar": {
+        "evidence_root_relative_path": "smoke/H0/2026-07-27_21-26-16_H0_seed_20260727_20s/provenance-amendment.json",
+        "sha256": "50935900f7fa1da49cc9847a33ed242d3cfe50997fdb779bfba212204ab47b58"
+      },
+      "original_manifest": {
+        "evidence_root_relative_path": "smoke/H0/manifest.json",
+        "sha256": "840378c4c67e18bc09763d3731ef4a17641f0c4588eb73bafd763dadb9770c5a"
+      },
+      "artifacts": {
+        "data_sha256": "59342c98f1b06adcf888fb1e53fb431752a58f4d939a8d2c0064532b34599107",
+        "config_sha256": "aa4d537543f3caec42c2224284ae9fb0723eba10cd8fc26a84e5171aca98f526",
+        "diagnostic_summary_json_sha256": "e8eb5703f524b5ae03433f98ea147eedda73278f3f18f6af684c7b72b35217d2",
+        "diagnostic_summary_markdown_sha256": "b51ea19f1999b7f4618f74edb7f6f05bb697a83e13c9d07cc110eea36f114460",
+        "binary_sha256": "4ee6c5f07eebe2ac7ada95f592f1785bb213a90e3320022f1a6c569810e35221"
+      }
+    },
+    {
+      "id": "smoke-C1-2026-07-27_21-27-52",
+      "case": "C1",
+      "horizon_s": 20.0,
+      "seed": 20260727,
+      "timestamped_run_path": "/private/tmp/cbf2026-results/smoke/C1/2026-07-27_21-27-52_C1_seed_20260727_20s",
+      "sidecar": {
+        "evidence_root_relative_path": "smoke/C1/2026-07-27_21-27-52_C1_seed_20260727_20s/provenance-amendment.json",
+        "sha256": "fd34e9e723a31da5b82c0f5860c6c5946c739dd5ee4de8ef120e1829c50aa2e3"
+      },
+      "original_manifest": {
+        "evidence_root_relative_path": "smoke/C1/manifest.json",
+        "sha256": "0cce5265217316c66b9c3f07fed0c953c75b051ae3f23255012efe171203d4f2"
+      },
+      "artifacts": {
+        "data_sha256": "7b928b37ddb5b004e6d4224363d743290d1a9739678b13c8cd82bfec716a5ef0",
+        "config_sha256": "f0a0f8d4161fd9af4fcdf3e5fc474eff7c55e0431f1364d6b7e8b63774aa9d80",
+        "diagnostic_summary_json_sha256": "022918e6a6fbaf38ff4f38ca96ea8a96d6b12cb422bb74812eb3369583152c0b",
+        "diagnostic_summary_markdown_sha256": "23cc641623c7431b79a2549f150b45de4d161b0b8d58d0a9ece95ad2b7fa0885",
+        "binary_sha256": "4ee6c5f07eebe2ac7ada95f592f1785bb213a90e3320022f1a6c569810e35221"
+      }
+    },
+    {
+      "id": "smoke-U0-2026-07-27_21-28-45",
+      "case": "U0",
+      "horizon_s": 20.0,
+      "seed": 20260727,
+      "timestamped_run_path": "/private/tmp/cbf2026-results/smoke/U0/2026-07-27_21-28-45_U0_seed_20260727_20s",
+      "sidecar": {
+        "evidence_root_relative_path": "smoke/U0/2026-07-27_21-28-45_U0_seed_20260727_20s/provenance-amendment.json",
+        "sha256": "5ddea5c5ce8c4703e6bc2cd7120c992b93cd53f936052384bfd5f87a05b6d491"
+      },
+      "original_manifest": {
+        "evidence_root_relative_path": "smoke/U0/manifest.json",
+        "sha256": "1f94543c6e731b076c54d8b5c52d9398b5b74ce1876e251613183dda0519e485"
+      },
+      "artifacts": {
+        "data_sha256": "c87c3aef93207421d9c1b42f958f787a0746a078e2621a8970beb171f361d8fe",
+        "config_sha256": "841909695182452fe471582f9a95904a0216903a28b17ba43c5e00ba27c991bc",
+        "diagnostic_summary_json_sha256": "ee444af511db9124d38c3c00aea7caf42aef7e830f89981ec7b8ec2a7cca3c20",
+        "diagnostic_summary_markdown_sha256": "e42b1e3478bfe9fa33f3b97761dfd0cef9c8221e59a40744f5e93fb98eb1bb9c",
+        "binary_sha256": "4ee6c5f07eebe2ac7ada95f592f1785bb213a90e3320022f1a6c569810e35221"
+      }
+    },
+    {
+      "id": "full-H0-2026-07-27_21-43-20",
+      "case": "H0",
+      "horizon_s": 500.0,
+      "seed": 20260727,
+      "timestamped_run_path": "/private/tmp/cbf2026-results/full/H0/2026-07-27_21-43-20_H0_seed_20260727_500s",
+      "sidecar": {
+        "evidence_root_relative_path": "full/H0/2026-07-27_21-43-20_H0_seed_20260727_500s/provenance-amendment.json",
+        "sha256": "db841809192d9bf2ecdca86c76f5384aed764993cfd0fb1c23867a720bc3b5d8"
+      },
+      "original_manifest": {
+        "evidence_root_relative_path": "full/H0/manifest.json",
+        "sha256": "04603b3bfc42e4ba0f304c18ab9041068dd3f2f20a61ff6a2b338b0f9f796980"
+      },
+      "artifacts": {
+        "data_sha256": "785d3f4c721a8cdbde80f49c67ea8f6322ddd3789adf8300a02161e122a14333",
+        "config_sha256": "94bc054ad85b98f966669f70048c19d2045c5df6297348110b2d8460c04150f0",
+        "diagnostic_summary_json_sha256": "22820de67b16757aa8dd0ce00fd24bd4924139090ad1d15f149102ae884c9e00",
+        "diagnostic_summary_markdown_sha256": "1d47e5174a8252fd99714dae564e6d1a28f6f6f9df046402efca1da701891492",
+        "binary_sha256": "4ee6c5f07eebe2ac7ada95f592f1785bb213a90e3320022f1a6c569810e35221"
+      }
+    },
+    {
+      "id": "full-C1-2026-07-27_21-47-38",
+      "case": "C1",
+      "horizon_s": 500.0,
+      "seed": 20260727,
+      "timestamped_run_path": "/private/tmp/cbf2026-results/full/C1/2026-07-27_21-47-38_C1_seed_20260727_500s",
+      "sidecar": {
+        "evidence_root_relative_path": "full/C1/2026-07-27_21-47-38_C1_seed_20260727_500s/provenance-amendment.json",
+        "sha256": "b18fb5efcc8303ff0e8bdafaf546e5f9054f995376f4ef9073fea109444fb170"
+      },
+      "original_manifest": {
+        "evidence_root_relative_path": "full/C1/manifest.json",
+        "sha256": "39da0366816be9986733cc6abb463ae1280c7aed2e5173c30dbc44e38171bd40"
+      },
+      "artifacts": {
+        "data_sha256": "72733f40e01ac951878f80a28e6109350d5767f4bbe4b239cc82cc02858c88dc",
+        "config_sha256": "4cf56d88a5cb5ff6cf97bc9616f7d82d1694904f5c5ab35fe2bcc8d450eef7e3",
+        "diagnostic_summary_json_sha256": "7b42fe74038fe753e957deda880b7d011ea8e43f7faae6491605ceaaa331c815",
+        "diagnostic_summary_markdown_sha256": "867b2fa75b35b30d01eb08cfce488a92c7924ff7e5f55de2d5bc6e04fc8a22b2",
+        "binary_sha256": "4ee6c5f07eebe2ac7ada95f592f1785bb213a90e3320022f1a6c569810e35221"
+      }
+    }
+  ]
+}
