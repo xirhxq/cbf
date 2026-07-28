@@ -121,6 +121,7 @@ def _result(
     phi_condition: float | None = None,
     iterations: int = 0,
     cost: float | None = None,
+    stationarity_norm: float | None = None,
     failure_reason: str | None = None,
 ) -> dict:
     return {
@@ -134,6 +135,7 @@ def _result(
         "phi_condition": phi_condition,
         "iterations": iterations,
         "cost": cost,
+        "stationarity_norm": stationarity_norm,
         "failure_reason": failure_reason,
     }
 
@@ -213,7 +215,9 @@ def _linearized_terms(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float] | None:
     diff = estimate[None, :] - reference_positions
     distance = np.linalg.norm(diff, axis=1)
-    direction = diff / np.maximum(distance[:, None], RANGE_EPSILON)
+    if not np.isfinite(distance).all() or np.any(distance <= RANGE_EPSILON):
+        return None
+    direction = diff / distance[:, None]
     projected_variance = np.einsum(
         "ni,nij,nj->n", direction, reference_covariances, direction
     )
@@ -221,19 +225,62 @@ def _linearized_terms(
     if not np.isfinite(total_variance).all() or np.any(total_variance <= 0.0):
         return None
     weight = 1.0 / total_variance
-    residual = distance - measurements
-    if not np.isfinite(weight).all() or not np.isfinite(residual).all():
-        return None
-    phi = direction.T @ (weight[:, None] * direction)
-    gradient = direction.T @ (weight * residual)
-    cost = float(np.sum(weight * residual**2))
+    range_residual = distance - measurements
+    residual = range_residual / np.sqrt(total_variance)
+    covariance_direction = np.einsum(
+        "nij,nj->ni", reference_covariances, direction
+    )
+    tangent_covariance_direction = covariance_direction - direction * (
+        projected_variance[:, None]
+    )
+    residual_jacobian = direction / np.sqrt(total_variance[:, None]) - (
+        range_residual[:, None]
+        * tangent_covariance_direction
+        / (
+            distance[:, None]
+            * total_variance[:, None] ** 1.5
+        )
+    )
     if (
-        not np.isfinite(phi).all()
+        not np.isfinite(weight).all()
+        or not np.isfinite(residual).all()
+        or not np.isfinite(residual_jacobian).all()
+    ):
+        return None
+    gauss_newton = residual_jacobian.T @ residual_jacobian
+    gradient = residual_jacobian.T @ residual
+    cost = float(residual @ residual)
+    if (
+        not np.isfinite(gauss_newton).all()
         or not np.isfinite(gradient).all()
         or not np.isfinite(cost)
     ):
         return None
-    return direction, weight, residual, phi, gradient, cost
+    return direction, weight, residual, gauss_newton, gradient, cost
+
+
+def _fim_terms(
+    estimate: np.ndarray,
+    reference_positions: np.ndarray,
+    reference_covariances: np.ndarray,
+    ranging_sigma: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    diff = estimate[None, :] - reference_positions
+    distance = np.linalg.norm(diff, axis=1)
+    if not np.isfinite(distance).all() or np.any(distance <= RANGE_EPSILON):
+        return None
+    direction = diff / distance[:, None]
+    projected_variance = np.einsum(
+        "ni,nij,nj->n", direction, reference_covariances, direction
+    )
+    total_variance = ranging_sigma**2 + projected_variance
+    if not np.isfinite(total_variance).all() or np.any(total_variance <= 0.0):
+        return None
+    weight = 1.0 / total_variance
+    phi = direction.T @ (weight[:, None] * direction)
+    if not np.isfinite(weight).all() or not np.isfinite(phi).all():
+        return None
+    return direction, weight, phi
 
 
 def fim_radius(
@@ -253,13 +300,13 @@ def fim_radius(
     if validated is None:
         return _result("invalid", failure_reason="non-finite or malformed FIM input")
     references, covariances, _, final_estimate, sigma = validated
-    zero_measurements = np.zeros(references.shape[0], dtype=float)
-    terms = _linearized_terms(
-        final_estimate, references, covariances, zero_measurements, sigma
-    )
+    terms = _fim_terms(final_estimate, references, covariances, sigma)
     if terms is None:
-        return _result("invalid", failure_reason="invalid final FIM weights")
-    _, _, _, phi, _, _ = terms
+        return _result(
+            "invalid",
+            failure_reason="undefined zero-range direction or invalid final FIM weights",
+        )
+    _, _, phi = terms
     eigenvalues = np.linalg.eigvalsh(phi)
     if not np.isfinite(eigenvalues).all():
         return _result("invalid", failure_reason="non-finite final FIM eigenvalues")
@@ -322,26 +369,45 @@ def solve_wnls(
     references, covariances, ranges, estimate, sigma = validated
     damping = INITIAL_DAMPING
     cost = None
+    stationarity_norm = None
 
     for iteration in range(1, MAX_ITERATIONS + 1):
+        distance = np.linalg.norm(estimate[None, :] - references, axis=1)
+        if np.any(distance <= RANGE_EPSILON):
+            return _result(
+                "invalid",
+                iterations=iteration - 1,
+                cost=cost,
+                stationarity_norm=stationarity_norm,
+                failure_reason="undefined zero-range direction",
+            )
         terms = _linearized_terms(estimate, references, covariances, ranges, sigma)
         if terms is None:
             return _result(
-                "invalid", iterations=iteration - 1, failure_reason="invalid WNLS terms"
+                "invalid",
+                iterations=iteration - 1,
+                cost=cost,
+                stationarity_norm=stationarity_norm,
+                failure_reason="invalid WNLS terms",
             )
-        _, _, _, phi, gradient, cost = terms
-        if np.linalg.norm(gradient) <= STEP_TOLERANCE:
+        _, _, _, gauss_newton, gradient, cost = terms
+        stationarity_norm = float(np.linalg.norm(gradient))
+        if stationarity_norm <= STEP_TOLERANCE:
             final = fim_radius(estimate, references, covariances, sigma)
             final["iterations"] = iteration
             final["cost"] = cost
+            final["stationarity_norm"] = stationarity_norm
             return final
         try:
-            delta = np.linalg.solve(phi + damping * np.eye(2), -gradient)
+            delta = np.linalg.solve(
+                gauss_newton + damping * np.eye(2), -gradient
+            )
         except np.linalg.LinAlgError:
             return _result(
                 "invalid",
                 iterations=iteration - 1,
                 cost=cost,
+                stationarity_norm=stationarity_norm,
                 failure_reason="damped solve failed",
             )
         if not np.isfinite(delta).all():
@@ -349,6 +415,7 @@ def solve_wnls(
                 "invalid",
                 iterations=iteration - 1,
                 cost=cost,
+                stationarity_norm=stationarity_norm,
                 failure_reason="non-finite WNLS step",
             )
         trial_estimate = estimate + delta
@@ -358,15 +425,20 @@ def solve_wnls(
         if trial_terms is not None and trial_terms[-1] < cost:
             trial_gradient = trial_terms[4]
             trial_cost = trial_terms[5]
+            trial_stationarity_norm = float(np.linalg.norm(trial_gradient))
             estimate = trial_estimate
             damping /= 10.0
+            cost_decrease = cost - trial_cost
+            cost = trial_cost
+            stationarity_norm = trial_stationarity_norm
             if (
                 np.linalg.norm(delta) <= STEP_TOLERANCE
-                or cost - trial_cost <= COST_TOLERANCE
-            ) and np.linalg.norm(trial_gradient) <= STEP_TOLERANCE:
+                or cost_decrease <= COST_TOLERANCE
+            ) and trial_stationarity_norm <= STEP_TOLERANCE:
                 final = fim_radius(estimate, references, covariances, sigma)
                 final["iterations"] = iteration
                 final["cost"] = trial_cost
+                final["stationarity_norm"] = trial_stationarity_norm
                 return final
         else:
             damping *= 10.0
@@ -375,6 +447,7 @@ def solve_wnls(
         "failed",
         iterations=MAX_ITERATIONS,
         cost=cost,
+        stationarity_norm=stationarity_norm,
         failure_reason="maximum WNLS iterations exceeded",
     )
 
@@ -462,6 +535,7 @@ def solve_later_frame(
             phi_condition=phi_condition,
             iterations=result["iterations"],
             cost=result["cost"],
+            stationarity_norm=result.get("stationarity_norm"),
             failure_reason=result["failure_reason"],
         )
         stale["failure"] = result
@@ -472,6 +546,7 @@ def solve_later_frame(
 GRAPH_CASES = ("dynamic_dag_wnls", "fixed_refs_wnls")
 PREREGISTERED_RANGING_SIGMA = 0.5
 IMPLEMENTATION_ID = "cbf2026-localization-calibration-v2"
+ESTIMATOR_CONTRACT_ID = "variable_weight_nls_full_residual_jacobian_v1"
 BOOTSTRAP_RESAMPLES = 10_000
 BOOTSTRAP_SEED = 20260728
 _STATUS_CODES = {"converged": 0, "stale": 1, "invalid": 2, "failed": 3}
@@ -845,6 +920,7 @@ def _summary(
     }
     adequacy["passed"] = all(adequacy.values())
     return {
+        "estimator_contract": ESTIMATOR_CONTRACT_ID,
         "settings": settings,
         "graph_cases": cases,
         "expected_process_rows": expected_count,
@@ -912,6 +988,7 @@ def _settings(
 ) -> dict:
     implementation_path = Path(__file__).resolve()
     return {
+        "estimator_contract": ESTIMATOR_CONTRACT_ID,
         "run_seeds": seeds,
         "graph_cases": list(GRAPH_CASES),
         "max_frames": max_frames,
@@ -950,6 +1027,7 @@ def _retained_after_attempt(previous_result: dict | None, attempt: dict) -> dict
         phi_condition=phi_condition,
         iterations=attempt["iterations"],
         cost=attempt["cost"],
+        stationarity_norm=attempt.get("stationarity_norm"),
         failure_reason=attempt["failure_reason"],
     )
     stale["failure"] = attempt
@@ -1005,6 +1083,7 @@ def replay_calibration(data_path, manifest_path, output_root, run_seeds, project
         nonlocal termination_reason, error
         manifest = {
             "termination_reason": termination_reason,
+            "estimator_contract": ESTIMATOR_CONTRACT_ID,
             "output_dir": str(run_root),
             "started_at": started_at,
             "ended_at": datetime.now(timezone.utc).isoformat(),
@@ -1124,6 +1203,9 @@ def replay_calibration(data_path, manifest_path, output_root, run_seeds, project
                                 "status": result["status"], "estimate": estimate,
                                 "attempt_status": attempt["status"],
                                 "attempt_failure_reason": attempt.get("failure_reason"),
+                                "attempt_stationarity_norm": attempt.get(
+                                    "stationarity_norm"
+                                ),
                                 "covariance": result.get("covariance"), "epsilon": epsilon,
                                 "finite": valid_result is not None,
                                 "covariance_spd": valid_result is not None,
@@ -1133,6 +1215,9 @@ def replay_calibration(data_path, manifest_path, output_root, run_seeds, project
                                 "containment": containment,
                                 "phi_min_eigenvalue": result.get("phi_min_eigenvalue"), "phi_condition": result.get("phi_condition"),
                                 "iterations": result.get("iterations"), "cost": result.get("cost"),
+                                "stationarity_norm": result.get(
+                                    "stationarity_norm"
+                                ),
                                 "failure_reason": result.get("failure_reason"),
                                 "failure": (
                                     attempt if attempt["status"] != "converged" else None

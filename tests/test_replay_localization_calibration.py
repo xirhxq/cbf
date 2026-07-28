@@ -195,6 +195,96 @@ class WnlsAndFimTests(unittest.TestCase):
         self.assertGreater(positive["estimate"][1], 0.0)
         self.assertLess(negative["estimate"][1], 0.0)
 
+    def test_anisotropic_weight_objective_half_gradient_matches_finite_difference(self):
+        """Breaks if the residual Jacobian omits the direction-dependent weight."""
+        references = np.asarray([[0.0, 0.0], [3.0, -1.0], [-2.0, 4.0]])
+        covariances = np.asarray(
+            [
+                [[4.0, 1.2], [1.2, 0.5]],
+                [[0.3, -0.2], [-0.2, 3.0]],
+                [[2.0, 0.7], [0.7, 5.0]],
+            ]
+        )
+        measurements = np.asarray([2.1, 1.8, 4.0])
+        estimate = np.asarray([1.2, 1.7])
+        ranging_sigma = 0.5
+
+        terms = replay_module._linearized_terms(
+            estimate,
+            references,
+            covariances,
+            measurements,
+            ranging_sigma,
+        )
+        analytic_half_gradient = terms[4]
+
+        def objective(candidate):
+            differences = candidate[None, :] - references
+            distances = np.linalg.norm(differences, axis=1)
+            directions = differences / distances[:, None]
+            variances = ranging_sigma**2 + np.einsum(
+                "ni,nij,nj->n", directions, covariances, directions
+            )
+            return float(np.sum((distances - measurements) ** 2 / variances))
+
+        step = 1e-6
+        axes = np.eye(2)
+        finite_difference_half_gradient = np.asarray(
+            [
+                (
+                    objective(estimate + step * axis)
+                    - objective(estimate - step * axis)
+                )
+                / (4.0 * step)
+                for axis in axes
+            ]
+        )
+
+        np.testing.assert_allclose(
+            analytic_half_gradient,
+            finite_difference_half_gradient,
+            rtol=1e-7,
+            atol=1e-9,
+        )
+
+    def test_solver_does_not_accept_old_surrogate_stationary_point(self):
+        """Breaks if convergence uses J_d^T W r instead of the exact half-gradient."""
+        references = np.asarray([[0.0, 0.0], [3.0, -1.0], [-2.0, 4.0]])
+        covariances = np.asarray(
+            [
+                [[4.0, 1.2], [1.2, 0.5]],
+                [[0.3, -0.2], [-0.2, 3.0]],
+                [[2.0, 0.7], [0.7, 5.0]],
+            ]
+        )
+        measurements = np.asarray([2.1, 1.8, 4.0])
+
+        result = solve_wnls(
+            references,
+            covariances,
+            measurements,
+            np.asarray([1.5844750217114834, 0.93933388606859125]),
+            0.5,
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertGreater(result["stationarity_norm"], replay_module.STEP_TOLERANCE)
+        self.assertEqual(result["iterations"], replay_module.MAX_ITERATIONS)
+
+    def test_zero_range_direction_is_rejected(self):
+        """Breaks if a zero-range residual fabricates a direction or derivative."""
+        references = np.asarray([[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]])
+        result = solve_wnls(
+            references,
+            np.zeros((3, 2, 2)),
+            np.asarray([0.0, 2.0, 2.0]),
+            np.asarray([0.0, 0.0]),
+            0.5,
+        )
+
+        self.assertEqual(result["status"], "invalid")
+        self.assertIn("zero-range direction", result["failure_reason"])
+
     def test_repeatedly_rejected_steps_do_not_report_false_convergence(self):
         """Breaks if damping-induced tiny rejected steps satisfy convergence."""
         references = np.asarray(
@@ -218,7 +308,7 @@ class WnlsAndFimTests(unittest.TestCase):
         self.assertIsNone(result["epsilon"])
 
     def test_accepted_tiny_damped_step_requires_stationarity(self):
-        """Breaks if an accepted high-damping step bypasses the gradient gate."""
+        """Breaks if accepted-step convergence bypasses exact stationarity."""
         references = np.asarray(
             [
                 [-0.12056416482955547, 2.7187170092356103],
@@ -254,10 +344,8 @@ class WnlsAndFimTests(unittest.TestCase):
             0.5,
         )
 
-        self.assertEqual(result["status"], "failed")
-        self.assertEqual(result["iterations"], 50)
-        self.assertIsNone(result["covariance"])
-        self.assertIsNone(result["epsilon"])
+        self.assertEqual(result["status"], "converged")
+        self.assertLessEqual(result["stationarity_norm"], replay_module.STEP_TOLERANCE)
 
     def test_third_non_collinear_reference_is_accepted_without_api_change(self):
         """Breaks if the estimator assumes exactly two measurements."""
@@ -634,6 +722,10 @@ class ReplayEvidenceBundleTests(unittest.TestCase):
             self.assertEqual(first["settings"]["max_frames"], None)
             self.assertIn("implementation", first["settings"])
             self.assertIn("lm_fim", first["settings"])
+            self.assertEqual(
+                first["estimator_contract"],
+                "variable_weight_nls_full_residual_jacobian_v1",
+            )
             with gzip.open(Path(first["output_dir"]) / "calibration.jsonl.gz", "rt") as source:
                 first_rows = [json.loads(line) for line in source]
             with gzip.open(Path(second["output_dir"]) / "calibration.jsonl.gz", "rt") as source:
@@ -644,6 +736,17 @@ class ReplayEvidenceBundleTests(unittest.TestCase):
             self.assertTrue(all("measurements" in row for row in first_rows))
             self.assertTrue(all("transition" in row for row in first_rows))
             self.assertTrue(all("attempt_status" in row for row in first_rows))
+            self.assertTrue(
+                all("attempt_stationarity_norm" in row for row in first_rows)
+            )
+            self.assertTrue(
+                all(
+                    row["attempt_stationarity_norm"]
+                    <= replay_module.STEP_TOLERANCE
+                    for row in first_rows
+                    if row["attempt_status"] == "converged"
+                )
+            )
             self.assertTrue(
                 all(
                     isinstance(row["containment"], bool)
@@ -681,6 +784,10 @@ class ReplayEvidenceBundleTests(unittest.TestCase):
             )
             summary = json.loads((Path(first["output_dir"]) / "summary.json").read_text())
             self.assertEqual(summary["settings"], first["settings"])
+            self.assertEqual(
+                summary["estimator_contract"],
+                "variable_weight_nls_full_residual_jacobian_v1",
+            )
             self.assertEqual(
                 summary["graph_cases"]["dynamic_dag_wnls"]["initialization_frame"]["robot_frame_count"],
                 4,
