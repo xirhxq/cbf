@@ -634,8 +634,130 @@ class DiagnosticRunnerTests(unittest.TestCase):
                         {"coe": 0.1, "pow": 1},
                     )
 
+    def test_rg_materializes_only_the_fixed_geometry_differently_from_r(self):
+        project_root = Path(__file__).resolve().parents[1]
+        expected_positions = [
+            [-1490.0, -120.0],
+            [-1487.320508, -164.641016],
+            [-1450.0, -140.0],
+            [-1447.320508, -184.641016],
+            [-1410.0, -160.0],
+            [-1407.320508, -204.641016],
+            [-1370.0, -180.0],
+            [-1490.0, 120.0],
+            [-1487.320508, 164.641016],
+            [-1450.0, 140.0],
+            [-1447.320508, 184.641016],
+            [-1410.0, 160.0],
+            [-1407.320508, 204.641016],
+            [-1370.0, 180.0],
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            r_config = materialize_config(
+                project_root / "config" / "config.json",
+                project_root / "config" / "diagnostics" / "r_rate_aware.json",
+                temporary_path / "R" / "config.materialized.json",
+                horizon_s=20,
+                seed=7,
+            )
+            rg_config = materialize_config(
+                project_root / "config" / "config.json",
+                project_root / "config" / "diagnostics" / "rg_fixed_geometry.json",
+                temporary_path / "RG" / "config.materialized.json",
+                horizon_s=20,
+                seed=7,
+            )
+
+        self.assertEqual(rg_config["initial"]["position"]["method"], "specified")
+        self.assertEqual(rg_config["initial"]["position"]["positions"], expected_positions)
+        for config in (r_config, rg_config):
+            config["initial"]["position"].pop("positions")
+            config.pop("output_path")
+            config.pop("run_suffix")
+        self.assertEqual(rg_config, r_config)
+
+    def test_run_diagnostic_maps_rg_to_the_fixed_geometry_overlay(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            project_root = temporary_path / "project"
+            project_root.mkdir()
+            binary_path = project_root / "Swarm"
+            binary_path.write_bytes(b"diagnostic binary")
+            output_root = temporary_path / "results"
+            with (
+                patch(
+                    "scripts.diagnostics.run_diagnostic.available_bytes",
+                    return_value=START_BYTES,
+                ),
+                patch(
+                    "scripts.diagnostics.run_diagnostic._git_output",
+                    side_effect=fake_git_output,
+                ),
+                patch(
+                    "scripts.diagnostics.run_diagnostic.materialize_config",
+                    side_effect=RuntimeError("stop after mapping"),
+                ) as mocked_materialize,
+                patch(
+                    "scripts.diagnostics.run_diagnostic.subprocess.Popen",
+                ) as mocked_popen,
+            ):
+                manifest = run_diagnostic(
+                    case="RG",
+                    horizon_s=20,
+                    seed=7,
+                    binary_path=binary_path,
+                    output_root=output_root,
+                    project_root=project_root,
+                )
+
+        self.assertEqual(manifest["termination_reason"], "runner_setup_error")
+        mocked_materialize.assert_called_once()
+        self.assertEqual(
+            mocked_materialize.call_args.args[1],
+            project_root / "config" / "diagnostics" / "rg_fixed_geometry.json",
+        )
+        mocked_popen.assert_not_called()
+
+    def test_rg_fixed_geometry_reflects_each_squad_across_the_x_axis(self):
+        project_root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config = materialize_config(
+                project_root / "config" / "config.json",
+                project_root / "config" / "diagnostics" / "rg_fixed_geometry.json",
+                Path(temporary_directory) / "RG" / "config.materialized.json",
+                horizon_s=20,
+                seed=7,
+            )
+
+        positions = config["initial"]["position"]["positions"]
+        self.assertEqual(len(positions), 14)
+        for lower, upper in zip(positions[:7], positions[7:]):
+            self.assertEqual(lower[0], upper[0])
+            self.assertEqual(lower[1], -upper[1])
+
+    def test_rg_fixed_geometry_has_nonzero_area_for_every_fixed_reference_triple(self):
+        project_root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config = materialize_config(
+                project_root / "config" / "config.json",
+                project_root / "config" / "diagnostics" / "rg_fixed_geometry.json",
+                Path(temporary_directory) / "RG" / "config.materialized.json",
+                horizon_s=20,
+                seed=7,
+            )
+
+        positions = config["initial"]["position"]["positions"]
+        for squad in (positions[:7], positions[7:]):
+            for first, second, third in zip(squad, squad[1:], squad[2:]):
+                signed_area_twice = (
+                    (second[0] - first[0]) * (third[1] - first[1])
+                    - (second[1] - first[1]) * (third[0] - first[0])
+                )
+                self.assertNotEqual(signed_area_twice, 0.0)
+
     def test_cli_accepts_every_mc_first_case(self):
-        for case in ("C0", "R", "RB", "RBP"):
+        for case in ("C0", "R", "RG", "RB", "RBP"):
             with self.subTest(case=case):
                 completed_manifest = {
                     "termination_reason": "completed",
