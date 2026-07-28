@@ -68,10 +68,39 @@ TEST_CASE("communicator exchanges the current uncertainty rate") {
     communicator.receiveUncertaintyRate(3, 1.25);
     CHECK(communicator._othersUncertaintyRate.at(3) == doctest::Approx(1.25));
 }
+
+TEST_CASE("two-phase refresh publishes current covariance and rate before CBF construction") {
+    auto robots = makeTwoDiagnosticRobots();
+    exchangeDiagnosticData(robots);
+    refreshDiagnosticUncertaintySnapshot(robots, 0.5);
+    CHECK(robots[0]->comm->_othersPositionCovariance.at(2).isApprox(
+        robots[1]->positionCovariance
+    ));
+    CHECK(robots[0]->comm->_othersUncertaintyRate.at(2)
+          == doctest::Approx(robots[1]->uncertaintyRate));
+
+    const auto covarianceBefore = robots[0]->positionCovariance;
+    const auto rateBefore = robots[0]->uncertaintyRate;
+    robots[0]->setFixedCommCBF(
+        robots[0]->settings["cbfs"]["without-slack"]["comm-fixed"]
+    );
+    CHECK(robots[0]->positionCovariance.isApprox(covarianceBefore));
+    CHECK(robots[0]->uncertaintyRate == doctest::Approx(rateBefore));
+}
+
+TEST_CASE("covariance refresh is independent of comm-fixed enforcement") {
+    auto robots = makeTwoDiagnosticRobots();
+    robots[0]->settings["cbfs"]["without-slack"]["comm-fixed"]["on"] = false;
+    refreshDiagnosticUncertaintySnapshot(robots, 0.5);
+    CHECK(robots[0]->hasUncertaintyHistory);
+}
 ```
 
-The test helper may reuse the existing minimal `Robot` fixture in
-`tests/testRobotDiagnostics.cpp`; do not mock the covariance math.
+Define the minimal factories and exchange/refresh fixture locally in
+`tests/testRobustConstraintConstruction.cpp`, because each `tests/*.cpp`
+translation unit is built as a separate executable. Do not import an anonymous
+namespace helper from `tests/testRobotDiagnostics.cpp`, and do not mock the
+covariance math.
 
 - [ ] **Step 2: Run the focused test and verify RED**
 
