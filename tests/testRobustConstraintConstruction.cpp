@@ -84,6 +84,25 @@ json makeDiagnosticSettings() {
     };
 }
 
+json makeThreeRobotChainSettings() {
+    json settings = makeDiagnosticSettings();
+    settings["num"] = 3;
+    settings["all"] = json::array({1, 2, 3});
+    settings["initial"]["position"]["positions"] = json::array({
+        json::array({0.0, 0.0}),
+        json::array({2.0, 1.0}),
+        json::array({4.0, 2.0})
+    });
+    settings["cbfs"]["without-slack"]["energy"] = {{"on", false}};
+    settings["searching"] = {
+        {"method", "downward"},
+        {"downward", {{"radius", 5.0}}}
+    };
+    settings["execute"]["check-constraint-violation"] = false;
+    settings["output_path"] = "build-diagnostic";
+    return settings;
+}
+
 Robot makeDiagnosticRobot(int id = 1) {
     json settings = makeDiagnosticSettings();
     return Robot(id, settings);
@@ -416,4 +435,43 @@ TEST_CASE("state logging exposes the uncertainty snapshot consumed by the contro
           == doctest::Approx(7.25));
     CHECK(state.at("uncertainty_rate").get<double>()
           == doctest::Approx(1.5));
+}
+
+TEST_CASE("startup bootstraps a self-consistent lower-index covariance chain") {
+    json settings = makeThreeRobotChainSettings();
+    settings["execute"]["execution-mode"] = "centralized";
+    settings["execute"]["time-total"] = 0.0;
+    settings["run_suffix"] = "-covariance-bootstrap";
+
+    Swarm swarm(settings);
+    swarm.run();
+
+    Robot& highestIndexRobot = *swarm.robots.at(2);
+    const Eigen::Matrix2d startupCovariance =
+        highestIndexRobot.positionCovariance;
+    highestIndexRobot.getCovariance(
+        highestIndexRobot.settings["cbfs"]["without-slack"]["comm-fixed"]
+    );
+    CHECK(highestIndexRobot.positionCovariance.isApprox(
+        startupCovariance, 1e-12
+    ));
+}
+
+TEST_CASE("distributed frame zero logs only first-sample zero uncertainty rates") {
+    json settings = makeThreeRobotChainSettings();
+    settings["execute"]["execution-mode"] = "distributed";
+    settings["execute"]["time-total"] = 0.5;
+    settings["cbfs"]["without-slack"]["comm-fixed"]["on"] = false;
+    settings["run_suffix"] = "-frame-zero-rate";
+
+    Swarm swarm(settings);
+    swarm.run();
+
+    REQUIRE(swarm.data.at("state").size() == 1);
+    const json& frameZeroRobots = swarm.data.at("state").at(0).at("robots");
+    REQUIRE(frameZeroRobots.size() == 3);
+    for (const json& robot : frameZeroRobots) {
+        CHECK(robot.at("uncertainty_rate").get<double>()
+              == doctest::Approx(0.0));
+    }
 }

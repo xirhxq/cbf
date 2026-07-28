@@ -233,8 +233,32 @@ public:
         double tTotal = settings["time-total"], tStep = settings["time-step"];
 
         exchangeData();
-        for (auto &robot: robots) robot->updateCovarianceAndRate(tStep);
-        exchangeData();
+        std::vector<Robot*> covarianceBootstrapOrder;
+        covarianceBootstrapOrder.reserve(robots.size());
+        for (auto &robot: robots) {
+            covarianceBootstrapOrder.push_back(robot.get());
+        }
+        std::sort(
+            covarianceBootstrapOrder.begin(),
+            covarianceBootstrapOrder.end(),
+            [](const Robot* lhs, const Robot* rhs) {
+                if (lhs->idInMyPart != rhs->idInMyPart) {
+                    return lhs->idInMyPart < rhs->idInMyPart;
+                }
+                return lhs->partId < rhs->partId;
+            }
+        );
+        for (Robot* robot: covarianceBootstrapOrder) {
+            robot->updateCovarianceAndRate(tStep);
+            for (auto &receiver: robots) {
+                receiver->comm->receivePositionCovariance(
+                    robot->id, robot->positionCovariance
+                );
+                receiver->comm->receiveUncertaintyRate(
+                    robot->id, robot->uncertaintyRate
+                );
+            }
+        }
         checkInformationExchange();
         initLog();
         logParams();
@@ -249,9 +273,13 @@ public:
 
         while (robots[0]->runtime < tTotal) {
             try {
-                exchangeData();
-                for (auto &robot: robots) robot->updateCovarianceAndRate(tStep);
-                exchangeData();
+                if (robots[0]->runtime > 0.0) {
+                    exchangeData();
+                    for (auto &robot: robots) {
+                        robot->updateCovarianceAndRate(tStep);
+                    }
+                    exchangeData();
+                }
                 checkInformationExchange();
                 for (auto &robot: robots) robot->checkRobotsInsideWorld();
                 printf("\r%.2lf seconds elapsed... %.2lf%%", robots[0]->runtime, gridWorldGroundTruth.getPercentage() * 100);
