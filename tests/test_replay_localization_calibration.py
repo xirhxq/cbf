@@ -1,7 +1,13 @@
 """Stage-0 contracts for the offline localization calibration core."""
 
 import copy
+import gzip
+import hashlib
+import json
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -12,6 +18,7 @@ from scripts.diagnostics.replay_localization_calibration import (
     solve_later_frame,
     solve_wnls,
     stable_measurement_seed,
+    replay_calibration,
 )
 
 
@@ -566,6 +573,119 @@ class WnlsAndFimTests(unittest.TestCase):
                 )
                 self.assertEqual(result["status"], "invalid")
                 self.assertNotIn("failure", result)
+
+
+class ReplayEvidenceBundleTests(unittest.TestCase):
+    def _fixture(self, directory: Path) -> tuple[Path, Path]:
+        """Create a three-frame two-squad truth replay with non-collinear bases."""
+        config = {
+            "num": 4,
+            "formation": {"parts": 2, "bases-id": [[0, 1], [1, 2]]},
+            "bases": [[0.0, 0.0], [4.0, 0.0], [0.0, 4.0]],
+            "initial": {"position": {"positions": [[1.0, 1.0], [2.0, 1.0], [1.0, 2.0], [2.0, 2.0]]}},
+            "execute": {"random-seed": 9},
+            "cbfs": {"without-slack": {"comm-fixed": {
+                "max-range": 20.0,
+                "min-neighbour-id-offset": -2,
+                "max-neighbour-id-offset": 0,
+            }}},
+        }
+        frames = []
+        for frame_index in range(3):
+            frames.append({"robots": [
+                {"id": robot_id, "state": {"x": x + 0.1 * frame_index, "y": y}}
+                for robot_id, (x, y) in enumerate(config["initial"]["position"]["positions"], 1)
+            ]})
+        data_path = directory / "data.json"
+        manifest_path = directory / "input-manifest.json"
+        data_path.write_text(json.dumps({"config": config, "state": frames}))
+        manifest_path.write_text(json.dumps({"base_commit": "fixture-commit", "config_sha256": "fixture-config"}))
+        return data_path, manifest_path
+
+    def test_replay_writes_complete_deterministic_paired_evidence_bundle(self):
+        """Breaks if replay drops rows, changes paired noise, or copies truth evidence."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project_root = root / "project"
+            output_root = root / "output"
+            project_root.mkdir()
+            data_path, manifest_path = self._fixture(root)
+
+            first = replay_calibration(
+                data_path, manifest_path, output_root, [17], project_root
+            )
+            second = replay_calibration(
+                data_path, manifest_path, output_root, [17], project_root
+            )
+
+            self.assertEqual(first["termination_reason"], "completed")
+            self.assertEqual(first["input_data"]["path"], str(data_path.resolve()))
+            self.assertEqual(
+                first["input_data"]["sha256"],
+                hashlib.sha256(data_path.read_bytes()).hexdigest(),
+            )
+            self.assertFalse((Path(first["output_dir"]) / "data.json").exists())
+            self.assertFalse((Path(first["output_dir"]) / "source-snapshot.tar.gz").exists())
+            with gzip.open(Path(first["output_dir"]) / "calibration.jsonl.gz", "rt") as source:
+                first_rows = [json.loads(line) for line in source]
+            with gzip.open(Path(second["output_dir"]) / "calibration.jsonl.gz", "rt") as source:
+                second_rows = [json.loads(line) for line in source]
+            self.assertEqual(first_rows, second_rows)
+            self.assertEqual(len(first_rows), 1 * 2 * 4 * 3)
+            self.assertTrue(all("active_references" in row for row in first_rows))
+            self.assertTrue(all("measurements" in row for row in first_rows))
+            self.assertTrue(all("transition" in row for row in first_rows))
+            self.assertTrue(all(not row["primary_statistics"] for row in first_rows if row["frame_index"] == 0))
+            by_edge = {}
+            for row in first_rows:
+                for measurement in row["measurements"]:
+                    key = (row["seed"], row["frame_index"], row["robot_id"], measurement["kind"], measurement["id"])
+                    by_edge.setdefault(key, set()).add(measurement["noisy_range"])
+            self.assertTrue(all(len(values) == 1 for values in by_edge.values()))
+            self.assertEqual(
+                json.loads((Path(first["output_dir"]) / "summary.json").read_text()),
+                json.loads((Path(second["output_dir"]) / "summary.json").read_text()),
+            )
+
+    def test_live_disk_floor_writes_terminal_manifest(self):
+        """Breaks if a post-frame disk guard exits without an inspectable manifest."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project_root = root / "project"
+            output_root = root / "output"
+            project_root.mkdir()
+            data_path, manifest_path = self._fixture(root)
+            with patch(
+                "scripts.diagnostics.replay_localization_calibration.available_bytes",
+                side_effect=[9_000_000_000, 5_999_999_999],
+            ):
+                result = replay_calibration(
+                    data_path, manifest_path, output_root, [17], project_root
+                )
+
+            self.assertEqual(result["termination_reason"], "disk_hard_floor")
+            self.assertTrue((Path(result["output_dir"]) / "manifest.json").exists())
+
+    def test_cache_caps_write_terminal_manifests(self):
+        """Breaks if either retained-evidence cap ends replay without a manifest."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project_root = root / "project"
+            project_root.mkdir()
+            data_path, manifest_path = self._fixture(root)
+            for expected, allocation in (
+                ("cache_root_cap", lambda _: 2_000_000_001),
+                ("cache_run_cap", lambda path: 250_000_001 if path.name.count("_") else 0),
+            ):
+                with self.subTest(expected=expected), patch(
+                    "scripts.diagnostics.replay_localization_calibration.allocated_bytes",
+                    side_effect=allocation,
+                ):
+                    result = replay_calibration(
+                        data_path, manifest_path, root / expected, [17], project_root
+                    )
+                self.assertEqual(result["termination_reason"], expected)
+                self.assertTrue((Path(result["output_dir"]) / "manifest.json").exists())
 
 
 if __name__ == "__main__":

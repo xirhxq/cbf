@@ -1,9 +1,29 @@
-"""Pure-NumPy primitives for offline localization calibration replay."""
+"""Pure-NumPy primitives and evidence bundles for localization calibration."""
 
+import argparse
+import gzip
 import hashlib
+import json
 import math
+from datetime import datetime, timezone
+from pathlib import Path
 
 import numpy as np
+
+from scripts.diagnostics.run_diagnostic import (
+    HARD_FLOOR_BYTES,
+    OUTPUT_ROOT_CAP_BYTES,
+    RUN_CAP_BYTES,
+    DiskSpaceError,
+    _allocate_run_root,
+    _nearest_existing_ancestor,
+    _sha256,
+    _validate_output_root,
+    _write_manifest,
+    allocated_bytes,
+    available_bytes,
+    require_start_space,
+)
 
 
 MAX_ITERATIONS = 50
@@ -447,3 +467,394 @@ def solve_later_frame(
         stale["failure"] = result
         return stale
     return result
+
+
+GRAPH_CASES = ("dynamic_dag_wnls", "fixed_refs_wnls")
+RANGING_SIGMA = 0.5
+
+
+def _strict_load(path: Path) -> dict:
+    def reject_constant(value: str):
+        raise ValueError(f"non-finite JSON constant {value}")
+
+    with path.open() as source:
+        loaded = json.load(source, parse_constant=reject_constant)
+    if not isinstance(loaded, dict):
+        raise ValueError(f"{path} must contain a JSON object")
+    return loaded
+
+
+def _json_value(value):
+    """Convert NumPy values while rejecting non-finite output evidence."""
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, np.ndarray):
+        value = value.tolist()
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
+    return value
+
+
+def _strict_json_bytes(value, *, indent=None) -> bytes:
+    return json.dumps(
+        _json_value(value),
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":") if indent is None else None,
+        indent=indent,
+    ).encode("utf-8")
+
+
+def _frames(data: dict) -> list[dict]:
+    frames = data.get("state", data.get("frames"))
+    if not isinstance(frames, list) or not frames:
+        raise ValueError("truth replay must contain a non-empty state or frames array")
+    if not all(isinstance(frame, dict) and isinstance(frame.get("robots"), list) for frame in frames):
+        raise ValueError("every truth frame must contain a robots array")
+    return frames
+
+
+def _truth_positions(frame: dict, expected_ids: set[int]) -> dict[int, np.ndarray]:
+    positions = {}
+    for robot in frame["robots"]:
+        try:
+            robot_id = int(robot["id"])
+            state = robot["state"]
+            position = np.asarray([state["x"], state["y"]], dtype=float)
+        except (KeyError, TypeError, ValueError, OverflowError):
+            raise ValueError("robot truth state must provide finite id, x, and y") from None
+        if robot_id in positions or position.shape != (2,) or not np.isfinite(position).all():
+            raise ValueError("robot truth IDs must be unique with finite planar positions")
+        positions[robot_id] = position
+    if set(positions) != expected_ids:
+        raise ValueError("every frame must contain exactly the configured UAV IDs")
+    return positions
+
+
+def _initial_positions(config: dict, expected_ids: set[int]) -> dict[int, np.ndarray]:
+    try:
+        positions = config["initial"]["position"]["positions"]
+    except (KeyError, TypeError):
+        raise ValueError("config must provide known deployment positions") from None
+    if not isinstance(positions, list) or len(positions) != len(expected_ids):
+        raise ValueError("deployment positions must match configured UAV count")
+    result = {index: np.asarray(position, dtype=float) for index, position in enumerate(positions, 1)}
+    if any(position.shape != (2,) or not np.isfinite(position).all() for position in result.values()):
+        raise ValueError("deployment positions must be finite planar coordinates")
+    return result
+
+
+def _invalid_result(reason: str) -> dict:
+    return _result("invalid", failure_reason=reason)
+
+
+def _reference_inputs(
+    references: dict[str, list[int]],
+    config: dict,
+    truth: dict[int, np.ndarray],
+    current: dict[int, dict],
+    seed: int,
+    frame_index: int,
+    observer_id: int,
+) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None, list[dict], str | None]:
+    positions = []
+    covariances = []
+    measurements = []
+    records = []
+    observer_truth = truth[observer_id]
+    for kind, identifiers in (("base", references["base_ids"]), ("uav", references["uav_ids"])):
+        for reference_id in identifiers:
+            if kind == "base":
+                try:
+                    reference_truth = np.asarray(config["bases"][reference_id], dtype=float)
+                except (IndexError, KeyError, TypeError, ValueError):
+                    return None, None, None, records, "invalid base reference"
+                reference_position = reference_truth
+                covariance = np.zeros((2, 2), dtype=float)
+            else:
+                reference_truth = truth[reference_id]
+                upstream = current.get(reference_id)
+                valid = _valid_prior_result(upstream)
+                if valid is None:
+                    return None, None, None, records, "invalid upstream UAV reference"
+                reference_position, covariance, _, _, _ = valid
+            true_range = float(np.linalg.norm(observer_truth - reference_truth))
+            noise = float(np.random.default_rng(stable_measurement_seed(
+                seed, frame_index, observer_id, kind, reference_id
+            )).normal(0.0, RANGING_SIGMA))
+            noisy_range = true_range + noise
+            positions.append(reference_position)
+            covariances.append(covariance)
+            measurements.append(noisy_range)
+            records.append({
+                "kind": kind,
+                "id": int(reference_id),
+                "true_range": true_range,
+                "noise": noise,
+                "noisy_range": noisy_range,
+            })
+    if len(positions) < 2:
+        return None, None, None, records, "fewer than two active references"
+    return np.asarray(positions), np.asarray(covariances), np.asarray(measurements), records, None
+
+
+def _transition(previous: dict[str, list[int]] | None, active: dict[str, list[int]], epsilon: float | None, previous_epsilon: float | None) -> dict:
+    return {
+        "changed": previous is not None and previous != active,
+        "previous_active_references": previous,
+        "epsilon_change": None if epsilon is None or previous_epsilon is None else epsilon - previous_epsilon,
+    }
+
+
+def _finite(values):
+    return [float(value) for value in values if value is not None and math.isfinite(float(value))]
+
+
+def _quantiles(values, percents):
+    values = _finite(values)
+    return {str(percent): (None if not values else float(np.percentile(values, percent))) for percent in percents}
+
+
+def _stats(rows: list[dict]) -> dict:
+    primary = [row for row in rows if row["primary_statistics"]]
+    statuses = {status: sum(row["status"] == status for row in primary) for status in ("converged", "stale", "invalid", "failed")}
+    containments = [row["containment"] for row in primary if row["containment"] is not None]
+    ratios = [row["error_to_epsilon_ratio"] for row in primary]
+    transitions = [row for row in rows if row["transition"]["changed"]]
+    epsilon_changes = [row["transition"]["epsilon_change"] for row in transitions]
+    return {
+        "robot_frame_count": len(primary),
+        "status_counts": statuses,
+        "containment_count": sum(containments),
+        "containment_denominator": len(containments),
+        "containment_rate": None if not containments else sum(containments) / len(containments),
+        "error_to_epsilon_ratio": {**_quantiles(ratios, (50, 95, 99)), "max": None if not _finite(ratios) else max(_finite(ratios))},
+        "phi_min_eigenvalue": _quantiles([row["phi_min_eigenvalue"] for row in primary], (1, 5, 50)),
+        "phi_condition": {**_quantiles([row["phi_condition"] for row in primary], (50, 95, 99)), "max": None if not _finite([row["phi_condition"] for row in primary]) else max(_finite([row["phi_condition"] for row in primary]))},
+        "epsilon": {**_quantiles([row["epsilon"] for row in primary], (50, 95, 99)), "max": None if not _finite([row["epsilon"] for row in primary]) else max(_finite([row["epsilon"] for row in primary]))},
+        "transition_count": len(transitions),
+        "epsilon_changes": epsilon_changes,
+    }
+
+
+def _bootstrap(seed_rates: list[float | None]) -> dict:
+    usable = np.asarray([rate for rate in seed_rates if rate is not None], dtype=float)
+    if not len(usable):
+        return {"resamples": 10000, "rng_seed": 20260728, "lower": None, "upper": None}
+    samples = np.random.default_rng(20260728).choice(usable, size=(10000, len(usable)), replace=True).mean(axis=1)
+    return {"resamples": 10000, "rng_seed": 20260728, "lower": float(np.percentile(samples, 2.5)), "upper": float(np.percentile(samples, 97.5))}
+
+
+def _summary(rows: list[dict], expected_count: int) -> dict:
+    cases = {}
+    for case in GRAPH_CASES:
+        case_rows = [row for row in rows if row["graph_case"] == case]
+        by_seed = {}
+        by_depth = {}
+        for seed in sorted({row["seed"] for row in case_rows}):
+            by_seed[str(seed)] = _stats([row for row in case_rows if row["seed"] == seed])
+        for depth in sorted({row["squad_local_index"] for row in case_rows}):
+            by_depth[str(depth)] = _stats([row for row in case_rows if row["squad_local_index"] == depth])
+        cases[case] = {"overall": _stats(case_rows), "by_seed": by_seed, "by_squad_local_depth": by_depth, "containment_bootstrap_95": _bootstrap([item["containment_rate"] for item in by_seed.values()])}
+    dynamic = cases["dynamic_dag_wnls"]["overall"]
+    fixed = cases["fixed_refs_wnls"]["overall"]
+    depth_rates = [item["containment_rate"] for item in cases["dynamic_dag_wnls"]["by_squad_local_depth"].values() if item["containment_rate"] is not None]
+    dynamic_invalid = dynamic["status_counts"]["invalid"] / max(1, dynamic["robot_frame_count"])
+    fixed_invalid = fixed["status_counts"]["invalid"] / max(1, fixed["robot_frame_count"])
+    dynamic_failed = dynamic["status_counts"]["failed"] / max(1, dynamic["robot_frame_count"])
+    fixed_failed = fixed["status_counts"]["failed"] / max(1, fixed["robot_frame_count"])
+    adequacy = {
+        "aggregate_containment_at_least_0_98": dynamic["containment_rate"] is not None and dynamic["containment_rate"] >= 0.98,
+        "every_depth_containment_at_least_0_95": bool(depth_rates) and min(depth_rates) >= 0.95,
+        "zero_silently_discarded_failures": len(rows) == expected_count,
+        "dynamic_invalid_rate_no_worse": dynamic_invalid <= fixed_invalid,
+        "dynamic_failure_rate_no_worse": dynamic_failed <= fixed_failed,
+    }
+    adequacy["passed"] = all(adequacy.values())
+    return {"graph_cases": cases, "expected_process_rows": expected_count, "process_rows": len(rows), "adequacy": adequacy}
+
+
+def _summary_markdown(summary: dict) -> str:
+    adequacy = summary["adequacy"]
+    return "# Localization calibration replay\n\n" + "\n".join(
+        f"- {key}: {value}" for key, value in adequacy.items()
+    ) + "\n"
+
+
+def replay_calibration(data_path, manifest_path, output_root, run_seeds, project_root, max_frames=None) -> dict:
+    """Replay truth trajectories into a disk-guarded, paired calibration bundle."""
+    data_path, manifest_path, output_root, project_root = map(Path, (data_path, manifest_path, output_root, project_root))
+    _validate_output_root(project_root, output_root)
+    free_before = require_start_space(_nearest_existing_ancestor(output_root))
+    data = _strict_load(data_path)
+    input_manifest = _strict_load(manifest_path)
+    config = data.get("config")
+    if not isinstance(config, dict):
+        raise ValueError("truth replay must contain config")
+    try:
+        number = int(config["num"])
+        parts = int(config["formation"]["parts"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("config must provide positive num and formation parts") from None
+    if number <= 0 or parts <= 0:
+        raise ValueError("num and formation parts must be positive")
+    frames = _frames(data)
+    if max_frames is not None:
+        if not isinstance(max_frames, int) or max_frames <= 0:
+            raise ValueError("max_frames must be a positive integer")
+        frames = frames[:max_frames]
+    seeds = list(run_seeds) if run_seeds else [int(config.get("execute", {}).get("random-seed", 0))]
+    if not seeds:
+        raise ValueError("at least one run seed is required")
+    seeds = [int(seed) for seed in seeds]
+    expected_ids = set(range(1, number + 1))
+    deployment = _initial_positions(config, expected_ids)
+    run_root = _allocate_run_root(output_root / "localization-calibration")
+    started_at = datetime.now(timezone.utc).isoformat()
+    process_path = run_root / "calibration.jsonl.gz"
+    summary_path = run_root / "summary.json"
+    markdown_path = run_root / "summary.md"
+    rows = []
+    termination_reason = "completed"
+    error = None
+    states = {}
+
+    def terminal_manifest():
+        manifest = {
+            "termination_reason": termination_reason,
+            "output_dir": str(run_root),
+            "started_at": started_at,
+            "ended_at": datetime.now(timezone.utc).isoformat(),
+            "input_data": {"path": str(data_path.resolve()), "sha256": _sha256(data_path)},
+            "input_manifest": {"path": str(manifest_path.resolve()), "sha256": _sha256(manifest_path), "source_commit": input_manifest.get("base_commit"), "materialized_config_sha256": input_manifest.get("config_sha256")},
+            "free_bytes_before": free_before,
+            "free_bytes_after": _safe_disk(output_root),
+            "output_root_allocated_bytes": _safe_allocated(output_root),
+            "bundle_allocated_bytes": _safe_allocated(run_root),
+            "output_root_cap_bytes": OUTPUT_ROOT_CAP_BYTES,
+            "bundle_cap_bytes": RUN_CAP_BYTES,
+            "process_sha256": _sha256(process_path) if process_path.exists() else None,
+            "summary_json_sha256": _sha256(summary_path) if summary_path.exists() else None,
+            "summary_markdown_sha256": _sha256(markdown_path) if markdown_path.exists() else None,
+        }
+        if error is not None:
+            manifest["error"] = {"type": type(error).__name__, "message": str(error)}
+        _write_manifest(run_root, _json_value(manifest))
+        return manifest
+
+    try:
+        with process_path.open("wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as compressed:
+            for frame_index, frame in enumerate(frames):
+                truth = _truth_positions(frame, expected_ids)
+                for seed in seeds:
+                    for graph_case in GRAPH_CASES:
+                        state_key = (seed, graph_case)
+                        case_state = states.setdefault(state_key, ({}, {}, {}))
+                        previous, previous_active, previous_epsilon = case_state
+                        squad_size = math.ceil(number / parts)
+                        for robot_id in range(1, number + 1):
+                            local_index = (robot_id - 1) % squad_size + 1
+                            refs = active_references(config, robot_id, truth) if graph_case == "dynamic_dag_wnls" else fixed_references(config, robot_id)
+                            inputs = _reference_inputs(refs, config, truth, previous, seed, frame_index, robot_id)
+                            reference_positions, reference_covariances, measurements, records, input_error = inputs
+                            initial = deployment[robot_id] if frame_index == 0 else np.asarray(previous.get(robot_id, {}).get("estimate", deployment[robot_id]), dtype=float)
+                            if input_error is not None:
+                                result = _invalid_result(input_error)
+                                if frame_index > 0:
+                                    valid = _valid_prior_result(previous.get(robot_id))
+                                    if valid is not None:
+                                        estimate, covariance, epsilon, phi_minimum, phi_condition = valid
+                                        result = _result("stale", estimate=estimate, covariance=covariance, epsilon=epsilon, phi_min_eigenvalue=phi_minimum, phi_condition=phi_condition, failure_reason=input_error)
+                            elif frame_index == 0:
+                                result = solve_wnls(reference_positions, reference_covariances, measurements, initial, RANGING_SIGMA)
+                            else:
+                                result = solve_later_frame(previous.get(robot_id), reference_positions, reference_covariances, measurements, initial, RANGING_SIGMA)
+                            estimate = result.get("estimate")
+                            error_vector = None if estimate is None else (truth[robot_id] - np.asarray(estimate, dtype=float)).tolist()
+                            error_norm = None if error_vector is None else float(np.linalg.norm(error_vector))
+                            epsilon = result.get("epsilon")
+                            valid_result = _valid_prior_result(result)
+                            row = {
+                                "seed": seed, "graph_case": graph_case, "frame_index": frame_index,
+                                "robot_id": robot_id, "squad_local_index": local_index,
+                                "primary_statistics": frame_index != 0, "active_references": refs,
+                                "measurements": records, "truth_position": truth[robot_id].tolist(),
+                                "status": result["status"], "estimate": estimate,
+                                "covariance": result.get("covariance"), "epsilon": epsilon,
+                                "finite": valid_result is not None,
+                                "covariance_spd": valid_result is not None,
+                                "error_vector": error_vector, "error_norm": error_norm,
+                                "error_to_epsilon_ratio": None if error_norm is None or epsilon is None or epsilon <= 0 else error_norm / epsilon,
+                                "containment": None if error_norm is None or epsilon is None else error_norm <= epsilon,
+                                "phi_min_eigenvalue": result.get("phi_min_eigenvalue"), "phi_condition": result.get("phi_condition"),
+                                "iterations": result.get("iterations"), "cost": result.get("cost"),
+                                "failure_reason": result.get("failure_reason"), "failure": result.get("failure"),
+                                "transition": _transition(previous_active.get(robot_id), refs, epsilon, previous_epsilon.get(robot_id)),
+                            }
+                            row = _json_value(row)
+                            compressed.write(_strict_json_bytes(row) + b"\n")
+                            rows.append(row)
+                            previous[robot_id] = result
+                            previous_active[robot_id] = refs
+                            previous_epsilon[robot_id] = epsilon
+                        states[state_key] = (previous, previous_active, previous_epsilon)
+                compressed.flush()
+                if available_bytes(output_root) < HARD_FLOOR_BYTES:
+                    raise DiskSpaceError("live disk floor reached")
+                if allocated_bytes(output_root) > OUTPUT_ROOT_CAP_BYTES:
+                    termination_reason = "cache_root_cap"
+                    raise DiskSpaceError("output root cap reached")
+                if allocated_bytes(run_root) > RUN_CAP_BYTES:
+                    termination_reason = "cache_run_cap"
+                    raise DiskSpaceError("bundle cap reached")
+        summary = _summary(rows, len(seeds) * len(GRAPH_CASES) * number * len(frames))
+        summary_path.write_bytes(_strict_json_bytes(summary, indent=2) + b"\n")
+        markdown_path.write_text(_summary_markdown(summary))
+    except DiskSpaceError as caught:
+        error = caught
+        if termination_reason == "completed":
+            termination_reason = "disk_hard_floor"
+    except BaseException as caught:
+        error = caught
+        termination_reason = "runner_setup_error"
+    return terminal_manifest()
+
+
+def _safe_disk(path: Path) -> int | None:
+    try:
+        return available_bytes(path)
+    except BaseException:
+        return None
+
+
+def _safe_allocated(path: Path) -> int | None:
+    try:
+        return allocated_bytes(path)
+    except BaseException:
+        return None
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run the offline calibration evidence replay command."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--data", required=True, type=Path)
+    parser.add_argument("--manifest", required=True, type=Path)
+    parser.add_argument("--output-root", required=True, type=Path)
+    parser.add_argument("--seed", action="append", type=int, default=[])
+    parser.add_argument("--max-frames", type=int)
+    arguments = parser.parse_args(argv)
+    project_root = Path(__file__).resolve().parents[2]
+    try:
+        manifest = replay_calibration(arguments.data, arguments.manifest, arguments.output_root, arguments.seed, project_root, arguments.max_frames)
+    except (DiskSpaceError, ValueError, OSError) as error:
+        parser.error(str(error))
+    print(json.dumps(manifest, indent=2, allow_nan=False))
+    return 0 if manifest["termination_reason"] == "completed" else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
