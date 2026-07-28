@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(cbf)
 
 include(FeatureSummary)
+include(CTest)
 
 option(CXX "enable C++ compilation" ON)
 if(CXX)
@@ -96,6 +97,24 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
     add_executable(${TEST_EXECUTABLE} ${TEST_SOURCE})
     target_link_libraries(${TEST_EXECUTABLE} PRIVATE cbf_deps)
 endforeach()
+
+if(BUILD_TESTING)
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME testSwarmFailureExit
+            COMMAND
+                ${CMAKE_COMMAND} -E env
+                CBF_SWARM_BINARY=$<TARGET_FILE:Swarm>
+                ${Python3_EXECUTABLE} -m unittest
+                tests.test_swarm_failure_exit -v
+        )
+        set_tests_properties(
+            testSwarmFailureExit
+            PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        )
+    endif()
+endif()
 
 message(STATUS "")
 message(STATUS "=== Optimizer Summary ===")

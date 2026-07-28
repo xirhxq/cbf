@@ -3,6 +3,7 @@
 
 #include "Robot.hpp"
 
+#include <exception>
 
 class Swarm {
 public:
@@ -271,6 +272,7 @@ public:
             for (auto &robot: robots) robot->presetCBF();
         }
 
+        std::exception_ptr loopFailure;
         while (robots[0]->runtime < tTotal) {
             try {
                 if (robots[0]->runtime > 0.0) {
@@ -312,19 +314,9 @@ public:
                 for (auto &robot: robots) robot->stepTimeForward(tStep);
             }
             catch (...) {
+                loopFailure = std::current_exception();
                 for (auto &robot: robots) robot->updateGridWorld();
                 logOnce();
-                endLog();
-                printf("Data so far has been saved in %s\n", filename.c_str());
-                try {
-                    throw;
-                }
-                catch (std::exception &e) {
-                    std::cerr << e.what() << std::endl;
-                }
-                catch (...) {
-                    std::cerr << "Unknown error" << std::endl;
-                }
                 break;
             }
         }
@@ -333,9 +325,16 @@ public:
         output();
         endLog();
 
-        printf("Data saved in %s\n", filename.c_str());
+        if (loopFailure) {
+            printf("Data so far has been saved in %s\n", filename.c_str());
+        } else {
+            printf("Data saved in %s\n", filename.c_str());
+        }
         std::cout << "[OUTPUT_DIR] " << outputDir << std::endl;
 
+        if (loopFailure) {
+            std::rethrow_exception(loopFailure);
+        }
     }
 
 private:
