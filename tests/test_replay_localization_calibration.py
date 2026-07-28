@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import numpy as np
 
+import scripts.diagnostics.replay_localization_calibration as replay_module
 from scripts.diagnostics.replay_localization_calibration import (
     active_references,
     fixed_references,
@@ -584,6 +585,7 @@ class ReplayEvidenceBundleTests(unittest.TestCase):
             "bases": [[0.0, 0.0], [4.0, 0.0], [0.0, 4.0]],
             "initial": {"position": {"positions": [[1.0, 1.0], [2.0, 1.0], [1.0, 2.0], [2.0, 2.0]]}},
             "execute": {"random-seed": 9},
+            "position_covariance": {"ranging_sigma": 0.5},
             "cbfs": {"without-slack": {"comm-fixed": {
                 "max-range": 20.0,
                 "min-neighbour-id-offset": -2,
@@ -626,6 +628,12 @@ class ReplayEvidenceBundleTests(unittest.TestCase):
             )
             self.assertFalse((Path(first["output_dir"]) / "data.json").exists())
             self.assertFalse((Path(first["output_dir"]) / "source-snapshot.tar.gz").exists())
+            self.assertEqual(first["settings"]["run_seeds"], [17])
+            self.assertEqual(first["settings"]["ranging_sigma"], 0.5)
+            self.assertEqual(first["settings"]["graph_cases"], ["dynamic_dag_wnls", "fixed_refs_wnls"])
+            self.assertEqual(first["settings"]["max_frames"], None)
+            self.assertIn("implementation", first["settings"])
+            self.assertIn("lm_fim", first["settings"])
             with gzip.open(Path(first["output_dir"]) / "calibration.jsonl.gz", "rt") as source:
                 first_rows = [json.loads(line) for line in source]
             with gzip.open(Path(second["output_dir"]) / "calibration.jsonl.gz", "rt") as source:
@@ -635,6 +643,14 @@ class ReplayEvidenceBundleTests(unittest.TestCase):
             self.assertTrue(all("active_references" in row for row in first_rows))
             self.assertTrue(all("measurements" in row for row in first_rows))
             self.assertTrue(all("transition" in row for row in first_rows))
+            self.assertTrue(all("attempt_status" in row for row in first_rows))
+            self.assertTrue(
+                all(
+                    isinstance(row["containment"], bool)
+                    for row in first_rows
+                    if row["primary_statistics"]
+                )
+            )
             self.assertTrue(all(not row["primary_statistics"] for row in first_rows if row["frame_index"] == 0))
             by_edge = {}
             for row in first_rows:
@@ -646,6 +662,126 @@ class ReplayEvidenceBundleTests(unittest.TestCase):
                 json.loads((Path(first["output_dir"]) / "summary.json").read_text()),
                 json.loads((Path(second["output_dir"]) / "summary.json").read_text()),
             )
+            decompressed = gzip.decompress(
+                (Path(first["output_dir"]) / "calibration.jsonl.gz").read_bytes()
+            )
+            self.assertEqual(
+                first["decompressed_process_sha256"],
+                hashlib.sha256(decompressed).hexdigest(),
+            )
+            self.assertEqual(
+                first["compressed_process_sha256"],
+                hashlib.sha256(
+                    (Path(first["output_dir"]) / "calibration.jsonl.gz").read_bytes()
+                ).hexdigest(),
+            )
+            self.assertEqual(
+                first["decompressed_process_sha256"],
+                second["decompressed_process_sha256"],
+            )
+            summary = json.loads((Path(first["output_dir"]) / "summary.json").read_text())
+            self.assertEqual(summary["settings"], first["settings"])
+            self.assertEqual(
+                summary["graph_cases"]["dynamic_dag_wnls"]["initialization_frame"]["robot_frame_count"],
+                4,
+            )
+
+    def test_attempt_failures_reduce_containment_and_no_worse_rates(self):
+        """Breaks if stale retained state hides current failures or inflates coverage."""
+        samples = replay_module._SummarySamples(6, [17])
+        template = {
+            "seed": 17,
+            "graph_case": "dynamic_dag_wnls",
+            "squad_local_index": 1,
+            "primary_statistics": True,
+            "status": "stale",
+            "attempt_status": "invalid",
+            "containment": False,
+            "error_to_epsilon_ratio": None,
+            "phi_min_eigenvalue": None,
+            "phi_condition": None,
+            "epsilon": None,
+            "transition": {"changed": False, "epsilon_change": None},
+        }
+        samples.add({**template, "graph_case": "dynamic_dag_wnls", "status": "converged", "attempt_status": "converged", "containment": True})
+        samples.add(template)
+        samples.add({**template, "attempt_status": "failed"})
+        for attempt_status in ("converged", "invalid", "converged"):
+            samples.add({**template, "graph_case": "fixed_refs_wnls", "status": attempt_status, "attempt_status": attempt_status, "containment": attempt_status == "converged"})
+
+        summary = replay_module._summary(samples, 6, {"run_seeds": [17]})
+        dynamic = summary["graph_cases"]["dynamic_dag_wnls"]["overall"]
+
+        self.assertEqual(dynamic["containment_denominator"], 3)
+        self.assertEqual(dynamic["containment_rate"], 1 / 3)
+        self.assertEqual(dynamic["attempt_status_counts"]["invalid"], 1)
+        self.assertEqual(dynamic["attempt_status_counts"]["failed"], 1)
+        self.assertFalse(summary["adequacy"]["aggregate_containment_at_least_0_98"])
+        self.assertFalse(summary["adequacy"]["dynamic_failure_rate_no_worse"])
+        self.assertEqual(
+            summary["graph_cases"]["dynamic_dag_wnls"]["containment_bootstrap_95"]["lower"],
+            1 / 3,
+        )
+
+    def test_reference_input_records_all_edges_before_upstream_validation(self):
+        """Breaks if one missing estimate truncates later physical edge evidence."""
+        with tempfile.TemporaryDirectory() as temporary:
+            data_path, _ = self._fixture(Path(temporary))
+            config = json.loads(data_path.read_text())["config"]
+            truth = {index: np.asarray(position) for index, position in enumerate(config["initial"]["position"]["positions"], 1)}
+            references = {"base_ids": [0, 1], "uav_ids": [1, 2]}
+
+            *_, records, error = replay_module._reference_inputs(
+                references, config, truth, {}, 17, 1, 3, 0.5
+            )
+
+        self.assertEqual(error, "invalid upstream UAV reference")
+        self.assertEqual([(record["kind"], record["id"]) for record in records], [("base", 0), ("base", 1), ("uav", 1), ("uav", 2)])
+        self.assertTrue(all(record["true_range"] is not None for record in records))
+        self.assertTrue(all(record["noisy_range"] is not None for record in records))
+
+    def test_compact_summary_storage_scales_to_registered_row_count(self):
+        """Breaks if the 280k-row replay retains nested process dictionaries."""
+        samples = replay_module._SummarySamples(280_000, list(range(20)))
+
+        self.assertLess(samples.nbytes, 32_000_000)
+        self.assertFalse(hasattr(samples, "rows"))
+
+    def test_duplicate_seeds_and_non_preregistered_sigma_are_rejected(self):
+        """Breaks if summary keys overwrite duplicate seeds or input sigma silently drifts."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project_root = root / "project"
+            project_root.mkdir()
+            data_path, manifest_path = self._fixture(root)
+            with self.assertRaisesRegex(ValueError, "duplicate"):
+                replay_calibration(data_path, manifest_path, root / "duplicate", [17, 17], project_root)
+            data = json.loads(data_path.read_text())
+            data["config"]["position_covariance"]["ranging_sigma"] = 0.6
+            data_path.write_text(json.dumps(data))
+            with self.assertRaisesRegex(ValueError, "preregistered"):
+                replay_calibration(data_path, manifest_path, root / "sigma", [17], project_root)
+
+    def test_process_control_exceptions_propagate_instead_of_becoming_setup_error(self):
+        """Breaks if process-control interrupts are caught as ordinary replay failures."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project_root = root / "project"
+            project_root.mkdir()
+            data_path, manifest_path = self._fixture(root)
+            for exception in (KeyboardInterrupt(), SystemExit(3)):
+                with self.subTest(exception=type(exception).__name__), patch.object(
+                    replay_module,
+                    "_truth_positions",
+                    side_effect=exception,
+                ), self.assertRaises(type(exception)):
+                    replay_calibration(
+                        data_path,
+                        manifest_path,
+                        root / type(exception).__name__,
+                        [17],
+                        project_root,
+                    )
 
     def test_live_disk_floor_writes_terminal_manifest(self):
         """Breaks if a post-frame disk guard exits without an inspectable manifest."""
@@ -657,7 +793,12 @@ class ReplayEvidenceBundleTests(unittest.TestCase):
             data_path, manifest_path = self._fixture(root)
             with patch(
                 "scripts.diagnostics.replay_localization_calibration.available_bytes",
-                side_effect=[9_000_000_000, 5_999_999_999],
+                side_effect=[
+                    9_000_000_000,
+                    7_000_000_000,
+                    5_999_999_999,
+                    7_000_000_000,
+                ],
             ):
                 result = replay_calibration(
                     data_path, manifest_path, output_root, [17], project_root
@@ -686,6 +827,51 @@ class ReplayEvidenceBundleTests(unittest.TestCase):
                     )
                 self.assertEqual(result["termination_reason"], expected)
                 self.assertTrue((Path(result["output_dir"]) / "manifest.json").exists())
+
+    def test_preexisting_root_cap_stops_before_process_rows(self):
+        """Breaks if an already oversized evidence root begins replay processing."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project_root = root / "project"
+            output_root = root / "output"
+            project_root.mkdir()
+            output_root.mkdir()
+            data_path, manifest_path = self._fixture(root)
+
+            def allocation(path):
+                return 2_000_000_001 if Path(path) == output_root else 0
+
+            with patch.object(replay_module, "allocated_bytes", side_effect=allocation):
+                result = replay_calibration(data_path, manifest_path, output_root, [17], project_root)
+
+            self.assertEqual(result["termination_reason"], "cache_root_cap")
+            self.assertFalse((Path(result["output_dir"]) / "calibration.jsonl.gz").exists())
+            self.assertTrue((Path(result["output_dir"]) / "manifest.json").exists())
+
+    def test_summary_induced_cap_cannot_leave_completed_manifest(self):
+        """Breaks if retained summary output can cross the cap after the last frame."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project_root = root / "project"
+            output_root = root / "output"
+            project_root.mkdir()
+            data_path, manifest_path = self._fixture(root)
+            run_probes = 0
+
+            def allocation(path):
+                nonlocal run_probes
+                if Path(path).name.count("_"):
+                    run_probes += 1
+                    return 250_000_001 if run_probes >= 5 else 0
+                return 0
+
+            with patch.object(replay_module, "allocated_bytes", side_effect=allocation):
+                result = replay_calibration(data_path, manifest_path, output_root, [17], project_root)
+
+            self.assertEqual(result["termination_reason"], "cache_run_cap")
+            self.assertTrue((Path(result["output_dir"]) / "summary.json").exists())
+            stored = json.loads((Path(result["output_dir"]) / "manifest.json").read_text())
+            self.assertEqual(stored["termination_reason"], "cache_run_cap")
 
 
 if __name__ == "__main__":

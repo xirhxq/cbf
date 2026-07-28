@@ -470,7 +470,12 @@ def solve_later_frame(
 
 
 GRAPH_CASES = ("dynamic_dag_wnls", "fixed_refs_wnls")
-RANGING_SIGMA = 0.5
+PREREGISTERED_RANGING_SIGMA = 0.5
+IMPLEMENTATION_ID = "cbf2026-localization-calibration-v2"
+BOOTSTRAP_RESAMPLES = 10_000
+BOOTSTRAP_SEED = 20260728
+_STATUS_CODES = {"converged": 0, "stale": 1, "invalid": 2, "failed": 3}
+_CODE_STATUSES = {code: status for status, code in _STATUS_CODES.items()}
 
 
 def _strict_load(path: Path) -> dict:
@@ -560,11 +565,14 @@ def _reference_inputs(
     seed: int,
     frame_index: int,
     observer_id: int,
+    ranging_sigma: float,
 ) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None, list[dict], str | None]:
+    """Record every physical edge before validating estimated DAG inputs."""
     positions = []
     covariances = []
     measurements = []
     records = []
+    errors = []
     observer_truth = truth[observer_id]
     for kind, identifiers in (("base", references["base_ids"]), ("uav", references["uav_ids"])):
         for reference_id in identifiers:
@@ -572,32 +580,53 @@ def _reference_inputs(
                 try:
                     reference_truth = np.asarray(config["bases"][reference_id], dtype=float)
                 except (IndexError, KeyError, TypeError, ValueError):
-                    return None, None, None, records, "invalid base reference"
-                reference_position = reference_truth
-                covariance = np.zeros((2, 2), dtype=float)
+                    reference_truth = None
             else:
-                reference_truth = truth[reference_id]
-                upstream = current.get(reference_id)
-                valid = _valid_prior_result(upstream)
-                if valid is None:
-                    return None, None, None, records, "invalid upstream UAV reference"
-                reference_position, covariance, _, _, _ = valid
-            true_range = float(np.linalg.norm(observer_truth - reference_truth))
+                reference_truth = truth.get(reference_id)
+            truth_available = (
+                reference_truth is not None
+                and np.asarray(reference_truth).shape == (2,)
+                and np.isfinite(reference_truth).all()
+            )
+            true_range = (
+                float(np.linalg.norm(observer_truth - reference_truth))
+                if truth_available
+                else None
+            )
             noise = float(np.random.default_rng(stable_measurement_seed(
                 seed, frame_index, observer_id, kind, reference_id
-            )).normal(0.0, RANGING_SIGMA))
-            noisy_range = true_range + noise
-            positions.append(reference_position)
-            covariances.append(covariance)
-            measurements.append(noisy_range)
+            )).normal(0.0, ranging_sigma))
+            noisy_range = None if true_range is None else true_range + noise
+
+            estimated_available = False
+            if kind == "base" and truth_available:
+                reference_position = np.asarray(reference_truth, dtype=float)
+                covariance = np.zeros((2, 2), dtype=float)
+                estimated_available = True
+            elif kind == "uav":
+                valid = _valid_prior_result(current.get(reference_id))
+                if valid is not None:
+                    reference_position, covariance, _, _, _ = valid
+                    estimated_available = True
+            if truth_available and estimated_available:
+                positions.append(reference_position)
+                covariances.append(covariance)
+                measurements.append(noisy_range)
+            elif not truth_available:
+                errors.append("invalid reference truth")
+            else:
+                errors.append("invalid upstream UAV reference")
             records.append({
                 "kind": kind,
                 "id": int(reference_id),
                 "true_range": true_range,
                 "noise": noise,
                 "noisy_range": noisy_range,
+                "estimated_reference_available": estimated_available,
             })
-    if len(positions) < 2:
+    if errors:
+        return None, None, None, records, errors[0]
+    if len(records) < 2:
         return None, None, None, records, "fewer than two active references"
     return np.asarray(positions), np.asarray(covariances), np.asarray(measurements), records, None
 
@@ -610,72 +639,219 @@ def _transition(previous: dict[str, list[int]] | None, active: dict[str, list[in
     }
 
 
-def _finite(values):
-    return [float(value) for value in values if value is not None and math.isfinite(float(value))]
-
-
 def _quantiles(values, percents):
-    values = _finite(values)
-    return {str(percent): (None if not values else float(np.percentile(values, percent))) for percent in percents}
-
-
-def _stats(rows: list[dict]) -> dict:
-    primary = [row for row in rows if row["primary_statistics"]]
-    statuses = {status: sum(row["status"] == status for row in primary) for status in ("converged", "stale", "invalid", "failed")}
-    containments = [row["containment"] for row in primary if row["containment"] is not None]
-    ratios = [row["error_to_epsilon_ratio"] for row in primary]
-    transitions = [row for row in rows if row["transition"]["changed"]]
-    epsilon_changes = [row["transition"]["epsilon_change"] for row in transitions]
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite)]
     return {
-        "robot_frame_count": len(primary),
-        "status_counts": statuses,
-        "containment_count": sum(containments),
-        "containment_denominator": len(containments),
-        "containment_rate": None if not containments else sum(containments) / len(containments),
-        "error_to_epsilon_ratio": {**_quantiles(ratios, (50, 95, 99)), "max": None if not _finite(ratios) else max(_finite(ratios))},
-        "phi_min_eigenvalue": _quantiles([row["phi_min_eigenvalue"] for row in primary], (1, 5, 50)),
-        "phi_condition": {**_quantiles([row["phi_condition"] for row in primary], (50, 95, 99)), "max": None if not _finite([row["phi_condition"] for row in primary]) else max(_finite([row["phi_condition"] for row in primary]))},
-        "epsilon": {**_quantiles([row["epsilon"] for row in primary], (50, 95, 99)), "max": None if not _finite([row["epsilon"] for row in primary]) else max(_finite([row["epsilon"] for row in primary]))},
-        "transition_count": len(transitions),
-        "epsilon_changes": epsilon_changes,
+        str(percent): (
+            None if not finite.size else float(np.percentile(finite, percent))
+        )
+        for percent in percents
     }
+
+
+class _SummarySamples:
+    """Fixed-size compact scalar storage; nested process rows are never retained."""
+
+    DTYPE = np.dtype(
+        [
+            ("seed", "<i8"),
+            ("case", "u1"),
+            ("depth", "<u2"),
+            ("primary", "?"),
+            ("retained_status", "u1"),
+            ("attempt_status", "u1"),
+            ("containment", "?"),
+            ("ratio", "<f8"),
+            ("phi_min", "<f8"),
+            ("condition", "<f8"),
+            ("epsilon", "<f8"),
+            ("transition", "?"),
+            ("epsilon_change", "<f8"),
+        ]
+    )
+
+    def __init__(self, capacity: int, seeds: list[int]):
+        self._data = np.empty(capacity, dtype=self.DTYPE)
+        self._count = 0
+        self.seeds = tuple(seeds)
+
+    @property
+    def nbytes(self) -> int:
+        return int(self._data.nbytes)
+
+    @property
+    def count(self) -> int:
+        return self._count
+
+    @property
+    def data(self) -> np.ndarray:
+        return self._data[: self._count]
+
+    def add(self, row: dict) -> None:
+        if self._count >= len(self._data):
+            raise ValueError("more process rows than the registered capacity")
+        transition = row["transition"]
+        self._data[self._count] = (
+            int(row["seed"]),
+            GRAPH_CASES.index(row["graph_case"]),
+            int(row["squad_local_index"]),
+            bool(row["primary_statistics"]),
+            _STATUS_CODES[row["status"]],
+            _STATUS_CODES[row["attempt_status"]],
+            bool(row["containment"]),
+            _sample_float(row.get("error_to_epsilon_ratio")),
+            _sample_float(row.get("phi_min_eigenvalue")),
+            _sample_float(row.get("phi_condition")),
+            _sample_float(row.get("epsilon")),
+            bool(transition["changed"]),
+            _sample_float(transition.get("epsilon_change")),
+        )
+        self._count += 1
+
+
+def _sample_float(value) -> float:
+    if value is None:
+        return math.nan
+    converted = float(value)
+    return converted if math.isfinite(converted) else math.nan
+
+
+def _stats(data: np.ndarray) -> dict:
+    retained_statuses = {
+        status: int(np.count_nonzero(data["retained_status"] == code))
+        for code, status in _CODE_STATUSES.items()
+    }
+    attempt_statuses = {
+        status: int(np.count_nonzero(data["attempt_status"] == code))
+        for code, status in _CODE_STATUSES.items()
+    }
+    denominator = len(data)
+    ratios = data["ratio"]
+    conditions = data["condition"]
+    epsilons = data["epsilon"]
+    epsilon_changes = data["epsilon_change"][data["transition"]]
+    finite_changes = epsilon_changes[np.isfinite(epsilon_changes)]
+    return {
+        "robot_frame_count": denominator,
+        "status_counts": retained_statuses,
+        "attempt_status_counts": attempt_statuses,
+        "containment_count": int(np.count_nonzero(data["containment"])),
+        "containment_denominator": denominator,
+        "containment_rate": (
+            None
+            if denominator == 0
+            else float(np.count_nonzero(data["containment"]) / denominator)
+        ),
+        "error_to_epsilon_ratio": {
+            **_quantiles(ratios, (50, 95, 99)),
+            "max": _finite_max(ratios),
+        },
+        "phi_min_eigenvalue": _quantiles(data["phi_min"], (1, 5, 50)),
+        "phi_condition": {
+            **_quantiles(conditions, (50, 95, 99)),
+            "max": _finite_max(conditions),
+        },
+        "epsilon": {
+            **_quantiles(epsilons, (50, 95, 99)),
+            "max": _finite_max(epsilons),
+        },
+        "transition_count": int(np.count_nonzero(data["transition"])),
+        "epsilon_changes": {
+            "finite_count": int(finite_changes.size),
+            "minimum": _finite_min(finite_changes),
+            "maximum": _finite_max(finite_changes),
+            "mean": (
+                None if not finite_changes.size else float(np.mean(finite_changes))
+            ),
+            **_quantiles(finite_changes, (5, 50, 95)),
+        },
+    }
+
+
+def _finite_min(values) -> float | None:
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    return None if not values.size else float(np.min(values))
+
+
+def _finite_max(values) -> float | None:
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    return None if not values.size else float(np.max(values))
 
 
 def _bootstrap(seed_rates: list[float | None]) -> dict:
     usable = np.asarray([rate for rate in seed_rates if rate is not None], dtype=float)
     if not len(usable):
-        return {"resamples": 10000, "rng_seed": 20260728, "lower": None, "upper": None}
-    samples = np.random.default_rng(20260728).choice(usable, size=(10000, len(usable)), replace=True).mean(axis=1)
-    return {"resamples": 10000, "rng_seed": 20260728, "lower": float(np.percentile(samples, 2.5)), "upper": float(np.percentile(samples, 97.5))}
+        return {
+            "resamples": BOOTSTRAP_RESAMPLES,
+            "rng_seed": BOOTSTRAP_SEED,
+            "lower": None,
+            "upper": None,
+        }
+    samples = np.random.default_rng(BOOTSTRAP_SEED).choice(
+        usable,
+        size=(BOOTSTRAP_RESAMPLES, len(usable)),
+        replace=True,
+    ).mean(axis=1)
+    return {
+        "resamples": BOOTSTRAP_RESAMPLES,
+        "rng_seed": BOOTSTRAP_SEED,
+        "lower": float(np.percentile(samples, 2.5)),
+        "upper": float(np.percentile(samples, 97.5)),
+    }
 
 
-def _summary(rows: list[dict], expected_count: int) -> dict:
+def _summary(
+    samples: _SummarySamples,
+    expected_count: int,
+    settings: dict,
+) -> dict:
+    data = samples.data
     cases = {}
-    for case in GRAPH_CASES:
-        case_rows = [row for row in rows if row["graph_case"] == case]
+    for case_index, case in enumerate(GRAPH_CASES):
+        case_data = data[data["case"] == case_index]
+        primary = case_data[case_data["primary"]]
+        initialization = case_data[~case_data["primary"]]
         by_seed = {}
         by_depth = {}
-        for seed in sorted({row["seed"] for row in case_rows}):
-            by_seed[str(seed)] = _stats([row for row in case_rows if row["seed"] == seed])
-        for depth in sorted({row["squad_local_index"] for row in case_rows}):
-            by_depth[str(depth)] = _stats([row for row in case_rows if row["squad_local_index"] == depth])
-        cases[case] = {"overall": _stats(case_rows), "by_seed": by_seed, "by_squad_local_depth": by_depth, "containment_bootstrap_95": _bootstrap([item["containment_rate"] for item in by_seed.values()])}
+        for seed in samples.seeds:
+            by_seed[str(seed)] = _stats(primary[primary["seed"] == seed])
+        for depth in sorted(np.unique(case_data["depth"]).tolist()):
+            by_depth[str(depth)] = _stats(primary[primary["depth"] == depth])
+        cases[case] = {
+            "overall": _stats(primary),
+            "initialization_frame": _stats(initialization),
+            "by_seed": by_seed,
+            "by_squad_local_depth": by_depth,
+            "containment_bootstrap_95": _bootstrap(
+                [item["containment_rate"] for item in by_seed.values()]
+            ),
+        }
     dynamic = cases["dynamic_dag_wnls"]["overall"]
     fixed = cases["fixed_refs_wnls"]["overall"]
     depth_rates = [item["containment_rate"] for item in cases["dynamic_dag_wnls"]["by_squad_local_depth"].values() if item["containment_rate"] is not None]
-    dynamic_invalid = dynamic["status_counts"]["invalid"] / max(1, dynamic["robot_frame_count"])
-    fixed_invalid = fixed["status_counts"]["invalid"] / max(1, fixed["robot_frame_count"])
-    dynamic_failed = dynamic["status_counts"]["failed"] / max(1, dynamic["robot_frame_count"])
-    fixed_failed = fixed["status_counts"]["failed"] / max(1, fixed["robot_frame_count"])
+    dynamic_invalid = dynamic["attempt_status_counts"]["invalid"] / max(1, dynamic["robot_frame_count"])
+    fixed_invalid = fixed["attempt_status_counts"]["invalid"] / max(1, fixed["robot_frame_count"])
+    dynamic_failed = dynamic["attempt_status_counts"]["failed"] / max(1, dynamic["robot_frame_count"])
+    fixed_failed = fixed["attempt_status_counts"]["failed"] / max(1, fixed["robot_frame_count"])
     adequacy = {
         "aggregate_containment_at_least_0_98": dynamic["containment_rate"] is not None and dynamic["containment_rate"] >= 0.98,
         "every_depth_containment_at_least_0_95": bool(depth_rates) and min(depth_rates) >= 0.95,
-        "zero_silently_discarded_failures": len(rows) == expected_count,
+        "zero_silently_discarded_failures": samples.count == expected_count,
         "dynamic_invalid_rate_no_worse": dynamic_invalid <= fixed_invalid,
         "dynamic_failure_rate_no_worse": dynamic_failed <= fixed_failed,
     }
     adequacy["passed"] = all(adequacy.values())
-    return {"graph_cases": cases, "expected_process_rows": expected_count, "process_rows": len(rows), "adequacy": adequacy}
+    return {
+        "settings": settings,
+        "graph_cases": cases,
+        "expected_process_rows": expected_count,
+        "process_rows": samples.count,
+        "summary_scalar_storage_bytes": samples.nbytes,
+        "adequacy": adequacy,
+    }
 
 
 def _summary_markdown(summary: dict) -> str:
@@ -683,6 +859,101 @@ def _summary_markdown(summary: dict) -> str:
     return "# Localization calibration replay\n\n" + "\n".join(
         f"- {key}: {value}" for key, value in adequacy.items()
     ) + "\n"
+
+
+class _ReplayLimitError(DiskSpaceError):
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _limit_reason(output_root: Path, run_root: Path) -> str | None:
+    if available_bytes(output_root) < HARD_FLOOR_BYTES:
+        return "disk_hard_floor"
+    if allocated_bytes(output_root) > OUTPUT_ROOT_CAP_BYTES:
+        return "cache_root_cap"
+    if allocated_bytes(run_root) > RUN_CAP_BYTES:
+        return "cache_run_cap"
+    return None
+
+
+def _enforce_limits(output_root: Path, run_root: Path) -> None:
+    reason = _limit_reason(output_root, run_root)
+    if reason is not None:
+        raise _ReplayLimitError(reason)
+
+
+def _parse_ranging_sigma(config: dict) -> float:
+    try:
+        raw = np.asarray(config["position_covariance"]["ranging_sigma"])
+        if raw.ndim != 0:
+            raise ValueError
+        sigma = float(raw)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        raise ValueError(
+            "config.position_covariance.ranging_sigma must be a finite scalar"
+        ) from None
+    if not math.isfinite(sigma) or sigma <= 0.0:
+        raise ValueError(
+            "config.position_covariance.ranging_sigma must be positive and finite"
+        )
+    if sigma != PREREGISTERED_RANGING_SIGMA:
+        raise ValueError(
+            "ranging sigma differs from preregistered 0.5 m setting"
+        )
+    return sigma
+
+
+def _settings(
+    seeds: list[int],
+    max_frames: int | None,
+    effective_frames: int,
+    ranging_sigma: float,
+) -> dict:
+    implementation_path = Path(__file__).resolve()
+    return {
+        "run_seeds": seeds,
+        "graph_cases": list(GRAPH_CASES),
+        "max_frames": max_frames,
+        "effective_frame_count": effective_frames,
+        "ranging_sigma": ranging_sigma,
+        "lm_fim": {
+            "max_iterations": MAX_ITERATIONS,
+            "initial_damping": INITIAL_DAMPING,
+            "step_tolerance": STEP_TOLERANCE,
+            "cost_tolerance": COST_TOLERANCE,
+            "range_epsilon": RANGE_EPSILON,
+            "relative_spectral_threshold": RELATIVE_SPECTRAL_THRESHOLD,
+            "epsilon_sigma_multiplier": 3.0,
+            "bootstrap_resamples": BOOTSTRAP_RESAMPLES,
+            "bootstrap_seed": BOOTSTRAP_SEED,
+        },
+        "implementation": {
+            "identity": IMPLEMENTATION_ID,
+            "path": str(implementation_path),
+            "sha256": _sha256(implementation_path),
+        },
+    }
+
+
+def _retained_after_attempt(previous_result: dict | None, attempt: dict) -> dict:
+    valid_prior = _valid_prior_result(previous_result)
+    if valid_prior is None:
+        return attempt
+    estimate, covariance, epsilon, phi_minimum, phi_condition = valid_prior
+    stale = _result(
+        "stale",
+        estimate=estimate,
+        covariance=covariance,
+        epsilon=epsilon,
+        phi_min_eigenvalue=phi_minimum,
+        phi_condition=phi_condition,
+        iterations=attempt["iterations"],
+        cost=attempt["cost"],
+        failure_reason=attempt["failure_reason"],
+    )
+    stale["failure"] = attempt
+    return stale
 
 
 def replay_calibration(data_path, manifest_path, output_root, run_seeds, project_root, max_frames=None) -> dict:
@@ -703,6 +974,7 @@ def replay_calibration(data_path, manifest_path, output_root, run_seeds, project
     if number <= 0 or parts <= 0:
         raise ValueError("num and formation parts must be positive")
     frames = _frames(data)
+    input_frame_count = len(frames)
     if max_frames is not None:
         if not isinstance(max_frames, int) or max_frames <= 0:
             raise ValueError("max_frames must be a positive integer")
@@ -711,19 +983,26 @@ def replay_calibration(data_path, manifest_path, output_root, run_seeds, project
     if not seeds:
         raise ValueError("at least one run seed is required")
     seeds = [int(seed) for seed in seeds]
+    if len(seeds) != len(set(seeds)):
+        raise ValueError("duplicate run seeds are not allowed")
+    ranging_sigma = _parse_ranging_sigma(config)
     expected_ids = set(range(1, number + 1))
     deployment = _initial_positions(config, expected_ids)
+    settings = _settings(seeds, max_frames, len(frames), ranging_sigma)
     run_root = _allocate_run_root(output_root / "localization-calibration")
     started_at = datetime.now(timezone.utc).isoformat()
     process_path = run_root / "calibration.jsonl.gz"
     summary_path = run_root / "summary.json"
     markdown_path = run_root / "summary.md"
-    rows = []
+    expected_count = len(seeds) * len(GRAPH_CASES) * number * len(frames)
+    samples = _SummarySamples(expected_count, seeds)
     termination_reason = "completed"
     error = None
     states = {}
+    decompressed_digest = hashlib.sha256()
 
     def terminal_manifest():
+        nonlocal termination_reason, error
         manifest = {
             "termination_reason": termination_reason,
             "output_dir": str(run_root),
@@ -737,16 +1016,42 @@ def replay_calibration(data_path, manifest_path, output_root, run_seeds, project
             "bundle_allocated_bytes": _safe_allocated(run_root),
             "output_root_cap_bytes": OUTPUT_ROOT_CAP_BYTES,
             "bundle_cap_bytes": RUN_CAP_BYTES,
-            "process_sha256": _sha256(process_path) if process_path.exists() else None,
+            "settings": settings,
+            "input_frame_count": input_frame_count,
+            "compressed_process_sha256": _sha256(process_path) if process_path.exists() else None,
+            "decompressed_process_sha256": (
+                decompressed_digest.hexdigest() if process_path.exists() else None
+            ),
             "summary_json_sha256": _sha256(summary_path) if summary_path.exists() else None,
             "summary_markdown_sha256": _sha256(markdown_path) if markdown_path.exists() else None,
         }
         if error is not None:
             manifest["error"] = {"type": type(error).__name__, "message": str(error)}
         _write_manifest(run_root, _json_value(manifest))
+        try:
+            final_reason = _limit_reason(output_root, run_root)
+        except Exception as probe_error:
+            if termination_reason == "completed":
+                termination_reason = "runner_setup_error"
+                error = probe_error
+                manifest["termination_reason"] = termination_reason
+                manifest["error"] = {
+                    "type": type(probe_error).__name__,
+                    "message": str(probe_error),
+                }
+                _write_manifest(run_root, _json_value(manifest))
+            return manifest
+        if termination_reason == "completed" and final_reason is not None:
+            termination_reason = final_reason
+            manifest["termination_reason"] = final_reason
+            manifest["free_bytes_after"] = _safe_disk(output_root)
+            manifest["output_root_allocated_bytes"] = _safe_allocated(output_root)
+            manifest["bundle_allocated_bytes"] = _safe_allocated(run_root)
+            _write_manifest(run_root, _json_value(manifest))
         return manifest
 
     try:
+        _enforce_limits(output_root, run_root)
         with process_path.open("wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as compressed:
             for frame_index, frame in enumerate(frames):
                 truth = _truth_positions(frame, expected_ids)
@@ -759,66 +1064,100 @@ def replay_calibration(data_path, manifest_path, output_root, run_seeds, project
                         for robot_id in range(1, number + 1):
                             local_index = (robot_id - 1) % squad_size + 1
                             refs = active_references(config, robot_id, truth) if graph_case == "dynamic_dag_wnls" else fixed_references(config, robot_id)
-                            inputs = _reference_inputs(refs, config, truth, previous, seed, frame_index, robot_id)
+                            inputs = _reference_inputs(
+                                refs,
+                                config,
+                                truth,
+                                previous,
+                                seed,
+                                frame_index,
+                                robot_id,
+                                ranging_sigma,
+                            )
                             reference_positions, reference_covariances, measurements, records, input_error = inputs
                             initial = deployment[robot_id] if frame_index == 0 else np.asarray(previous.get(robot_id, {}).get("estimate", deployment[robot_id]), dtype=float)
                             if input_error is not None:
-                                result = _invalid_result(input_error)
-                                if frame_index > 0:
-                                    valid = _valid_prior_result(previous.get(robot_id))
-                                    if valid is not None:
-                                        estimate, covariance, epsilon, phi_minimum, phi_condition = valid
-                                        result = _result("stale", estimate=estimate, covariance=covariance, epsilon=epsilon, phi_min_eigenvalue=phi_minimum, phi_condition=phi_condition, failure_reason=input_error)
+                                attempt = _invalid_result(input_error)
+                                result = (
+                                    attempt
+                                    if frame_index == 0
+                                    else _retained_after_attempt(
+                                        previous.get(robot_id), attempt
+                                    )
+                                )
                             elif frame_index == 0:
-                                result = solve_wnls(reference_positions, reference_covariances, measurements, initial, RANGING_SIGMA)
+                                attempt = solve_wnls(reference_positions, reference_covariances, measurements, initial, ranging_sigma)
+                                result = attempt
                             else:
-                                result = solve_later_frame(previous.get(robot_id), reference_positions, reference_covariances, measurements, initial, RANGING_SIGMA)
+                                result = solve_later_frame(
+                                    previous.get(robot_id),
+                                    reference_positions,
+                                    reference_covariances,
+                                    measurements,
+                                    initial,
+                                    ranging_sigma,
+                                )
+                                attempt = (
+                                    result["failure"]
+                                    if result["status"] == "stale"
+                                    else result
+                                )
                             estimate = result.get("estimate")
                             error_vector = None if estimate is None else (truth[robot_id] - np.asarray(estimate, dtype=float)).tolist()
                             error_norm = None if error_vector is None else float(np.linalg.norm(error_vector))
                             epsilon = result.get("epsilon")
                             valid_result = _valid_prior_result(result)
+                            state_containment = (
+                                None
+                                if error_norm is None or epsilon is None
+                                else error_norm <= epsilon
+                            )
+                            containment = (
+                                attempt["status"] == "converged"
+                                and state_containment is True
+                            )
                             row = {
                                 "seed": seed, "graph_case": graph_case, "frame_index": frame_index,
                                 "robot_id": robot_id, "squad_local_index": local_index,
                                 "primary_statistics": frame_index != 0, "active_references": refs,
                                 "measurements": records, "truth_position": truth[robot_id].tolist(),
                                 "status": result["status"], "estimate": estimate,
+                                "attempt_status": attempt["status"],
+                                "attempt_failure_reason": attempt.get("failure_reason"),
                                 "covariance": result.get("covariance"), "epsilon": epsilon,
                                 "finite": valid_result is not None,
                                 "covariance_spd": valid_result is not None,
                                 "error_vector": error_vector, "error_norm": error_norm,
                                 "error_to_epsilon_ratio": None if error_norm is None or epsilon is None or epsilon <= 0 else error_norm / epsilon,
-                                "containment": None if error_norm is None or epsilon is None else error_norm <= epsilon,
+                                "state_containment": state_containment,
+                                "containment": containment,
                                 "phi_min_eigenvalue": result.get("phi_min_eigenvalue"), "phi_condition": result.get("phi_condition"),
                                 "iterations": result.get("iterations"), "cost": result.get("cost"),
-                                "failure_reason": result.get("failure_reason"), "failure": result.get("failure"),
+                                "failure_reason": result.get("failure_reason"),
+                                "failure": (
+                                    attempt if attempt["status"] != "converged" else None
+                                ),
                                 "transition": _transition(previous_active.get(robot_id), refs, epsilon, previous_epsilon.get(robot_id)),
                             }
                             row = _json_value(row)
-                            compressed.write(_strict_json_bytes(row) + b"\n")
-                            rows.append(row)
+                            line = _strict_json_bytes(row) + b"\n"
+                            compressed.write(line)
+                            decompressed_digest.update(line)
+                            samples.add(row)
                             previous[robot_id] = result
                             previous_active[robot_id] = refs
                             previous_epsilon[robot_id] = epsilon
                         states[state_key] = (previous, previous_active, previous_epsilon)
                 compressed.flush()
-                if available_bytes(output_root) < HARD_FLOOR_BYTES:
-                    raise DiskSpaceError("live disk floor reached")
-                if allocated_bytes(output_root) > OUTPUT_ROOT_CAP_BYTES:
-                    termination_reason = "cache_root_cap"
-                    raise DiskSpaceError("output root cap reached")
-                if allocated_bytes(run_root) > RUN_CAP_BYTES:
-                    termination_reason = "cache_run_cap"
-                    raise DiskSpaceError("bundle cap reached")
-        summary = _summary(rows, len(seeds) * len(GRAPH_CASES) * number * len(frames))
+                _enforce_limits(output_root, run_root)
+        summary = _summary(samples, expected_count, settings)
         summary_path.write_bytes(_strict_json_bytes(summary, indent=2) + b"\n")
         markdown_path.write_text(_summary_markdown(summary))
-    except DiskSpaceError as caught:
+        _enforce_limits(output_root, run_root)
+    except _ReplayLimitError as caught:
         error = caught
-        if termination_reason == "completed":
-            termination_reason = "disk_hard_floor"
-    except BaseException as caught:
+        termination_reason = caught.reason
+    except Exception as caught:
         error = caught
         termination_reason = "runner_setup_error"
     return terminal_manifest()
@@ -827,14 +1166,14 @@ def replay_calibration(data_path, manifest_path, output_root, run_seeds, project
 def _safe_disk(path: Path) -> int | None:
     try:
         return available_bytes(path)
-    except BaseException:
+    except Exception:
         return None
 
 
 def _safe_allocated(path: Path) -> int | None:
     try:
         return allocated_bytes(path)
-    except BaseException:
+    except Exception:
         return None
 
 
