@@ -478,10 +478,37 @@ public:
         return references;
     }
 
-    void getCovariance() {
+    json activeLocalizationReferences(const json& config) const {
+        json references = fixedLocalizationReferences();
+        const double maxRange = config.at("max-range").get<double>();
+        const Point myPosition = model->xy();
+
+        auto appendUnique = [](json& ids, int candidate) {
+            for (const json& existing : ids) {
+                if (existing.get<int>() == candidate) return;
+            }
+            ids.push_back(candidate);
+        };
+
+        for (std::size_t baseId = 0; baseId < bases.size(); ++baseId) {
+            if (bases.at(baseId).distance_to(myPosition) <= maxRange) {
+                appendUnique(references["baseIds"], static_cast<int>(baseId));
+            }
+        }
+
+        for (const auto& [otherId, otherPosition] : comm->_othersPos) {
+            if (!isSamePartAsMe(otherId)) continue;
+            if (getIdInPart(otherId) >= idInMyPart) continue;
+            if (otherPosition.distance_to(myPosition) > maxRange) continue;
+            appendUnique(references["anchorIds"], otherId);
+        }
+        return references;
+    }
+
+    void getCovariance(const json& config) {
         if (!enablePositionCovariance) return;
 
-        const json references = fixedLocalizationReferences();
+        const json references = activeLocalizationReferences(config);
         myCovarianceFormation = {
             {"id", id},
             {"anchorIds", references.at("anchorIds")},
@@ -497,7 +524,7 @@ public:
             if (baseId < 0 || baseId >= static_cast<int>(bases.size())) {
                 throw std::invalid_argument(
                     "#" + std::to_string(id)
-                    + " has an invalid fixed base reference "
+                    + " has an invalid active base reference "
                     + std::to_string(baseId)
                 );
             }
@@ -514,7 +541,7 @@ public:
                 || covarianceIt == comm->_othersPositionCovariance.end()) {
                 throw std::invalid_argument(
                     "#" + std::to_string(id)
-                    + " is missing fixed localization data for #"
+                    + " is missing active localization data for #"
                     + std::to_string(otherId)
                 );
             }
@@ -541,7 +568,7 @@ public:
             if (!std::isfinite(total_variance) || total_variance <= 0.0) {
                 throw std::invalid_argument(
                     "#" + std::to_string(id)
-                    + " has invalid covariance validity: total variance for fixed reference "
+                    + " has invalid covariance validity: total variance for active reference "
                     + std::to_string(i)
                     + " must be finite and positive"
                 );
@@ -671,7 +698,9 @@ public:
     }
 
     void updateCovarianceAndRate(double dt) {
-        getCovariance();
+        const auto& commConfig =
+            settings["cbfs"]["without-slack"]["comm-fixed"];
+        getCovariance(commConfig);
         updateUncertaintyHistory(uncertaintyFromCovarianceFunction(positionCovariance), dt);
     }
 

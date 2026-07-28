@@ -488,22 +488,25 @@ TEST_CASE("startup bootstraps a self-consistent lower-index covariance chain") {
     Robot& highestIndexRobot = *swarm.robots.at(2);
     const Eigen::Matrix2d startupCovariance =
         highestIndexRobot.positionCovariance;
-    highestIndexRobot.getCovariance();
+    highestIndexRobot.getCovariance(
+        highestIndexRobot.settings["cbfs"]["without-slack"]["comm-fixed"]
+    );
     CHECK(highestIndexRobot.positionCovariance.isApprox(
         startupCovariance, 1e-12
     ));
 }
 
-TEST_CASE("covariance FIM excludes in-range references outside the fixed localization graph") {
+TEST_CASE("covariance FIM includes eligible in-range references outside the fixed CBF graph") {
+    json settings = makeFourRobotFixedGraphSettings();
     auto robots = makeFourFixedGraphRobots();
     Robot& robot = *robots.at(3);
 
-    robot.getCovariance();
+    robot.getCovariance(settings["cbfs"]["without-slack"]["comm-fixed"]);
 
     CHECK(robot.myCovarianceFormation.at("anchorIds")
-          == json::array({2, 3}));
+          == json::array({2, 3, 1}));
     CHECK(robot.myCovarianceFormation.at("baseIds")
-          == json::array());
+          == json::array({0, 1, 2}));
 }
 
 TEST_CASE("covariance FIM rejects collinear fixed lower-index references") {
@@ -514,10 +517,13 @@ TEST_CASE("covariance FIM rejects collinear fixed lower-index references") {
     exchangeDiagnosticData(robots);
 
     Robot& robot = *robots.at(3);
+    robot.settings["cbfs"]["without-slack"]["comm-fixed"]["max-range"] = 1.0;
 
     bool threw = false;
     try {
-        robot.getCovariance();
+        robot.getCovariance(
+            robot.settings["cbfs"]["without-slack"]["comm-fixed"]
+        );
     } catch (const std::invalid_argument& error) {
         threw = true;
         const std::string message = error.what();
@@ -534,7 +540,9 @@ TEST_CASE("covariance FIM rejects a non-positive configured ranging variance") {
 
     bool threw = false;
     try {
-        robot.getCovariance();
+        robot.getCovariance(
+            robot.settings["cbfs"]["without-slack"]["comm-fixed"]
+        );
     } catch (const std::invalid_argument& error) {
         threw = true;
         const std::string message = error.what();
@@ -549,7 +557,9 @@ TEST_CASE("covariance FIM retains the non-collinear hand calculation beyond max 
     settings["cbfs"]["without-slack"]["comm-fixed"]["max-range"] = 5.0;
     Robot robot(1, settings);
 
-    CHECK_NOTHROW(robot.getCovariance());
+    CHECK_NOTHROW(robot.getCovariance(
+        settings["cbfs"]["without-slack"]["comm-fixed"]
+    ));
     CHECK(robot.myCovarianceFormation.at("anchorIds")
           == json::array());
     CHECK(robot.myCovarianceFormation.at("baseIds")
@@ -559,17 +569,42 @@ TEST_CASE("covariance FIM retains the non-collinear hand calculation beyond max 
     ));
 }
 
-TEST_CASE("covariance information set is invariant across optional-anchor range crossing") {
+TEST_CASE("covariance FIM removes optional anchors that leave range") {
+    json settings = makeFourRobotFixedGraphSettings();
     auto robots = makeFourFixedGraphRobots();
     Robot& robot = *robots.at(3);
-    robot.getCovariance();
-    const json before = robot.myCovarianceFormation;
+
+    robot.getCovariance(settings["cbfs"]["without-slack"]["comm-fixed"]);
+    CHECK(robot.myCovarianceFormation.at("anchorIds")
+          == json::array({2, 3, 1}));
 
     robots.at(0)->model->setPosition2D(Point(1500.0, 1500.0));
     exchangeDiagnosticData(robots);
-    robot.getCovariance();
+    robot.getCovariance(settings["cbfs"]["without-slack"]["comm-fixed"]);
 
-    CHECK(robot.myCovarianceFormation == before);
+    CHECK(robot.myCovarianceFormation.at("anchorIds")
+          == json::array({2, 3}));
+}
+
+TEST_CASE("covariance FIM keeps assigned bases beyond range and gates unassigned bases") {
+    json settings = makeFourRobotFixedGraphSettings();
+    settings["cbfs"]["without-slack"]["comm-fixed"]["max-range"] = 5.0;
+    auto robots = makeFourFixedGraphRobots();
+    Robot& robot = *robots.at(1);
+
+    robot.bases.at(0) = Point(-20.0, 0.0);
+    robot.bases.at(1) = Point(2.0, 0.0);
+    robot.bases.at(2) = Point(1000.0, 1000.0);
+
+    robot.getCovariance(settings["cbfs"]["without-slack"]["comm-fixed"]);
+    CHECK(robot.myCovarianceFormation.at("baseIds")
+          == json::array({0, 1}));
+
+    robot.bases.at(1) = Point(1000.0, 1000.0);
+    robot.getCovariance(settings["cbfs"]["without-slack"]["comm-fixed"]);
+
+    CHECK(robot.myCovarianceFormation.at("baseIds")
+          == json::array({0}));
 }
 
 TEST_CASE("distributed frame zero logs only first-sample zero uncertainty rates") {
