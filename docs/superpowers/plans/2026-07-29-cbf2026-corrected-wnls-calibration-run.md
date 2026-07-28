@@ -4,15 +4,16 @@
 
 **Goal:** Execute one preregistered calibration with the corrected variable-weight WNLS objective, preserve complete audit evidence, and prevent any result-dependent tuning or claim change.
 
-**Architecture:** Reuse the preserved truth trajectory as an immutable input and run the offline replay at frozen code commit `f6e995d6dc4711f0d2869636beb70f061e73063a`. Two identical 40-frame Stage 1 runs must match in deterministic content before exactly one 500-frame, 20-seed Stage 2 run is allowed. All bundles remain outside Git and are accepted only after independent hash, row-completeness, stationarity, pairing, JSON, and adequacy audits.
+**Architecture:** Reuse the preserved truth trajectory as an immutable input and run the offline replay with executable files frozen to source commit `f6e995d6dc4711f0d2869636beb70f061e73063a`. The execution checkout may contain later registration and review documentation, but no executable drift. Two identical 40-frame Stage 1 runs must match in deterministic content before exactly one 500-frame, 20-seed Stage 2 run is allowed.
 
-**Tech Stack:** Python 3.11 in conda environment `cbf_env`, NumPy 1.24.4, gzip JSON Lines, SHA-256, standard-library JSON.
+**Tech Stack:** Python 3.11.12 in conda environment `cbf_env`, NumPy 1.24.4, gzip JSON Lines, SHA-256, standard-library JSON.
 
 ## Global Constraints
 
 - This document registers execution only. Do not modify code, tests, existing evidence, the paper, DRA, or `build-diagnostic`.
 - Do not stage or commit during the registered run.
 - The independent final mathematical re-review returned `CLEAN/READY` for commit `f6e995d6dc4711f0d2869636beb70f061e73063a`; this exact source is final for the registered run.
+- Require Python `3.11.12` and NumPy `1.24.4` in conda environment `cbf_env`; version drift is a hard stop.
 - Freeze estimator contract `variable_weight_nls_full_residual_jacobian_v1`.
 - Freeze graph cases, in order, as `dynamic_dag_wnls` and `fixed_refs_wnls`.
 - Freeze `ranging_sigma=0.5`, seeds `20260727` through `20260746`, and 500 frames for Stage 2.
@@ -46,10 +47,17 @@ estimator contract: variable_weight_nls_full_residual_jacobian_v1
 The independent final mathematical re-review returned `CLEAN/READY` on
 2026-07-29 for this exact commit. It confirmed the complete residual Jacobian,
 the `J_q.T @ q` stationarity gate, final-iteration convergence, and separation
-of `J_q.T @ J_q` from the final localization FIM. The executor must cite the
-durable review artifact in the corrected evidence report. Any source change
-after this verdict invalidates this registration and requires a new review and
-new registration before execution.
+of `J_q.T @ J_q` from the final localization FIM. The tracked durable record
+is:
+
+```text
+path: docs/diagnostics/reviews/2026-07-29-variable-weight-wnls-math-review.md
+SHA-256: 6c1dc9497175a602d58ef1ba53d8a8eca572b12567c063d52ae74d24faa3f09a
+```
+
+The executor must verify and cite this exact path and hash in the corrected
+evidence report. Any executable-source change after this verdict invalidates
+this registration and requires a new review and new registration.
 
 ### Immutable inputs
 
@@ -115,6 +123,59 @@ omitted the position-dependent weight derivative.
 
 ## Registered Adequacy Gate
 
+For Stage 2 graph case \(c\), define the primary denominator from every row
+whose `graph_case` is \(c\) and whose `primary_statistics` is `true`:
+
+\[
+N_c^{\mathrm{primary}}
+=
+\sum_r
+\mathbf{1}\{
+r.\mathrm{graph\_case}=c
+\land r.\mathrm{primary\_statistics}=\mathrm{true}
+\}
+=139{,}720.
+\]
+
+The invalid- and failed-attempt rates are:
+
+\[
+R_c^{\mathrm{invalid}}
+=
+\frac{
+\sum_r
+\mathbf{1}\{
+r.\mathrm{graph\_case}=c
+\land r.\mathrm{primary\_statistics}=\mathrm{true}
+\land r.\mathrm{attempt\_status}=\texttt{invalid}
+\}
+}{
+N_c^{\mathrm{primary}}
+},
+\]
+
+\[
+R_c^{\mathrm{failed}}
+=
+\frac{
+\sum_r
+\mathbf{1}\{
+r.\mathrm{graph\_case}=c
+\land r.\mathrm{primary\_statistics}=\mathrm{true}
+\land r.\mathrm{attempt\_status}=\texttt{failed}
+\}
+}{
+N_c^{\mathrm{primary}}
+}.
+\]
+
+Retained `status` values do not define these numerators. The no-worse gates
+are exactly
+\(R_{\mathrm{dynamic}}^{\mathrm{invalid}}
+\leq R_{\mathrm{fixed}}^{\mathrm{invalid}}\) and
+\(R_{\mathrm{dynamic}}^{\mathrm{failed}}
+\leq R_{\mathrm{fixed}}^{\mathrm{failed}}\).
+
 Stage 2 passes only if all five preregistered conditions are true:
 
 ```text
@@ -134,6 +195,8 @@ including a failed adequacy result, must be reported.
 
 **Files:**
 - Read only: `scripts/diagnostics/replay_localization_calibration.py`
+- Read only: `scripts/diagnostics/run_diagnostic.py`
+- Read only: `docs/diagnostics/reviews/2026-07-29-variable-weight-wnls-math-review.md`
 - Read only: the two immutable inputs above
 - Inspect only: `/private/tmp/cbf2026-localization-calibration-corrected`
 
@@ -143,10 +206,19 @@ including a failed adequacy result, must be reported.
 
 - [ ] **Step 1: Verify the independent math approval**
 
-Verify that the durable review artifact records `CLEAN/READY` for the exact
-frozen commit. Record its path and SHA-256 in the later corrected evidence
-report. Stop if the artifact identifies another source or qualifies the
-verdict.
+Run:
+
+```bash
+git ls-files --error-unmatch \
+  docs/diagnostics/reviews/2026-07-29-variable-weight-wnls-math-review.md
+shasum -a 256 \
+  docs/diagnostics/reviews/2026-07-29-variable-weight-wnls-math-review.md
+```
+
+Require the exact tracked path and SHA-256 pinned above. Verify that the file
+records `CLEAN / READY` for the exact frozen executable source. Record its
+path and SHA-256 in the corrected evidence report. Stop on any mismatch or
+qualified verdict.
 
 - [ ] **Step 2: Verify source identity**
 
@@ -154,17 +226,50 @@ Run:
 
 ```bash
 git rev-parse HEAD
+git merge-base --is-ancestor \
+  f6e995d6dc4711f0d2869636beb70f061e73063a HEAD
 git diff --exit-code f6e995d6dc4711f0d2869636beb70f061e73063a -- \
   scripts/diagnostics/replay_localization_calibration.py \
   scripts/diagnostics/run_diagnostic.py
+git diff --name-only \
+  f6e995d6dc4711f0d2869636beb70f061e73063a
 shasum -a 256 scripts/diagnostics/replay_localization_calibration.py
 ```
 
-Require the exact full commit and script hash registered above. Documentation
-changes and the pre-existing untracked `build-diagnostic/` do not alter the
-frozen executable, but any executable-source difference is a hard stop.
+Record the actual `HEAD` shown by the first command. Require `f6e995d6...` to
+be an ancestor, zero diff for both executable paths, and the exact runner hash
+registered above. Every committed, staged, or unstaged tracked path that
+differs from `f6e995d6...` must belong to this allowlist:
 
-- [ ] **Step 3: Verify the inputs and the unused corrected root**
+```text
+docs/superpowers/plans/2026-07-29-cbf2026-corrected-wnls-calibration-run.md
+docs/diagnostics/reviews/2026-07-29-variable-weight-wnls-math-review.md
+```
+
+The pre-existing untracked `build-diagnostic/` does not alter the executable.
+Any executable difference or tracked path outside the allowlist is a hard
+stop.
+
+- [ ] **Step 3: Verify the exact Python environment**
+
+Run:
+
+```bash
+conda run -n cbf_env python -c \
+  'import platform, numpy; print(f"Python {platform.python_version()}"); print(f"NumPy {numpy.__version__}")'
+```
+
+Require exactly:
+
+```text
+Python 3.11.12
+NumPy 1.24.4
+```
+
+Record both lines verbatim in the corrected evidence report. Any version
+drift is a hard stop.
+
+- [ ] **Step 4: Verify the inputs and the unused corrected root**
 
 Run:
 
@@ -181,7 +286,7 @@ test ! -e /private/tmp/cbf2026-localization-calibration-corrected
 Any path, size, or hash mismatch is a hard stop. If the corrected root exists,
 preserve it and stop; do not reuse or delete it.
 
-- [ ] **Step 4: Verify the start-space gate**
+- [ ] **Step 5: Verify the start-space gate**
 
 Run:
 
@@ -359,6 +464,8 @@ Also require:
 - `max_frames=500` and `effective_frame_count=500`;
 - all attempt and retained status categories reconcile to total rows;
 - adequacy booleans equal direct recomputation from process rows;
+- invalid- and failed-attempt rates use the registered primary-row equations,
+  with denominator 139,720 for each graph case;
 - the seed bootstrap uses exactly 10,000 seed-level resamples with RNG seed
   `20260728`, never robot-frame resampling;
 - the frame-zero summary is distinct from primary containment;
@@ -379,7 +486,7 @@ both summary, and manifest hashes for all three corrected bundles.
 **Files:**
 - Create after execution: `docs/diagnostics/2026-07-29-corrected-wnls-localization-calibration.md`
 - Modify after execution: `docs/diagnostics/README.md`
-- Create independent review: `.superpowers/sdd/2026-07-28-cbf2026-dynamic-localization-calibration-implementation/task-7-evidence-review.md`
+- Create tracked independent review: `docs/diagnostics/reviews/2026-07-29-corrected-wnls-calibration-evidence-review.md`
 
 **Interfaces:**
 - Consumes: bundle files only, not terminal recollection.
@@ -391,9 +498,11 @@ both summary, and manifest hashes for all three corrected bundles.
 Do not overwrite or revise
 `docs/diagnostics/2026-07-28-dynamic-localization-calibration.md`.
 The new report must record the math-review provenance, frozen source and input
-identities, exact commands, disk probes, all three bundle paths/sizes/hashes,
-Stage 1 content comparison, complete audit results, graph memberships,
-attempt/retained status counts, primary and frame-zero containment, seed-level
+identities, actual execution `HEAD`, exact Python and NumPy version outputs,
+exact commands, disk probes, all three bundle paths/sizes/hashes, Stage 1
+content comparison, complete audit results, graph memberships,
+attempt/retained status counts, primary and frame-zero containment, the
+registered primary invalid/failed-rate equations and values, seed-level
 confidence intervals, per-depth values, FIM/condition/epsilon quantiles,
 transition statistics, paired changes, and the exact adequacy decision.
 
@@ -407,20 +516,29 @@ mission-level probability or closed-loop safety guarantee follows.
 The reviewer must recompute hashes, row counts, expected-key completeness,
 strict-JSON validity, converged-attempt stationarity, common-edge pairing,
 summary aggregates, bootstrap configuration, disk caps, and every adequacy
-boolean from the preserved bundles. The review must state PASS or FAIL and
-identify the exact bundle paths and report SHA-256.
+boolean from the preserved bundles. The tracked review must state PASS or FAIL
+and identify the exact bundle paths and corrected-report SHA-256.
+
+After the review is final, independently compute its SHA-256 and record that
+hash in the Task 7 execution report and downstream handoff. Do not place a
+self-hash or future commit placeholder inside the review.
 
 - [ ] **Step 3: Apply the claim gate**
 
 Do not update the paper or DRA, and do not upgrade any claim, before the
-corrected report and independent evidence review are complete. A failed
-adequacy gate must be reported as a calibration gap and cannot authorize an
-epsilon validation claim. A passed gate may support only the carefully bounded
-empirical claim justified by the reviewed report.
+corrected report and tracked independent evidence review are complete,
+hash-reported, and committed. A failed adequacy gate must be reported as a
+calibration gap and cannot authorize an epsilon validation claim. A passed
+gate may support only the carefully bounded empirical claim justified by the
+reviewed report.
 
 - [ ] **Step 4: Hand off paper and DRA updates**
 
-Only after independent evidence-review PASS may a separate, newly scoped task
-update the paper and DRA from the reviewed evidence files. That task must
-preserve the one-trajectory, offline-estimator, graph-ablation,
-cross-correlation, and non-closed-loop limitations.
+Only after independent evidence-review PASS and a documentation commit
+containing the corrected report, README update, and tracked review may a
+separate, newly scoped task update the paper and DRA from the reviewed
+evidence files. The handoff records the actual review SHA-256 and documentation
+commit after they exist; this registration contains no future commit
+placeholder. The downstream task must preserve the one-trajectory,
+offline-estimator, graph-ablation, cross-correlation, and non-closed-loop
+limitations.
