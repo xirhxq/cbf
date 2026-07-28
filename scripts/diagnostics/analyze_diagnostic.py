@@ -36,6 +36,37 @@ def _finite_number(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def _solver_record_lifecycle(opt: Any) -> str:
+    """Classify one logged solve without inferring success from one status.
+
+    A distributed frame aborts on any explicit failed/non-optimal status.
+    Conversely, a record is confirmed optimal only when both the wrapper and
+    solver statuses agree.  Missing or otherwise contradictory non-failure
+    combinations remain unconfirmed.
+    """
+    if not isinstance(opt, dict):
+        return "unconfirmed"
+    solver_info = (
+        opt.get("solver_info")
+        if isinstance(opt.get("solver_info"), dict)
+        else {}
+    )
+    opt_status = opt.get("status")
+    solver_status_present = "status" in solver_info
+    solver_status = solver_info.get("status")
+    if (
+        opt_status == "failed"
+        or (
+            solver_status_present
+            and solver_status != "optimal"
+        )
+    ):
+        return "failed"
+    if opt_status == "success" and solver_status == "optimal":
+        return "optimal"
+    return "unconfirmed"
+
+
 def _summary_statistics(values: list[float]) -> dict[str, float | int | None]:
     """Return JSON-safe distribution statistics without inventing empty values."""
     if not values:
@@ -378,12 +409,22 @@ def _write_markdown(summary: dict, path: Path) -> None:
     hard = summary["hard_constraints"]
     coverage = summary["coverage"]
     covariance_information_set = summary["covariance_information_set"]
+    unapplied = summary["unapplied_solver_records"]
+    fresh_optimal = unapplied["fresh_optimal"]
+    failed = unapplied["failed"]
     lines = [
         "# Diagnostic Summary",
         "",
         f"- Case: `{summary['manifest'].get('case', 'unknown')}`",
         f"- Frames: {summary['frame_count']}",
+        f"- Execution mode: `{summary['execution_mode']}`",
+        f"- Confirmed-applied frames: {summary['applied_frame_count']}",
+        f"- Aborted partial frames: {summary['partial_frame_count']}",
         f"- Solver statuses: `{json.dumps(summary['solver_status_counts'], sort_keys=True)}`",
+        f"- Confirmed-applied solver records: {summary['applied_solver_records']['count']}",
+        f"- Fresh optimal but unapplied records: {fresh_optimal['record_count']} (results={fresh_optimal['result_record_count']}, hard rows={fresh_optimal['hard_constraint_count']}, valid logged residuals={fresh_optimal['valid_logged_residual_count']})",
+        f"- Failed solver records: {failed['record_count']} (placeholders={failed['result_placeholder_count']}, hard rows={failed['hard_constraint_count']}, unexpected logged residuals={failed['unexpected_logged_residual_count']})",
+        f"- Not-attempted/stale solver records: {summary['not_attempted_solver_records']['count']}",
         f"- Hard residual minimum: {hard['residual_min']}",
         f"- Hard residuals below {hard['negative_tolerance']}: {hard['negative_count']}",
         f"- Coverage: {coverage['fraction']} ({coverage['unique_cells']}/{coverage['total_cells']})",
@@ -457,6 +498,25 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
     unapplied_result_placeholder_count = 0
     unapplied_invalid_result_placeholder_count = 0
     unapplied_unexpected_logged_residual_count = 0
+    failed_unapplied_hard_constraint_count = 0
+    fresh_optimal_unapplied_count = 0
+    fresh_optimal_unapplied_result_count = 0
+    fresh_optimal_unapplied_invalid_result_count = 0
+    fresh_optimal_unapplied_hard_constraint_count = 0
+    fresh_optimal_unapplied_logged_residual_count = 0
+    fresh_optimal_unapplied_valid_logged_residual_count = 0
+    fresh_optimal_unapplied_logged_residual_missing_count = 0
+    fresh_optimal_unapplied_logged_residual_mismatch_count = 0
+    fresh_optimal_unapplied_logged_residual_unverifiable_count = 0
+    fresh_solver_record_count = 0
+    fresh_optimal_solver_record_count = 0
+    fresh_failed_solver_record_count = 0
+    fresh_status_counts: Counter[str] = Counter()
+    not_attempted_solver_record_count = 0
+    not_attempted_status_counts: Counter[str] = Counter()
+    applied_frame_count = 0
+    applied_frame_indices: list[int] = []
+    partial_frames: list[dict] = []
     uncertainties: list[float] = []
     uncertainty_rates: list[float] = []
     positive_uncertainty_jumps: list[float] = []
@@ -472,6 +532,11 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
     pairwise_missing_rows: list[dict] = []
     pairwise_unexpected_rows: list[dict] = []
     pairwise_coverage_per_frame: list[dict] = []
+    partial_pairwise_expected_rows: list[dict] = []
+    partial_pairwise_observed_rows: list[dict] = []
+    partial_pairwise_missing_rows: list[dict] = []
+    partial_pairwise_unexpected_rows: list[dict] = []
+    partial_pairwise_coverage_per_frame: list[dict] = []
     observed_saturation_counts: Counter[str] = Counter()
     logged_saturation_counts: Counter[str] = Counter()
     input_violation_counts: Counter[str] = Counter()
@@ -549,6 +614,17 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
     supported_uncertainty_types = {"max_eigenvalue", "std_avg"}
     covariance_absolute_tolerance = 1e-6
     covariance_relative_tolerance = 1e-6
+    execute_config = (
+        config.get("execute")
+        if isinstance(config.get("execute"), dict)
+        else {}
+    )
+    configured_execution_mode = execute_config.get("execution-mode")
+    execution_mode = (
+        "centralized"
+        if configured_execution_mode == "centralized"
+        else "distributed"
+    )
 
     for frame_index, frame in enumerate(frames):
         if not isinstance(frame, dict):
@@ -563,6 +639,21 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
             per_frame_linf.append(None)
             unapplied_per_frame_linf.append(None)
             continue
+
+        first_failed_robot_index: int | None = None
+        if execution_mode == "distributed":
+            for robot_index, robot in enumerate(robots):
+                if not isinstance(robot, dict):
+                    continue
+                opt = (
+                    robot.get("opt")
+                    if isinstance(robot.get("opt"), dict)
+                    else {}
+                )
+                if _solver_record_lifecycle(opt) == "failed":
+                    first_failed_robot_index = robot_index
+                    break
+        partial_frame = first_failed_robot_index is not None
 
         formation_by_id: dict[int, dict] = {}
         formations = frame.get("formation")
@@ -642,9 +733,17 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
             tuple[int, int], dict[str, set[str]]
         ] = {}
         frame_safety_rows: set[tuple[int, str]] = set()
+        frame_fresh_safety_rows: set[tuple[int, str]] = set()
+        frame_fresh_attempt_robot_ids: set[int] = set()
         robot_info: dict[int, tuple[tuple[float, float], float | None]] = {}
         frame_bounds: list[float] = []
         unapplied_frame_bounds: list[float] = []
+        frame_applied_solver_record_count = 0
+        frame_fresh_attempt_count = 0
+        frame_fresh_optimal_count = 0
+        frame_fresh_failed_count = 0
+        frame_not_attempted_count = 0
+        failed_robot_id: int | None = None
         for robot_index, robot in enumerate(robots):
             robot_path = f"state[{frame_index}].robots[{robot_index}]"
             if not isinstance(robot, dict) or not isinstance(robot.get("id"), int):
@@ -748,29 +847,54 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
             opt = robot.get("opt") if isinstance(robot.get("opt"), dict) else {}
             solver_info = opt.get("solver_info") if isinstance(opt.get("solver_info"), dict) else {}
             solver_status = solver_info.get("status", opt.get("status", "missing"))
-            status_counts[str(solver_status)] += 1
-            solve_time = _finite_number(solver_info.get("solve_time_ms"))
-            if solve_time is not None:
-                solve_times.append(solve_time)
-            confirmed_applied = (
-                opt.get("status") == "success"
-                and solver_info.get("status") == "optimal"
+            record_lifecycle = _solver_record_lifecycle(opt)
+            optimal_record = record_lifecycle == "optimal"
+            explicitly_failed_record = record_lifecycle == "failed"
+            not_attempted_record = (
+                partial_frame
+                and first_failed_robot_index is not None
+                and robot_index > first_failed_robot_index
             )
+            fresh_attempt = not not_attempted_record
+            confirmed_applied = optimal_record and not partial_frame
+
+            if fresh_attempt:
+                frame_fresh_attempt_robot_ids.add(robot_id)
+                frame_fresh_attempt_count += 1
+                fresh_solver_record_count += 1
+                status_counts[str(solver_status)] += 1
+                fresh_status_counts[str(solver_status)] += 1
+                if optimal_record:
+                    frame_fresh_optimal_count += 1
+                    fresh_optimal_solver_record_count += 1
+                elif explicitly_failed_record:
+                    frame_fresh_failed_count += 1
+                    fresh_failed_solver_record_count += 1
+                    if failed_robot_id is None:
+                        failed_robot_id = robot_id
+            else:
+                frame_not_attempted_count += 1
+                not_attempted_solver_record_count += 1
+                not_attempted_status_counts[str(solver_status)] += 1
+
             if confirmed_applied:
                 applied_solver_record_count += 1
-            else:
+                frame_applied_solver_record_count += 1
+                solve_time = _finite_number(solver_info.get("solve_time_ms"))
+                if solve_time is not None:
+                    solve_times.append(solve_time)
+            elif fresh_attempt:
                 unapplied_solver_record_count += 1
                 unapplied_status_counts[str(solver_status)] += 1
-                if (
-                    opt.get("status") == "failed"
-                    or (
-                        "status" in solver_info
-                        and solver_info.get("status") != "optimal"
-                    )
-                ):
+                if explicitly_failed_record:
                     failed_solver_record_count += 1
+                elif optimal_record:
+                    fresh_optimal_unapplied_count += 1
                 else:
                     unconfirmed_solver_record_count += 1
+
+            if not_attempted_record:
+                continue
 
             result = opt.get("result") if isinstance(opt.get("result"), dict) else {}
             finite_result: dict[str, float] = {}
@@ -955,10 +1079,17 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
                             "failures": evidence_failures,
                         }
                     )
-            elif result:
+            elif explicitly_failed_record and result:
                 unapplied_result_placeholder_count += 1
                 if any(_finite_number(value) is None for value in result.values()):
                     unapplied_invalid_result_placeholder_count += 1
+            elif optimal_record and result:
+                fresh_optimal_unapplied_result_count += 1
+                if any(
+                    _finite_number(value) is None
+                    for value in result.values()
+                ):
+                    fresh_optimal_unapplied_invalid_result_count += 1
 
             raw_constraints = opt.get("cbfNoSlack")
             constraints = raw_constraints if isinstance(raw_constraints, list) else []
@@ -976,8 +1107,10 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
                 )
                 if neighbor_source is not None:
                     neighbor_id, source = neighbor_source
-                    if source == "safety":
+                    if source == "safety" and not partial_frame:
                         frame_safety_rows.add((robot_id, constraint_name))
+                    if source == "safety" and fresh_attempt:
+                        frame_fresh_safety_rows.add((robot_id, constraint_name))
                     if confirmed_applied:
                         source_record = (
                             frame_applied_neighbor_sources.setdefault(
@@ -1020,11 +1153,54 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
                     feasibility_constraints.append({"coe": coe, "rhs": -constant})
                 else:
                     unapplied_hard_constraint_count += 1
-                    if _finite_number(constraint.get("residual")) is not None:
-                        unapplied_unexpected_logged_residual_count += 1
+                    if explicitly_failed_record:
+                        failed_unapplied_hard_constraint_count += 1
+                        if (
+                            _finite_number(
+                                constraint.get("residual")
+                            )
+                            is not None
+                        ):
+                            unapplied_unexpected_logged_residual_count += 1
+                    elif optimal_record:
+                        fresh_optimal_unapplied_hard_constraint_count += 1
+                        logged_residual = _finite_number(
+                            constraint.get("residual")
+                        )
+                        if logged_residual is None:
+                            fresh_optimal_unapplied_logged_residual_missing_count += 1
+                        else:
+                            fresh_optimal_unapplied_logged_residual_count += 1
+                            recomputed_residual = constant
+                            recomputable = True
+                            for name, coefficient_value in coe.items():
+                                coefficient = _finite_number(
+                                    coefficient_value
+                                )
+                                control = _finite_number(result.get(name))
+                                if coefficient is None or control is None:
+                                    recomputable = False
+                                    break
+                                recomputed_residual += (
+                                    coefficient * control
+                                )
+                            if not recomputable:
+                                fresh_optimal_unapplied_logged_residual_unverifiable_count += 1
+                            elif math.isclose(
+                                logged_residual,
+                                recomputed_residual,
+                                rel_tol=1e-9,
+                                abs_tol=1e-9,
+                            ):
+                                fresh_optimal_unapplied_valid_logged_residual_count += 1
+                            else:
+                                fresh_optimal_unapplied_logged_residual_mismatch_count += 1
                     unapplied_feasibility_constraints.append(
                         {"coe": coe, "rhs": -constant}
                     )
+
+                if not confirmed_applied:
+                    continue
 
                 class_k_record_count += 1
                 alpha_coe = _finite_number(constraint.get("alpha_coe"))
@@ -1142,7 +1318,16 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
                     )
                 )
 
-        if previous_frame_index == frame_index - 1:
+        frame_fully_applied = (
+            bool(robots)
+            and not partial_frame
+            and frame_applied_solver_record_count == len(robots)
+        )
+        if frame_fully_applied:
+            applied_frame_count += 1
+            applied_frame_indices.append(frame_index)
+
+        if not partial_frame and previous_frame_index == frame_index - 1:
             for (
                 owner_id,
                 neighbor_id,
@@ -1192,10 +1377,10 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
                 )
         previous_frame_index = frame_index
         previous_frame_applied_planar_controls = (
-            frame_applied_planar_controls
+            frame_applied_planar_controls if not partial_frame else {}
         )
 
-        if safety_mode == "pairwise":
+        if safety_mode == "pairwise" and not partial_frame:
             expected_rows = {
                 (owner_id, f"safetyCBF(#{neighbor_id})")
                 for owner_id in frame_robot_ids
@@ -1232,6 +1417,80 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
                     "missing_count": len(missing_records),
                     "unexpected_count": len(unexpected_records),
                     "complete": not missing_records and not unexpected_records,
+                }
+            )
+
+        if safety_mode == "pairwise" and partial_frame:
+            partial_expected_rows = {
+                (owner_id, f"safetyCBF(#{neighbor_id})")
+                for owner_id in frame_fresh_attempt_robot_ids
+                for neighbor_id in frame_robot_ids
+                if owner_id != neighbor_id
+            }
+            partial_observed_rows = set(frame_fresh_safety_rows)
+            partial_missing_rows = (
+                partial_expected_rows - partial_observed_rows
+            )
+            partial_unexpected_rows = (
+                partial_observed_rows - partial_expected_rows
+            )
+
+            def partial_coverage_records(rows):
+                return [
+                    {
+                        "frame_index": frame_index,
+                        "owner_id": owner_id,
+                        "name": name,
+                    }
+                    for owner_id, name in sorted(rows)
+                ]
+
+            partial_expected_records = partial_coverage_records(
+                partial_expected_rows
+            )
+            partial_observed_records = partial_coverage_records(
+                partial_observed_rows
+            )
+            partial_missing_records = partial_coverage_records(
+                partial_missing_rows
+            )
+            partial_unexpected_records = partial_coverage_records(
+                partial_unexpected_rows
+            )
+            partial_pairwise_expected_rows.extend(partial_expected_records)
+            partial_pairwise_observed_rows.extend(partial_observed_records)
+            partial_pairwise_missing_rows.extend(partial_missing_records)
+            partial_pairwise_unexpected_rows.extend(
+                partial_unexpected_records
+            )
+            partial_pairwise_coverage_per_frame.append(
+                {
+                    "frame_index": frame_index,
+                    "expected_count": len(partial_expected_records),
+                    "observed_count": len(partial_observed_records),
+                    "missing_count": len(partial_missing_records),
+                    "unexpected_count": len(partial_unexpected_records),
+                    "complete": (
+                        not partial_missing_records
+                        and not partial_unexpected_records
+                    ),
+                }
+            )
+
+        if partial_frame:
+            partial_frames.append(
+                {
+                    "frame_index": frame_index,
+                    "runtime": runtime,
+                    "failed_robot_id": failed_robot_id,
+                    "fresh_attempt_count": frame_fresh_attempt_count,
+                    "fresh_optimal_count": frame_fresh_optimal_count,
+                    "fresh_failed_count": frame_fresh_failed_count,
+                    "not_attempted_count": frame_not_attempted_count,
+                    "fresh_pairwise_row_count": len(
+                        frame_fresh_safety_rows
+                    ),
+                    "applied": False,
                 }
             )
 
@@ -1363,7 +1622,6 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
         if (
             applied_linf_values
             and not infeasible_frame_indices
-            and not unavailable_frame_indices
         )
         else None
     )
@@ -1461,6 +1719,48 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
             "per_frame": [],
         }
 
+    if safety_mode == "pairwise":
+        partial_frame_pairwise_row_coverage = {
+            "status": (
+                "available"
+                if partial_pairwise_coverage_per_frame
+                else "unavailable_no_partial_distributed_frames"
+            ),
+            "mode": "pairwise",
+            "expected_count": len(partial_pairwise_expected_rows),
+            "observed_count": len(partial_pairwise_observed_rows),
+            "missing_count": len(partial_pairwise_missing_rows),
+            "unexpected_count": len(partial_pairwise_unexpected_rows),
+            "expected_rows": partial_pairwise_expected_rows,
+            "observed_rows": partial_pairwise_observed_rows,
+            "missing_rows": partial_pairwise_missing_rows,
+            "unexpected_rows": partial_pairwise_unexpected_rows,
+            "complete": (
+                not partial_pairwise_missing_rows
+                and not partial_pairwise_unexpected_rows
+            )
+            if partial_pairwise_coverage_per_frame
+            else None,
+            "per_frame": partial_pairwise_coverage_per_frame,
+            "scope": "fresh_attempts_in_unapplied_partial_frames_only",
+        }
+    else:
+        partial_frame_pairwise_row_coverage = {
+            "status": "not_applicable",
+            "mode": safety_mode,
+            "expected_count": None,
+            "observed_count": None,
+            "missing_count": None,
+            "unexpected_count": None,
+            "expected_rows": [],
+            "observed_rows": [],
+            "missing_rows": [],
+            "unexpected_rows": [],
+            "complete": None,
+            "per_frame": [],
+            "scope": "fresh_attempts_in_unapplied_partial_frames_only",
+        }
+
     unavailable_metrics = {
         "RMSE": UNAVAILABLE_METRIC,
         "NEES": UNAVAILABLE_METRIC,
@@ -1491,20 +1791,95 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
     summary = {
         "manifest": manifest,
         "frame_count": len(frames),
+        "configured_execution_mode": configured_execution_mode,
+        "execution_mode": execution_mode,
+        "applied_frame_count": applied_frame_count,
+        "applied_frame_indices": applied_frame_indices,
+        "partial_frame_count": len(partial_frames),
+        "partial_frames": partial_frames,
         "solver_status_counts": dict(sorted(status_counts.items())),
+        "fresh_solver_records": {
+            "count": fresh_solver_record_count,
+            "optimal_count": fresh_optimal_solver_record_count,
+            "failed_count": fresh_failed_solver_record_count,
+            "status_counts": dict(sorted(fresh_status_counts.items())),
+            "classification": (
+                "records through the first explicit failed/non-optimal "
+                "record in distributed logged order"
+            ),
+        },
+        "not_attempted_solver_records": {
+            "count": not_attempted_solver_record_count,
+            "status_counts": dict(
+                sorted(not_attempted_status_counts.items())
+            ),
+            "classification": (
+                "records after the first explicit failed/non-optimal "
+                "record in a distributed frame; logged values are stale"
+            ),
+        },
         "applied_solver_records": {
             "count": applied_solver_record_count,
-            "confirmation": "opt.status=success_and_solver_info.status=optimal",
+            "confirmation": (
+                "opt.status=success_and_solver_info.status=optimal_in_a_"
+                "non_aborted_frame"
+            ),
         },
         "unapplied_solver_records": {
             "count": unapplied_solver_record_count,
             "failed_solver_record_count": failed_solver_record_count,
+            "fresh_optimal_record_count": fresh_optimal_unapplied_count,
             "unconfirmed_record_count": unconfirmed_solver_record_count,
             "status_counts": dict(sorted(unapplied_status_counts.items())),
             "hard_constraint_count": unapplied_hard_constraint_count,
+            "failed_hard_constraint_count": (
+                failed_unapplied_hard_constraint_count
+            ),
             "result_placeholder_count": unapplied_result_placeholder_count,
             "invalid_result_placeholder_count": unapplied_invalid_result_placeholder_count,
             "unexpected_logged_residual_count": unapplied_unexpected_logged_residual_count,
+            "failed": {
+                "record_count": failed_solver_record_count,
+                "result_placeholder_count": (
+                    unapplied_result_placeholder_count
+                ),
+                "invalid_result_placeholder_count": (
+                    unapplied_invalid_result_placeholder_count
+                ),
+                "hard_constraint_count": (
+                    failed_unapplied_hard_constraint_count
+                ),
+                "unexpected_logged_residual_count": (
+                    unapplied_unexpected_logged_residual_count
+                ),
+            },
+            "fresh_optimal": {
+                "record_count": fresh_optimal_unapplied_count,
+                "result_record_count": (
+                    fresh_optimal_unapplied_result_count
+                ),
+                "invalid_result_record_count": (
+                    fresh_optimal_unapplied_invalid_result_count
+                ),
+                "hard_constraint_count": (
+                    fresh_optimal_unapplied_hard_constraint_count
+                ),
+                "logged_residual_count": (
+                    fresh_optimal_unapplied_logged_residual_count
+                ),
+                "valid_logged_residual_count": (
+                    fresh_optimal_unapplied_valid_logged_residual_count
+                ),
+                "logged_residual_missing_count": (
+                    fresh_optimal_unapplied_logged_residual_missing_count
+                ),
+                "logged_residual_mismatch_count": (
+                    fresh_optimal_unapplied_logged_residual_mismatch_count
+                ),
+                "logged_residual_unverifiable_count": (
+                    fresh_optimal_unapplied_logged_residual_unverifiable_count
+                ),
+            },
             "minimum_linf_bound": {
                 "per_frame": unapplied_per_frame_linf,
                 "maximum": float(
@@ -1522,9 +1897,9 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
                 "infeasible_frame_indices": unapplied_infeasible_frame_indices,
             },
             "interpretation": (
-                "unconfirmed records are excluded from applied evidence; "
-                "solver failures are caught and logged without a state step, "
-                "so their result placeholders were not applied"
+                "fresh records from an aborted distributed frame are excluded "
+                "from applied evidence; later records are classified as not "
+                "attempted/stale"
             ),
         },
         "solve_time_ms": _summary_statistics(solve_times),
@@ -1643,6 +2018,9 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
             "definition": "abs(n_ij_dot_(u_j_current_minus_u_j_previous))",
         },
         "pairwise_row_coverage": pairwise_row_coverage,
+        "partial_frame_pairwise_row_coverage": (
+            partial_frame_pairwise_row_coverage
+        ),
         "coverage": {
             "unique_cells": len(updated_cells),
             "total_cells": total_cells,
@@ -1656,6 +2034,7 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
             "not_directly_comparable_count": class_k_not_directly_comparable_count,
             "unmapped_count": class_k_unmapped_count,
             "records": class_k_records,
+            "scope": "confirmed_applied_optimal_controls_only",
         },
         "covariance_uncertainty_consistency": {
             "status": covariance_consistency_status,

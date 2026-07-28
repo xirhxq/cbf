@@ -4,7 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.diagnostics.analyze_diagnostic import analyze_run, minimum_linf_bound
+from scripts.diagnostics.analyze_diagnostic import (
+    _solver_record_lifecycle,
+    analyze_run,
+    minimum_linf_bound,
+)
 
 
 UNAVAILABLE = "unavailable_no_distinct_truth_estimate_or_input_bounds"
@@ -284,6 +288,124 @@ def mc_first_two_frame_fixture():
     }
 
 
+def distributed_aborted_frame_fixture():
+    def robot(
+        robot_id,
+        x,
+        uncertainty,
+        solve_time,
+        result_vx,
+        *,
+        opt_status="success",
+        solver_status="optimal",
+    ):
+        return {
+            "id": robot_id,
+            "state": {"x": x, "y": 0.0},
+            "position_covariance": {
+                "cov_xx": uncertainty**2,
+                "cov_xy": 0.0,
+                "cov_yx": 0.0,
+                "cov_yy": uncertainty**2,
+            },
+            "uncertainty": uncertainty,
+            "uncertainty_rate": 0.0,
+            "opt": {
+                "status": opt_status,
+                "solver_info": {
+                    "status": solver_status,
+                    "solve_time_ms": solve_time,
+                },
+                "result": {
+                    "vx": result_vx,
+                    "vy": 0.0,
+                    "yawRateRad": 0.0,
+                },
+                "cbfNoSlack": [
+                    {
+                        "name": f"safetyCBF(#{neighbor_id})",
+                        "coe": {
+                            "vx": 0.0,
+                            "vy": 0.0,
+                            "yawRateRad": 0.0,
+                        },
+                        "const": 1.0,
+                        "residual": 1.0,
+                        "alpha_coe": 0.1,
+                        "alpha_pow": 1,
+                    }
+                    for neighbor_id in (1, 2, 3)
+                    if neighbor_id != robot_id
+                ],
+            },
+        }
+
+    first_frame_robots = [
+        robot(1, 10.0, 1.0, 1.0, 1.0),
+        robot(2, 20.0, 1.0, 2.0, 2.0),
+        robot(3, 30.0, 1.0, 3.0, 3.0),
+    ]
+    failed_robot = robot(
+        2,
+        21.0,
+        2.0,
+        11.0,
+        0.0,
+        opt_status="success",
+        solver_status="infeasible",
+    )
+    for row in failed_robot["opt"]["cbfNoSlack"]:
+        row.pop("residual")
+    return {
+        "para": {"gridWorld": {"xNum": 1, "yNum": 1}},
+        "config": {
+            "execute": {"execution-mode": "distributed"},
+            "position_covariance": {
+                "enable": True,
+                "uncertainty-type": "std_avg",
+            },
+            "cbfs": {
+                "without-slack": {
+                    "safety": {
+                        "mode": "pairwise",
+                        "safe-distance": 1.0,
+                        "consider-uncertainty": True,
+                        "alpha": {"coe": 0.1, "pow": 1},
+                    }
+                }
+            },
+        },
+        "state": [
+            {
+                "runtime": 0.0,
+                "formation": [],
+                "update": [],
+                "robots": first_frame_robots,
+            },
+            {
+                "runtime": 0.5,
+                "formation": [],
+                "update": [],
+                "robots": [
+                    robot(1, 11.0, 2.0, 10.0, 100.0),
+                    failed_robot,
+                    {
+                        **first_frame_robots[2],
+                        "state": {"x": 31.0, "y": 0.0},
+                        "position_covariance": {
+                            "cov_xx": 4.0,
+                            "cov_xy": 0.0,
+                            "cov_yx": 0.0,
+                            "cov_yy": 4.0,
+                        },
+                        "uncertainty": 2.0,
+                    },
+                ],
+            },
+        ],
+    }
+
+
 class FeasibilityBoundTests(unittest.TestCase):
     def test_single_axis_lower_bound(self):
         constraints = [{"coe": {"vx": 1.0, "vy": 0.0, "yawRateRad": 0.0}, "rhs": 2.0}]
@@ -302,6 +424,49 @@ class FeasibilityBoundTests(unittest.TestCase):
 
     def test_no_hard_constraints_need_no_control_bound(self):
         self.assertEqual(minimum_linf_bound([], ["vx", "vy", "yawRateRad"]), 0.0)
+
+
+class SolverRecordLifecycleTests(unittest.TestCase):
+    def test_optimal_requires_both_success_and_optimal_statuses(self):
+        self.assertEqual(
+            _solver_record_lifecycle(
+                {
+                    "status": "success",
+                    "solver_info": {"status": "optimal"},
+                }
+            ),
+            "optimal",
+        )
+        for opt in (
+            {"status": "success", "solver_info": {}},
+            {"solver_info": {"status": "optimal"}},
+            {},
+        ):
+            with self.subTest(opt=opt):
+                self.assertEqual(
+                    _solver_record_lifecycle(opt),
+                    "unconfirmed",
+                )
+
+    def test_any_explicit_failure_wins_over_a_contradictory_status(self):
+        for opt in (
+            {
+                "status": "failed",
+                "solver_info": {"status": "optimal"},
+            },
+            {
+                "status": "success",
+                "solver_info": {"status": "infeasible"},
+            },
+            {
+                "solver_info": {"status": "inf_or_unbounded"},
+            },
+        ):
+            with self.subTest(opt=opt):
+                self.assertEqual(
+                    _solver_record_lifecycle(opt),
+                    "failed",
+                )
 
 
 class RunAnalysisTests(unittest.TestCase):
@@ -775,7 +940,7 @@ class RunAnalysisTests(unittest.TestCase):
     def test_failed_qp_placeholder_is_not_reported_as_applied_control_evidence(self):
         data = {
             "para": {"gridWorld": {"xNum": 1, "yNum": 1}},
-            "config": {},
+            "config": {"execute": {"execution-mode": "distributed"}},
             "state": [
                 {
                     "runtime": 0.0,
@@ -815,27 +980,212 @@ class RunAnalysisTests(unittest.TestCase):
 
         summary = self.analyze_fixture(data)
 
-        self.assertEqual(summary["hard_constraints"]["count"], 1)
+        self.assertEqual(summary["applied_frame_count"], 0)
+        self.assertEqual(summary["partial_frame_count"], 1)
+        self.assertEqual(summary["fresh_solver_records"]["optimal_count"], 1)
+        self.assertEqual(summary["fresh_solver_records"]["failed_count"], 1)
+        self.assertEqual(summary["not_attempted_solver_records"]["count"], 0)
+        self.assertEqual(summary["hard_constraints"]["count"], 0)
         self.assertEqual(summary["hard_constraints"]["negative_count"], 0)
-        self.assertAlmostEqual(summary["hard_constraints"]["residual_min"], 0.0)
+        self.assertIsNone(summary["hard_constraints"]["residual_min"])
         self.assertEqual(summary["hard_constraints"]["logged_residual_missing_count"], 0)
-        self.assertEqual(summary["control_norms"]["l2"]["count"], 1)
-        self.assertEqual(summary["minimum_linf_bound"]["per_frame"], [1.0])
-        self.assertEqual(summary["unapplied_solver_records"]["count"], 1)
+        self.assertEqual(summary["control_norms"]["l2"]["count"], 0)
+        self.assertEqual(summary["minimum_linf_bound"]["per_frame"], [None])
+        self.assertEqual(summary["unapplied_solver_records"]["count"], 2)
         self.assertEqual(summary["unapplied_solver_records"]["failed_solver_record_count"], 1)
         self.assertEqual(summary["unapplied_solver_records"]["unconfirmed_record_count"], 0)
-        self.assertEqual(summary["unapplied_solver_records"]["status_counts"], {"infeasible": 1})
-        self.assertEqual(summary["unapplied_solver_records"]["hard_constraint_count"], 1)
+        self.assertEqual(
+            summary["unapplied_solver_records"]["status_counts"],
+            {"infeasible": 1, "optimal": 1},
+        )
+        self.assertEqual(summary["unapplied_solver_records"]["hard_constraint_count"], 2)
         self.assertEqual(summary["unapplied_solver_records"]["result_placeholder_count"], 1)
+        self.assertEqual(
+            summary["unapplied_solver_records"]["failed_hard_constraint_count"],
+            1,
+        )
+        self.assertEqual(
+            summary["unapplied_solver_records"]["unexpected_logged_residual_count"],
+            0,
+        )
+        self.assertEqual(
+            summary["unapplied_solver_records"]["failed"],
+            {
+                "record_count": 1,
+                "result_placeholder_count": 1,
+                "invalid_result_placeholder_count": 0,
+                "hard_constraint_count": 1,
+                "unexpected_logged_residual_count": 0,
+            },
+        )
+        fresh_optimal = summary["unapplied_solver_records"][
+            "fresh_optimal"
+        ]
+        self.assertEqual(fresh_optimal["record_count"], 1)
+        self.assertEqual(fresh_optimal["result_record_count"], 1)
+        self.assertEqual(fresh_optimal["hard_constraint_count"], 1)
+        self.assertEqual(fresh_optimal["logged_residual_count"], 1)
+        self.assertEqual(fresh_optimal["valid_logged_residual_count"], 1)
+        self.assertEqual(fresh_optimal["logged_residual_missing_count"], 0)
+        self.assertEqual(fresh_optimal["logged_residual_mismatch_count"], 0)
+        self.assertEqual(
+            fresh_optimal["logged_residual_unverifiable_count"],
+            0,
+        )
         self.assertEqual(summary["unapplied_solver_records"]["minimum_linf_bound"]["per_frame"], [2.0])
         self.assertEqual(
             summary["unapplied_solver_records"]["interpretation"],
             (
-                "unconfirmed records are excluded from applied evidence; "
-                "solver failures are caught and logged without a state step, "
-                "so their result placeholders were not applied"
+                "fresh records from an aborted distributed frame are excluded "
+                "from applied evidence; later records are classified as not "
+                "attempted/stale"
             ),
         )
+
+    def test_distributed_aborted_frame_excludes_partial_and_stale_solver_evidence(self):
+        summary = self.analyze_fixture(distributed_aborted_frame_fixture())
+
+        self.assertEqual(summary["frame_count"], 2)
+        self.assertEqual(summary["applied_frame_count"], 1)
+        self.assertEqual(summary["partial_frame_count"], 1)
+        self.assertEqual(summary["solver_status_counts"], {"infeasible": 1, "optimal": 4})
+        self.assertEqual(summary["fresh_solver_records"]["count"], 5)
+        self.assertEqual(summary["fresh_solver_records"]["optimal_count"], 4)
+        self.assertEqual(summary["fresh_solver_records"]["failed_count"], 1)
+        self.assertEqual(summary["not_attempted_solver_records"]["count"], 1)
+        self.assertEqual(
+            summary["not_attempted_solver_records"]["status_counts"],
+            {"optimal": 1},
+        )
+        self.assertEqual(summary["applied_solver_records"]["count"], 3)
+        self.assertEqual(summary["unapplied_solver_records"]["count"], 2)
+        self.assertEqual(
+            summary["unapplied_solver_records"]["result_placeholder_count"],
+            1,
+        )
+        self.assertEqual(
+            summary["unapplied_solver_records"]["failed_hard_constraint_count"],
+            2,
+        )
+        self.assertEqual(
+            summary["unapplied_solver_records"][
+                "unexpected_logged_residual_count"
+            ],
+            0,
+        )
+        self.assertEqual(
+            summary["unapplied_solver_records"]["fresh_optimal"],
+            {
+                "record_count": 1,
+                "result_record_count": 1,
+                "invalid_result_record_count": 0,
+                "hard_constraint_count": 2,
+                "logged_residual_count": 2,
+                "valid_logged_residual_count": 2,
+                "logged_residual_missing_count": 0,
+                "logged_residual_mismatch_count": 0,
+                "logged_residual_unverifiable_count": 0,
+            },
+        )
+
+        partial = summary["partial_frames"][0]
+        self.assertEqual(partial["frame_index"], 1)
+        self.assertEqual(partial["failed_robot_id"], 2)
+        self.assertEqual(partial["fresh_attempt_count"], 2)
+        self.assertEqual(partial["fresh_optimal_count"], 1)
+        self.assertEqual(partial["fresh_failed_count"], 1)
+        self.assertEqual(partial["not_attempted_count"], 1)
+        self.assertEqual(partial["fresh_pairwise_row_count"], 4)
+
+        self.assertEqual(summary["solve_time_ms"]["count"], 3)
+        self.assertAlmostEqual(summary["solve_time_ms"]["max"], 3.0)
+        self.assertEqual(summary["control_norms"]["l2"]["count"], 3)
+        self.assertAlmostEqual(summary["control_norms"]["linf"]["max"], 3.0)
+        self.assertEqual(summary["control_mismatch"]["count"], 0)
+        self.assertEqual(summary["hard_constraints"]["count"], 6)
+        self.assertEqual(summary["class_k_parameters"]["record_count"], 6)
+        self.assertEqual(summary["minimum_linf_bound"]["per_frame"], [0.0, None])
+        self.assertEqual(summary["minimum_linf_bound"]["unavailable_frame_indices"], [1])
+        self.assertEqual(summary["pairwise_row_coverage"]["expected_count"], 6)
+        self.assertEqual(summary["pairwise_row_coverage"]["observed_count"], 6)
+        self.assertTrue(summary["pairwise_row_coverage"]["complete"])
+        partial_coverage = summary["partial_frame_pairwise_row_coverage"]
+        self.assertEqual(partial_coverage["expected_count"], 4)
+        self.assertEqual(partial_coverage["observed_count"], 4)
+        self.assertTrue(partial_coverage["complete"])
+
+        self.assertEqual(summary["uncertainty"]["count"], 6)
+        self.assertAlmostEqual(summary["uncertainty"]["max"], 2.0)
+        self.assertEqual(
+            summary["covariance_uncertainty_consistency"]["checked_count"],
+            6,
+        )
+        self.assertEqual(
+            summary["collision_margins"]["all_pairs"]["nominal_count"],
+            6,
+        )
+
+    def test_missing_execution_mode_uses_distributed_abort_semantics(self):
+        data = distributed_aborted_frame_fixture()
+        data["config"].pop("execute")
+
+        summary = self.analyze_fixture(data)
+
+        self.assertIsNone(summary["configured_execution_mode"])
+        self.assertEqual(summary["execution_mode"], "distributed")
+        self.assertEqual(summary["partial_frame_count"], 1)
+        self.assertEqual(summary["not_attempted_solver_records"]["count"], 1)
+
+    def test_unknown_execution_mode_uses_simulator_distributed_semantics(self):
+        data = distributed_aborted_frame_fixture()
+        data["config"]["execute"]["execution-mode"] = "typo-mode"
+
+        summary = self.analyze_fixture(data)
+
+        self.assertEqual(
+            summary["configured_execution_mode"],
+            "typo-mode",
+        )
+        self.assertEqual(summary["execution_mode"], "distributed")
+        self.assertEqual(summary["partial_frame_count"], 1)
+        self.assertEqual(summary["not_attempted_solver_records"]["count"], 1)
+
+    def test_aborted_last_frame_does_not_erase_applied_input_headroom(self):
+        data = mc_first_two_frame_fixture()
+        data["state"][1]["robots"][1]["opt"]["status"] = "failed"
+        data["state"][1]["robots"][1]["opt"]["solver_info"]["status"] = (
+            "infeasible"
+        )
+
+        summary = self.analyze_fixture(data)
+
+        self.assertEqual(summary["execution_mode"], "distributed")
+        self.assertEqual(
+            summary["minimum_linf_bound"]["unavailable_frame_indices"],
+            [1],
+        )
+        self.assertAlmostEqual(
+            summary["input_limits"]["minimum_required_linf"],
+            2.0,
+        )
+        self.assertAlmostEqual(
+            summary["input_limits"]["bounded_feasibility_headroom"],
+            23.0,
+        )
+
+    def test_centralized_nonoptimal_record_does_not_stale_later_optimal_record(self):
+        data = distributed_aborted_frame_fixture()
+        data["config"]["execute"]["execution-mode"] = "centralized"
+
+        summary = self.analyze_fixture(data)
+
+        self.assertEqual(summary["execution_mode"], "centralized")
+        self.assertEqual(summary["partial_frame_count"], 0)
+        self.assertEqual(summary["not_attempted_solver_records"]["count"], 0)
+        self.assertEqual(summary["fresh_solver_records"]["count"], 6)
+        self.assertEqual(summary["applied_solver_records"]["count"], 5)
+        self.assertEqual(summary["unapplied_solver_records"]["count"], 1)
+        self.assertEqual(summary["control_norms"]["l2"]["count"], 5)
 
     def test_min_mode_surfaces_identity_alpha_and_contained_comm_auto_configuration(self):
         data = {
