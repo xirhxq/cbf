@@ -347,6 +347,34 @@ class WnlsAndFimTests(unittest.TestCase):
         self.assertEqual(result["status"], "converged")
         self.assertLessEqual(result["stationarity_norm"], replay_module.STEP_TOLERANCE)
 
+    def test_stationary_accepted_trial_converges_on_final_allowed_iteration(self):
+        """Breaks if step or cost gates veto an exactly stationary accepted trial."""
+        references = np.asarray(
+            [[-2.0, -1.0], [3.0, -2.0], [-1.0, 4.0], [4.0, 3.0]]
+        )
+        measurements = np.asarray(
+            [
+                2.4671928990571241,
+                5.0070958478874461,
+                5.2968424030271493,
+                3.789416589514135,
+            ]
+        )
+
+        with patch.object(replay_module, "MAX_ITERATIONS", 1):
+            result = solve_wnls(
+                references,
+                np.zeros((4, 2, 2)),
+                measurements,
+                np.asarray([1.2, -0.8]),
+                0.5,
+            )
+
+        self.assertEqual(result["status"], "converged")
+        self.assertEqual(result["iterations"], 1)
+        self.assertLessEqual(result["stationarity_norm"], replay_module.STEP_TOLERANCE)
+        np.testing.assert_allclose(result["estimate"], [0.2, 0.3], atol=1e-12)
+
     def test_third_non_collinear_reference_is_accepted_without_api_change(self):
         """Breaks if the estimator assumes exactly two measurements."""
         references = np.vstack((self.references, np.asarray([[0.0, 2.0]])))
@@ -401,6 +429,52 @@ class WnlsAndFimTests(unittest.TestCase):
         self.assertAlmostEqual(result["epsilon"], 3.0 * np.sqrt(2.0), places=12)
         self.assertAlmostEqual(result["phi_min_eigenvalue"], 0.5, places=12)
         self.assertAlmostEqual(result["phi_condition"], 2.0, places=12)
+
+    def test_off_axis_anisotropic_fim_remains_distinct_from_residual_gn_matrix(self):
+        """Breaks if the final directional FIM is replaced by J_q^T J_q."""
+        references = np.asarray([[0.0, 0.0], [3.0, -1.0], [-2.0, 4.0]])
+        covariances = np.asarray(
+            [
+                [[4.0, 1.2], [1.2, 0.5]],
+                [[0.3, -0.2], [-0.2, 3.0]],
+                [[2.0, 0.7], [0.7, 5.0]],
+            ]
+        )
+        measurements = np.asarray([2.1, 1.8, 4.0])
+        estimate = np.asarray([1.2, 1.7])
+        differences = estimate[None, :] - references
+        distances = np.linalg.norm(differences, axis=1)
+        directions = differences / distances[:, None]
+        covariance_directions = np.einsum(
+            "nij,nj->ni", covariances, directions
+        )
+        projected_variances = np.einsum(
+            "ni,ni->n", directions, covariance_directions
+        )
+        tangents = covariance_directions - (
+            directions * projected_variances[:, None]
+        )
+        variances = 0.5**2 + projected_variances
+        expected_phi = directions.T @ (directions / variances[:, None])
+        residual_gauss_newton = replay_module._linearized_terms(
+            estimate, references, covariances, measurements, 0.5
+        )[3]
+
+        result = fim_radius(estimate, references, covariances, 0.5)
+
+        self.assertTrue(np.all(np.linalg.norm(tangents, axis=1) > 1.0))
+        self.assertTrue(np.all(np.abs(distances - measurements) > 1e-3))
+        np.testing.assert_allclose(
+            result["covariance"], np.linalg.inv(expected_phi), atol=1e-12
+        )
+        self.assertFalse(
+            np.allclose(
+                result["covariance"],
+                np.linalg.inv(residual_gauss_newton),
+                rtol=1e-6,
+                atol=1e-8,
+            )
+        )
 
     def test_relative_spectral_threshold_accepts_above_and_rejects_below(self):
         """Breaks if the 1e-12 relative FIM condition gate drifts."""
@@ -613,6 +687,49 @@ class WnlsAndFimTests(unittest.TestCase):
                 self.assertEqual(result["covariance"], previous["covariance"])
                 self.assertEqual(result["failure"]["status"], "invalid")
 
+    def test_finite_nonstationary_failure_is_audited_while_prior_state_is_stale(self):
+        """Breaks if stale retention hides a finite failed attempt's stationarity."""
+        previous = {
+            "status": "converged",
+            "estimate": [1.0, 1.0],
+            "covariance": [[0.25, 0.0], [0.0, 0.25]],
+            "epsilon": 1.5,
+            "phi_min_eigenvalue": 4.0,
+            "phi_condition": 1.0,
+            "iterations": 3,
+            "cost": 0.0,
+            "stationarity_norm": 0.0,
+            "failure_reason": None,
+        }
+        references = np.asarray([[0.0, 0.0], [3.0, -1.0], [-2.0, 4.0]])
+        covariances = np.asarray(
+            [
+                [[4.0, 1.2], [1.2, 0.5]],
+                [[0.3, -0.2], [-0.2, 3.0]],
+                [[2.0, 0.7], [0.7, 5.0]],
+            ]
+        )
+
+        result = solve_later_frame(
+            previous,
+            references,
+            covariances,
+            np.asarray([2.1, 1.8, 4.0]),
+            np.asarray([1.5844750217114834, 0.93933388606859125]),
+            0.5,
+        )
+
+        self.assertEqual(result["status"], "stale")
+        self.assertEqual(result["estimate"], previous["estimate"])
+        self.assertEqual(result["covariance"], previous["covariance"])
+        self.assertEqual(result["failure"]["status"], "failed")
+        self.assertTrue(np.isfinite(result["stationarity_norm"]))
+        self.assertGreater(result["stationarity_norm"], replay_module.STEP_TOLERANCE)
+        self.assertEqual(
+            result["stationarity_norm"],
+            result["failure"]["stationarity_norm"],
+        )
+
     def test_malformed_or_missing_prior_does_not_become_stale(self):
         """Breaks if stale fallback accepts an invalid prior calibration state."""
         valid_prior = {
@@ -726,6 +843,10 @@ class ReplayEvidenceBundleTests(unittest.TestCase):
                 first["estimator_contract"],
                 "variable_weight_nls_full_residual_jacobian_v1",
             )
+            self.assertEqual(
+                first["settings"]["estimator_contract"],
+                "variable_weight_nls_full_residual_jacobian_v1",
+            )
             with gzip.open(Path(first["output_dir"]) / "calibration.jsonl.gz", "rt") as source:
                 first_rows = [json.loads(line) for line in source]
             with gzip.open(Path(second["output_dir"]) / "calibration.jsonl.gz", "rt") as source:
@@ -789,6 +910,10 @@ class ReplayEvidenceBundleTests(unittest.TestCase):
                 "variable_weight_nls_full_residual_jacobian_v1",
             )
             self.assertEqual(
+                summary["settings"]["estimator_contract"],
+                "variable_weight_nls_full_residual_jacobian_v1",
+            )
+            self.assertEqual(
                 summary["graph_cases"]["dynamic_dag_wnls"]["initialization_frame"]["robot_frame_count"],
                 4,
             )
@@ -846,6 +971,59 @@ class ReplayEvidenceBundleTests(unittest.TestCase):
         self.assertEqual([(record["kind"], record["id"]) for record in records], [("base", 0), ("base", 1), ("uav", 1), ("uav", 2)])
         self.assertTrue(all(record["true_range"] is not None for record in records))
         self.assertTrue(all(record["noisy_range"] is not None for record in records))
+
+    def test_process_row_preserves_finite_failed_attempt_stationarity(self):
+        """Breaks if stale process evidence substitutes retained-state stationarity."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project_root = root / "project"
+            project_root.mkdir()
+            data_path, manifest_path = self._fixture(root)
+
+            def stale_with_finite_failure(
+                previous_result,
+                reference_positions,
+                reference_covariances,
+                measurements,
+                initial_estimate,
+                ranging_sigma,
+            ):
+                failure = replay_module._result(
+                    "failed",
+                    iterations=replay_module.MAX_ITERATIONS,
+                    cost=1.25,
+                    stationarity_norm=0.25,
+                    failure_reason="maximum WNLS iterations exceeded",
+                )
+                return replay_module._retained_after_attempt(
+                    previous_result, failure
+                )
+
+            with patch.object(
+                replay_module,
+                "solve_later_frame",
+                side_effect=stale_with_finite_failure,
+            ):
+                manifest = replay_calibration(
+                    data_path,
+                    manifest_path,
+                    root / "output",
+                    [17],
+                    project_root,
+                )
+
+            with gzip.open(
+                Path(manifest["output_dir"]) / "calibration.jsonl.gz", "rt"
+            ) as source:
+                rows = [json.loads(line) for line in source]
+
+        stale_rows = [row for row in rows if row["status"] == "stale"]
+        self.assertTrue(stale_rows)
+        for row in stale_rows:
+            self.assertEqual(row["stationarity_norm"], 0.25)
+            self.assertEqual(row["attempt_stationarity_norm"], 0.25)
+            self.assertEqual(row["failure"]["stationarity_norm"], 0.25)
+            self.assertEqual(row["attempt_status"], "failed")
 
     def test_compact_summary_storage_scales_to_registered_row_count(self):
         """Breaks if the 280k-row replay retains nested process dictionaries."""

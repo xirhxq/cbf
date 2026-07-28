@@ -428,13 +428,9 @@ def solve_wnls(
             trial_stationarity_norm = float(np.linalg.norm(trial_gradient))
             estimate = trial_estimate
             damping /= 10.0
-            cost_decrease = cost - trial_cost
             cost = trial_cost
             stationarity_norm = trial_stationarity_norm
-            if (
-                np.linalg.norm(delta) <= STEP_TOLERANCE
-                or cost_decrease <= COST_TOLERANCE
-            ) and trial_stationarity_norm <= STEP_TOLERANCE:
+            if trial_stationarity_norm <= STEP_TOLERANCE:
                 final = fim_radius(estimate, references, covariances, sigma)
                 final["iterations"] = iteration
                 final["cost"] = trial_cost

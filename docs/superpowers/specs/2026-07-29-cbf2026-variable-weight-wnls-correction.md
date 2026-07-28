@@ -64,6 +64,11 @@ exact objective half-gradient norm
 \lVert J_q^Tq\rVert_2\leq 10^{-9}.
 \]
 
+An accepted trial that satisfies this exact stationarity gate is converged
+immediately, including on the final allowed iteration. Step size and cost
+decrease do not veto exact stationarity. The iteration, damping, and tolerance
+constants remain unchanged.
+
 A range \(\rho_j\leq\texttt{RANGE_EPSILON}\) has no defined direction or
 derivative and is rejected. No substitute direction is fabricated.
 
@@ -79,7 +84,10 @@ stationary estimate is obtained, covariance and radius continue to use
 \]
 
 The implementation keeps this calculation in a separate helper so that
-\(J_q^TJ_q\) cannot silently replace \(\Phi\).
+\(J_q^TJ_q\) cannot silently replace \(\Phi\). The distinction is covered by
+an off-axis anisotropic case with nonzero
+\((I-n_jn_j^T)P_jn_j\) and nonzero residuals, where the two matrices produce
+measurably different covariance approximations.
 
 ## Audit contract
 
@@ -89,10 +97,12 @@ terminal manifest, summary, and shared settings block.
 
 Every solver result records `stationarity_norm`. Each process row separately
 records `attempt_stationarity_norm`, including a failed current attempt when a
-prior state is retained as stale. Values that cannot be defined before a valid
-linearization remain JSON `null`. Output remains strict JSON, and the
-fixed-size compact summary store does not retain process dictionaries or add a
-stationarity sample array.
+prior state is retained as stale. In that case the prior estimate, covariance,
+and radius remain the retained state, while both the stale result and its
+nested `failure` preserve the finite current-attempt stationarity norm.
+Values that cannot be defined before a valid linearization remain JSON
+`null`. Output remains strict JSON, and the fixed-size compact summary store
+does not retain process dictionaries or add a stationarity sample array.
 
 ## Evidence status
 
