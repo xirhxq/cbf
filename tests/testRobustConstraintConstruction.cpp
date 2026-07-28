@@ -36,7 +36,7 @@ json makeDiagnosticSettings() {
         {"initial", {
             {"position", {
                 {"method", "specified"},
-                {"positions", json::array({json::array({0.0, 0.0}), json::array({2.0, 0.0})})}
+                {"positions", json::array({json::array({0.0, 0.0}), json::array({2.0, 1.0})})}
             }},
             {"battery", {{"min", 4000.0}, {"max", 4000.0}}},
             {"yawDeg", 0.0}
@@ -91,7 +91,7 @@ json makeThreeRobotChainSettings() {
     settings["initial"]["position"]["positions"] = json::array({
         json::array({0.0, 0.0}),
         json::array({2.0, 1.0}),
-        json::array({4.0, 2.0})
+        json::array({4.0, 3.0})
     });
     settings["cbfs"]["without-slack"]["energy"] = {{"on", false}};
     settings["searching"] = {
@@ -100,6 +100,33 @@ json makeThreeRobotChainSettings() {
     };
     settings["execute"]["check-constraint-violation"] = false;
     settings["output_path"] = "build-diagnostic";
+    return settings;
+}
+
+json makeFourRobotFixedGraphSettings() {
+    json settings = makeThreeRobotChainSettings();
+    settings["num"] = 4;
+    settings["all"] = json::array({1, 2, 3, 4});
+    settings["world"]["boundary"] = json::array({
+        json::array({-2000.0, -2000.0}),
+        json::array({2000.0, -2000.0}),
+        json::array({2000.0, 2000.0}),
+        json::array({-2000.0, 2000.0})
+    });
+    settings["initial"]["position"]["positions"] = json::array({
+        json::array({0.0, 0.0}),
+        json::array({2.0, 1.0}),
+        json::array({4.0, 3.0}),
+        json::array({6.0, 6.0})
+    });
+    settings["bases"] = json::array({
+        json::array({-20.0, 0.0}),
+        json::array({0.0, -20.0}),
+        json::array({10.0, 10.0})
+    });
+    settings["formation"]["bases-id"] =
+        json::array({json::array({0, 1, 2})});
+    settings["cbfs"]["without-slack"]["comm-fixed"]["max-range"] = 100.0;
     return settings;
 }
 
@@ -133,6 +160,17 @@ void exchangeDiagnosticData(std::vector<std::unique_ptr<Robot>>& robots) {
             receiver->comm->receiveUncertaintyRate(robot->id, robot->uncertaintyRate);
         }
     }
+}
+
+std::vector<std::unique_ptr<Robot>> makeFourFixedGraphRobots() {
+    json settings = makeFourRobotFixedGraphSettings();
+    std::vector<std::unique_ptr<Robot>> robots;
+    for (int id = 1; id <= 4; ++id) {
+        json robotSettings = settings;
+        robots.emplace_back(std::make_unique<Robot>(id, robotSettings));
+    }
+    exchangeDiagnosticData(robots);
+    return robots;
 }
 
 void refreshDiagnosticUncertaintySnapshot(std::vector<std::unique_ptr<Robot>>& robots, double dt) {
@@ -449,12 +487,50 @@ TEST_CASE("startup bootstraps a self-consistent lower-index covariance chain") {
     Robot& highestIndexRobot = *swarm.robots.at(2);
     const Eigen::Matrix2d startupCovariance =
         highestIndexRobot.positionCovariance;
-    highestIndexRobot.getCovariance(
-        highestIndexRobot.settings["cbfs"]["without-slack"]["comm-fixed"]
-    );
+    highestIndexRobot.getCovariance();
     CHECK(highestIndexRobot.positionCovariance.isApprox(
         startupCovariance, 1e-12
     ));
+}
+
+TEST_CASE("covariance FIM excludes in-range references outside the fixed localization graph") {
+    auto robots = makeFourFixedGraphRobots();
+    Robot& robot = *robots.at(3);
+
+    robot.getCovariance();
+
+    CHECK(robot.myCovarianceFormation.at("anchorIds")
+          == json::array({2, 3}));
+    CHECK(robot.myCovarianceFormation.at("baseIds")
+          == json::array());
+}
+
+TEST_CASE("covariance FIM retains declared base references beyond max range") {
+    json settings = makeDiagnosticSettings();
+    settings["cbfs"]["without-slack"]["comm-fixed"]["max-range"] = 5.0;
+    Robot robot(1, settings);
+
+    CHECK_NOTHROW(robot.getCovariance());
+    CHECK(robot.myCovarianceFormation.at("anchorIds")
+          == json::array());
+    CHECK(robot.myCovarianceFormation.at("baseIds")
+          == json::array({0, 1}));
+    CHECK(robot.positionCovariance.isApprox(
+        Eigen::Matrix2d::Identity(), 1e-12
+    ));
+}
+
+TEST_CASE("covariance information set is invariant across optional-anchor range crossing") {
+    auto robots = makeFourFixedGraphRobots();
+    Robot& robot = *robots.at(3);
+    robot.getCovariance();
+    const json before = robot.myCovarianceFormation;
+
+    robots.at(0)->model->setPosition2D(Point(1500.0, 1500.0));
+    exchangeDiagnosticData(robots);
+    robot.getCovariance();
+
+    CHECK(robot.myCovarianceFormation == before);
 }
 
 TEST_CASE("distributed frame zero logs only first-sample zero uncertainty rates") {

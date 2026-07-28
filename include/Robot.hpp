@@ -446,38 +446,80 @@ public:
         cbfNoSlack.cbfs[commCBF.name] = commCBF;
     }
 
-    void getCovariance(json &config) {
-        if (!enablePositionCovariance) return;
-
-        myCovarianceFormation = {
-            {"id", id},
+    json fixedLocalizationReferences() const {
+        json references = {
             {"anchorIds", json::array()},
             {"baseIds", json::array()}
+        };
+
+        const auto commConfig =
+            settings["cbfs"]["without-slack"]["comm-fixed"];
+        const int minOffset =
+            commConfig.value("min-neighbour-id-offset", -2);
+        const int maximumBaseIndex =
+            -idInMyPart - minOffset;
+
+        for (std::size_t index = 0; index < myBasesId.size(); ++index) {
+            if (static_cast<int>(index) > maximumBaseIndex) {
+                continue;
+            }
+            references["baseIds"].push_back(myBasesId[index]);
+        }
+
+        for (int otherId : myNeighboursId) {
+            if (!isSamePartAsMe(otherId)) {
+                continue;
+            }
+            if (getIdInPart(otherId) >= idInMyPart) {
+                continue;
+            }
+            references["anchorIds"].push_back(otherId);
+        }
+        return references;
+    }
+
+    void getCovariance() {
+        if (!enablePositionCovariance) return;
+
+        const json references = fixedLocalizationReferences();
+        myCovarianceFormation = {
+            {"id", id},
+            {"anchorIds", references.at("anchorIds")},
+            {"baseIds", references.at("baseIds")}
         };
 
         Point p = this->model->xy();
         std::vector<Point> anchorPoints;
         std::vector<Eigen::Matrix2d> anchorCovariances;
 
-        double maxRange = config["max-range"];
-
-        for (int i = 0; i < bases.size(); i++) {
-            Point& base = bases[i];
-            if (base.distance_to(p) > maxRange) continue;
-
-            anchorPoints.push_back(base);
+        for (const json& baseIdJson : references.at("baseIds")) {
+            const int baseId = baseIdJson.get<int>();
+            if (baseId < 0 || baseId >= static_cast<int>(bases.size())) {
+                throw std::invalid_argument(
+                    "#" + std::to_string(id)
+                    + " has an invalid fixed base reference "
+                    + std::to_string(baseId)
+                );
+            }
+            anchorPoints.push_back(bases.at(baseId));
             anchorCovariances.push_back(Eigen::Matrix2d::Zero());
-            myCovarianceFormation["baseIds"].push_back(i);
         }
 
-        for (auto &[otherId, otherPos] : comm->_othersPos) {
-            if (myNeighboursId.find(otherId) == myNeighboursId.end() && otherPos.distance_to(p) > maxRange) continue;
-            if (!isSamePartAsMe(otherId)) continue;
-            if (getIdInPart(otherId) >= getIdInPart(id)) continue;
-
-            anchorPoints.push_back(otherPos);
-            anchorCovariances.push_back(comm->_othersPositionCovariance[otherId]);
-            myCovarianceFormation["anchorIds"].push_back(otherId);
+        for (const json& anchorIdJson : references.at("anchorIds")) {
+            const int otherId = anchorIdJson.get<int>();
+            const auto positionIt = comm->_othersPos.find(otherId);
+            const auto covarianceIt =
+                comm->_othersPositionCovariance.find(otherId);
+            if (positionIt == comm->_othersPos.end()
+                || covarianceIt == comm->_othersPositionCovariance.end()) {
+                throw std::invalid_argument(
+                    "#" + std::to_string(id)
+                    + " is missing fixed localization data for #"
+                    + std::to_string(otherId)
+                );
+            }
+            anchorPoints.push_back(positionIt->second);
+            anchorCovariances.push_back(covarianceIt->second);
         }
 
         std::vector<double> angles;
@@ -552,8 +594,7 @@ public:
     }
 
     void updateCovarianceAndRate(double dt) {
-        auto& config = settings["cbfs"]["without-slack"]["comm-fixed"];
-        getCovariance(config);
+        getCovariance();
         updateUncertaintyHistory(uncertaintyFromCovarianceFunction(positionCovariance), dt);
     }
 
@@ -562,28 +603,18 @@ public:
         // This should always be called, regardless of whether comm-fixed CBF is enabled
         // Uses the already-initialized myNeighboursId and myBasesId
 
-        auto commConfig = settings["cbfs"]["without-slack"]["comm-fixed"];
-        int minOffset = commConfig.value("min-neighbour-id-offset", -2);
-
+        const json references = fixedLocalizationReferences();
         myFormation = {
             {"id", id},
             {"anchorPoints", json::array()},
-            {"anchorIds", json::array()},
-            {"baseIds", json::array()}
+            {"anchorIds", references.at("anchorIds")},
+            {"baseIds", references.at("baseIds")}
         };
 
-        // Add base stations (from already-initialized myBasesId)
-        for (int i = 0; i < myBasesId.size(); i++) {
-            int baseId = myBasesId[i];
-            if (i > -idInMyPart - minOffset) continue;
-            auto base = bases[baseId];
+        for (const json& baseIdJson : references.at("baseIds")) {
+            const int baseId = baseIdJson.get<int>();
+            const Point& base = bases.at(baseId);
             myFormation["anchorPoints"].push_back({base.x, base.y});
-            myFormation["baseIds"].push_back(baseId);
-        }
-
-        // Add robot neighbours (from already-initialized myNeighboursId)
-        for (auto &otherId: myNeighboursId) {
-            myFormation["anchorIds"].push_back(otherId);
         }
     }
 
