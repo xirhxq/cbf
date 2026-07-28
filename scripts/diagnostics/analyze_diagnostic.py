@@ -182,15 +182,22 @@ def _metric_maximum(values: list[float]) -> float | None:
     return float(max(values)) if values else None
 
 
-def _safety_neighbor_id(name: Any) -> int | None:
-    """Extract the neighbor id from a stable ``safetyCBF(#<id>)`` row name."""
-    prefix = "safetyCBF(#"
-    if not isinstance(name, str) or not name.startswith(prefix) or not name.endswith(")"):
+def _neighbor_constraint_source(name: Any) -> tuple[int, str] | None:
+    """Extract neighbor and source from stable hard neighbor-row names."""
+    if not isinstance(name, str) or not name.endswith(")"):
         return None
-    try:
-        return int(name[len(prefix):-1])
-    except ValueError:
-        return None
+    prefixes = (
+        ("safetyCBF(#", "safety"),
+        ("fixedCommCBF(#", "fixed_communication"),
+    )
+    for prefix, source in prefixes:
+        if not name.startswith(prefix):
+            continue
+        try:
+            return int(name[len(prefix):-1]), source
+        except ValueError:
+            return None
+    return None
 
 
 def _record_physical_margin(
@@ -422,6 +429,7 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
     linf_norms: list[float] = []
     per_frame_linf: list[float | None] = []
     infeasible_frame_indices: list[int] = []
+    unavailable_frame_indices: list[int] = []
     unapplied_per_frame_linf: list[float | None] = []
     unapplied_infeasible_frame_indices: list[int] = []
     applied_solver_record_count = 0
@@ -451,6 +459,7 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
     observed_saturation_counts: Counter[str] = Counter()
     logged_saturation_counts: Counter[str] = Counter()
     input_violation_counts: Counter[str] = Counter()
+    input_limit_evidence_records: list[dict] = []
     localization_margin_records: dict[
         str, dict[int, tuple[float, float]]
     ] = {}
@@ -541,7 +550,9 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
 
         frame_robot_ids: set[int] = set()
         frame_applied_planar_controls: dict[int, tuple[float, float]] = {}
-        frame_applied_safety_neighbors: dict[int, set[int]] = {}
+        frame_applied_neighbor_sources: dict[
+            tuple[int, int], dict[str, set[str]]
+        ] = {}
         frame_safety_rows: set[tuple[int, str]] = set()
         robot_info: dict[int, tuple[tuple[float, float], float | None]] = {}
         frame_bounds: list[float] = []
@@ -675,6 +686,18 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
 
             result = opt.get("result") if isinstance(opt.get("result"), dict) else {}
             finite_result: dict[str, float] = {}
+            observed_input_saturation: dict[str, bool] | None = None
+            raw_logged_input_limits = opt.get("input_limits")
+            logged_input_limits = (
+                raw_logged_input_limits
+                if isinstance(raw_logged_input_limits, dict)
+                else {}
+            )
+            logged_saturation = (
+                logged_input_limits.get("saturated")
+                if isinstance(logged_input_limits.get("saturated"), dict)
+                else {}
+            )
             if confirmed_applied:
                 controls: list[float] = []
                 for name, value in result.items():
@@ -714,6 +737,16 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
                                 abs(yaw_rate)
                                 >= yaw_rate_max - INPUT_LIMIT_TOLERANCE
                             )
+                            observed_input_saturation = {
+                                "vx": vx_saturated,
+                                "vy": vy_saturated,
+                                "yawRateRad": yaw_saturated,
+                                "any": (
+                                    vx_saturated
+                                    or vy_saturated
+                                    or yaw_saturated
+                                ),
+                            }
                             observed_saturation_counts["vx"] += int(vx_saturated)
                             observed_saturation_counts["vy"] += int(vy_saturated)
                             observed_saturation_counts["yawRateRad"] += int(
@@ -738,19 +771,102 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
                                 > yaw_rate_max + INPUT_LIMIT_TOLERANCE
                             )
 
-                    logged_input_limits = (
-                        opt.get("input_limits")
-                        if isinstance(opt.get("input_limits"), dict)
-                        else {}
-                    )
-                    logged_saturation = (
-                        logged_input_limits.get("saturated")
-                        if isinstance(logged_input_limits.get("saturated"), dict)
-                        else {}
-                    )
                     for saturation_name in ("vx", "vy", "yawRateRad", "any"):
                         if logged_saturation.get(saturation_name) is True:
                             logged_saturation_counts[saturation_name] += 1
+                if input_limits_available and input_limits_enabled:
+                    evidence_failures: list[str] = []
+                    if not isinstance(raw_logged_input_limits, dict):
+                        evidence_failures.append("missing_opt_input_limits")
+                    if logged_input_limits.get("enabled") is not True:
+                        evidence_failures.append("enabled_not_true")
+                    bound_row_count = logged_input_limits.get(
+                        "bound_row_count"
+                    )
+                    if (
+                        isinstance(bound_row_count, bool)
+                        or bound_row_count != 6
+                    ):
+                        evidence_failures.append("bound_row_count_not_six")
+                    logged_planar_max = _finite_number(
+                        logged_input_limits.get("planar_component_max")
+                    )
+                    if (
+                        logged_planar_max is None
+                        or not math.isclose(
+                            logged_planar_max,
+                            planar_component_max,
+                            rel_tol=0.0,
+                            abs_tol=1e-12,
+                        )
+                    ):
+                        evidence_failures.append(
+                            "planar_component_max_mismatch"
+                        )
+                    logged_yaw_max = _finite_number(
+                        logged_input_limits.get("yaw_rate_max")
+                    )
+                    if (
+                        logged_yaw_max is None
+                        or not math.isclose(
+                            logged_yaw_max,
+                            yaw_rate_max,
+                            rel_tol=0.0,
+                            abs_tol=1e-12,
+                        )
+                    ):
+                        evidence_failures.append("yaw_rate_max_mismatch")
+                    logged_tolerance = _finite_number(
+                        logged_input_limits.get("saturation_tolerance")
+                    )
+                    if (
+                        logged_tolerance is None
+                        or not math.isclose(
+                            logged_tolerance,
+                            INPUT_LIMIT_TOLERANCE,
+                            rel_tol=0.0,
+                            abs_tol=1e-15,
+                        )
+                    ):
+                        evidence_failures.append(
+                            "saturation_tolerance_mismatch"
+                        )
+                    saturation_names = (
+                        "vx",
+                        "vy",
+                        "yawRateRad",
+                        "any",
+                    )
+                    if not all(
+                        isinstance(logged_saturation.get(name), bool)
+                        for name in saturation_names
+                    ):
+                        evidence_failures.append(
+                            "missing_logged_saturation_flags"
+                        )
+                    if observed_input_saturation is None:
+                        evidence_failures.append(
+                            "missing_finite_applied_control"
+                        )
+                    elif all(
+                        isinstance(logged_saturation.get(name), bool)
+                        for name in saturation_names
+                    ) and any(
+                        logged_saturation[name]
+                        != observed_input_saturation[name]
+                        for name in saturation_names
+                    ):
+                        evidence_failures.append(
+                            "logged_saturation_mismatch"
+                        )
+                    input_limit_evidence_records.append(
+                        {
+                            "frame_index": frame_index,
+                            "robot_id": robot_id,
+                            "valid": not evidence_failures,
+                            "failures": evidence_failures,
+                        }
+                    )
             elif result:
                 unapplied_result_placeholder_count += 1
                 if any(_finite_number(value) is None for value in result.values()):
@@ -767,14 +883,22 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
                     finite_failures.append(constraint_path)
                     continue
                 constraint_name = constraint.get("name")
-                safety_neighbor_id = _safety_neighbor_id(constraint_name)
-                if safety_neighbor_id is not None:
-                    frame_safety_rows.add((robot_id, constraint_name))
+                neighbor_source = _neighbor_constraint_source(
+                    constraint_name
+                )
+                if neighbor_source is not None:
+                    neighbor_id, source = neighbor_source
+                    if source == "safety":
+                        frame_safety_rows.add((robot_id, constraint_name))
                     if confirmed_applied:
-                        frame_applied_safety_neighbors.setdefault(
-                            robot_id,
-                            set(),
-                        ).add(safety_neighbor_id)
+                        source_record = (
+                            frame_applied_neighbor_sources.setdefault(
+                                (robot_id, neighbor_id),
+                                {"sources": set(), "source_rows": set()},
+                            )
+                        )
+                        source_record["sources"].add(source)
+                        source_record["source_rows"].add(constraint_name)
                 coe = constraint.get("coe")
                 constant = _finite_number(constraint.get("const"))
                 if not isinstance(coe, dict) or constant is None:
@@ -931,47 +1055,53 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
                 )
 
         if previous_frame_index == frame_index - 1:
-            for owner_id in sorted(frame_applied_safety_neighbors):
+            for (
+                owner_id,
+                neighbor_id,
+            ), source_record in sorted(
+                frame_applied_neighbor_sources.items()
+            ):
                 owner_info = robot_info.get(owner_id)
                 if owner_info is None:
                     continue
                 owner_position = owner_info[0]
-                for neighbor_id in sorted(
-                    frame_applied_safety_neighbors[owner_id]
+                neighbor_info = robot_info.get(neighbor_id)
+                current_control = frame_applied_planar_controls.get(
+                    neighbor_id
+                )
+                previous_control = (
+                    previous_frame_applied_planar_controls.get(neighbor_id)
+                )
+                if (
+                    neighbor_info is None
+                    or current_control is None
+                    or previous_control is None
                 ):
-                    neighbor_info = robot_info.get(neighbor_id)
-                    current_control = frame_applied_planar_controls.get(
-                        neighbor_id
-                    )
-                    previous_control = (
-                        previous_frame_applied_planar_controls.get(neighbor_id)
-                    )
-                    if (
-                        neighbor_info is None
-                        or current_control is None
-                        or previous_control is None
-                    ):
-                        continue
-                    neighbor_position = neighbor_info[0]
-                    dx = owner_position[0] - neighbor_position[0]
-                    dy = owner_position[1] - neighbor_position[1]
-                    distance = math.hypot(dx, dy)
-                    if distance <= 0.0:
-                        continue
-                    delta_vx = current_control[0] - previous_control[0]
-                    delta_vy = current_control[1] - previous_control[1]
-                    projected = abs(
-                        dx / distance * delta_vx
-                        + dy / distance * delta_vy
-                    )
-                    control_mismatch_records.append(
-                        {
-                            "frame_index": frame_index,
-                            "owner_id": owner_id,
-                            "neighbor_id": neighbor_id,
-                            "projected_mismatch": projected,
-                        }
-                    )
+                    continue
+                neighbor_position = neighbor_info[0]
+                dx = owner_position[0] - neighbor_position[0]
+                dy = owner_position[1] - neighbor_position[1]
+                distance = math.hypot(dx, dy)
+                if distance <= 0.0:
+                    continue
+                delta_vx = current_control[0] - previous_control[0]
+                delta_vy = current_control[1] - previous_control[1]
+                projected = abs(
+                    dx / distance * delta_vx
+                    + dy / distance * delta_vy
+                )
+                control_mismatch_records.append(
+                    {
+                        "frame_index": frame_index,
+                        "owner_id": owner_id,
+                        "neighbor_id": neighbor_id,
+                        "sources": sorted(source_record["sources"]),
+                        "source_rows": sorted(
+                            source_record["source_rows"]
+                        ),
+                        "projected_mismatch": projected,
+                    }
+                )
         previous_frame_index = frame_index
         previous_frame_applied_planar_controls = (
             frame_applied_planar_controls
@@ -1017,10 +1147,15 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
                 }
             )
 
-        # The frame requirement is the largest per-robot bound; zero makes an
-        # empty frame and a no-hard-constraint frame unambiguous.
-        frame_bound = max(frame_bounds) if frame_bounds else 0.0
-        if math.isinf(frame_bound):
+        # A genuinely empty simulator frame needs no bound.  A nonempty frame
+        # with no confirmed applied solve has no usable bound evidence.
+        frame_bound = max(frame_bounds) if frame_bounds else None
+        if frame_bound is None and robots:
+            per_frame_linf.append(None)
+            unavailable_frame_indices.append(frame_index)
+        elif frame_bound is None:
+            per_frame_linf.append(0.0)
+        elif math.isinf(frame_bound):
             # JSON has no portable infinity literal.  Preserve the diagnosis
             # explicitly instead of emitting non-standard NaN/Infinity JSON.
             per_frame_linf.append(None)
@@ -1135,17 +1270,51 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
     applied_linf_values = [
         value for value in per_frame_linf if value is not None
     ]
-    minimum_required_linf = (
+    minimum_required_linf_candidate = (
         float(max(applied_linf_values))
-        if applied_linf_values and not infeasible_frame_indices
+        if (
+            applied_linf_values
+            and not infeasible_frame_indices
+            and not unavailable_frame_indices
+        )
         else None
+    )
+    applicable_input_limit_record_count = len(
+        input_limit_evidence_records
+    )
+    validated_input_limit_record_count = sum(
+        record["valid"] for record in input_limit_evidence_records
+    )
+    invalid_input_limit_record_count = (
+        applicable_input_limit_record_count
+        - validated_input_limit_record_count
     )
     if not input_limits_available:
         input_limits_status = "unavailable"
-    elif input_limits_enabled:
-        input_limits_status = "enabled"
-    else:
+        input_limits_unavailable_reason = (
+            "missing_or_invalid_materialized_input_limit_config"
+        )
+    elif not input_limits_enabled:
         input_limits_status = "disabled"
+        input_limits_unavailable_reason = "input_limits_disabled"
+    elif not applicable_input_limit_record_count:
+        input_limits_status = "unavailable"
+        input_limits_unavailable_reason = (
+            "no_applicable_optimal_input_limit_records"
+        )
+    elif invalid_input_limit_record_count:
+        input_limits_status = "invalid"
+        input_limits_unavailable_reason = (
+            "invalid_or_inconsistent_opt_input_limit_records"
+        )
+    else:
+        input_limits_status = "enabled"
+        input_limits_unavailable_reason = None
+    minimum_required_linf = (
+        minimum_required_linf_candidate
+        if input_limits_status == "enabled"
+        else None
+    )
     bounded_feasibility_headroom = (
         planar_component_max - minimum_required_linf
         if input_limits_status == "enabled"
@@ -1165,6 +1334,10 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
         for name in ("vx", "vy", "yawRateRad")
     }
     violation_summary["total"] = sum(violation_summary.values())
+    if input_limits_status != "enabled":
+        observed_saturation_summary = None
+        logged_saturation_summary = None
+        violation_summary = None
 
     if safety_mode == "pairwise":
         pairwise_row_coverage = {
@@ -1205,8 +1378,13 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
         "NEES": UNAVAILABLE_METRIC,
         "ANEES": UNAVAILABLE_METRIC,
         "tracking_error": UNAVAILABLE_METRIC,
-        "saturation": UNAVAILABLE_METRIC,
     }
+    if input_limits_status != "enabled":
+        unavailable_metrics["saturation"] = (
+            UNAVAILABLE_METRIC
+            if not input_limits_available
+            else f"unavailable_{input_limits_unavailable_reason}"
+        )
     if covariance_consistency_records:
         covariance_consistency_status = "available"
     elif not isinstance(configured_uncertainty_type, str):
@@ -1317,6 +1495,13 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
             "violation_counts": violation_summary,
             "minimum_required_linf": minimum_required_linf,
             "bounded_feasibility_headroom": bounded_feasibility_headroom,
+            "applicable_optimal_record_count": (
+                applicable_input_limit_record_count
+            ),
+            "validated_record_count": validated_input_limit_record_count,
+            "invalid_record_count": invalid_input_limit_record_count,
+            "evidence_records": input_limit_evidence_records,
+            "unavailable_reason": input_limits_unavailable_reason,
             "headroom_definition": (
                 "planar_component_max_minus_minimum_required_linf"
             ),
@@ -1331,6 +1516,8 @@ def analyze_run(data_path: Path, manifest_path: Path) -> dict:
             ),
             "infeasible_frame_count": len(infeasible_frame_indices),
             "infeasible_frame_indices": infeasible_frame_indices,
+            "unavailable_frame_count": len(unavailable_frame_indices),
+            "unavailable_frame_indices": unavailable_frame_indices,
             "scope": "confirmed_applied_optimal_constraint_sets_only",
         },
         "uncertainty": {

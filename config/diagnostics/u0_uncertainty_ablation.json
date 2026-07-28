@@ -3,9 +3,18 @@
   "overrides": {
     "initial": {"position": {"method": "specified"}},
     "cbfs": {
+      "uncertainty-rate": {"mode": "off"},
       "without-slack": {
-        "safety": {"on": true, "consider-uncertainty": false},
-        "comm-fixed": {"on": true, "consider-uncertainty": false}
+        "safety": {
+          "on": true,
+          "consider-uncertainty": false,
+          "alpha": {"coe": 0.1, "pow": 3}
+        },
+        "comm-fixed": {
+          "on": true,
+          "consider-uncertainty": false,
+          "alpha": {"coe": 0.1, "pow": 3}
+        }
       }
     },
     "execute": {

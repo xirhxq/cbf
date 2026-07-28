@@ -410,7 +410,58 @@ class RunAnalysisTests(unittest.TestCase):
             limits["bounded_feasibility_headroom"],
             23.0,
         )
+        self.assertEqual(limits["applicable_optimal_record_count"], 4)
+        self.assertEqual(limits["validated_record_count"], 4)
+        self.assertEqual(limits["invalid_record_count"], 0)
+        self.assertNotIn("saturation", summary["unavailable_metrics"])
         self.assertEqual(summary["finite_value_failures"]["count"], 0)
+
+    def test_control_mismatch_includes_fixed_communication_neighbor_rows(self):
+        data = mc_first_two_frame_fixture()
+        for frame in data["state"]:
+            frame["robots"][0]["opt"]["cbfNoSlack"][0]["name"] = (
+                "fixedCommCBF(#2)"
+            )
+
+        mismatch = self.analyze_fixture(data)["control_mismatch"]
+
+        self.assertEqual(mismatch["count"], 2)
+        self.assertAlmostEqual(mismatch["maximum"], 5.0)
+        owner_record = next(
+            record for record in mismatch["records"]
+            if record["owner_id"] == 1
+        )
+        self.assertEqual(owner_record["neighbor_id"], 2)
+        self.assertAlmostEqual(owner_record["projected_mismatch"], 5.0)
+        self.assertEqual(owner_record["sources"], ["fixed_communication"])
+        self.assertEqual(owner_record["source_rows"], ["fixedCommCBF(#2)"])
+
+    def test_control_mismatch_deduplicates_safety_and_communication_rows(self):
+        data = mc_first_two_frame_fixture()
+        for frame in data["state"]:
+            row = frame["robots"][0]["opt"]["cbfNoSlack"][0]
+            frame["robots"][0]["opt"]["cbfNoSlack"].append(
+                {
+                    **row,
+                    "name": "fixedCommCBF(#2)",
+                }
+            )
+
+        mismatch = self.analyze_fixture(data)["control_mismatch"]
+
+        self.assertEqual(mismatch["count"], 2)
+        owner_record = next(
+            record for record in mismatch["records"]
+            if record["owner_id"] == 1
+        )
+        self.assertEqual(
+            owner_record["sources"],
+            ["fixed_communication", "safety"],
+        )
+        self.assertEqual(
+            owner_record["source_rows"],
+            ["fixedCommCBF(#2)", "safetyCBF(#2)"],
+        )
 
     def test_input_limit_violations_use_the_declared_one_e_minus_seven_tolerance(self):
         data = mc_first_two_frame_fixture()
@@ -418,6 +469,12 @@ class RunAnalysisTests(unittest.TestCase):
         result["vx"] = 25.0000002
         result["vy"] = -25.0000002
         result["yawRateRad"] = 0.3500002
+        data["state"][1]["robots"][1]["opt"]["input_limits"]["saturated"] = {
+            "vx": True,
+            "vy": True,
+            "yawRateRad": True,
+            "any": True,
+        }
 
         limits = self.analyze_fixture(data)["input_limits"]
 
@@ -425,6 +482,69 @@ class RunAnalysisTests(unittest.TestCase):
             limits["violation_counts"],
             {"vx": 1, "vy": 1, "yawRateRad": 1, "total": 3},
         )
+
+    def test_bounded_input_evidence_rejects_missing_or_inconsistent_opt_metadata(self):
+        cases = (
+            ("missing", "missing"),
+            ("disabled", False),
+            ("wrong_row_count", 5),
+            ("wrong_planar_limit", 24.0),
+            ("wrong_tolerance", 1e-6),
+        )
+        for name, bad_value in cases:
+            with self.subTest(name=name):
+                data = mc_first_two_frame_fixture()
+                opt = data["state"][0]["robots"][0]["opt"]
+                if name == "missing":
+                    opt.pop("input_limits")
+                elif name == "disabled":
+                    opt["input_limits"]["enabled"] = bad_value
+                elif name == "wrong_row_count":
+                    opt["input_limits"]["bound_row_count"] = bad_value
+                elif name == "wrong_planar_limit":
+                    opt["input_limits"]["planar_component_max"] = bad_value
+                else:
+                    opt["input_limits"]["saturation_tolerance"] = bad_value
+
+                summary = self.analyze_fixture(data)
+                limits = summary["input_limits"]
+
+                self.assertEqual(limits["status"], "invalid")
+                self.assertEqual(limits["applicable_optimal_record_count"], 4)
+                self.assertEqual(limits["validated_record_count"], 3)
+                self.assertEqual(limits["invalid_record_count"], 1)
+                self.assertIsNone(limits["observed_saturation_counts"])
+                self.assertIsNone(limits["logged_saturation_counts"])
+                self.assertIsNone(limits["violation_counts"])
+                self.assertIsNone(limits["minimum_required_linf"])
+                self.assertIsNone(limits["bounded_feasibility_headroom"])
+                self.assertIn("saturation", summary["unavailable_metrics"])
+
+    def test_all_nonoptimal_frames_have_unavailable_bound_and_saturation_evidence(self):
+        data = mc_first_two_frame_fixture()
+        for frame in data["state"]:
+            for robot in frame["robots"]:
+                robot["opt"]["status"] = "failed"
+                robot["opt"]["solver_info"]["status"] = "infeasible"
+
+        summary = self.analyze_fixture(data)
+        limits = summary["input_limits"]
+
+        self.assertEqual(
+            summary["minimum_linf_bound"]["per_frame"],
+            [None, None],
+        )
+        self.assertIsNone(summary["minimum_linf_bound"]["maximum"])
+        self.assertEqual(limits["status"], "unavailable")
+        self.assertEqual(limits["applicable_optimal_record_count"], 0)
+        self.assertEqual(limits["validated_record_count"], 0)
+        self.assertEqual(limits["invalid_record_count"], 0)
+        self.assertIsNone(limits["observed_saturation_counts"])
+        self.assertIsNone(limits["logged_saturation_counts"])
+        self.assertIsNone(limits["violation_counts"])
+        self.assertIsNone(limits["minimum_required_linf"])
+        self.assertIsNone(limits["bounded_feasibility_headroom"])
+        self.assertIn("saturation", summary["unavailable_metrics"])
 
     def test_exact_negative_half_meter_is_an_event_not_a_below_tolerance_failure(self):
         data = mc_first_two_frame_fixture()

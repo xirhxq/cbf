@@ -107,6 +107,8 @@ def _allocate_run_root(case_root: Path) -> Path:
 
 def _validate_output_root(project_root: Path, output_root: Path) -> None:
     """Reject output paths whose artifacts could enter the source worktree."""
+    if output_root.is_symlink():
+        raise ValueError("output_root must not be a symbolic link")
     resolved_project_root = project_root.resolve()
     resolved_output_root = output_root.resolve()
     if (

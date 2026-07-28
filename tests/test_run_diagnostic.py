@@ -480,12 +480,79 @@ class DiagnosticRunnerTests(unittest.TestCase):
 
             self.assertFalse(output_root.exists())
 
+    def test_final_output_root_symlink_is_rejected_before_allocation(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            project_root = temporary_path / "project"
+            project_root.mkdir()
+            binary_path = write_minimal_project(project_root)
+            real_output_root = temporary_path / "real-results"
+            real_output_root.mkdir()
+            output_root = temporary_path / "results-link"
+            output_root.symlink_to(real_output_root, target_is_directory=True)
+
+            with (
+                patch(
+                    "scripts.diagnostics.run_diagnostic.available_bytes",
+                    return_value=START_BYTES,
+                ) as mocked_available,
+                patch(
+                    "scripts.diagnostics.run_diagnostic.subprocess.Popen",
+                    side_effect=completed_process_factory("symlink-output"),
+                ) as mocked_popen,
+                patch(
+                    "scripts.diagnostics.run_diagnostic._git_output",
+                    side_effect=fake_git_output,
+                ),
+                patch("scripts.diagnostics.run_diagnostic.time.sleep"),
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "output_root must not be a symbolic link",
+                ):
+                    run_diagnostic(
+                        case="H0",
+                        horizon_s=20,
+                        seed=7,
+                        binary_path=binary_path,
+                        output_root=output_root,
+                        project_root=project_root,
+                    )
+
+            self.assertFalse((real_output_root / "H0").exists())
+            mocked_available.assert_not_called()
+            mocked_popen.assert_not_called()
+
     def test_each_case_materializes_intended_safety_and_uncertainty_truth(self):
         project_root = Path(__file__).resolve().parents[1]
         expected_truth = {
-            "H0": (False, True, True, False),
-            "C1": (True, True, True, True),
-            "U0": (True, False, False, True),
+            "H0": (
+                False,
+                True,
+                True,
+                False,
+                "off",
+                {"coe": 0.1, "pow": 3},
+                {"coe": 0.1, "pow": 3},
+            ),
+            "C1": (
+                True,
+                True,
+                True,
+                True,
+                "off",
+                {"coe": 0.1, "pow": 3},
+                {"coe": 0.1, "pow": 3},
+            ),
+            "U0": (
+                True,
+                False,
+                False,
+                True,
+                "off",
+                {"coe": 0.1, "pow": 3},
+                {"coe": 0.1, "pow": 3},
+            ),
         }
         patch_names = {
             "H0": "h0_historical.json",
@@ -514,6 +581,9 @@ class DiagnosticRunnerTests(unittest.TestCase):
                             safety["consider-uncertainty"],
                             communication["consider-uncertainty"],
                             config["execute"]["check-constraint-violation"],
+                            config["cbfs"]["uncertainty-rate"]["mode"],
+                            safety["alpha"],
+                            communication["alpha"],
                         ),
                         expected,
                     )

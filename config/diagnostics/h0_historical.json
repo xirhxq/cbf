@@ -2,6 +2,13 @@
   "case": "H0",
   "overrides": {
     "initial": {"position": {"method": "specified"}},
+    "cbfs": {
+      "uncertainty-rate": {"mode": "off"},
+      "without-slack": {
+        "safety": {"alpha": {"coe": 0.1, "pow": 3}},
+        "comm-fixed": {"alpha": {"coe": 0.1, "pow": 3}}
+      }
+    },
     "execute": {
       "random-seed": 20260727,
       "check-constraint-violation": false
