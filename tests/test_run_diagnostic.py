@@ -677,6 +677,42 @@ class DiagnosticRunnerTests(unittest.TestCase):
             config.pop("run_suffix")
         self.assertEqual(rg_config, r_config)
 
+    def test_rgp_normalized_materialization_differs_from_rg_only_in_safety_mode(self):
+        project_root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            rg_config = materialize_config(
+                project_root / "config" / "config.json",
+                project_root / "config" / "diagnostics" / "rg_fixed_geometry.json",
+                temporary_path / "RG" / "config.materialized.json",
+                horizon_s=20,
+                seed=7,
+            )
+            rgp_config = materialize_config(
+                project_root / "config" / "config.json",
+                project_root
+                / "config"
+                / "diagnostics"
+                / "rgp_fixed_geometry_pairwise.json",
+                temporary_path / "RGP" / "config.materialized.json",
+                horizon_s=20,
+                seed=7,
+            )
+
+        for config in (rg_config, rgp_config):
+            config.pop("output_path")
+            config.pop("run_suffix")
+        self.assertEqual(
+            rg_config["cbfs"]["without-slack"]["safety"]["mode"],
+            "minimum",
+        )
+        self.assertEqual(
+            rgp_config["cbfs"]["without-slack"]["safety"]["mode"],
+            "pairwise",
+        )
+        rgp_config["cbfs"]["without-slack"]["safety"]["mode"] = "minimum"
+        self.assertEqual(rgp_config, rg_config)
+
     def test_run_diagnostic_maps_rg_to_the_fixed_geometry_overlay(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_path = Path(temporary_directory)
@@ -719,6 +755,51 @@ class DiagnosticRunnerTests(unittest.TestCase):
         )
         mocked_popen.assert_not_called()
 
+    def test_run_diagnostic_maps_rgp_to_the_fixed_geometry_pairwise_overlay(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            project_root = temporary_path / "project"
+            project_root.mkdir()
+            binary_path = project_root / "Swarm"
+            binary_path.write_bytes(b"diagnostic binary")
+            output_root = temporary_path / "results"
+            with (
+                patch(
+                    "scripts.diagnostics.run_diagnostic.available_bytes",
+                    return_value=START_BYTES,
+                ),
+                patch(
+                    "scripts.diagnostics.run_diagnostic._git_output",
+                    side_effect=fake_git_output,
+                ),
+                patch(
+                    "scripts.diagnostics.run_diagnostic.materialize_config",
+                    side_effect=RuntimeError("stop after mapping"),
+                ) as mocked_materialize,
+                patch(
+                    "scripts.diagnostics.run_diagnostic.subprocess.Popen",
+                ) as mocked_popen,
+            ):
+                manifest = run_diagnostic(
+                    case="RGP",
+                    horizon_s=20,
+                    seed=7,
+                    binary_path=binary_path,
+                    output_root=output_root,
+                    project_root=project_root,
+                )
+
+        self.assertEqual(manifest["termination_reason"], "runner_setup_error")
+        mocked_materialize.assert_called_once()
+        self.assertEqual(
+            mocked_materialize.call_args.args[1],
+            project_root
+            / "config"
+            / "diagnostics"
+            / "rgp_fixed_geometry_pairwise.json",
+        )
+        mocked_popen.assert_not_called()
+
     def test_rg_fixed_geometry_reflects_each_squad_across_the_x_axis(self):
         project_root = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -757,7 +838,7 @@ class DiagnosticRunnerTests(unittest.TestCase):
                 self.assertNotEqual(signed_area_twice, 0.0)
 
     def test_cli_accepts_every_mc_first_case(self):
-        for case in ("C0", "R", "RG", "RB", "RBP"):
+        for case in ("C0", "R", "RG", "RGP", "RB", "RBP"):
             with self.subTest(case=case):
                 completed_manifest = {
                     "termination_reason": "completed",
