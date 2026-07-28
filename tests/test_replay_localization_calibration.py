@@ -127,12 +127,25 @@ class LocalizationGraphTests(unittest.TestCase):
         positions[1] = np.asarray([0.5, 0.0])
         self.assertEqual(active_references(config, 7, positions)["uav_ids"], [1, 5, 6])
 
-    def test_active_uav_references_are_strictly_lower_index_and_same_squad(self):
-        """Breaks if a cyclic, cross-squad, or higher-index UAV edge is admitted."""
-        references = active_references(self.config, 10, self.positions)
-
-        self.assertEqual(references["uav_ids"], [8, 9])
-        self.assertTrue(all(8 <= robot_id < 10 for robot_id in references["uav_ids"]))
+    def test_every_observer_has_only_lower_index_same_squad_uav_references(self):
+        """Breaks if any of the 14 DAG nodes admits a cyclic or cross-squad edge."""
+        squad_size = 7
+        for observer_id in range(1, 15):
+            observer_part = (observer_id - 1) // squad_size
+            observer_local = (observer_id - 1) % squad_size
+            references = active_references(
+                self.config, observer_id, self.positions
+            )
+            for reference_id in references["uav_ids"]:
+                with self.subTest(
+                    observer_id=observer_id, reference_id=reference_id
+                ):
+                    self.assertEqual(
+                        (reference_id - 1) // squad_size, observer_part
+                    )
+                    self.assertLess(
+                        (reference_id - 1) % squad_size, observer_local
+                    )
 
 
 class WnlsAndFimTests(unittest.TestCase):
@@ -174,6 +187,28 @@ class WnlsAndFimTests(unittest.TestCase):
         self.assertGreater(positive["estimate"][1], 0.0)
         self.assertLess(negative["estimate"][1], 0.0)
 
+    def test_repeatedly_rejected_steps_do_not_report_false_convergence(self):
+        """Breaks if damping-induced tiny rejected steps satisfy convergence."""
+        references = np.asarray(
+            [[2.8, 1.4], [-2.5, -1.8], [-5.2, -9.2]], dtype=float
+        )
+        covariances = np.zeros((3, 2, 2), dtype=float)
+        covariances[:, 0, 0] = [17.5, 11.0, 15.1]
+        covariances[:, 1, 1] = [9.4, 6.5, 0.6]
+
+        result = solve_wnls(
+            references,
+            covariances,
+            np.asarray([7.5, 0.7, 2.5]),
+            np.asarray([9.3, 3.2]),
+            0.5,
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["iterations"], 50)
+        self.assertIsNone(result["covariance"])
+        self.assertIsNone(result["epsilon"])
+
     def test_third_non_collinear_reference_is_accepted_without_api_change(self):
         """Breaks if the estimator assumes exactly two measurements."""
         references = np.vstack((self.references, np.asarray([[0.0, 2.0]])))
@@ -207,6 +242,50 @@ class WnlsAndFimTests(unittest.TestCase):
         self.assertAlmostEqual(result["phi_min_eigenvalue"], 4.0, places=12)
         self.assertAlmostEqual(result["phi_condition"], 1.0, places=12)
 
+    def test_fim_weights_match_nonzero_propagated_covariance_hand_case(self):
+        """Breaks if projected reference covariance is omitted from range weights."""
+        references = np.asarray([[0.0, 1.0], [1.0, 0.0]])
+        covariances = np.asarray(
+            [
+                [[0.75, 0.0], [0.0, 9.0]],
+                [[9.0, 0.0], [0.0, 1.75]],
+            ]
+        )
+
+        result = fim_radius(
+            np.asarray([1.0, 1.0]), references, covariances, 0.5
+        )
+
+        self.assertEqual(result["status"], "converged")
+        np.testing.assert_allclose(
+            result["covariance"], [[1.0, 0.0], [0.0, 2.0]], atol=1e-12
+        )
+        self.assertAlmostEqual(result["epsilon"], 3.0 * np.sqrt(2.0), places=12)
+        self.assertAlmostEqual(result["phi_min_eigenvalue"], 0.5, places=12)
+        self.assertAlmostEqual(result["phi_condition"], 2.0, places=12)
+
+    def test_relative_spectral_threshold_accepts_above_and_rejects_below(self):
+        """Breaks if the 1e-12 relative FIM condition gate drifts."""
+        references = np.asarray([[-1.0, 0.0], [0.0, -1.0]])
+        above = np.zeros((2, 2, 2))
+        above[1, 1, 1] = 1.0 / (8.0e-12) - 0.25
+        below = np.zeros((2, 2, 2))
+        below[1, 1, 1] = 1.0 / (2.0e-12) - 0.25
+
+        accepted = fim_radius(
+            np.asarray([0.0, 0.0]), references, above, 0.5
+        )
+        rejected = fim_radius(
+            np.asarray([0.0, 0.0]), references, below, 0.5
+        )
+
+        self.assertEqual(accepted["status"], "converged")
+        self.assertAlmostEqual(
+            accepted["phi_min_eigenvalue"], 8.0e-12, delta=1.0e-22
+        )
+        self.assertEqual(rejected["status"], "invalid")
+        self.assertIsNone(rejected["covariance"])
+
     def test_collinear_fim_is_invalid_without_fabricated_covariance(self):
         """Breaks if a singular final FIM is regularized or reported as valid."""
         result = solve_wnls(
@@ -235,6 +314,137 @@ class WnlsAndFimTests(unittest.TestCase):
         self.assertIsNone(result["estimate"])
         self.assertIsNone(result["covariance"])
 
+    def test_malformed_numeric_inputs_return_invalid_instead_of_raising(self):
+        """Breaks if numeric conversion or malformed shapes escape the status API."""
+        cases = {
+            "nonnumeric reference": (
+                [["bad", 0.0], [2.0, 0.0]],
+                self.reference_covariances,
+                self.measurements,
+                [1.0, 0.8],
+                0.5,
+            ),
+            "malformed reference shape": (
+                [0.0, 2.0],
+                self.reference_covariances,
+                self.measurements,
+                [1.0, 0.8],
+                0.5,
+            ),
+            "nonnumeric covariance": (
+                self.references,
+                [[["bad", 0.0], [0.0, 0.0]], [[0.0, 0.0], [0.0, 0.0]]],
+                self.measurements,
+                [1.0, 0.8],
+                0.5,
+            ),
+            "malformed covariance shape": (
+                self.references,
+                np.zeros((2, 2)),
+                self.measurements,
+                [1.0, 0.8],
+                0.5,
+            ),
+            "nonnumeric measurements": (
+                self.references,
+                self.reference_covariances,
+                ["bad", 1.0],
+                [1.0, 0.8],
+                0.5,
+            ),
+            "nonnumeric initial estimate": (
+                self.references,
+                self.reference_covariances,
+                self.measurements,
+                ["bad", 0.8],
+                0.5,
+            ),
+            "nonnumeric sigma": (
+                self.references,
+                self.reference_covariances,
+                self.measurements,
+                [1.0, 0.8],
+                "bad",
+            ),
+            "malformed sigma shape": (
+                self.references,
+                self.reference_covariances,
+                self.measurements,
+                [1.0, 0.8],
+                np.asarray([0.5]),
+            ),
+            "nonfinite reference": (
+                [[np.inf, 0.0], [2.0, 0.0]],
+                self.reference_covariances,
+                self.measurements,
+                [1.0, 0.8],
+                0.5,
+            ),
+            "nonfinite covariance": (
+                self.references,
+                np.asarray(
+                    [[[np.nan, 0.0], [0.0, 0.0]], [[0.0, 0.0], [0.0, 0.0]]]
+                ),
+                self.measurements,
+                [1.0, 0.8],
+                0.5,
+            ),
+            "nonfinite initial estimate": (
+                self.references,
+                self.reference_covariances,
+                self.measurements,
+                [1.0, np.inf],
+                0.5,
+            ),
+            "nonfinite sigma": (
+                self.references,
+                self.reference_covariances,
+                self.measurements,
+                [1.0, 0.8],
+                np.nan,
+            ),
+        }
+
+        for label, arguments in cases.items():
+            with self.subTest(label):
+                result = solve_wnls(*arguments)
+                self.assertEqual(result["status"], "invalid")
+                self.assertIsNone(result["covariance"])
+
+    def test_fim_malformed_numeric_input_returns_invalid_instead_of_raising(self):
+        """Breaks if the shared FIM validator leaks numeric conversion errors."""
+        result = fim_radius(
+            ["bad", 1.0],
+            self.references,
+            self.reference_covariances,
+            0.5,
+        )
+
+        self.assertEqual(result["status"], "invalid")
+        self.assertIsNone(result["covariance"])
+
+    def test_asymmetric_or_non_psd_reference_covariance_is_invalid(self):
+        """Breaks if propagated covariance assumptions are not enforced."""
+        asymmetric = np.zeros((2, 2, 2))
+        asymmetric[0] = [[1.0, 0.5], [0.0, 1.0]]
+        non_psd = np.zeros((2, 2, 2))
+        non_psd[0] = [[-1.0, 0.0], [0.0, 1.0]]
+
+        for label, covariances in (
+            ("asymmetric", asymmetric),
+            ("non-PSD", non_psd),
+        ):
+            with self.subTest(label):
+                result = solve_wnls(
+                    self.references,
+                    covariances,
+                    self.measurements,
+                    np.asarray([1.0, 0.8]),
+                    0.5,
+                )
+                self.assertEqual(result["status"], "invalid")
+                self.assertIsNone(result["covariance"])
+
     def test_later_frame_failure_holds_previous_finite_result_as_stale(self):
         """Breaks if a later failure discards usable upstream DAG state."""
         previous = {
@@ -242,20 +452,78 @@ class WnlsAndFimTests(unittest.TestCase):
             "estimate": [1.0, 1.0],
             "covariance": [[0.25, 0.0], [0.0, 0.25]],
             "epsilon": 1.5,
+            "phi_min_eigenvalue": 4.0,
+            "phi_condition": 1.0,
+            "iterations": 3,
+            "cost": 0.0,
+            "failure_reason": None,
         }
-        result = solve_later_frame(
-            previous,
-            self.references,
-            self.reference_covariances,
-            np.asarray([np.nan, np.sqrt(2.0)]),
-            np.asarray([1.0, 1.0]),
-            0.5,
-        )
+        for status in ("converged", "stale"):
+            with self.subTest(status=status):
+                previous["status"] = status
+                result = solve_later_frame(
+                    previous,
+                    self.references,
+                    self.reference_covariances,
+                    np.asarray([np.nan, np.sqrt(2.0)]),
+                    np.asarray([1.0, 1.0]),
+                    0.5,
+                )
 
-        self.assertEqual(result["status"], "stale")
-        self.assertEqual(result["estimate"], previous["estimate"])
-        self.assertEqual(result["covariance"], previous["covariance"])
-        self.assertEqual(result["failure"]["status"], "invalid")
+                self.assertEqual(result["status"], "stale")
+                self.assertEqual(result["estimate"], previous["estimate"])
+                self.assertEqual(result["covariance"], previous["covariance"])
+                self.assertEqual(result["failure"]["status"], "invalid")
+
+    def test_malformed_or_missing_prior_does_not_become_stale(self):
+        """Breaks if stale fallback accepts an invalid prior calibration state."""
+        valid_prior = {
+            "status": "converged",
+            "estimate": [1.0, 1.0],
+            "covariance": [[0.25, 0.0], [0.0, 0.25]],
+            "epsilon": 1.5,
+            "phi_min_eigenvalue": 4.0,
+            "phi_condition": 1.0,
+            "iterations": 3,
+            "cost": 0.0,
+            "failure_reason": None,
+        }
+        malformed_priors = {
+            "no prior": None,
+            "invalid status": {**valid_prior, "status": "invalid"},
+            "wrong estimate shape": {**valid_prior, "estimate": [1.0]},
+            "nonnumeric covariance": {**valid_prior, "covariance": [["bad"]]},
+            "non-SPD covariance": {
+                **valid_prior,
+                "covariance": [[1.0, 0.0], [0.0, 0.0]],
+            },
+            "asymmetric covariance": {
+                **valid_prior,
+                "covariance": [[1.0, 0.5], [0.0, 1.0]],
+            },
+            "nonfinite epsilon": {**valid_prior, "epsilon": np.nan},
+            "invalid FIM minimum": {
+                **valid_prior,
+                "phi_min_eigenvalue": 0.0,
+            },
+            "invalid FIM condition": {
+                **valid_prior,
+                "phi_condition": np.inf,
+            },
+        }
+
+        for label, previous in malformed_priors.items():
+            with self.subTest(label):
+                result = solve_later_frame(
+                    previous,
+                    self.references,
+                    self.reference_covariances,
+                    np.asarray([np.nan, np.sqrt(2.0)]),
+                    np.asarray([1.0, 1.0]),
+                    0.5,
+                )
+                self.assertEqual(result["status"], "invalid")
+                self.assertNotIn("failure", result)
 
 
 if __name__ == "__main__":

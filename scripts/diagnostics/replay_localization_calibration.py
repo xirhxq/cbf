@@ -125,11 +125,19 @@ def _validated_inputs(
     initial_estimate: np.ndarray,
     ranging_sigma: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray, float] | None:
-    references = np.asarray(reference_positions, dtype=float)
-    covariances = np.asarray(reference_covariances, dtype=float)
-    ranges = None if measurements is None else np.asarray(measurements, dtype=float)
-    estimate = np.asarray(initial_estimate, dtype=float)
-    sigma = float(ranging_sigma)
+    try:
+        references = np.asarray(reference_positions, dtype=float)
+        covariances = np.asarray(reference_covariances, dtype=float)
+        ranges = (
+            None if measurements is None else np.asarray(measurements, dtype=float)
+        )
+        estimate = np.asarray(initial_estimate, dtype=float)
+        sigma_value = np.asarray(ranging_sigma)
+        if sigma_value.ndim != 0:
+            return None
+        sigma = float(sigma_value)
+    except (TypeError, ValueError, OverflowError):
+        return None
     if (
         references.ndim != 2
         or references.shape[1:] != (2,)
@@ -150,7 +158,30 @@ def _validated_inputs(
         )
     ):
         return None
-    return references, covariances, ranges, estimate, sigma
+    covariance_scale = np.maximum(
+        1.0, np.max(np.abs(covariances), axis=(1, 2))
+    )
+    symmetry_error = np.max(
+        np.abs(covariances - np.swapaxes(covariances, 1, 2)), axis=(1, 2)
+    )
+    if np.any(symmetry_error > RELATIVE_SPECTRAL_THRESHOLD * covariance_scale):
+        return None
+    symmetric_covariances = 0.5 * (
+        covariances + np.swapaxes(covariances, 1, 2)
+    )
+    try:
+        covariance_eigenvalues = np.linalg.eigvalsh(symmetric_covariances)
+    except np.linalg.LinAlgError:
+        return None
+    if (
+        not np.isfinite(covariance_eigenvalues).all()
+        or np.any(
+            covariance_eigenvalues[:, 0]
+            < -RELATIVE_SPECTRAL_THRESHOLD * covariance_scale
+        )
+    ):
+        return None
+    return references, symmetric_covariances, ranges, estimate, sigma
 
 
 def _linearized_terms(
@@ -279,6 +310,11 @@ def solve_wnls(
                 "invalid", iterations=iteration - 1, failure_reason="invalid WNLS terms"
             )
         _, _, _, phi, gradient, cost = terms
+        if np.linalg.norm(gradient) <= STEP_TOLERANCE:
+            final = fim_radius(estimate, references, covariances, sigma)
+            final["iterations"] = iteration
+            final["cost"] = cost
+            return final
         try:
             delta = np.linalg.solve(phi + damping * np.eye(2), -gradient)
         except np.linalg.LinAlgError:
@@ -295,12 +331,6 @@ def solve_wnls(
                 cost=cost,
                 failure_reason="non-finite WNLS step",
             )
-        if np.linalg.norm(delta) <= STEP_TOLERANCE:
-            final = fim_radius(estimate, references, covariances, sigma)
-            final["iterations"] = iteration
-            final["cost"] = cost
-            return final
-
         trial_estimate = estimate + delta
         trial_terms = _linearized_terms(
             trial_estimate, references, covariances, ranges, sigma
@@ -309,7 +339,10 @@ def solve_wnls(
             trial_cost = trial_terms[-1]
             estimate = trial_estimate
             damping /= 10.0
-            if cost - trial_cost <= COST_TOLERANCE:
+            if (
+                np.linalg.norm(delta) <= STEP_TOLERANCE
+                or cost - trial_cost <= COST_TOLERANCE
+            ):
                 final = fim_radius(estimate, references, covariances, sigma)
                 final["iterations"] = iteration
                 final["cost"] = trial_cost
@@ -322,6 +355,59 @@ def solve_wnls(
         iterations=MAX_ITERATIONS,
         cost=cost,
         failure_reason="maximum WNLS iterations exceeded",
+    )
+
+
+def _valid_prior_result(
+    previous_result: dict | None,
+) -> tuple[np.ndarray, np.ndarray, float, float, float] | None:
+    if (
+        not isinstance(previous_result, dict)
+        or previous_result.get("status") not in {"converged", "stale"}
+    ):
+        return None
+    try:
+        estimate = np.asarray(previous_result["estimate"], dtype=float)
+        covariance = np.asarray(previous_result["covariance"], dtype=float)
+        epsilon = float(previous_result["epsilon"])
+        phi_minimum = float(previous_result["phi_min_eigenvalue"])
+        phi_condition = float(previous_result["phi_condition"])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    if (
+        estimate.shape != (2,)
+        or covariance.shape != (2, 2)
+        or not np.isfinite(estimate).all()
+        or not np.isfinite(covariance).all()
+        or not np.isfinite(epsilon)
+        or epsilon <= 0.0
+        or not np.isfinite(phi_minimum)
+        or phi_minimum <= 0.0
+        or not np.isfinite(phi_condition)
+        or phi_condition < 1.0
+    ):
+        return None
+    covariance_scale = max(1.0, float(np.max(np.abs(covariance))))
+    if np.max(np.abs(covariance - covariance.T)) > (
+        RELATIVE_SPECTRAL_THRESHOLD * covariance_scale
+    ):
+        return None
+    symmetric_covariance = 0.5 * (covariance + covariance.T)
+    try:
+        covariance_eigenvalues = np.linalg.eigvalsh(symmetric_covariance)
+    except np.linalg.LinAlgError:
+        return None
+    if (
+        not np.isfinite(covariance_eigenvalues).all()
+        or covariance_eigenvalues[0] <= 0.0
+    ):
+        return None
+    return (
+        estimate,
+        symmetric_covariance,
+        epsilon,
+        phi_minimum,
+        phi_condition,
     )
 
 
@@ -343,20 +429,16 @@ def solve_later_frame(
     )
     if result["status"] == "converged":
         return result
-    if (
-        previous_result is not None
-        and previous_result.get("estimate") is not None
-        and previous_result.get("covariance") is not None
-        and np.isfinite(np.asarray(previous_result["estimate"], dtype=float)).all()
-        and np.isfinite(np.asarray(previous_result["covariance"], dtype=float)).all()
-    ):
+    valid_prior = _valid_prior_result(previous_result)
+    if valid_prior is not None:
+        estimate, covariance, epsilon, phi_minimum, phi_condition = valid_prior
         stale = _result(
             "stale",
-            estimate=np.asarray(previous_result["estimate"], dtype=float),
-            covariance=np.asarray(previous_result["covariance"], dtype=float),
-            epsilon=previous_result.get("epsilon"),
-            phi_min_eigenvalue=previous_result.get("phi_min_eigenvalue"),
-            phi_condition=previous_result.get("phi_condition"),
+            estimate=estimate,
+            covariance=covariance,
+            epsilon=epsilon,
+            phi_min_eigenvalue=phi_minimum,
+            phi_condition=phi_condition,
             iterations=result["iterations"],
             cost=result["cost"],
             failure_reason=result["failure_reason"],
