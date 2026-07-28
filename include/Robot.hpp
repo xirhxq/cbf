@@ -971,11 +971,33 @@ public:
 
     void optimise() {
         VectorXd uNominal = VectorXd::Zero(model->uSize());
+        const json inputLimitsConfig =
+            settings["cbfs"].value("input-limits", json::object());
+        const bool inputLimitsEnabled =
+            inputLimitsConfig.value("on", false);
+        const double planarComponentMax =
+            inputLimitsConfig.value("planar-component-max", 25.0);
+        const double yawRateMax =
+            inputLimitsConfig.value("yaw-rate-max", 0.35);
+        constexpr double saturationTolerance = 1e-7;
         opt = {
                 {"nominal",    model->control2Json(uNominal)},
                 {"result",     model->control2Json(uNominal)},
                 {"cbfNoSlack", json::array()},
-                {"cbfSlack",   json::array()}
+                {"cbfSlack",   json::array()},
+                {"input_limits", {
+                    {"enabled", inputLimitsEnabled},
+                    {"planar_component_max", planarComponentMax},
+                    {"yaw_rate_max", yawRateMax},
+                    {"bound_row_count", 0},
+                    {"saturation_tolerance", saturationTolerance},
+                    {"saturated", {
+                        {"vx", false},
+                        {"vy", false},
+                        {"yawRateRad", false},
+                        {"any", false}
+                    }}
+                }}
         };
         json jsonCBFNoSlack = json::array(), jsonCBFSlack = json::array();
         std::vector<Eigen::VectorXd> hardConstraintCoefficients;
@@ -997,6 +1019,38 @@ public:
             int totalSize = uSize + slackSize;
 
             optimiser->start(totalSize, uSize);
+
+            if (inputLimitsEnabled) {
+                if (settings.value("model", "") != "SingleIntegrate2D"
+                    || uSize != 3) {
+                    throw std::invalid_argument(
+                        "Input limits require the SingleIntegrate2D "
+                        "three-control velocity-command model"
+                    );
+                }
+                if (!std::isfinite(planarComponentMax)
+                    || planarComponentMax <= 0.0
+                    || !std::isfinite(yawRateMax)
+                    || yawRateMax <= 0.0) {
+                    throw std::invalid_argument(
+                        "Input limits must be finite and positive"
+                    );
+                }
+
+                auto addInputBound = [&](int index, double sign, double limit) {
+                    Eigen::VectorXd coefficients =
+                        Eigen::VectorXd::Zero(totalSize);
+                    coefficients[index] = sign;
+                    optimiser->addLinearConstraint(coefficients, -limit);
+                };
+                addInputBound(0, 1.0, planarComponentMax);
+                addInputBound(0, -1.0, planarComponentMax);
+                addInputBound(1, 1.0, planarComponentMax);
+                addInputBound(1, -1.0, planarComponentMax);
+                addInputBound(2, 1.0, yawRateMax);
+                addInputBound(2, -1.0, yawRateMax);
+                opt["input_limits"]["bound_row_count"] = 6;
+            }
 
             optimiser->setObjective(uNominal);
 
@@ -1079,6 +1133,20 @@ public:
             }
 
             auto u = result.head(uSize);
+            if (inputLimitsEnabled) {
+                const bool vxSaturated =
+                    std::abs(u[0]) >= planarComponentMax - saturationTolerance;
+                const bool vySaturated =
+                    std::abs(u[1]) >= planarComponentMax - saturationTolerance;
+                const bool yawSaturated =
+                    std::abs(u[2]) >= yawRateMax - saturationTolerance;
+                opt["input_limits"]["saturated"] = {
+                    {"vx", vxSaturated},
+                    {"vy", vySaturated},
+                    {"yawRateRad", yawSaturated},
+                    {"any", vxSaturated || vySaturated || yawSaturated}
+                };
+            }
             model->setControlInput(u);
             opt["result"] = model->control2Json(u);
             opt["slacks"] = result.tail(slackSize);
@@ -1254,10 +1322,8 @@ public:
             robotJson["cvt"] = cvtJson;
         }
 
-        // Calculate current distance from origin and compute uncertainty
-        Point currentPos = model->xy();
-        double currentDistFromOrigin = currentPos.distance_to(Point(0, 0));
-        robotJson["uncertainty"] = uncertaintyFromCovarianceFunction(positionCovariance);
+        robotJson["uncertainty"] = currentUncertainty;
+        robotJson["uncertainty_rate"] = uncertaintyRate;
         if (enablePositionCovariance) {
             Eigen::Matrix2d cov = positionCovariance;
             json covarianceJson = {

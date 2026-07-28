@@ -6,6 +6,7 @@
 #include "doctest/doctest.h"
 #include "Swarm.hpp"
 
+#include <cmath>
 #include <memory>
 #include <stdexcept>
 #include <vector>
@@ -366,4 +367,53 @@ TEST_CASE("base communication row treats anchor velocity and rate as zero") {
         robot.cbfNoSlack.cbfs.at("fixedCommCBF(base-0)");
     CHECK(baseCBF.dhdt(robot.model->getX(), 0.0)
           == doctest::Approx(-0.4));
+}
+
+TEST_CASE("hard input rows bound a strong planar soft task inside the QP") {
+    json settings = makeDiagnosticSettings();
+    settings["cbfs"]["objective-function"]["k_delta"] = 100.0;
+    settings["cbfs"]["input-limits"] = {
+        {"on", true},
+        {"planar-component-max", 25.0},
+        {"yaw-rate-max", 0.35}
+    };
+    Robot robot(1, settings);
+
+    CBF strongDistanceTask;
+    strongDistanceTask.name = "strong-distance-task";
+    strongDistanceTask.h = [](VectorXd x, double) {
+        return x[0] + x[1] - 200.0;
+    };
+    strongDistanceTask.dhdx_analytical = [](VectorXd, double) {
+        VectorXd gradient(4);
+        gradient << 1.0, 1.0, 0.0, 0.0;
+        return gradient;
+    };
+    strongDistanceTask.setAlphaClassK(1.0, 1);
+    robot.cbfSlack[strongDistanceTask.name] = strongDistanceTask;
+
+    robot.optimise();
+    const VectorXd control = robot.model->getControlInput();
+    CAPTURE(control.transpose());
+    CHECK(std::abs(control[0]) <= 25.0 + 1e-7);
+    CHECK(std::abs(control[1]) <= 25.0 + 1e-7);
+    CHECK(std::abs(control[2]) <= 0.35 + 1e-7);
+    CHECK(robot.opt["input_limits"]["bound_row_count"] == 6);
+    CHECK(robot.opt["input_limits"]["saturation_tolerance"]
+          == doctest::Approx(1e-7));
+    CHECK(robot.opt["input_limits"]["saturated"]["vx"]);
+    CHECK(robot.opt["input_limits"]["saturated"]["vy"]);
+    CHECK(robot.opt["input_limits"]["saturated"]["any"]);
+}
+
+TEST_CASE("state logging exposes the uncertainty snapshot consumed by the controller") {
+    Robot robot = makeDiagnosticRobot();
+    robot.currentUncertainty = 7.25;
+    robot.uncertaintyRate = 1.5;
+
+    const json state = robot.getState();
+    CHECK(state.at("uncertainty").get<double>()
+          == doctest::Approx(7.25));
+    CHECK(state.at("uncertainty_rate").get<double>()
+          == doctest::Approx(1.5));
 }

@@ -116,3 +116,29 @@ TEST_CASE("RandomSolvePerformanceComparison") {
         std::cout << "Average Time for Optimiser " << i + 1 << ": " << total_times[i] / num_tests << " ms" << std::endl;
     }
 }
+
+#ifdef ENABLE_GUROBI
+TEST_CASE("Gurobi preserves an infeasible status without reading a primal") {
+    json settings = {{"k_delta", 10.0}};
+    Gurobi gurobi(settings);
+    Eigen::VectorXd nominal = Eigen::VectorXd::Zero(1);
+    Eigen::VectorXd lower(1);
+    Eigen::VectorXd upper(1);
+    lower << 1.0;
+    upper << -1.0;
+
+    gurobi.start(1, 1);
+    gurobi.setObjective(nominal);
+    gurobi.addLinearConstraint(lower, 9.0);
+    gurobi.addLinearConstraint(upper, -8.0);
+
+    Eigen::VectorXd result;
+    CHECK_NOTHROW(result = gurobi.solve());
+    CHECK(result.isZero(0.0));
+
+    const json status = gurobi.getStatus();
+    CHECK(status.at("status") == "infeasible");
+    CHECK_FALSE(status.contains("objective_value"));
+    CHECK(gurobi.getObjectiveValue() == doctest::Approx(0.0));
+}
+#endif

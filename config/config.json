@@ -119,6 +119,11 @@
       "//mode": ["off", "backward-difference-positive"],
       "mode": "backward-difference-positive"
     },
+    "input-limits": {
+      "on": false,
+      "planar-component-max": 25.0,
+      "yaw-rate-max": 0.35
+    },
     "with-slack": {
       "cvt": {
         "name": "cvtCBF",

@@ -78,8 +78,12 @@ public:
     }
 
     double getObjectiveValue() const override {
-        if (model) {
-            return model->get(GRB_DoubleAttr_ObjVal);
+        try {
+            if (model && model->get(GRB_IntAttr_Status) == GRB_OPTIMAL) {
+                return model->get(GRB_DoubleAttr_ObjVal);
+            }
+        } catch (...) {
+            return 0.0;
         }
         return 0.0;
     }
@@ -111,7 +115,9 @@ public:
                         status["status"] = "other";
                         break;
                 }
-                status["objective_value"] = model->get(GRB_DoubleAttr_ObjVal);
+                if (grb_status == GRB_OPTIMAL) {
+                    status["objective_value"] = model->get(GRB_DoubleAttr_ObjVal);
+                }
                 status["vars_count"] = model->get(GRB_IntAttr_NumVars);
                 status["constraints_count"] = model->get(GRB_IntAttr_NumConstrs);
                 status["solve_time_ms"] = last_solve_time_ms;
@@ -130,19 +136,29 @@ public:
         try {
             auto start = std::chrono::high_resolution_clock::now();
             model->optimize();
+            int status = model->get(GRB_IntAttr_Status);
+            if (status == GRB_INF_OR_UNBD) {
+                model->set(GRB_IntParam_DualReductions, 0);
+                model->optimize();
+                status = model->get(GRB_IntAttr_Status);
+            }
             auto end = std::chrono::high_resolution_clock::now();
 
             // Calculate solve time in milliseconds
             auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
             last_solve_time_ms = duration.count() / 1000.0;
 
+            has_error = false;
+            last_error_code = 0;
+            last_error_message = "";
+            if (status != GRB_OPTIMAL) {
+                return Eigen::VectorXd::Zero(vars.size());
+            }
+
             Eigen::VectorXd u(vars.size());
             for (int i = 0; i < vars.size(); i++) {
                 u[i] = vars[i].get(GRB_DoubleAttr_X);
             }
-            has_error = false;
-            last_error_code = 0;
-            last_error_message = "";
             return u;
         } catch (GRBException e) {
             has_error = true;
