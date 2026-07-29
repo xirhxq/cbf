@@ -62,10 +62,35 @@ _BOOTSTRAP_RESAMPLES = 10_000
 _BOOTSTRAP_RNG_SEED = 20260729
 _TIME_BINS = ("1-100", "101-200", "201-300", "301-400", "401-499")
 _REFERENCE_BINS = tuple(str(value) for value in range(10)) + ("10_or_more",)
-_CONDITION_BINS = ("[1,10)", "[10,30)", "[30,100)", "[100,infinity)")
-_MIN_EIGEN_BINS = ("(0,0.05)", "[0.05,0.2)", "[0.2,1)", "[1,infinity)")
-_RATIO_BINS = ("[0,0.5)", "[0.5,1)", "[1,2)", "[2,5)", "[5,infinity)")
-_Q_BINS = ("[0,2.295748929)", "[2.295748929,5.991464547)", "[5.991464547,9]", "(9,infinity)")
+_RATIO_BIN_DEFINITIONS = (
+    {"label": "[0,0.5)", "lower": 0.0, "upper": 0.5, "lower_closed": True, "upper_closed": False},
+    {"label": "[0.5,1)", "lower": 0.5, "upper": 1.0, "lower_closed": True, "upper_closed": False},
+    {"label": "[1,2)", "lower": 1.0, "upper": 2.0, "lower_closed": True, "upper_closed": False},
+    {"label": "[2,5)", "lower": 2.0, "upper": 5.0, "lower_closed": True, "upper_closed": False},
+    {"label": "[5,infinity)", "lower": 5.0, "upper": None, "lower_closed": True, "upper_closed": False},
+)
+_Q_BIN_DEFINITIONS = (
+    {"label": "[0,2.295748929)", "lower": 0.0, "upper": 2.295748929, "lower_closed": True, "upper_closed": False},
+    {"label": "[2.295748929,5.991464547)", "lower": 2.295748929, "upper": 5.991464547, "lower_closed": True, "upper_closed": False},
+    {"label": "[5.991464547,9]", "lower": 5.991464547, "upper": 9.0, "lower_closed": True, "upper_closed": True},
+    {"label": "(9,infinity)", "lower": 9.0, "upper": None, "lower_closed": False, "upper_closed": False},
+)
+_CONDITION_BIN_DEFINITIONS = (
+    {"label": "[1,10)", "lower": 1.0, "upper": 10.0, "lower_closed": True, "upper_closed": False},
+    {"label": "[10,30)", "lower": 10.0, "upper": 30.0, "lower_closed": True, "upper_closed": False},
+    {"label": "[30,100)", "lower": 30.0, "upper": 100.0, "lower_closed": True, "upper_closed": False},
+    {"label": "[100,infinity)", "lower": 100.0, "upper": None, "lower_closed": True, "upper_closed": False},
+)
+_MIN_EIGEN_BIN_DEFINITIONS = (
+    {"label": "(0,0.05)", "lower": 0.0, "upper": 0.05, "lower_closed": False, "upper_closed": False},
+    {"label": "[0.05,0.2)", "lower": 0.05, "upper": 0.2, "lower_closed": True, "upper_closed": False},
+    {"label": "[0.2,1)", "lower": 0.2, "upper": 1.0, "lower_closed": True, "upper_closed": False},
+    {"label": "[1,infinity)", "lower": 1.0, "upper": None, "lower_closed": True, "upper_closed": False},
+)
+_RATIO_BINS = tuple(item["label"] for item in _RATIO_BIN_DEFINITIONS)
+_Q_BINS = tuple(item["label"] for item in _Q_BIN_DEFINITIONS)
+_CONDITION_BINS = tuple(item["label"] for item in _CONDITION_BIN_DEFINITIONS)
+_MIN_EIGEN_BINS = tuple(item["label"] for item in _MIN_EIGEN_BIN_DEFINITIONS)
 _LIMITATIONS = (
     "post-hoc exploratory mechanism audit",
     "one preserved trajectory with 20 paired noise seeds",
@@ -113,26 +138,33 @@ def _normalized_squared_error(error_vector: object, covariance: object) -> float
     return result
 
 
+def _numeric_bin(value: float, definitions: tuple[dict, ...]) -> str | None:
+    for definition in definitions:
+        lower = definition["lower"]
+        upper = definition["upper"]
+        lower_matches = value > lower or (
+            definition["lower_closed"] and value == lower
+        )
+        upper_matches = upper is None or value < upper or (
+            definition["upper_closed"] and value == upper
+        )
+        if lower_matches and upper_matches:
+            return definition["label"]
+    return None
+
+
 def _ratio_bin(value: float) -> str:
-    if value < 0.5:
-        return "[0,0.5)"
-    if value < 1.0:
-        return "[0.5,1)"
-    if value < 2.0:
-        return "[1,2)"
-    if value < 5.0:
-        return "[2,5)"
-    return "[5,infinity)"
+    label = _numeric_bin(value, _RATIO_BIN_DEFINITIONS)
+    if label is None:
+        raise ValueError("ratio is outside the frozen non-negative bins")
+    return label
 
 
 def _q_bin(value: float) -> str:
-    if value < 2.295748929:
-        return "[0,2.295748929)"
-    if value < 5.991464547:
-        return "[2.295748929,5.991464547)"
-    if value <= 9.0:
-        return "[5.991464547,9]"
-    return "(9,infinity)"
+    label = _numeric_bin(value, _Q_BIN_DEFINITIONS)
+    if label is None:
+        raise ValueError("normalized squared error is outside the frozen non-negative bins")
+    return label
 
 
 def _upstream_ratio(record: dict) -> float | None:
@@ -198,27 +230,11 @@ def _reference_bin(value: int) -> str:
 
 
 def _condition_bin(value: float) -> str | None:
-    if value < 1:
-        return None
-    if value < 10:
-        return "[1,10)"
-    if value < 30:
-        return "[10,30)"
-    if value < 100:
-        return "[30,100)"
-    return "[100,infinity)"
+    return _numeric_bin(value, _CONDITION_BIN_DEFINITIONS)
 
 
 def _min_eigen_bin(value: float) -> str | None:
-    if value <= 0:
-        return None
-    if value < 0.05:
-        return "(0,0.05)"
-    if value < 0.2:
-        return "[0.05,0.2)"
-    if value < 1:
-        return "[0.2,1)"
-    return "[1,infinity)"
+    return _numeric_bin(value, _MIN_EIGEN_BIN_DEFINITIONS)
 
 
 def _budget() -> dict:
@@ -1042,7 +1058,7 @@ def _source_record(bundle_dir: Path, manifest_raw: bytes, manifest: dict) -> dic
     }
 
 
-def _protocol_record(max_examples_per_bucket: int) -> dict:
+def _protocol_record(max_examples_per_bucket: int, paired_seed_records: int) -> dict:
     return {
         "failure_class_predicates": [
             {"class": "contained", "attempt_status": "converged", "containment": True},
@@ -1054,29 +1070,16 @@ def _protocol_record(max_examples_per_bucket: int) -> dict:
         ],
         "bin_edges": {
             "error_to_epsilon_ratio": [
-                {"label": "[0,0.5)", "lower": 0.0, "upper": 0.5, "lower_closed": True, "upper_closed": False},
-                {"label": "[0.5,1)", "lower": 0.5, "upper": 1.0, "lower_closed": True, "upper_closed": False},
-                {"label": "[1,2)", "lower": 1.0, "upper": 2.0, "lower_closed": True, "upper_closed": False},
-                {"label": "[2,5)", "lower": 2.0, "upper": 5.0, "lower_closed": True, "upper_closed": False},
-                {"label": "[5,infinity)", "lower": 5.0, "upper": None, "lower_closed": True, "upper_closed": False},
+                dict(item) for item in _RATIO_BIN_DEFINITIONS
             ],
             "normalized_squared_error": [
-                {"label": "[0,2.295748929)", "lower": 0.0, "upper": 2.295748929, "lower_closed": True, "upper_closed": False},
-                {"label": "[2.295748929,5.991464547)", "lower": 2.295748929, "upper": 5.991464547, "lower_closed": True, "upper_closed": False},
-                {"label": "[5.991464547,9]", "lower": 5.991464547, "upper": 9.0, "lower_closed": True, "upper_closed": True},
-                {"label": "(9,infinity)", "lower": 9.0, "upper": None, "lower_closed": False, "upper_closed": False},
+                dict(item) for item in _Q_BIN_DEFINITIONS
             ],
             "phi_condition": [
-                {"label": "[1,10)", "lower": 1.0, "upper": 10.0, "lower_closed": True, "upper_closed": False},
-                {"label": "[10,30)", "lower": 10.0, "upper": 30.0, "lower_closed": True, "upper_closed": False},
-                {"label": "[30,100)", "lower": 30.0, "upper": 100.0, "lower_closed": True, "upper_closed": False},
-                {"label": "[100,infinity)", "lower": 100.0, "upper": None, "lower_closed": True, "upper_closed": False},
+                dict(item) for item in _CONDITION_BIN_DEFINITIONS
             ],
             "phi_min_eigenvalue": [
-                {"label": "(0,0.05)", "lower": 0.0, "upper": 0.05, "lower_closed": False, "upper_closed": False},
-                {"label": "[0.05,0.2)", "lower": 0.05, "upper": 0.2, "lower_closed": True, "upper_closed": False},
-                {"label": "[0.2,1)", "lower": 0.2, "upper": 1.0, "lower_closed": True, "upper_closed": False},
-                {"label": "[1,infinity)", "lower": 1.0, "upper": None, "lower_closed": True, "upper_closed": False},
+                dict(item) for item in _MIN_EIGEN_BIN_DEFINITIONS
             ],
             "reference_count": {
                 "singleton_values": list(range(10)),
@@ -1093,7 +1096,8 @@ def _protocol_record(max_examples_per_bucket: int) -> dict:
         },
         "bootstrap": {
             "resampling_unit": "paired seed record",
-            "draws_per_resample": 20,
+            "paired_seed_records": paired_seed_records,
+            "draws_per_resample": paired_seed_records,
             "sampling": "with_replacement",
             "aggregate_counts": ["dyn_up", "fix_up", "dyn_invalid", "fix_invalid"],
             "formula": "(sum(dyn_up) - sum(fix_up)) / (sum(dyn_invalid) - sum(fix_invalid))",
@@ -1335,7 +1339,7 @@ def analyze_localization_failures(
         "schema": SCHEMA_ID,
         "status": "completed",
         "source": _source_record(bundle_dir, manifest_raw, manifest),
-        "protocol": _protocol_record(max_examples_per_bucket),
+        "protocol": _protocol_record(max_examples_per_bucket, len(seeds)),
         "limitations": list(_LIMITATIONS),
         "integrity": {
             "observed_rows": observed_rows,

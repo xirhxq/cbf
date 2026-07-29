@@ -1096,6 +1096,13 @@ class PairedBootstrapTests(unittest.TestCase):
                                     "attempt_failure_reason": reason})
                     rows.append(row)
         report = _analyze_rows(rows, 1)
+        self.assertEqual(
+            {
+                key: report["protocol"]["bootstrap"][key]
+                for key in ("paired_seed_records", "draws_per_resample")
+            },
+            {"paired_seed_records": 2, "draws_per_resample": 2},
+        )
         records = report["bootstrap"]["seed_records"]
         self.assertEqual(
             records,
@@ -1209,7 +1216,8 @@ class OutputContractTests(unittest.TestCase):
             })
             self.assertEqual(payload["protocol"]["bootstrap"], {
                 "resampling_unit": "paired seed record",
-                "draws_per_resample": 20,
+                "paired_seed_records": 1,
+                "draws_per_resample": 1,
                 "sampling": "with_replacement",
                 "aggregate_counts": ["dyn_up", "fix_up", "dyn_invalid", "fix_invalid"],
                 "formula": "(sum(dyn_up) - sum(fix_up)) / (sum(dyn_invalid) - sum(fix_invalid))",
