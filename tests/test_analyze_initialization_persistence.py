@@ -5,6 +5,8 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -140,9 +142,46 @@ class InitializationPersistenceAnalyzerTests(unittest.TestCase):
 
     def test_exact_reason_plus_other_invalid_reasons_reconciles_broad_class(self) -> None:
         """Breaks if exact and non-exact invalid reasons lose the invalid partition."""
-        report = self.analyze_fixture(self.rows_with_two_invalid_reasons())
+        bundle = self.write_fixture(self.rows_with_two_invalid_reasons())
+        report = analyze_initialization_persistence(
+            bundle,
+            expected_broad_invalid_totals={
+                "dynamic_dag_wnls": 2,
+                "fixed_refs_wnls": 2,
+            },
+        )
         integrity = report["integrity"]
         self.assertTrue(integrity["invalid_reason_reconciliation"])
+
+    def test_completed_audit_reconciliation_is_per_case_and_closes_gate(self) -> None:
+        """Breaks if a case can pass without matching its completed-audit broad total."""
+        bundle = self.write_fixture(self.rows_with_two_invalid_reasons())
+        report = analyze_initialization_persistence(
+            bundle,
+            expected_broad_invalid_totals={
+                "dynamic_dag_wnls": 2,
+                "fixed_refs_wnls": 1,
+            },
+        )
+        self.assertTrue(
+            report["cases"]["dynamic_dag_wnls"]["invalid_reason_reconciliation"]
+        )
+        self.assertFalse(
+            report["cases"]["fixed_refs_wnls"]["invalid_reason_reconciliation"]
+        )
+        self.assertFalse(report["integrity"]["invalid_reason_reconciliation"])
+        self.assertFalse(report["gate_passed"])
+
+    def test_rejects_any_graph_case_set_other_than_the_two_frozen_cases(self) -> None:
+        """Breaks if a self-consistent one-case bundle can satisfy a two-case Gate."""
+        rows = [
+            row
+            for row in self.persistence_rows(primary_frames=2)
+            if row["graph_case"] == "dynamic_dag_wnls"
+        ]
+        bundle = self.write_fixture(rows, graph_cases=("dynamic_dag_wnls",))
+        with self.assertRaises(InputIntegrityError):
+            analyze_initialization_persistence(bundle)
 
     def test_source_hash_mutation_and_out_of_order_keys_fail_closed(self) -> None:
         """Breaks if a rehashed but noncanonical stream is accepted."""
@@ -155,7 +194,6 @@ class InitializationPersistenceAnalyzerTests(unittest.TestCase):
         """Breaks if publication leaks siblings or exceeds its bounded output budget."""
         bundle = self.write_fixture(self.persistence_rows(primary_frames=2))
         output = self.root / "analysis" / "run"
-        output.parent.mkdir()
         analyze_initialization_persistence(bundle, output_dir=output)
         self.assertEqual(
             {path.name for path in output.iterdir()},
@@ -165,6 +203,57 @@ class InitializationPersistenceAnalyzerTests(unittest.TestCase):
             },
         )
         self.assertLess(allocated_bytes(output), 10_000_000)
+
+    def test_publication_does_not_overwrite_directory_created_by_racer(self) -> None:
+        """Breaks if final publication can replace a concurrently created directory."""
+        bundle = self.write_fixture(self.persistence_rows(primary_frames=2))
+        output = self.root / "analysis" / "run"
+        output.parent.mkdir()
+        verify_inputs = analyzer._verify_unchanged_inputs
+        verification_count = 0
+
+        def create_racing_directory(*args: object) -> None:
+            nonlocal verification_count
+            verify_inputs(*args)
+            verification_count += 1
+            if verification_count == 2:
+                output.mkdir()
+
+        with patch.object(
+            analyzer,
+            "_verify_unchanged_inputs",
+            side_effect=create_racing_directory,
+        ):
+            with self.assertRaises(FileExistsError):
+                analyze_initialization_persistence(bundle, output_dir=output)
+        self.assertTrue(output.is_dir())
+        self.assertEqual(list(output.iterdir()), [])
+        self.assertEqual(list(output.with_name("run.incomplete").iterdir()), [])
+
+    def test_module_cli_executes_analysis_with_frozen_trust_root(self) -> None:
+        """Breaks if python -m merely imports definitions without running Gate 1."""
+        bundle = self.write_fixture(self.persistence_rows(primary_frames=2))
+        completed = self.run_cli(bundle, expected_hashes=self.source_hashes(bundle))
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertTrue(completed.stdout.strip(), "CLI emitted no report")
+        self.assertTrue(json.loads(completed.stdout)["gate_passed"])
+
+    def test_cli_rejects_self_consistent_bundle_replaced_before_start(self) -> None:
+        """Breaks if a replaced manifest and artifact can self-certify at startup."""
+        bundle = self.write_fixture(self.persistence_rows(primary_frames=2))
+        expected_hashes = self.source_hashes(bundle)
+        summary_path = bundle / SUMMARY_NAME
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        summary["substituted_before_start"] = True
+        summary_path.write_text(json.dumps(summary, sort_keys=True) + "\n", encoding="utf-8")
+        manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+        manifest["summary_json_sha256"] = _sha256(summary_path)
+        _write_manifest(bundle, manifest)
+
+        completed = self.run_cli(bundle, expected_hashes=expected_hashes)
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertFalse(completed.stdout.strip())
 
     def test_output_rejects_source_mutation_during_publication(self) -> None:
         """Breaks if a completed report survives a source change while it is rendered."""
@@ -192,7 +281,12 @@ class InitializationPersistenceAnalyzerTests(unittest.TestCase):
             self.write_fixture(rows, robot_count=robot_count)
         )
 
-    def write_fixture(self, rows: list[dict], robot_count: int = 1) -> Path:
+    def write_fixture(
+        self,
+        rows: list[dict],
+        robot_count: int = 1,
+        graph_cases: tuple[str, ...] = GRAPH_CASES,
+    ) -> Path:
         if {row["robot_id"] for row in rows} != set(range(1, robot_count + 1)):
             raise ValueError("fixture rows must cover exactly the declared robot IDs")
         bundle = self.root / f"bundle-{len(list(self.root.glob('bundle-*')))}"
@@ -215,7 +309,7 @@ class InitializationPersistenceAnalyzerTests(unittest.TestCase):
 
         frame_count = max(row["frame_index"] for row in rows) + 1
         summary_cases = {}
-        for graph_case in GRAPH_CASES:
+        for graph_case in graph_cases:
             case_rows = [row for row in rows if row["graph_case"] == graph_case]
             primary_rows = [row for row in case_rows if row["primary_statistics"]]
             initialization_rows = [row for row in case_rows if not row["primary_statistics"]]
@@ -231,7 +325,7 @@ class InitializationPersistenceAnalyzerTests(unittest.TestCase):
             }
         settings = {
             "run_seeds": [17],
-            "graph_cases": list(GRAPH_CASES),
+            "graph_cases": list(graph_cases),
             "effective_frame_count": frame_count,
         }
         summary = {
@@ -257,6 +351,43 @@ class InitializationPersistenceAnalyzerTests(unittest.TestCase):
             },
         )
         return bundle
+
+    def source_hashes(self, bundle: Path) -> dict[str, str]:
+        return {
+            "manifest": _sha256(bundle / "manifest.json"),
+            "summary": _sha256(bundle / SUMMARY_NAME),
+            "process": _sha256(bundle / PROCESS_NAME),
+        }
+
+    def run_cli(
+        self,
+        bundle: Path,
+        *,
+        expected_hashes: dict[str, str],
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "scripts.diagnostics.analyze_initialization_persistence",
+                "--bundle-dir",
+                str(bundle),
+                "--expected-manifest-sha256",
+                expected_hashes["manifest"],
+                "--expected-summary-json-sha256",
+                expected_hashes["summary"],
+                "--expected-compressed-process-sha256",
+                expected_hashes["process"],
+                "--expected-dynamic-broad-invalid-total",
+                "2",
+                "--expected-fixed-broad-invalid-total",
+                "2",
+            ],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
 
     def rewrite_first_process_key(self, bundle: Path, *, frame_index: int) -> None:
         process_path = bundle / PROCESS_NAME
