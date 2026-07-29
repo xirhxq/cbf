@@ -12,7 +12,7 @@ dynamic primary containment was only 44.7438%, every dynamic
 squad-local-depth containment gate failed, and both no-worse attempt-rate
 gates failed.
 This is a calibration gap.
-It does not validate the registered \(3\epsilon\) radius and does not
+It does not validate the registered epsilon radius and does not
 authorize an upgraded paper claim.
 No result-dependent tuning, retry, graph change, noise change, or radius
 inflation was made.
@@ -45,6 +45,12 @@ The registered environment check returned exactly:
 Python 3.11.12
 NumPy 1.24.4
 ```
+
+This linked worktree's frozen CBF2026 task registration explicitly used
+conda environment `cbf_env` with those versions.
+The original checkout's external, untracked `.agents/AGENTS.md` convention
+requiring `.venv` was not present or applicable in this linked worktree;
+this clarification does not change any historical command.
 
 The replay read, but did not copy, these immutable inputs:
 
@@ -407,7 +413,7 @@ The direct raw-row recomputation and preserved summary agree:
 | Overall adequacy | four of five conditions fail | **FAIL** |
 
 This failed registered run is a calibration gap.
-It must not be described as validating the \(3\epsilon\) radius.
+It must not be described as validating the epsilon radius.
 
 ## Preserved but excluded old bundle
 
@@ -445,4 +451,5 @@ shared-ancestor cross-correlations.
 Consequently these results provide neither a mission-level probability
 guarantee nor a closed-loop safety or estimator-robustness guarantee.
 The failed adequacy gate is empirical evidence of a remaining calibration
-gap, not empirical validation of \(3\epsilon\).
+gap, not empirical validation of the coefficient-3 FIM-derived epsilon
+radius.

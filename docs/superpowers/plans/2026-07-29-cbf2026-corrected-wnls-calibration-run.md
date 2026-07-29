@@ -8,6 +8,13 @@
 
 **Tech Stack:** Python 3.11.12 in conda environment `cbf_env`, NumPy 1.24.4, gzip JSON Lines, SHA-256, standard-library JSON.
 
+**Environment clarification (2026-07-29):** This linked worktree's frozen
+CBF2026 task registration explicitly used conda environment `cbf_env`
+(Python 3.11.12 and NumPy 1.24.4).
+The original checkout's external, untracked `.agents/AGENTS.md` convention
+requiring `.venv` was not present or applicable in this linked worktree.
+This clarification does not rewrite any historical command in this plan.
+
 ## Global Constraints
 
 - This document registers execution only. Do not modify code, tests, existing evidence, the paper, DRA, or `build-diagnostic`.

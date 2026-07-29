@@ -8,6 +8,13 @@
 
 **Tech Stack:** C++17, Eigen, nlohmann/json, doctest, CMake, Python 3.11 in conda environment `cbf_env`, NumPy 1.24.4, standard-library `unittest`, gzip JSON Lines, LaTeX/BibTeX.
 
+**Environment clarification (2026-07-29):** This linked worktree's frozen
+CBF2026 task registration explicitly used conda environment `cbf_env`
+(Python 3.11.12 and NumPy 1.24.4).
+The original checkout's external, untracked `.agents/AGENTS.md` convention
+requiring `.venv` was not present or applicable in this linked worktree.
+This clarification does not rewrite any historical command in this plan.
+
 ## Global Constraints
 
 - Work on `/private/tmp/cbf2026-diagnostic` branch `codex/cbf2026-diagnostic`; do not touch `cbf-research-2026` or its stash.

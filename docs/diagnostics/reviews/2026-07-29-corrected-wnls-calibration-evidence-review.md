@@ -9,7 +9,7 @@ These verdicts are deliberately separate.
 The preserved artifacts, the corrected evidence report, and the diagnostics
 README are internally consistent and reproducible from the raw rows.
 The registered experiment itself fails four of its five adequacy conditions,
-so this review does not validate the \(3\epsilon\) radius or authorize a
+so this review does not validate the epsilon radius or authorize a
 stronger paper claim.
 
 Issues by severity:
@@ -20,11 +20,16 @@ Issues by severity:
 
 The reviewed corrected report is
 `docs/diagnostics/2026-07-29-corrected-wnls-localization-calibration.md`,
-20,223 bytes, SHA-256
-`92e71a8642b67a88e8aceddd8b70052afbce3549c66d9f3b660b5b68c5b0d3e2`.
+20,571 bytes, SHA-256
+`dd410d5607b7e4ed24a785d2c8780bcbfa4051b46cacc573faf26e681b21f00d`.
 The entry in `docs/diagnostics/README.md` links to that report and accurately
 describes the result as an objective-correct replay whose registered adequacy
-gate failed, rather than as a \(3\epsilon\) validation.
+gate failed, rather than as validation of the epsilon radius.
+Final review corrected an earlier multiplicative shorthand to the registered
+epsilon radius, defined exactly as
+\(\epsilon=3\sqrt{\lambda_{\max}(P)}\).
+This is a terminology-only correction: it does not alter any bundle,
+statistic, adequacy gate, or result.
 
 ## Reviewed bundles
 
@@ -196,6 +201,11 @@ SHA-256
 and records `CLEAN / READY`.
 The checked environment reports Python 3.11.12 and NumPy 1.24.4, matching
 the frozen registration and all manifest settings.
+This linked worktree's frozen CBF2026 task registration explicitly used conda
+environment `cbf_env` with those versions.
+The original checkout's external, untracked `.agents/AGENTS.md` convention
+requiring `.venv` was not present or applicable in this linked worktree;
+this clarification does not change any historical command.
 
 The manifest free-space readings before every invocation exceed
 8,000,000,000 bytes and their terminal readings exceed 6,000,000,000 bytes.
