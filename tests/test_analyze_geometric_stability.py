@@ -1172,6 +1172,25 @@ class PublicationIntegrityTests(GeometricAnalysisFixture):
             return None
         return {item.name for item in staging[0].iterdir()}
 
+    def _assert_descriptors_closed(
+        self,
+        descriptors: list[int] | set[int],
+        *,
+        fstat: Callable[[int], object],
+        close: Callable[[int], None],
+    ) -> None:
+        leaked: list[int] = []
+        for descriptor in set(descriptors):
+            try:
+                fstat(descriptor)
+            except OSError as error:
+                self.assertEqual(error.errno, analyzer_module.errno.EBADF)
+            else:
+                leaked.append(descriptor)
+        for descriptor in leaked:
+            close(descriptor)
+        self.assertEqual(leaked, [])
+
     def test_start_gate_precedes_all_source_access(self):
         output = self.root / "analysis" / "run"
         missing_comparison = self.root / "missing-comparison.json"
@@ -1264,12 +1283,19 @@ class PublicationIntegrityTests(GeometricAnalysisFixture):
         self.assertEqual(report["status"], "completed")
         self.assertTrue((output / OUTPUT_JSON_NAME).is_file())
 
-    def test_descriptor_close_interruption_after_commit_does_not_escape(self):
+    def test_python_close_hook_cannot_interrupt_postcommit_teardown(self):
         fixture = self.write_complete_fixture()
         output = self.root / "analysis" / "run"
+        real_open = analyzer_module.os.open
         real_close = analyzer_module.os.close
         real_fstat = analyzer_module.os.fstat
+        opened: list[int] = []
         interrupted = False
+
+        def tracked_open(*args, **kwargs):
+            descriptor = real_open(*args, **kwargs)
+            opened.append(descriptor)
+            return descriptor
 
         def interrupted_close(descriptor: int) -> None:
             nonlocal interrupted
@@ -1287,6 +1313,10 @@ class PublicationIntegrityTests(GeometricAnalysisFixture):
 
         with patch.object(
             analyzer_module.os,
+            "open",
+            side_effect=tracked_open,
+        ), patch.object(
+            analyzer_module.os,
             "close",
             side_effect=interrupted_close,
         ):
@@ -1294,7 +1324,12 @@ class PublicationIntegrityTests(GeometricAnalysisFixture):
                 **fixture.call_args(output_dir=output)
             )
 
-        self.assertTrue(interrupted)
+        self.assertFalse(interrupted)
+        self._assert_descriptors_closed(
+            opened,
+            fstat=real_fstat,
+            close=real_close,
+        )
         self.assertEqual(report["status"], "completed")
         self.assertTrue((output / OUTPUT_JSON_NAME).is_file())
 
@@ -1655,27 +1690,18 @@ class PublicationIntegrityTests(GeometricAnalysisFixture):
         output = self.root / "analysis" / "run"
         real_open = analyzer_module.os.open
         real_close = analyzer_module.os.close
+        real_fstat = analyzer_module.os.fstat
         opened: list[int] = []
-        live: set[int] = set()
 
         def tracked_open(*args, **kwargs):
             descriptor = real_open(*args, **kwargs)
             opened.append(descriptor)
-            live.add(descriptor)
             return descriptor
-
-        def tracked_close(descriptor: int) -> None:
-            live.discard(descriptor)
-            real_close(descriptor)
 
         with patch.object(
             analyzer_module.os,
             "open",
             side_effect=tracked_open,
-        ), patch.object(
-            analyzer_module.os,
-            "close",
-            side_effect=tracked_close,
         ):
             with self.assertRaises(InputIntegrityError):
                 analyze_geometric_stability(
@@ -1686,7 +1712,11 @@ class PublicationIntegrityTests(GeometricAnalysisFixture):
                 )
 
         self.assertTrue(opened)
-        self.assertEqual(live, set())
+        self._assert_descriptors_closed(
+            opened,
+            fstat=real_fstat,
+            close=real_close,
+        )
 
     def test_path_chain_fstat_failure_closes_new_child_descriptor(self):
         output = self.root / "analysis" / "run"
@@ -1694,18 +1724,12 @@ class PublicationIntegrityTests(GeometricAnalysisFixture):
         real_close = analyzer_module.os.close
         real_fstat = analyzer_module.os.fstat
         opened: list[int] = []
-        live: set[int] = set()
         injected = False
 
         def tracked_open(*args, **kwargs):
             descriptor = real_open(*args, **kwargs)
             opened.append(descriptor)
-            live.add(descriptor)
             return descriptor
-
-        def tracked_close(descriptor: int) -> None:
-            live.discard(descriptor)
-            real_close(descriptor)
 
         def failing_fstat(descriptor: int):
             nonlocal injected
@@ -1718,37 +1742,32 @@ class PublicationIntegrityTests(GeometricAnalysisFixture):
                 raise OSError("injected path-chain fstat failure")
             return real_fstat(descriptor)
 
-        try:
-            with patch.object(
-                analyzer_module.os,
-                "open",
-                side_effect=tracked_open,
-            ), patch.object(
-                analyzer_module.os,
-                "close",
-                side_effect=tracked_close,
-            ), patch.object(
-                analyzer_module.os,
-                "fstat",
-                side_effect=failing_fstat,
+        with patch.object(
+            analyzer_module.os,
+            "open",
+            side_effect=tracked_open,
+        ), patch.object(
+            analyzer_module.os,
+            "fstat",
+            side_effect=failing_fstat,
+        ):
+            with self.assertRaisesRegex(
+                OSError,
+                "path-chain fstat failure",
             ):
-                with self.assertRaisesRegex(
-                    OSError,
-                    "path-chain fstat failure",
-                ):
-                    analyze_geometric_stability(
-                        self.root / "missing-comparison.json",
-                        expected_comparison_sha256="0" * 64,
-                        expected_parent_manifest_sha256="1" * 64,
-                        output_dir=output,
-                    )
+                analyze_geometric_stability(
+                    self.root / "missing-comparison.json",
+                    expected_comparison_sha256="0" * 64,
+                    expected_parent_manifest_sha256="1" * 64,
+                    output_dir=output,
+                )
 
-            self.assertTrue(injected)
-            self.assertEqual(live, set())
-        finally:
-            for descriptor in list(live):
-                real_close(descriptor)
-                live.discard(descriptor)
+        self.assertTrue(injected)
+        self._assert_descriptors_closed(
+            opened,
+            fstat=real_fstat,
+            close=real_close,
+        )
 
     def test_staging_identity_is_pinned_before_name_stat_replacement(self):
         fixture = self.write_complete_fixture()
@@ -1796,6 +1815,105 @@ class PublicationIntegrityTests(GeometricAnalysisFixture):
             "must survive\n",
         )
         self.assertFalse(owned_displaced.exists())
+        self.assertFalse(output.exists())
+
+    def test_staging_create_and_pin_bypasses_former_open_callback_gap(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        real_open_directory = (
+            analyzer_module._PublicationTransaction._open_directory
+        )
+        displaced = output.parent / "former-gap-owned"
+        callback_reached = False
+
+        def replace_from_former_gap(
+            path: Path,
+            *,
+            dir_fd: int | None = None,
+        ) -> int:
+            nonlocal callback_reached
+            if path.name.startswith(f"{output.name}.incomplete-"):
+                callback_reached = True
+                staging = output.parent / path.name
+                staging.rename(displaced)
+                staging.mkdir()
+                (staging / "victim.txt").write_text(
+                    "must survive\n",
+                    encoding="utf-8",
+                )
+            return real_open_directory(path, dir_fd=dir_fd)
+
+        failure: AnalysisLimitError | None = None
+        report: dict | None = None
+        with patch.object(
+            analyzer_module._PublicationTransaction,
+            "_open_directory",
+            side_effect=replace_from_former_gap,
+        ):
+            try:
+                report = analyze_geometric_stability(
+                    **fixture.call_args(output_dir=output)
+                )
+            except AnalysisLimitError as error:
+                failure = error
+
+        self.assertIsNone(failure)
+        self.assertFalse(callback_reached)
+        self.assertFalse(displaced.exists())
+        self.assertIsNotNone(report)
+        self.assertEqual(report["status"], "completed")
+        self.assertTrue((output / OUTPUT_JSON_NAME).is_file())
+
+    def test_replacement_after_create_and_pin_preserves_unowned_entry(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        primitive = getattr(
+            analyzer_module,
+            "_create_and_pin_directory_at",
+            None,
+        )
+        displaced = output.parent / "post-pin-owned"
+        victim: Path | None = None
+        replaced = False
+
+        def replace_after_pin(
+            parent_fd: int,
+            candidate: str,
+        ) -> tuple[int, tuple[int, int]]:
+            nonlocal replaced, victim
+            self.assertIsNotNone(primitive)
+            descriptor, identity = primitive(parent_fd, candidate)
+            victim = output.parent / candidate
+            victim.rename(displaced)
+            victim.mkdir()
+            (victim / "victim.txt").write_text(
+                "must survive\n",
+                encoding="utf-8",
+            )
+            replaced = True
+            return descriptor, identity
+
+        with patch.object(
+            analyzer_module,
+            "_create_and_pin_directory_at",
+            side_effect=replace_after_pin,
+            create=primitive is None,
+        ):
+            with self.assertRaisesRegex(
+                AnalysisLimitError,
+                "staging.*changed",
+            ):
+                analyze_geometric_stability(
+                    **fixture.call_args(output_dir=output)
+                )
+
+        self.assertTrue(replaced)
+        self.assertIsNotNone(victim)
+        self.assertEqual(
+            (victim / "victim.txt").read_text(encoding="utf-8"),
+            "must survive\n",
+        )
+        self.assertFalse(displaced.exists())
         self.assertFalse(output.exists())
 
     def test_staging_stat_failure_removes_created_owned_directory(self):
@@ -1854,17 +1972,14 @@ class PublicationIntegrityTests(GeometricAnalysisFixture):
         output = self.root / "analysis" / "run"
         real_open = analyzer_module.os.open
         real_close = analyzer_module.os.close
-        live: set[int] = set()
+        real_fstat = analyzer_module.os.fstat
+        opened: list[int] = []
         interrupted = False
 
         def tracked_open(*args, **kwargs):
             descriptor = real_open(*args, **kwargs)
-            live.add(descriptor)
+            opened.append(descriptor)
             return descriptor
-
-        def tracked_close(descriptor: int) -> None:
-            live.discard(descriptor)
-            real_close(descriptor)
 
         def guard() -> None:
             nonlocal interrupted
@@ -1872,92 +1987,109 @@ class PublicationIntegrityTests(GeometricAnalysisFixture):
                 interrupted = True
                 raise KeyboardInterrupt("injected entry interruption")
 
-        try:
-            with patch.object(
-                analyzer_module.os,
-                "open",
-                side_effect=tracked_open,
-            ), patch.object(
-                analyzer_module.os,
-                "close",
-                side_effect=tracked_close,
+        with patch.object(
+            analyzer_module.os,
+            "open",
+            side_effect=tracked_open,
+        ):
+            with self.assertRaisesRegex(
+                KeyboardInterrupt,
+                "entry interruption",
             ):
-                with self.assertRaisesRegex(
-                    KeyboardInterrupt,
-                    "entry interruption",
-                ):
-                    analyze_geometric_stability(
-                        **fixture.call_args(output_dir=output),
-                        live_guard=guard,
-                    )
+                analyze_geometric_stability(
+                    **fixture.call_args(output_dir=output),
+                    live_guard=guard,
+                )
 
-            self.assertTrue(interrupted)
-            self.assertEqual(live, set())
-            self.assertFalse(output.exists())
-            self.assertFalse(output.parent.exists())
-        finally:
-            for descriptor in list(live):
-                real_close(descriptor)
-                live.discard(descriptor)
+        self.assertTrue(interrupted)
+        self._assert_descriptors_closed(
+            opened,
+            fstat=real_fstat,
+            close=real_close,
+        )
+        self.assertFalse(output.exists())
+        self.assertFalse(output.parent.exists())
 
-    def test_artifact_close_base_exception_is_retried_without_fd_leak(self):
+    def test_repeated_close_base_exceptions_cannot_leak_artifact_fds(self):
         fixture = self.write_complete_fixture()
         output = self.root / "analysis" / "run"
         real_open = analyzer_module.os.open
         real_close = analyzer_module.os.close
         real_fstat = analyzer_module.os.fstat
-        live: set[int] = set()
-        interrupted = False
+        real_library = analyzer_module.ctypes.PyDLL(None, use_errno=True)
+        real_raw_close = (
+            getattr(real_library, "__close_nocancel")
+            if analyzer_module.sys.platform == "darwin"
+            else real_library.close
+        )
+        real_raw_close.argtypes = [analyzer_module.ctypes.c_int]
+        real_raw_close.restype = analyzer_module.ctypes.c_int
+        artifact_fds: list[int] = []
+        injected: list[type[BaseException]] = []
 
-        def tracked_open(*args, **kwargs):
-            descriptor = real_open(*args, **kwargs)
-            live.add(descriptor)
+        def tracked_open(path, flags, *args, **kwargs):
+            descriptor = real_open(path, flags, *args, **kwargs)
+            if (
+                isinstance(path, str)
+                and path in (OUTPUT_JSON_NAME, OUTPUT_MARKDOWN_NAME)
+                and flags & analyzer_module.os.O_ACCMODE
+                == analyzer_module.os.O_RDONLY
+            ):
+                artifact_fds.append(descriptor)
             return descriptor
 
-        def interrupted_close(descriptor: int) -> None:
-            nonlocal interrupted
-            metadata = real_fstat(descriptor)
-            artifact_identity = {
-                analyzer_module._directory_identity(path.stat())
-                for path in (
-                    output / OUTPUT_JSON_NAME,
-                    output / OUTPUT_MARKDOWN_NAME,
-                )
-                if path.exists()
-            }
-            if (
-                not interrupted
-                and stat.S_ISREG(metadata.st_mode)
-                and analyzer_module._directory_identity(metadata)
-                in artifact_identity
-            ):
-                interrupted = True
-                raise KeyboardInterrupt("injected artifact close")
-            live.discard(descriptor)
+        class InterruptedRawClose:
+            argtypes = None
+            restype = None
+
+            def __call__(self, descriptor: int) -> int:
+                result = real_raw_close(descriptor)
+                if descriptor in artifact_fds and len(injected) < 2:
+                    exception_type = (
+                        KeyboardInterrupt if not injected else SystemExit
+                    )
+                    injected.append(exception_type)
+                    raise exception_type(
+                        "injected post-syscall artifact close"
+                    )
+                return result
+
+        interrupted_raw_close = InterruptedRawClose()
+
+        class LibraryProxy:
+            def __getattr__(self, name: str):
+                if name in ("__close_nocancel", "close"):
+                    return interrupted_raw_close
+                return getattr(real_library, name)
+
+        with patch.object(
+            analyzer_module.os,
+            "open",
+            side_effect=tracked_open,
+        ), patch.object(
+            analyzer_module.ctypes,
+            "PyDLL",
+            return_value=LibraryProxy(),
+        ):
+            report = analyze_geometric_stability(
+                **fixture.call_args(output_dir=output)
+            )
+
+        self.assertEqual(len(artifact_fds), 2)
+        self.assertEqual(injected, [KeyboardInterrupt, SystemExit])
+        leaked: list[int] = []
+        for descriptor in artifact_fds:
+            try:
+                real_fstat(descriptor)
+            except OSError as error:
+                self.assertEqual(error.errno, analyzer_module.errno.EBADF)
+            else:
+                leaked.append(descriptor)
+        for descriptor in leaked:
             real_close(descriptor)
-
-        try:
-            with patch.object(
-                analyzer_module.os,
-                "open",
-                side_effect=tracked_open,
-            ), patch.object(
-                analyzer_module.os,
-                "close",
-                side_effect=interrupted_close,
-            ):
-                report = analyze_geometric_stability(
-                    **fixture.call_args(output_dir=output)
-                )
-
-            self.assertTrue(interrupted)
-            self.assertEqual(live, set())
-            self.assertEqual(report["status"], "completed")
-            self.assertTrue((output / OUTPUT_JSON_NAME).is_file())
-        finally:
-            for descriptor in list(live):
-                real_close(descriptor)
-                live.discard(descriptor)
+        self.assertEqual(leaked, [])
+        self.assertEqual(report["status"], "completed")
+        self.assertTrue((output / OUTPUT_JSON_NAME).is_file())
 
     def test_base_exception_at_final_guard_cleans_staging(self):
         fixture = self.write_complete_fixture()
@@ -1983,30 +2115,20 @@ class PublicationIntegrityTests(GeometricAnalysisFixture):
         self.assertFalse(output.exists())
         self.assertFalse(output.parent.exists())
 
-    def test_staging_open_failure_preserves_unknown_created_entry(self):
+    def test_staging_pin_failure_preserves_unknown_created_entry(self):
         fixture = self.write_complete_fixture()
         output = self.root / "analysis" / "run"
-        real_open_directory = analyzer_module._PublicationTransaction._open_directory
-        staging_open_attempted = False
-
-        def open_directory(path: Path, *, dir_fd: int | None = None) -> int:
-            nonlocal staging_open_attempted
-            if path.name.startswith(f"{output.name}.incomplete-"):
-                staging_open_attempted = True
-                raise OSError("injected staging open failure")
-            return real_open_directory(path, dir_fd=dir_fd)
 
         with patch.object(
-            analyzer_module._PublicationTransaction,
-            "_open_directory",
-            side_effect=open_directory,
+            analyzer_module,
+            "_PIN_FSTAT",
+            side_effect=OSError("injected staging pin failure"),
         ):
-            with self.assertRaisesRegex(OSError, "staging open failure"):
+            with self.assertRaisesRegex(OSError, "staging pin failure"):
                 analyze_geometric_stability(
                     **fixture.call_args(output_dir=output)
                 )
 
-        self.assertTrue(staging_open_attempted)
         self.assertFalse(output.exists())
         preserved = list(
             output.parent.glob(f"{output.name}.incomplete-*")
@@ -2282,6 +2404,183 @@ class PublicationIntegrityTests(GeometricAnalysisFixture):
 
         self.assertEqual(processed, 10_000)
         self.assertFalse(output.exists())
+
+
+class RawFilesystemPrimitiveTests(unittest.TestCase):
+    class FakeCall:
+        def __init__(self, result: int = 0) -> None:
+            self.result = result
+            self.calls: list[tuple] = []
+            self.argtypes = None
+            self.restype = None
+
+        def __call__(self, *arguments):
+            self.calls.append(arguments)
+            return self.result
+
+    def test_create_and_pin_defines_mkdirat_and_openat_signatures(self):
+        primitive = getattr(
+            analyzer_module,
+            "_create_and_pin_directory_at",
+            None,
+        )
+        self.assertIsNotNone(primitive)
+        mkdirat = self.FakeCall()
+        openat = self.FakeCall(result=73)
+        library = type(
+            "Library",
+            (),
+            {"mkdirat": mkdirat, "openat": openat},
+        )()
+        metadata = type(
+            "Metadata",
+            (),
+            {
+                "st_mode": stat.S_IFDIR | 0o700,
+                "st_dev": 12,
+                "st_ino": 34,
+            },
+        )()
+
+        with patch.object(
+            analyzer_module.sys,
+            "platform",
+            "linux",
+        ), patch.object(
+            analyzer_module.ctypes,
+            "PyDLL",
+            return_value=library,
+        ), patch.object(
+            analyzer_module,
+            "_PIN_FSTAT",
+            return_value=metadata,
+            create=True,
+        ):
+            descriptor, identity = primitive(51, "stage-name")
+
+        self.assertEqual(mkdirat.argtypes, [
+            analyzer_module.ctypes.c_int,
+            analyzer_module.ctypes.c_char_p,
+            analyzer_module.ctypes.c_uint,
+        ])
+        self.assertIs(mkdirat.restype, analyzer_module.ctypes.c_int)
+        self.assertEqual(openat.argtypes, [
+            analyzer_module.ctypes.c_int,
+            analyzer_module.ctypes.c_char_p,
+            analyzer_module.ctypes.c_int,
+        ])
+        self.assertIs(openat.restype, analyzer_module.ctypes.c_int)
+        self.assertEqual(mkdirat.calls, [(51, b"stage-name", 0o700)])
+        self.assertEqual(
+            openat.calls,
+            [(
+                51,
+                b"stage-name",
+                analyzer_module.os.O_RDONLY
+                | analyzer_module.os.O_DIRECTORY
+                | analyzer_module.os.O_NOFOLLOW
+                | analyzer_module.os.O_CLOEXEC,
+            )],
+        )
+        self.assertEqual((descriptor, identity), (73, (12, 34)))
+
+    def test_create_and_pin_translates_mkdirat_and_openat_errno(self):
+        primitive = getattr(
+            analyzer_module,
+            "_create_and_pin_directory_at",
+            None,
+        )
+        self.assertIsNotNone(primitive)
+        cases = (
+            (
+                self.FakeCall(result=-1),
+                self.FakeCall(),
+                analyzer_module.errno.EEXIST,
+                FileExistsError,
+            ),
+            (
+                self.FakeCall(),
+                self.FakeCall(result=-1),
+                analyzer_module.errno.ELOOP,
+                OSError,
+            ),
+        )
+        for mkdirat, openat, error_number, exception_type in cases:
+            with self.subTest(error_number=error_number):
+                library = type(
+                    "Library",
+                    (),
+                    {"mkdirat": mkdirat, "openat": openat},
+                )()
+                with patch.object(
+                    analyzer_module.sys,
+                    "platform",
+                    "linux",
+                ), patch.object(
+                    analyzer_module.ctypes,
+                    "PyDLL",
+                    return_value=library,
+                ), patch.object(
+                    analyzer_module.ctypes,
+                    "get_errno",
+                    return_value=error_number,
+                ):
+                    with self.assertRaises(exception_type) as caught:
+                        primitive(52, "stage-name")
+                self.assertEqual(caught.exception.errno, error_number)
+
+    def test_raw_close_defines_signature_and_never_retries_ambiguous_error(self):
+        close_no_fail = getattr(
+            analyzer_module,
+            "_close_fd_no_fail",
+            None,
+        )
+        self.assertIsNotNone(close_no_fail)
+        for error_number in (
+            analyzer_module.errno.EINTR,
+            analyzer_module.errno.EBADF,
+        ):
+            with self.subTest(error_number=error_number):
+                close = self.FakeCall(result=-1)
+                library = type("Library", (), {"close": close})()
+                with patch.object(
+                    analyzer_module.sys,
+                    "platform",
+                    "linux",
+                ), patch.object(
+                    analyzer_module.ctypes,
+                    "PyDLL",
+                    return_value=library,
+                ), patch.object(
+                    analyzer_module.ctypes,
+                    "get_errno",
+                    return_value=error_number,
+                ):
+                    close_no_fail(74)
+
+                self.assertEqual(
+                    close.argtypes,
+                    [analyzer_module.ctypes.c_int],
+                )
+                self.assertIs(close.restype, analyzer_module.ctypes.c_int)
+                self.assertEqual(close.calls, [(74,)])
+
+    def test_darwin_raw_close_falls_back_when_nocancel_symbol_is_absent(self):
+        close = self.FakeCall()
+        library = type("Library", (), {"close": close})()
+
+        with patch.object(
+            analyzer_module.sys,
+            "platform",
+            "darwin",
+        ), patch.object(
+            analyzer_module.ctypes,
+            "PyDLL",
+            return_value=library,
+        ):
+            analyzer_module._close_fd_no_fail(75)
+
+        self.assertEqual(close.calls, [(75,)])
 
 
 class RenameNoReplaceTests(unittest.TestCase):

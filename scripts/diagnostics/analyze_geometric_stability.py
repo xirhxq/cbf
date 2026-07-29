@@ -56,6 +56,7 @@ START_BYTES = 8_000_000_000
 HARD_FLOOR_BYTES = 6_000_000_000
 OUTPUT_CAP_BYTES = 10_000_000
 LIVE_CHECK_INTERVAL_ROWS = 10_000
+_PIN_FSTAT = os.fstat
 
 if (START_BYTES, HARD_FLOOR_BYTES) != (
     _RUN_START_BYTES,
@@ -1789,6 +1790,111 @@ def _paths_overlap(first: Path, second: Path) -> bool:
     )
 
 
+def _close_fd_no_fail(descriptor: int) -> None:
+    """Issue one raw close without exposing Python's patchable close hook."""
+    try:
+        libc = ctypes.PyDLL(None, use_errno=True)
+        if sys.platform == "darwin":
+            try:
+                close = libc.__close_nocancel
+            except AttributeError:
+                close = libc.close
+        elif sys.platform.startswith("linux"):
+            close = libc.close
+        else:
+            return
+        close.argtypes = [ctypes.c_int]
+        close.restype = ctypes.c_int
+        ctypes.set_errno(0)
+        result = close(descriptor)
+        if result == 0:
+            return
+        error_number = ctypes.get_errno()
+        if error_number in (errno.EBADF, errno.EINTR):
+            return
+        # close(2) may already have released the descriptor for every other
+        # reported error. Retrying could close a concurrently reused number.
+    except BaseException:
+        # Descriptor teardown must not replace a precommit failure or escape
+        # after the authoritative publication transition.
+        return
+
+
+def _create_and_pin_directory_at(
+    parent_fd: int,
+    candidate: str,
+) -> tuple[int, tuple[int, int]]:
+    """Create and pin one unpredictable child without a Python open hook."""
+    if sys.platform == "darwin":
+        mode_type = ctypes.c_ushort
+    elif sys.platform.startswith("linux"):
+        mode_type = ctypes.c_uint
+    else:
+        raise AnalysisLimitError(
+            "descriptor-relative staging creation is unsupported"
+        )
+    try:
+        libc = ctypes.PyDLL(None, use_errno=True)
+        mkdirat = libc.mkdirat
+        openat = libc.openat
+    except AttributeError as error:
+        raise AnalysisLimitError(
+            "descriptor-relative staging creation is unavailable"
+        ) from error
+    mkdirat.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        mode_type,
+    ]
+    mkdirat.restype = ctypes.c_int
+    openat.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+    ]
+    openat.restype = ctypes.c_int
+    candidate_bytes = os.fsencode(candidate)
+    ctypes.set_errno(0)
+    if mkdirat(parent_fd, candidate_bytes, 0o700) != 0:
+        error_number = ctypes.get_errno()
+        if error_number == errno.EEXIST:
+            raise FileExistsError(
+                error_number,
+                os.strerror(error_number),
+                candidate,
+            )
+        raise OSError(
+            error_number,
+            os.strerror(error_number),
+            candidate,
+        )
+    descriptor = openat(
+        parent_fd,
+        candidate_bytes,
+        os.O_RDONLY
+        | os.O_DIRECTORY
+        | os.O_NOFOLLOW
+        | os.O_CLOEXEC,
+    )
+    if descriptor < 0:
+        error_number = ctypes.get_errno()
+        raise OSError(
+            error_number,
+            os.strerror(error_number),
+            candidate,
+        )
+    try:
+        metadata = _PIN_FSTAT(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise AnalysisLimitError(
+                "created staging entry is not a directory"
+            )
+        return descriptor, _directory_identity(metadata)
+    except BaseException:
+        _close_fd_no_fail(descriptor)
+        raise
+
+
 def _rename_no_replace_at(
     parent_fd: int,
     source_name: str,
@@ -2159,18 +2265,19 @@ class _PublicationTransaction:
                 candidate = (
                     f"{self.output_name}.incomplete-{uuid.uuid4().hex}"
                 )
-                try:
-                    os.mkdir(candidate, mode=0o700, dir_fd=self.parent_fd)
-                except FileExistsError:
-                    continue
                 self.staging_name = candidate
                 self.staging_created = True
-                self.staging_fd = self._open_directory(
-                    Path(candidate),
-                    dir_fd=self.parent_fd,
-                )
-                staging_metadata = os.fstat(self.staging_fd)
-                self.staging_identity = _directory_identity(staging_metadata)
+                try:
+                    descriptor, identity = _create_and_pin_directory_at(
+                        self.parent_fd,
+                        candidate,
+                    )
+                except FileExistsError:
+                    self.staging_name = None
+                    self.staging_created = False
+                    continue
+                self.staging_fd = descriptor
+                self.staging_identity = identity
                 name_metadata = os.stat(
                     candidate,
                     dir_fd=self.parent_fd,
@@ -2451,7 +2558,7 @@ class _PublicationTransaction:
                     os.fstat(candidate_fd)
                 )
                 if candidate_identity != staging_identity:
-                    self._close_no_fail(candidate_fd)
+                    _close_fd_no_fail(candidate_fd)
                     staging_name = None
                 else:
                     self.staging_fd = candidate_fd
@@ -2502,6 +2609,8 @@ class _PublicationTransaction:
         if self.parent_fd is None:
             return None
         identity = self.staging_identity
+        if identity is None:
+            return None
         if self.staging_fd is not None:
             descriptor_identity = _directory_identity(
                 os.fstat(self.staging_fd)
@@ -2510,8 +2619,6 @@ class _PublicationTransaction:
                 return None
             identity = descriptor_identity
             self.staging_identity = identity
-        if identity is None:
-            return None
         for name in os.listdir(self.parent_fd):
             try:
                 metadata = os.stat(
@@ -2548,24 +2655,15 @@ class _PublicationTransaction:
             and _directory_identity(metadata) == self.parent_identity
         )
 
-    @staticmethod
-    def _close_no_fail(descriptor: int) -> None:
-        for _ in range(2):
-            try:
-                os.close(descriptor)
-                return
-            except BaseException:
-                pass
-
     def _close_descriptors(self) -> None:
         for descriptor in self.artifact_fds.values():
-            self._close_no_fail(descriptor)
+            _close_fd_no_fail(descriptor)
         self.artifact_fds.clear()
         if self.staging_fd is not None:
-            self._close_no_fail(self.staging_fd)
+            _close_fd_no_fail(self.staging_fd)
             self.staging_fd = None
         for descriptor in reversed(self.chain_fds):
-            self._close_no_fail(descriptor)
+            _close_fd_no_fail(descriptor)
         self.chain_fds.clear()
         self.chain_records.clear()
         self.parent_fd = None
