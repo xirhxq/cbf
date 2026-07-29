@@ -151,4 +151,3 @@ The smoke report must show strict minima as well as tolerance classification.
   first resolve bounded-input feasibility.
 - If all four cases are valid, use the paired results to decide which cases
   advance to 250 s and then to the pre-registered geometry distribution.
-
