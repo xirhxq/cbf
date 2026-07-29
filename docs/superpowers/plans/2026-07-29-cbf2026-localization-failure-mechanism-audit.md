@@ -752,6 +752,20 @@ conda run -n cbf_env python -m scripts.diagnostics.analyze_localization_failures
   --max-examples-per-bucket 5
 ```
 
+The registered output parent does not exist at planning time.
+Before the production command,
+and only after the Task 6 launch probes pass,
+create that empty parent exactly once with:
+
+```bash
+mkdir -m 700 /private/tmp/cbf2026-localization-failure-analysis
+```
+
+This is an operational setup action,
+not an analyzer invocation.
+If the parent already exists at that point or the command fails,
+stop before production execution and do not substitute another path.
+
 Record:
 
 - executable source SHA-256;
@@ -860,7 +874,19 @@ Do not delete evidence,
 user documents,
 or Git history.
 
-- [ ] **Step 2: Run the registered command exactly once**
+- [ ] **Step 2: Create the registered empty output parent**
+
+Verify that
+`/private/tmp/cbf2026-localization-failure-analysis`
+still does not exist,
+then run the exact registered `mkdir -m 700` setup command once.
+Verify that the new directory is empty,
+has the registered path,
+and is below the 2,000,000,000-byte root cap.
+If any check or the setup command fails,
+stop before production execution.
+
+- [ ] **Step 3: Run the registered command exactly once**
 
 Run the exact Task 5 command without added flags,
 redirection,
@@ -871,7 +897,7 @@ If it fails,
 preserve the sibling `.incomplete` directory and stop production execution.
 Do not run it again in this task.
 
-- [ ] **Step 3: Audit source immutability and output integrity**
+- [ ] **Step 4: Audit source immutability and output integrity**
 
 Verify:
 
@@ -888,7 +914,7 @@ Verify:
   and 7-by-5 table reconciles; and
 - JSON/Markdown SHA-256 values are recorded.
 
-- [ ] **Step 4: Write the evidence report**
+- [ ] **Step 5: Write the evidence report**
 
 The report must state:
 

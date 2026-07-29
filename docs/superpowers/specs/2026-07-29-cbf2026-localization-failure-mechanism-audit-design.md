@@ -454,6 +454,11 @@ If any condition fails,
 the analyzer records or raises an integrity failure and stops.
 
 Run the production analyzer once on the corrected Stage 2 bundle.
+The registered output parent is created as an empty directory exactly once,
+after non-mutating launch probes pass and before the analyzer invocation;
+the final output directory and its `.incomplete` sibling must still be absent.
+Creating this parent is an operational setup action,
+not an analyzer invocation or evidence transformation.
 Do not rerun it with changed bins,
 taxonomy,
 examples,
