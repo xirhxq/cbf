@@ -6,6 +6,7 @@ import gzip
 import hashlib
 import importlib
 import json
+import math
 import tempfile
 import unittest
 from collections.abc import Callable
@@ -1119,6 +1120,45 @@ class SafeguardAndProvenanceTests(ComparisonFixture):
             self.compare_fixture(
                 restart_scientific_mutation=invalidate_restart_only
             )
+
+    def test_base_availability_requires_recorded_truth(self):
+        """Breaks if a base with missing truth is recorded as available."""
+        module = _load_comparator()
+
+        def truth_missing_but_base_available(baseline, strict, restart):
+            for source in (baseline, strict, restart):
+                row = self._primary(
+                    source,
+                    "dynamic_dag_wnls",
+                )[0]
+                measurement = row["measurements"][0]
+                measurement["true_range"] = None
+                measurement["noisy_range"] = None
+                measurement["estimated_reference_available"] = True
+                self._set_invalid(row, "invalid reference truth")
+
+        with self.assertRaises(module.InputIntegrityError):
+            self.compare_fixture(
+                outcome_setup=truth_missing_but_base_available
+            )
+
+    def test_noisy_range_requires_exact_python_sum(self):
+        """Breaks if one-ULP noisy-range drift is treated as provenance."""
+        module = _load_comparator()
+
+        def one_ulp_noisy_range_drift(baseline, strict, restart):
+            for source in (baseline, strict, restart):
+                measurement = source[0]["measurements"][0]
+                expected = (
+                    measurement["true_range"] + measurement["noise"]
+                )
+                measurement["noisy_range"] = math.nextafter(
+                    expected,
+                    math.inf,
+                )
+
+        with self.assertRaises(module.InputIntegrityError):
+            self.compare_fixture(outcome_setup=one_ulp_noisy_range_drift)
 
     def test_output_is_exactly_two_atomic_files_and_cap_failure_is_unpublished(self):
         """Breaks if output is non-atomic, unbounded, or contains extra files."""

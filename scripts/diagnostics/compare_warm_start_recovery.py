@@ -563,18 +563,16 @@ def _measurement_noise_identity(row: dict) -> list[dict]:
             or not math.isfinite(true_range)
             or type(noisy_range) is not float
             or not math.isfinite(noisy_range)
-            or not math.isclose(
-                noisy_range,
-                true_range + noise,
-                rel_tol=1e-12,
-                abs_tol=1e-12,
-            )
+            or noisy_range != true_range + noise
         ):
             raise InputIntegrityError(
                 f"paired measurement range/noise values are invalid at key "
                 f"{_compact_key(row)!r}"
             )
-        if kind == "base" and true_range is not None and available is not True:
+        if (
+            kind == "base"
+            and available is not (true_range is not None)
+        ):
             raise InputIntegrityError(
                 f"base availability is invalid at key {_compact_key(row)!r}"
             )
