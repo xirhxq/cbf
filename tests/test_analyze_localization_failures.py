@@ -13,6 +13,10 @@ from scripts.diagnostics.analyze_localization_failures import (
     InputIntegrityError,
     _attempt_class,
     _empty_failure_budget,
+    _normalized_squared_error,
+    _paired_seed_bootstrap,
+    _q_bin,
+    _ratio_bin,
     _record_lineage,
     analyze_localization_failures,
 )
@@ -734,3 +738,34 @@ class PredecessorLineageTests(unittest.TestCase):
 
         lineage = report["cases"]["dynamic_dag_wnls"]["lineage"]
         self.assertEqual(lineage["predecessor_attempt_classes"]["not_observed"], 1)
+
+
+class ConditionalCalibrationTests(unittest.TestCase):
+    def test_hand_derived_nees_and_fixed_bins(self) -> None:
+        """Breaks if covariance inversion or half-open endpoint assignment changes."""
+        self.assertEqual(
+            _normalized_squared_error([2.0, 1.0], [[4.0, 0.0], [0.0, 1.0]]),
+            2.0,
+        )
+
+
+class PairedBootstrapTests(unittest.TestCase):
+    def test_recomputes_paired_aggregate_counts_and_marks_non_estimable_resamples(self) -> None:
+        """Breaks if bootstrap averages seed ratios instead of resampling summed paired counts."""
+        seed_counts = [
+            {"dyn_up": 8, "fix_up": 2, "dyn_invalid": 10, "fix_invalid": 4},
+            {"dyn_up": 1, "fix_up": 3, "dyn_invalid": 2, "fix_invalid": 5},
+        ]
+        report = _paired_seed_bootstrap(seed_counts, resamples=20, rng_seed=20260729)
+        self.assertEqual(report["point_estimate"], 4 / 3)
+        self.assertEqual(report["seed_specific"], [1.0, None])
+        self.assertGreater(report["non_estimable_resamples"], 0)
+        self.assertIsNone(report["percentile_interval"])
+        self.assertEqual(
+            [_ratio_bin(value) for value in (0.0, 0.5, 1.0, 2.0, 5.0)],
+            ["[0,0.5)", "[0.5,1)", "[1,2)", "[2,5)", "[5,infinity)"],
+        )
+        self.assertEqual(
+            [_q_bin(value) for value in (0.0, 2.295748929, 5.991464547, 9.0, 9.000000001)],
+            ["[0,2.295748929)", "[2.295748929,5.991464547)", "[5.991464547,9]", "[5.991464547,9]", "(9,infinity)"],
+        )
