@@ -6,15 +6,23 @@ import hashlib
 import gzip
 import json
 import math
+import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+from unittest.mock import patch
 
 import numpy as np
 
+import scripts.diagnostics.analyze_geometric_stability as analyzer_module
 from scripts.diagnostics.analyze_geometric_stability import (
+    OUTPUT_JSON_NAME,
+    OUTPUT_MARKDOWN_NAME,
+    AnalysisLimitError,
     InputIntegrityError,
     analyze_geometric_stability,
     fixed_pair_metrics,
@@ -23,6 +31,7 @@ from scripts.diagnostics.analyze_geometric_stability import (
     opposite_baseline_side,
     shared_uav_ancestor_metrics,
 )
+from scripts.diagnostics import run_diagnostic
 from scripts.diagnostics.replay_localization_calibration import (
     RESTART_BEFORE_FIRST_FINITE_POLICY,
     STRICT_PREVIOUS_POLICY,
@@ -90,7 +99,7 @@ def trajectory_fixture() -> dict:
 class GeometricAnalysisFixture(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.fixture_index = 0
 
     def tearDown(self) -> None:
@@ -1003,6 +1012,1387 @@ class DependencyAndBranchTests(GeometricAnalysisFixture):
         self.assertIn(
             "two_reference_opposite_baseline_side", mechanisms
         )
+
+
+class PublicationTests(GeometricAnalysisFixture):
+    def test_output_is_atomic_exact_and_below_ten_megabytes(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+
+        analyze_geometric_stability(**fixture.call_args(output_dir=output))
+
+        self.assertEqual(
+            {path.name for path in output.iterdir()},
+            {OUTPUT_JSON_NAME, OUTPUT_MARKDOWN_NAME},
+        )
+        self.assertLess(run_diagnostic.allocated_bytes(output), 10_000_000)
+
+    def test_existing_output_or_nested_source_output_is_rejected(self):
+        fixture = self.write_complete_fixture()
+        for output in (
+            fixture.comparison.parent / "restart" / "analysis",
+            self.root / "exists",
+        ):
+            output.mkdir(parents=True)
+            with self.assertRaises((InputIntegrityError, AnalysisLimitError)):
+                analyze_geometric_stability(**fixture.call_args(output_dir=output))
+
+    def test_nonexistent_output_nested_in_source_is_rejected(self):
+        fixture = self.write_complete_fixture()
+        output = fixture.comparison.parent / "restart" / "new" / "run"
+
+        with self.assertRaisesRegex(AnalysisLimitError, "protected input"):
+            analyze_geometric_stability(**fixture.call_args(output_dir=output))
+
+        self.assertFalse(output.parent.exists())
+
+    def test_live_floor_failure_leaves_no_published_output(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        with self.assertRaises(AnalysisLimitError):
+            analyze_geometric_stability(
+                **fixture.call_args(output_dir=output),
+                live_guard=lambda: (_ for _ in ()).throw(
+                    AnalysisLimitError("below live floor")
+                ),
+            )
+        self.assertFalse(output.exists())
+
+    def test_markdown_states_exploratory_claim_boundary(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        analyze_geometric_stability(**fixture.call_args(output_dir=output))
+        text = (output / OUTPUT_MARKDOWN_NAME).read_text(encoding="utf-8")
+        self.assertIn("post-hoc exploratory", text)
+        self.assertIn("not a deterministic true-error bound", text)
+        self.assertIn("one truth trajectory", text)
+
+    def test_json_is_deterministic_complete_and_matches_returned_report(self):
+        fixture = self.write_complete_fixture()
+        first = self.root / "analysis" / "first"
+        second = self.root / "analysis" / "second"
+
+        report = analyze_geometric_stability(**fixture.call_args(output_dir=first))
+        analyze_geometric_stability(**fixture.call_args(output_dir=second))
+
+        first_bytes = (first / OUTPUT_JSON_NAME).read_bytes()
+        self.assertEqual(first_bytes, (second / OUTPUT_JSON_NAME).read_bytes())
+        self.assertEqual(json.loads(first_bytes), report)
+        self.assertEqual(report["status"], "completed")
+        self.assertEqual(report["protocol"]["scope"], "post-hoc exploratory")
+        self.assertEqual(report["protocol"]["truth_trajectory_count"], 1)
+        self.assertEqual(report["protocol"]["time_bins_seconds"], [0, 50, 100, 150, 200, 250])
+        self.assertEqual(
+            report["claim_boundary"][0],
+            "not a deterministic true-error bound",
+        )
+        self.assertTrue(first_bytes.endswith(b"\n"))
+
+    def test_cli_publishes_with_registered_arguments(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "scripts.diagnostics.analyze_geometric_stability",
+                "--comparison",
+                str(fixture.comparison),
+                "--expected-comparison-sha256",
+                fixture.comparison_sha256,
+                "--expected-parent-manifest-sha256",
+                fixture.parent_sha256,
+                "--output-dir",
+                str(output),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((output / OUTPUT_JSON_NAME).is_file())
+        self.assertEqual(result.stdout, "")
+
+    def test_cli_success_does_not_write_stdout_after_publication(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        arguments = [
+            "--comparison",
+            str(fixture.comparison),
+            "--expected-comparison-sha256",
+            fixture.comparison_sha256,
+            "--expected-parent-manifest-sha256",
+            fixture.parent_sha256,
+            "--output-dir",
+            str(output),
+        ]
+
+        with patch(
+            "builtins.print",
+            side_effect=BrokenPipeError("stdout is closed"),
+        ):
+            exit_code = analyzer_module.main(arguments)
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue((output / OUTPUT_JSON_NAME).is_file())
+
+    def test_cli_integrity_failure_is_nonzero_without_output(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "scripts.diagnostics.analyze_geometric_stability",
+                "--comparison",
+                str(fixture.comparison),
+                "--expected-comparison-sha256",
+                "0" * 64,
+                "--expected-parent-manifest-sha256",
+                fixture.parent_sha256,
+                "--output-dir",
+                str(output),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(output.exists())
+
+
+class PublicationIntegrityTests(GeometricAnalysisFixture):
+    @staticmethod
+    def _staging_entries(output: Path) -> set[str] | None:
+        parent = output.parent
+        if not parent.is_dir() or parent.is_symlink():
+            return None
+        staging = list(parent.glob(f"{output.name}.incomplete-*"))
+        if len(staging) != 1:
+            return None
+        return {item.name for item in staging[0].iterdir()}
+
+    def test_start_gate_precedes_all_source_access(self):
+        output = self.root / "analysis" / "run"
+        missing_comparison = self.root / "missing-comparison.json"
+        with patch.object(
+            analyzer_module,
+            "_available_bytes_for_guard",
+            return_value=analyzer_module.START_BYTES - 1,
+        ):
+            with self.assertRaisesRegex(AnalysisLimitError, "below start"):
+                analyze_geometric_stability(
+                    missing_comparison,
+                    expected_comparison_sha256="0" * 64,
+                    expected_parent_manifest_sha256="1" * 64,
+                    output_dir=output,
+                )
+        self.assertFalse(output.parent.exists())
+
+    def test_combined_entry_guard_runs_builtin_before_failing_caller(self):
+        output = self.root / "analysis" / "run"
+        events: list[str] = []
+
+        def start_gate(parent_fd: int | None, path: Path) -> int:
+            del parent_fd, path
+            events.append("builtin")
+            return analyzer_module.START_BYTES + 1
+
+        def caller_guard() -> None:
+            events.append("caller")
+            raise AnalysisLimitError("caller stopped analysis")
+
+        with patch.object(
+            analyzer_module,
+            "_available_bytes_for_guard",
+            side_effect=start_gate,
+        ):
+            with self.assertRaisesRegex(AnalysisLimitError, "caller stopped"):
+                analyze_geometric_stability(
+                    self.root / "missing-comparison.json",
+                    expected_comparison_sha256="0" * 64,
+                    expected_parent_manifest_sha256="1" * 64,
+                    output_dir=output,
+                    live_guard=caller_guard,
+                )
+
+        self.assertEqual(events, ["builtin", "caller"])
+
+    def test_caller_guard_surrounds_both_writes_and_publication(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        observed: list[frozenset[str] | None] = []
+
+        def guard() -> None:
+            entries = self._staging_entries(output)
+            observed.append(None if entries is None else frozenset(entries))
+
+        analyze_geometric_stability(
+            **fixture.call_args(output_dir=output),
+            live_guard=guard,
+        )
+
+        self.assertEqual(observed[0], None)
+        self.assertIn(frozenset(), observed)
+        self.assertIn(frozenset({OUTPUT_JSON_NAME}), observed)
+        completed = frozenset({OUTPUT_JSON_NAME, OUTPUT_MARKDOWN_NAME})
+        self.assertGreaterEqual(observed.count(completed), 2)
+
+    def test_no_fallible_resource_probe_occurs_after_rename(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        real_probe = analyzer_module._available_bytes_for_guard
+        probe_calls = 0
+
+        def probe(parent_fd, fallback_path: Path) -> int:
+            nonlocal probe_calls
+            probe_calls += 1
+            if output.exists():
+                raise AnalysisLimitError("probe occurred after commit")
+            return real_probe(parent_fd, fallback_path)
+
+        with patch.object(
+            analyzer_module,
+            "_available_bytes_for_guard",
+            side_effect=probe,
+        ):
+            report = analyze_geometric_stability(
+                **fixture.call_args(output_dir=output)
+            )
+
+        self.assertGreater(probe_calls, 0)
+        self.assertEqual(report["status"], "completed")
+        self.assertTrue((output / OUTPUT_JSON_NAME).is_file())
+
+    def test_descriptor_close_interruption_after_commit_does_not_escape(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        real_close = analyzer_module.os.close
+        real_fstat = analyzer_module.os.fstat
+        interrupted = False
+
+        def interrupted_close(descriptor: int) -> None:
+            nonlocal interrupted
+            metadata = real_fstat(descriptor)
+            if (
+                not interrupted
+                and output.exists()
+                and stat.S_ISDIR(metadata.st_mode)
+                and analyzer_module._directory_identity(metadata)
+                != analyzer_module._directory_identity(output.stat())
+            ):
+                interrupted = True
+                raise KeyboardInterrupt("injected post-commit close")
+            real_close(descriptor)
+
+        with patch.object(
+            analyzer_module.os,
+            "close",
+            side_effect=interrupted_close,
+        ):
+            report = analyze_geometric_stability(
+                **fixture.call_args(output_dir=output)
+            )
+
+        self.assertTrue(interrupted)
+        self.assertEqual(report["status"], "completed")
+        self.assertTrue((output / OUTPUT_JSON_NAME).is_file())
+
+    def test_final_guard_staging_name_replacement_cannot_publish(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        complete_calls = 0
+        replaced = False
+
+        def guard() -> None:
+            nonlocal complete_calls, replaced
+            entries = self._staging_entries(output)
+            if entries == {OUTPUT_JSON_NAME, OUTPUT_MARKDOWN_NAME}:
+                complete_calls += 1
+                if complete_calls == 2:
+                    staging = next(
+                        output.parent.glob(f"{output.name}.incomplete-*")
+                    )
+                    staging.rename(staging.with_name("displaced-staging"))
+                    staging.mkdir()
+                    replaced = True
+
+        with self.assertRaisesRegex(AnalysisLimitError, "staging.*changed"):
+            analyze_geometric_stability(
+                **fixture.call_args(output_dir=output),
+                live_guard=guard,
+            )
+
+        self.assertTrue(replaced)
+        self.assertFalse(output.exists())
+
+    def test_final_guard_extra_overcap_file_cannot_publish(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        complete_calls = 0
+        injected = False
+
+        def guard() -> None:
+            nonlocal complete_calls, injected
+            entries = self._staging_entries(output)
+            if entries == {OUTPUT_JSON_NAME, OUTPUT_MARKDOWN_NAME}:
+                complete_calls += 1
+                if complete_calls == 2:
+                    staging = next(
+                        output.parent.glob(f"{output.name}.incomplete-*")
+                    )
+                    (staging / "over-cap.bin").write_bytes(
+                        b"x" * (analyzer_module.OUTPUT_CAP_BYTES + 1)
+                    )
+                    injected = True
+
+        with self.assertRaisesRegex(AnalysisLimitError, "unexpected|10 MB"):
+            analyze_geometric_stability(
+                **fixture.call_args(output_dir=output),
+                live_guard=guard,
+            )
+
+        self.assertTrue(injected)
+        self.assertFalse(output.exists())
+
+    def test_final_guard_source_mutation_cannot_publish(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        complete_calls = 0
+        mutated = False
+
+        def guard() -> None:
+            nonlocal complete_calls, mutated
+            entries = self._staging_entries(output)
+            if entries == {OUTPUT_JSON_NAME, OUTPUT_MARKDOWN_NAME}:
+                complete_calls += 1
+                if complete_calls == 2:
+                    fixture.comparison.write_text("{}\n", encoding="utf-8")
+                    mutated = True
+
+        with self.assertRaises(InputIntegrityError):
+            analyze_geometric_stability(
+                **fixture.call_args(output_dir=output),
+                live_guard=guard,
+            )
+
+        self.assertTrue(mutated)
+        self.assertFalse(output.exists())
+
+    def test_final_closure_rejects_mutated_artifact_type_or_bytes(self):
+        mutation_kinds = (
+            "small_content",
+            "same_length_content",
+            "symlink",
+            "directory",
+        )
+        for artifact_name in (OUTPUT_JSON_NAME, OUTPUT_MARKDOWN_NAME):
+            for mutation_kind in mutation_kinds:
+                with self.subTest(
+                    artifact=artifact_name,
+                    mutation=mutation_kind,
+                ):
+                    fixture = self.write_complete_fixture()
+                    output = (
+                        self.root
+                        / f"artifact-{artifact_name}-{mutation_kind}"
+                        / "run"
+                    )
+                    external = (
+                        self.root
+                        / f"external-{artifact_name}-{mutation_kind}.txt"
+                    )
+                    external.write_bytes(b"must survive\n")
+                    complete_calls = 0
+                    mutated = False
+
+                    def guard() -> None:
+                        nonlocal complete_calls, mutated
+                        entries = self._staging_entries(output)
+                        if entries == {
+                            OUTPUT_JSON_NAME,
+                            OUTPUT_MARKDOWN_NAME,
+                        }:
+                            complete_calls += 1
+                            if complete_calls != 2:
+                                return
+                            staging = next(
+                                output.parent.glob(
+                                    f"{output.name}.incomplete-*"
+                                )
+                            )
+                            artifact = staging / artifact_name
+                            if mutation_kind == "small_content":
+                                artifact.write_bytes(b"forged\n")
+                            elif mutation_kind == "same_length_content":
+                                original = artifact.read_bytes()
+                                replacement = (
+                                    b"X" if original[:1] != b"X" else b"Y"
+                                )
+                                artifact.write_bytes(
+                                    replacement + original[1:]
+                                )
+                            elif mutation_kind == "symlink":
+                                artifact.unlink()
+                                artifact.symlink_to(external)
+                            else:
+                                artifact.unlink()
+                                artifact.mkdir()
+                            mutated = True
+
+                    with self.assertRaisesRegex(
+                        AnalysisLimitError,
+                        "artifact",
+                    ):
+                        analyze_geometric_stability(
+                            **fixture.call_args(output_dir=output),
+                            live_guard=guard,
+                        )
+
+                    self.assertTrue(mutated)
+                    self.assertFalse(output.exists())
+                    self.assertEqual(external.read_bytes(), b"must survive\n")
+
+    def test_inter_artifact_replacement_cannot_publish_forged_json(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        real_read = analyzer_module.os.read
+        injected = False
+
+        def replace_json_while_markdown_is_verified(
+            descriptor: int,
+            size: int,
+        ) -> bytes:
+            nonlocal injected
+            markdown = output / OUTPUT_MARKDOWN_NAME
+            if (
+                not injected
+                and markdown.exists()
+                and analyzer_module._directory_identity(
+                    analyzer_module.os.fstat(descriptor)
+                )
+                == analyzer_module._directory_identity(markdown.stat())
+            ):
+                json_path = output / OUTPUT_JSON_NAME
+                original = json_path.read_bytes()
+                replacement = b"X" if original[:1] != b"X" else b"Y"
+                forged = self.root / "forged-json-replacement"
+                forged.write_bytes(replacement + original[1:])
+                forged.replace(json_path)
+                injected = True
+            return real_read(descriptor, size)
+
+        with patch.object(
+            analyzer_module.os,
+            "read",
+            side_effect=replace_json_while_markdown_is_verified,
+        ):
+            with self.assertRaisesRegex(AnalysisLimitError, "artifact"):
+                analyze_geometric_stability(
+                    **fixture.call_args(output_dir=output)
+                )
+
+        self.assertTrue(injected)
+        self.assertFalse(output.exists())
+
+    def test_destination_identity_mismatch_preserves_victim_and_cleans_owned(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        owned_displaced = output.parent / "owned-staging-at-rename"
+        real_rename = analyzer_module._rename_no_replace_at
+        replaced = False
+
+        def replace_then_rename(
+            parent_fd: int,
+            source_name: str,
+            destination_name: str,
+        ) -> None:
+            nonlocal replaced
+            staging = output.parent / source_name
+            staging.rename(owned_displaced)
+            staging.mkdir()
+            (staging / "victim.txt").write_text(
+                "must survive\n",
+                encoding="utf-8",
+            )
+            replaced = True
+            real_rename(parent_fd, source_name, destination_name)
+
+        with patch.object(
+            analyzer_module,
+            "_rename_no_replace_at",
+            side_effect=replace_then_rename,
+        ):
+            with self.assertRaisesRegex(
+                AnalysisLimitError,
+                "destination.*changed",
+            ):
+                analyze_geometric_stability(
+                    **fixture.call_args(output_dir=output)
+                )
+
+        self.assertTrue(replaced)
+        self.assertEqual(
+            (output / "victim.txt").read_text(encoding="utf-8"),
+            "must survive\n",
+        )
+        self.assertFalse(owned_displaced.exists())
+        self.assertEqual(
+            list(output.parent.glob(f"{output.name}.incomplete-*")),
+            [],
+        )
+
+    def test_parent_replacement_aborts_and_cleans_pinned_staging(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        moved_parent = self.root / "moved-analysis"
+        attacker_parent = self.root / "attacker-analysis"
+        attacker_parent.mkdir()
+        replaced = False
+
+        def guard() -> None:
+            nonlocal replaced
+            entries = self._staging_entries(output)
+            if (
+                not replaced
+                and entries == {OUTPUT_JSON_NAME, OUTPUT_MARKDOWN_NAME}
+            ):
+                output.parent.rename(moved_parent)
+                output.parent.symlink_to(attacker_parent, target_is_directory=True)
+                replaced = True
+
+        with self.assertRaisesRegex(AnalysisLimitError, "output parent changed"):
+            analyze_geometric_stability(
+                **fixture.call_args(output_dir=output),
+                live_guard=guard,
+            )
+
+        self.assertTrue(replaced)
+        self.assertFalse(output.exists())
+        self.assertEqual(list(moved_parent.iterdir()), [])
+
+    def test_ancestor_replacement_aborts_before_publication(self):
+        fixture = self.write_complete_fixture()
+        ancestor = self.root / "publication-root"
+        ancestor.mkdir()
+        output = ancestor / "analysis" / "run"
+        moved_ancestor = self.root / "moved-publication-root"
+        attacker_ancestor = self.root / "attacker-publication-root"
+        attacker_ancestor.mkdir()
+        complete_calls = 0
+        replaced = False
+
+        def guard() -> None:
+            nonlocal complete_calls, replaced
+            entries = self._staging_entries(output)
+            if entries == {OUTPUT_JSON_NAME, OUTPUT_MARKDOWN_NAME}:
+                complete_calls += 1
+                if complete_calls == 2:
+                    ancestor.rename(moved_ancestor)
+                    ancestor.symlink_to(
+                        attacker_ancestor,
+                        target_is_directory=True,
+                    )
+                    replaced = True
+
+        with self.assertRaisesRegex(AnalysisLimitError, "output path changed"):
+            analyze_geometric_stability(
+                **fixture.call_args(output_dir=output),
+                live_guard=guard,
+            )
+
+        self.assertTrue(replaced)
+        self.assertFalse(output.exists())
+
+    def test_start_gate_uses_pinned_existing_filesystem_descriptor(self):
+        output = self.root / "analysis" / "run"
+        observed_fds: list[int | None] = []
+
+        def available(parent_fd, fallback_path: Path) -> int:
+            del fallback_path
+            observed_fds.append(parent_fd)
+            return analyzer_module.START_BYTES - 1
+
+        with patch.object(
+            analyzer_module,
+            "_available_bytes_for_guard",
+            side_effect=available,
+        ):
+            with self.assertRaisesRegex(AnalysisLimitError, "start threshold"):
+                analyze_geometric_stability(
+                    self.root / "missing-comparison.json",
+                    expected_comparison_sha256="0" * 64,
+                    expected_parent_manifest_sha256="1" * 64,
+                    output_dir=output,
+                )
+
+        self.assertTrue(observed_fds)
+        self.assertIsInstance(observed_fds[0], int)
+
+    def test_missing_parent_live_probe_uses_pinned_preflight_descriptor(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "new-analysis" / "run"
+        observed_fds: list[int | None] = []
+
+        def available(parent_fd, fallback_path: Path) -> int:
+            del fallback_path
+            observed_fds.append(parent_fd)
+            return analyzer_module.START_BYTES + 1
+
+        with patch.object(
+            analyzer_module,
+            "_available_bytes_for_guard",
+            side_effect=available,
+        ):
+            analyze_geometric_stability(
+                **fixture.call_args(output_dir=output)
+            )
+
+        self.assertGreaterEqual(len(observed_fds), 2)
+        self.assertTrue(all(isinstance(item, int) for item in observed_fds))
+
+    def test_preflight_source_failure_closes_every_opened_descriptor(self):
+        output = self.root / "analysis" / "run"
+        real_open = analyzer_module.os.open
+        real_close = analyzer_module.os.close
+        opened: list[int] = []
+        live: set[int] = set()
+
+        def tracked_open(*args, **kwargs):
+            descriptor = real_open(*args, **kwargs)
+            opened.append(descriptor)
+            live.add(descriptor)
+            return descriptor
+
+        def tracked_close(descriptor: int) -> None:
+            live.discard(descriptor)
+            real_close(descriptor)
+
+        with patch.object(
+            analyzer_module.os,
+            "open",
+            side_effect=tracked_open,
+        ), patch.object(
+            analyzer_module.os,
+            "close",
+            side_effect=tracked_close,
+        ):
+            with self.assertRaises(InputIntegrityError):
+                analyze_geometric_stability(
+                    self.root / "missing-comparison.json",
+                    expected_comparison_sha256="0" * 64,
+                    expected_parent_manifest_sha256="1" * 64,
+                    output_dir=output,
+                )
+
+        self.assertTrue(opened)
+        self.assertEqual(live, set())
+
+    def test_path_chain_fstat_failure_closes_new_child_descriptor(self):
+        output = self.root / "analysis" / "run"
+        real_open = analyzer_module.os.open
+        real_close = analyzer_module.os.close
+        real_fstat = analyzer_module.os.fstat
+        opened: list[int] = []
+        live: set[int] = set()
+        injected = False
+
+        def tracked_open(*args, **kwargs):
+            descriptor = real_open(*args, **kwargs)
+            opened.append(descriptor)
+            live.add(descriptor)
+            return descriptor
+
+        def tracked_close(descriptor: int) -> None:
+            live.discard(descriptor)
+            real_close(descriptor)
+
+        def failing_fstat(descriptor: int):
+            nonlocal injected
+            if (
+                not injected
+                and len(opened) >= 2
+                and descriptor == opened[-1]
+            ):
+                injected = True
+                raise OSError("injected path-chain fstat failure")
+            return real_fstat(descriptor)
+
+        try:
+            with patch.object(
+                analyzer_module.os,
+                "open",
+                side_effect=tracked_open,
+            ), patch.object(
+                analyzer_module.os,
+                "close",
+                side_effect=tracked_close,
+            ), patch.object(
+                analyzer_module.os,
+                "fstat",
+                side_effect=failing_fstat,
+            ):
+                with self.assertRaisesRegex(
+                    OSError,
+                    "path-chain fstat failure",
+                ):
+                    analyze_geometric_stability(
+                        self.root / "missing-comparison.json",
+                        expected_comparison_sha256="0" * 64,
+                        expected_parent_manifest_sha256="1" * 64,
+                        output_dir=output,
+                    )
+
+            self.assertTrue(injected)
+            self.assertEqual(live, set())
+        finally:
+            for descriptor in list(live):
+                real_close(descriptor)
+                live.discard(descriptor)
+
+    def test_staging_identity_is_pinned_before_name_stat_replacement(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        real_stat = analyzer_module.os.stat
+        staging_victim: Path | None = None
+        owned_displaced = output.parent / "owned-staging-displaced"
+        injected = False
+
+        def replace_before_name_stat(path, *args, **kwargs):
+            nonlocal injected, staging_victim
+            if (
+                not injected
+                and isinstance(path, str)
+                and path.startswith(f"{output.name}.incomplete-")
+                and kwargs.get("dir_fd") is not None
+            ):
+                staging_victim = output.parent / path
+                staging_victim.rename(owned_displaced)
+                staging_victim.mkdir()
+                (staging_victim / "victim.txt").write_text(
+                    "must survive\n",
+                    encoding="utf-8",
+                )
+                injected = True
+            return real_stat(path, *args, **kwargs)
+
+        with patch.object(
+            analyzer_module.os,
+            "stat",
+            side_effect=replace_before_name_stat,
+        ):
+            with self.assertRaisesRegex(
+                AnalysisLimitError,
+                "staging.*changed|unexpected artifacts",
+            ):
+                analyze_geometric_stability(
+                    **fixture.call_args(output_dir=output)
+                )
+
+        self.assertTrue(injected)
+        self.assertIsNotNone(staging_victim)
+        self.assertEqual(
+            (staging_victim / "victim.txt").read_text(encoding="utf-8"),
+            "must survive\n",
+        )
+        self.assertFalse(owned_displaced.exists())
+        self.assertFalse(output.exists())
+
+    def test_staging_stat_failure_removes_created_owned_directory(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        real_stat = analyzer_module.os.stat
+        injected = False
+
+        def failing_stat(path, *args, **kwargs):
+            nonlocal injected
+            if (
+                not injected
+                and isinstance(path, str)
+                and path.startswith(f"{output.name}.incomplete-")
+                and kwargs.get("dir_fd") is not None
+            ):
+                injected = True
+                raise OSError("injected staging stat failure")
+            return real_stat(path, *args, **kwargs)
+
+        with patch.object(
+            analyzer_module.os,
+            "stat",
+            side_effect=failing_stat,
+        ):
+            with self.assertRaisesRegex(OSError, "staging stat failure"):
+                analyze_geometric_stability(
+                    **fixture.call_args(output_dir=output)
+                )
+
+        self.assertTrue(injected)
+        self.assertFalse(output.exists())
+        self.assertFalse(output.parent.exists())
+
+    def test_ancestor_symlink_is_rejected_without_target_artifacts(self):
+        fixture = self.write_complete_fixture()
+        target = self.root / "publication-target"
+        target.mkdir()
+        ancestor_link = self.root / "publication-link"
+        ancestor_link.symlink_to(target, target_is_directory=True)
+        output = ancestor_link / "run"
+
+        with self.assertRaisesRegex(AnalysisLimitError, "symlink"):
+            analyze_geometric_stability(
+                **fixture.call_args(output_dir=output)
+            )
+
+        self.assertFalse((target / output.name).exists())
+        self.assertEqual(
+            list(target.glob(f"{output.name}.incomplete-*")),
+            [],
+        )
+
+    def test_base_exception_during_entry_guard_cleans_staging_and_fds(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        real_open = analyzer_module.os.open
+        real_close = analyzer_module.os.close
+        live: set[int] = set()
+        interrupted = False
+
+        def tracked_open(*args, **kwargs):
+            descriptor = real_open(*args, **kwargs)
+            live.add(descriptor)
+            return descriptor
+
+        def tracked_close(descriptor: int) -> None:
+            live.discard(descriptor)
+            real_close(descriptor)
+
+        def guard() -> None:
+            nonlocal interrupted
+            if not interrupted and self._staging_entries(output) == set():
+                interrupted = True
+                raise KeyboardInterrupt("injected entry interruption")
+
+        try:
+            with patch.object(
+                analyzer_module.os,
+                "open",
+                side_effect=tracked_open,
+            ), patch.object(
+                analyzer_module.os,
+                "close",
+                side_effect=tracked_close,
+            ):
+                with self.assertRaisesRegex(
+                    KeyboardInterrupt,
+                    "entry interruption",
+                ):
+                    analyze_geometric_stability(
+                        **fixture.call_args(output_dir=output),
+                        live_guard=guard,
+                    )
+
+            self.assertTrue(interrupted)
+            self.assertEqual(live, set())
+            self.assertFalse(output.exists())
+            self.assertFalse(output.parent.exists())
+        finally:
+            for descriptor in list(live):
+                real_close(descriptor)
+                live.discard(descriptor)
+
+    def test_artifact_close_base_exception_is_retried_without_fd_leak(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        real_open = analyzer_module.os.open
+        real_close = analyzer_module.os.close
+        real_fstat = analyzer_module.os.fstat
+        live: set[int] = set()
+        interrupted = False
+
+        def tracked_open(*args, **kwargs):
+            descriptor = real_open(*args, **kwargs)
+            live.add(descriptor)
+            return descriptor
+
+        def interrupted_close(descriptor: int) -> None:
+            nonlocal interrupted
+            metadata = real_fstat(descriptor)
+            artifact_identity = {
+                analyzer_module._directory_identity(path.stat())
+                for path in (
+                    output / OUTPUT_JSON_NAME,
+                    output / OUTPUT_MARKDOWN_NAME,
+                )
+                if path.exists()
+            }
+            if (
+                not interrupted
+                and stat.S_ISREG(metadata.st_mode)
+                and analyzer_module._directory_identity(metadata)
+                in artifact_identity
+            ):
+                interrupted = True
+                raise KeyboardInterrupt("injected artifact close")
+            live.discard(descriptor)
+            real_close(descriptor)
+
+        try:
+            with patch.object(
+                analyzer_module.os,
+                "open",
+                side_effect=tracked_open,
+            ), patch.object(
+                analyzer_module.os,
+                "close",
+                side_effect=interrupted_close,
+            ):
+                report = analyze_geometric_stability(
+                    **fixture.call_args(output_dir=output)
+                )
+
+            self.assertTrue(interrupted)
+            self.assertEqual(live, set())
+            self.assertEqual(report["status"], "completed")
+            self.assertTrue((output / OUTPUT_JSON_NAME).is_file())
+        finally:
+            for descriptor in list(live):
+                real_close(descriptor)
+                live.discard(descriptor)
+
+    def test_base_exception_at_final_guard_cleans_staging(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        complete_calls = 0
+
+        def guard() -> None:
+            nonlocal complete_calls
+            if self._staging_entries(output) == {
+                OUTPUT_JSON_NAME,
+                OUTPUT_MARKDOWN_NAME,
+            }:
+                complete_calls += 1
+                if complete_calls == 2:
+                    raise SystemExit("injected final interruption")
+
+        with self.assertRaisesRegex(SystemExit, "final interruption"):
+            analyze_geometric_stability(
+                **fixture.call_args(output_dir=output),
+                live_guard=guard,
+            )
+
+        self.assertFalse(output.exists())
+        self.assertFalse(output.parent.exists())
+
+    def test_staging_open_failure_preserves_unknown_created_entry(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        real_open_directory = analyzer_module._PublicationTransaction._open_directory
+        staging_open_attempted = False
+
+        def open_directory(path: Path, *, dir_fd: int | None = None) -> int:
+            nonlocal staging_open_attempted
+            if path.name.startswith(f"{output.name}.incomplete-"):
+                staging_open_attempted = True
+                raise OSError("injected staging open failure")
+            return real_open_directory(path, dir_fd=dir_fd)
+
+        with patch.object(
+            analyzer_module._PublicationTransaction,
+            "_open_directory",
+            side_effect=open_directory,
+        ):
+            with self.assertRaisesRegex(OSError, "staging open failure"):
+                analyze_geometric_stability(
+                    **fixture.call_args(output_dir=output)
+                )
+
+        self.assertTrue(staging_open_attempted)
+        self.assertFalse(output.exists())
+        preserved = list(
+            output.parent.glob(f"{output.name}.incomplete-*")
+        )
+        self.assertEqual(len(preserved), 1)
+        self.assertEqual(list(preserved[0].iterdir()), [])
+
+    def test_write_phase_failure_cleans_staging(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+
+        def guard() -> None:
+            if self._staging_entries(output) == {OUTPUT_JSON_NAME}:
+                raise AnalysisLimitError("injected write-phase failure")
+
+        with self.assertRaisesRegex(AnalysisLimitError, "write-phase"):
+            analyze_geometric_stability(
+                **fixture.call_args(output_dir=output),
+                live_guard=guard,
+            )
+
+        self.assertFalse(output.exists())
+        self.assertFalse(output.parent.exists())
+
+    def test_direct_write_failure_cleans_staging(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        with patch.object(
+            analyzer_module,
+            "_write_all",
+            side_effect=OSError("injected write failure"),
+        ):
+            with self.assertRaisesRegex(OSError, "injected write failure"):
+                analyze_geometric_stability(
+                    **fixture.call_args(output_dir=output)
+                )
+        self.assertFalse(output.exists())
+        self.assertFalse(output.parent.exists())
+
+    def test_direct_rename_failure_cleans_staging(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        with patch.object(
+            analyzer_module,
+            "_rename_no_replace_at",
+            side_effect=OSError("injected rename failure"),
+        ):
+            with self.assertRaisesRegex(OSError, "injected rename failure"):
+                analyze_geometric_stability(
+                    **fixture.call_args(output_dir=output)
+                )
+        self.assertFalse(output.exists())
+        self.assertFalse(output.parent.exists())
+
+    def test_transient_cleanup_failure_is_retried_without_masking_original(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        real_clear = analyzer_module._clear_directory_fd
+        cleanup_attempts = 0
+
+        def flaky_clear(directory_fd: int) -> None:
+            nonlocal cleanup_attempts
+            cleanup_attempts += 1
+            if cleanup_attempts == 1:
+                raise OSError("transient cleanup interference")
+            real_clear(directory_fd)
+
+        def guard() -> None:
+            if self._staging_entries(output) == {OUTPUT_JSON_NAME}:
+                raise AnalysisLimitError("original publication failure")
+
+        with patch.object(
+            analyzer_module,
+            "_clear_directory_fd",
+            side_effect=flaky_clear,
+        ):
+            with self.assertRaisesRegex(
+                AnalysisLimitError,
+                "original publication failure",
+            ):
+                analyze_geometric_stability(
+                    **fixture.call_args(output_dir=output),
+                    live_guard=guard,
+                )
+
+        self.assertEqual(cleanup_attempts, 2)
+        self.assertFalse(output.exists())
+        self.assertFalse(output.parent.exists())
+
+    def test_cleanup_removes_unexpected_entries_without_masking_failure(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        external_target = self.root / "must-survive.txt"
+        external_target.write_text("survives\n", encoding="utf-8")
+        injected = False
+
+        def guard() -> None:
+            nonlocal injected
+            entries = self._staging_entries(output)
+            if (
+                not injected
+                and entries == {OUTPUT_JSON_NAME, OUTPUT_MARKDOWN_NAME}
+            ):
+                staging = next(
+                    output.parent.glob(f"{output.name}.incomplete-*")
+                )
+                (staging / "unexpected-link").symlink_to(external_target)
+                nested = staging / "unexpected-dir"
+                nested.mkdir()
+                (nested / "nested-link").symlink_to(external_target)
+                injected = True
+                raise AnalysisLimitError("original publication failure")
+
+        with self.assertRaisesRegex(AnalysisLimitError, "original publication"):
+            analyze_geometric_stability(
+                **fixture.call_args(output_dir=output),
+                live_guard=guard,
+            )
+
+        self.assertTrue(injected)
+        self.assertEqual(external_target.read_text(encoding="utf-8"), "survives\n")
+        self.assertFalse(output.exists())
+        self.assertFalse(output.parent.exists())
+
+    def test_ten_megabyte_cap_fails_without_publication(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        with patch.object(analyzer_module, "OUTPUT_CAP_BYTES", 1):
+            with self.assertRaisesRegex(AnalysisLimitError, "10 MB"):
+                analyze_geometric_stability(
+                    **fixture.call_args(output_dir=output)
+                )
+        self.assertFalse(output.exists())
+
+    def test_source_drift_after_rendering_aborts_publication(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        mutated = False
+
+        def guard() -> None:
+            nonlocal mutated
+            if (
+                not mutated
+                and self._staging_entries(output)
+                == {OUTPUT_JSON_NAME, OUTPUT_MARKDOWN_NAME}
+            ):
+                fixture.comparison.write_text("{}\n", encoding="utf-8")
+                mutated = True
+
+        with self.assertRaises(InputIntegrityError):
+            analyze_geometric_stability(
+                **fixture.call_args(output_dir=output),
+                live_guard=guard,
+            )
+        self.assertTrue(mutated)
+        self.assertFalse(output.exists())
+
+    def test_no_replace_collision_preserves_racer_output(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        raced = False
+
+        def guard() -> None:
+            nonlocal raced
+            if (
+                not raced
+                and self._staging_entries(output)
+                == {OUTPUT_JSON_NAME, OUTPUT_MARKDOWN_NAME}
+            ):
+                output.mkdir()
+                (output / "racer.txt").write_text("racer\n", encoding="utf-8")
+                raced = True
+
+        with self.assertRaisesRegex(AnalysisLimitError, "already exists"):
+            analyze_geometric_stability(
+                **fixture.call_args(output_dir=output),
+                live_guard=guard,
+            )
+
+        self.assertTrue(raced)
+        self.assertEqual(
+            (output / "racer.txt").read_text(encoding="utf-8"),
+            "racer\n",
+        )
+        self.assertEqual(
+            list(output.parent.glob(f"{output.name}.incomplete-*")),
+            [],
+        )
+
+    def test_source_commit_drift_aborts_before_publication(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+        commits = ["1" * 40, "2" * 40]
+        with patch.object(
+            analyzer_module,
+            "_source_commit",
+            side_effect=commits,
+        ):
+            with self.assertRaisesRegex(InputIntegrityError, "source commit"):
+                analyze_geometric_stability(
+                    **fixture.call_args(output_dir=output)
+                )
+        self.assertFalse(output.exists())
+
+    def test_live_guard_runs_once_at_exact_ten_thousand_pair_boundary(self):
+        trajectory = self._trajectory(robot_count=1, frame_count=5_000)
+        trajectory["config"]["execute"]["time-step"] = 0.05
+        fixture = self.write_complete_fixture(trajectory=trajectory)
+        output = self.root / "analysis" / "run"
+        processed = 0
+        boundary_calls = 0
+        original_record = analyzer_module._ScientificAccumulator.record
+
+        def record(accumulator, row):
+            nonlocal processed
+            result = original_record(accumulator, row)
+            processed += 1
+            return result
+
+        def guard() -> None:
+            nonlocal boundary_calls
+            if processed == 10_000:
+                boundary_calls += 1
+
+        with patch.object(
+            analyzer_module._ScientificAccumulator,
+            "record",
+            new=record,
+        ):
+            analyze_geometric_stability(
+                **fixture.call_args(),
+                live_guard=guard,
+            )
+
+        self.assertEqual(processed, 10_000)
+        self.assertEqual(boundary_calls, 1)
+
+    def test_builtin_live_floor_stops_at_ten_thousand_pair_boundary(self):
+        trajectory = self._trajectory(robot_count=1, frame_count=5_000)
+        trajectory["config"]["execute"]["time-step"] = 0.05
+        fixture = self.write_complete_fixture(trajectory=trajectory)
+        output = self.root / "analysis" / "run"
+        processed = 0
+        original_record = analyzer_module._ScientificAccumulator.record
+        real_available = analyzer_module.available_bytes
+
+        def record(accumulator, row):
+            nonlocal processed
+            result = original_record(accumulator, row)
+            processed += 1
+            return result
+
+        def available(parent_fd, fallback_path: Path) -> int:
+            del parent_fd, fallback_path
+            if processed == 10_000:
+                return analyzer_module.HARD_FLOOR_BYTES - 1
+            return analyzer_module.START_BYTES + 1
+
+        with patch.object(
+            analyzer_module._ScientificAccumulator,
+            "record",
+            new=record,
+        ), patch.object(
+            analyzer_module,
+            "_available_bytes_for_guard",
+            side_effect=available,
+            create=True,
+        ):
+            with self.assertRaisesRegex(AnalysisLimitError, "live threshold"):
+                analyze_geometric_stability(
+                    **fixture.call_args(output_dir=output)
+                )
+
+        self.assertEqual(processed, 10_000)
+        self.assertFalse(output.exists())
+
+
+class RenameNoReplaceTests(unittest.TestCase):
+    class FakeRename:
+        def __init__(self, result: int = 0) -> None:
+            self.result = result
+            self.calls: list[tuple] = []
+            self.argtypes = None
+            self.restype = None
+
+        def __call__(self, *arguments):
+            self.calls.append(arguments)
+            return self.result
+
+    def test_darwin_uses_descriptor_relative_rename_excl(self):
+        rename = self.FakeRename()
+        library = type("Library", (), {"renameatx_np": rename})()
+
+        with patch.object(analyzer_module.sys, "platform", "darwin"), patch.object(
+            analyzer_module.ctypes,
+            "CDLL",
+            return_value=library,
+        ):
+            analyzer_module._rename_no_replace_at(41, "stage", "final")
+
+        self.assertEqual(
+            rename.calls,
+            [(41, b"stage", 41, b"final", 0x00000004)],
+        )
+
+    def test_linux_uses_descriptor_relative_rename_noreplace(self):
+        rename = self.FakeRename()
+        library = type("Library", (), {"renameat2": rename})()
+
+        with patch.object(analyzer_module.sys, "platform", "linux"), patch.object(
+            analyzer_module.ctypes,
+            "CDLL",
+            return_value=library,
+        ):
+            analyzer_module._rename_no_replace_at(42, "stage", "final")
+
+        self.assertEqual(
+            rename.calls,
+            [(42, b"stage", 42, b"final", 1)],
+        )
+
+    def test_missing_platform_symbol_fails_closed(self):
+        for platform in ("darwin", "linux"):
+            with self.subTest(platform=platform), patch.object(
+                analyzer_module.sys,
+                "platform",
+                platform,
+            ), patch.object(
+                analyzer_module.ctypes,
+                "CDLL",
+                return_value=object(),
+            ):
+                with self.assertRaises(AnalysisLimitError):
+                    analyzer_module._rename_no_replace_at(
+                        43,
+                        "stage",
+                        "final",
+                    )
+
+    def test_errno_is_translated_without_losing_collision_semantics(self):
+        for error_number, expected_exception in (
+            (analyzer_module.errno.EEXIST, AnalysisLimitError),
+            (analyzer_module.errno.ENOTEMPTY, AnalysisLimitError),
+            (analyzer_module.errno.EPERM, OSError),
+        ):
+            with self.subTest(error_number=error_number):
+                rename = self.FakeRename(result=-1)
+                library = type("Library", (), {"renameatx_np": rename})()
+                with patch.object(
+                    analyzer_module.sys,
+                    "platform",
+                    "darwin",
+                ), patch.object(
+                    analyzer_module.ctypes,
+                    "CDLL",
+                    return_value=library,
+                ), patch.object(
+                    analyzer_module.ctypes,
+                    "get_errno",
+                    return_value=error_number,
+                ):
+                    with self.assertRaises(expected_exception) as caught:
+                        analyzer_module._rename_no_replace_at(
+                            44,
+                            "stage",
+                            "final",
+                        )
+                if error_number == analyzer_module.errno.EPERM:
+                    self.assertEqual(caught.exception.errno, error_number)
+
+    def test_unsupported_platform_fails_closed(self):
+        with patch.object(
+            analyzer_module.sys,
+            "platform",
+            "win32",
+        ), patch.object(
+            analyzer_module.ctypes,
+            "CDLL",
+            return_value=object(),
+        ):
+            with self.assertRaisesRegex(AnalysisLimitError, "unsupported"):
+                analyzer_module._rename_no_replace_at(
+                    45,
+                    "stage",
+                    "final",
+                )
 
 
 class GeometryPrimitiveTests(unittest.TestCase):

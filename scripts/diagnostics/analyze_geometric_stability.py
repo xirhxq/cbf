@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+import argparse
+import ctypes
+import errno
 import hashlib
 import json
 import math
+import os
+import stat
+import subprocess
+import sys
+import uuid
 from itertools import zip_longest
 from pathlib import Path
 from typing import Callable
@@ -21,6 +29,11 @@ from scripts.diagnostics.replay_localization_calibration import (
     STRICT_PREVIOUS_POLICY,
     active_references,
     fixed_references,
+)
+from scripts.diagnostics.run_diagnostic import (
+    HARD_FLOOR_BYTES as _RUN_HARD_FLOOR_BYTES,
+    START_BYTES as _RUN_START_BYTES,
+    available_bytes,
 )
 
 
@@ -39,6 +52,16 @@ TIME_BIN_LABELS = (
 _PERCENTILES = (50.0, 90.0, 95.0, 99.0)
 _DYNAMIC_CASE = "dynamic_dag_wnls"
 _MISSING = object()
+START_BYTES = 8_000_000_000
+HARD_FLOOR_BYTES = 6_000_000_000
+OUTPUT_CAP_BYTES = 10_000_000
+LIVE_CHECK_INTERVAL_ROWS = 10_000
+
+if (START_BYTES, HARD_FLOOR_BYTES) != (
+    _RUN_START_BYTES,
+    _RUN_HARD_FLOOR_BYTES,
+):
+    raise RuntimeError("geometric-stability disk thresholds must match the runner")
 
 
 class AnalysisLimitError(RuntimeError):
@@ -1391,144 +1414,1202 @@ def analyze_geometric_stability(
     live_guard: Callable[[], None] | None = None,
 ) -> dict:
     """Verify paired evidence, aggregate geometry/error/availability, publish optionally."""
-    del output_dir
-    source_path = Path(comparison_path)
-    comparison_hash = _verify_hash(
-        source_path,
-        expected_comparison_sha256,
-        "comparison",
+    publication = _PublicationTransaction(output_dir, [])
+    active_guard = _combined_live_guard(
+        live_guard,
+        publication.resource_guard if output_dir is not None else None,
     )
-    comparison = _strict_object(source_path, "comparison")
-    if comparison.get("schema") != COMPARISON_SCHEMA_ID:
-        raise InputIntegrityError("comparison schema does not match")
-    if comparison.get("status") != "completed":
-        raise InputIntegrityError("comparison is not completed")
-    source = _mapping(comparison.get("source"), "comparison.source")
-
-    parent_dir = _real_directory(
-        source.get("paired_bundle_dir"),
-        "paired parent bundle",
-    )
-    parent_path = parent_dir / "manifest.json"
-    parent_hash = _verify_hash(
-        parent_path,
-        expected_parent_manifest_sha256,
-        "paired parent manifest",
-    )
-    if source.get("paired_parent_manifest_sha256") != parent_hash:
-        raise InputIntegrityError(
-            "comparison parent-manifest hash does not match trust root"
+    publication.set_live_guard(active_guard)
+    try:
+        if active_guard is not None:
+            active_guard()
+        analyzer_path = Path(__file__).resolve()
+        analyzer_hash = _sha256(analyzer_path)
+        source_commit = _source_commit(analyzer_path)
+        source_path = Path(comparison_path)
+        comparison_hash = _verify_hash(
+            source_path,
+            expected_comparison_sha256,
+            "comparison",
         )
+        comparison = _strict_object(source_path, "comparison")
+        if comparison.get("schema") != COMPARISON_SCHEMA_ID:
+            raise InputIntegrityError("comparison schema does not match")
+        if comparison.get("status") != "completed":
+            raise InputIntegrityError("comparison is not completed")
+        source = _mapping(comparison.get("source"), "comparison.source")
 
-    strict = _load_child(source, "strict")
-    restart = _load_child(source, "restart")
-    _require_policy(strict, STRICT_PREVIOUS_POLICY, "strict")
-    _require_policy(
-        restart,
-        RESTART_BEFORE_FIRST_FINITE_POLICY,
-        "restart",
-    )
-    strict_input = _mapping(
-        strict["manifest"].get("input_data"),
-        "strict input_data",
-    )
-    restart_input = _mapping(
-        restart["manifest"].get("input_data"),
-        "restart input_data",
-    )
-    if strict_input != restart_input:
-        raise InputIntegrityError("strict and restart trajectory records differ")
-    if strict_input.get("sha256") != source.get("input_data_sha256"):
-        raise InputIntegrityError(
-            "trajectory hash does not match comparison source"
+        parent_dir = _real_directory(
+            source.get("paired_bundle_dir"),
+            "paired parent bundle",
         )
-    trajectory_path = strict_input.get("path")
-    trajectory_hash = strict_input.get("sha256")
-    if not isinstance(trajectory_path, str) or not isinstance(
-        trajectory_hash, str
-    ):
-        raise InputIntegrityError("trajectory record is invalid")
-    trajectory = load_trajectory(
-        Path(trajectory_path),
-        expected_sha256=trajectory_hash,
-    )
-    raw_seeds = strict["summary"].get("settings", {}).get("run_seeds")
-    if not isinstance(raw_seeds, list) or any(
-        type(seed) is not int for seed in raw_seeds
-    ):
-        raise InputIntegrityError("strict run seeds are invalid")
-    scientific = _ScientificAccumulator(trajectory, raw_seeds)
+        parent_path = parent_dir / "manifest.json"
+        parent_hash = _verify_hash(
+            parent_path,
+            expected_parent_manifest_sha256,
+            "paired parent manifest",
+        )
+        if source.get("paired_parent_manifest_sha256") != parent_hash:
+            raise InputIntegrityError(
+                "comparison parent-manifest hash does not match trust root"
+            )
 
-    strict_state: dict[tuple[int, str, int], tuple[bool, bool]] = {}
-    restart_state: dict[tuple[int, str, int], tuple[bool, bool]] = {}
-    paired_rows = 0
-    pairs = zip_longest(
-        comparison_module._verified_rows(strict, live_guard=live_guard),
-        comparison_module._verified_rows(restart, live_guard=live_guard),
-        fillvalue=_MISSING,
-    )
-    for strict_row, restart_row in pairs:
-        if strict_row is _MISSING or restart_row is _MISSING:
+        strict = _load_child(source, "strict")
+        restart = _load_child(source, "restart")
+        _require_policy(strict, STRICT_PREVIOUS_POLICY, "strict")
+        _require_policy(
+            restart,
+            RESTART_BEFORE_FIRST_FINITE_POLICY,
+            "restart",
+        )
+        strict_input = _mapping(
+            strict["manifest"].get("input_data"),
+            "strict input_data",
+        )
+        restart_input = _mapping(
+            restart["manifest"].get("input_data"),
+            "restart input_data",
+        )
+        if strict_input != restart_input:
             raise InputIntegrityError(
-                "strict and restart streams have different cardinality"
+                "strict and restart trajectory records differ"
             )
-        strict_key = comparison_module._compact_key(strict_row)
-        restart_key = comparison_module._compact_key(restart_row)
-        if strict_key != restart_key:
+        if strict_input.get("sha256") != source.get("input_data_sha256"):
             raise InputIntegrityError(
-                f"paired row key mismatch at {strict_key!r}/{restart_key!r}"
+                "trajectory hash does not match comparison source"
             )
-        if not comparison_module._paired_inputs_equal(
-            strict_row, restart_row
+        trajectory_path = strict_input.get("path")
+        trajectory_hash = strict_input.get("sha256")
+        if not isinstance(trajectory_path, str) or not isinstance(
+            trajectory_hash, str
         ):
-            raise InputIntegrityError(
-                f"paired external inputs differ at key {strict_key!r}"
-            )
-        comparison_module._reconcile_replay_row_inputs(strict_row)
-        comparison_module._reconcile_replay_row_inputs(restart_row)
-        comparison_module._validate_policy_row(
-            strict_row,
-            policy=STRICT_PREVIOUS_POLICY,
-            acquisition_state=strict_state,
+            raise InputIntegrityError("trajectory record is invalid")
+        publication.protected = [
+            source_path,
+            parent_path,
+            strict["dir"],
+            restart["dir"],
+            Path(trajectory_path),
+            analyzer_path,
+        ]
+    except BaseException:
+        publication.abort_preparation()
+        raise
+    with publication:
+        trajectory = load_trajectory(
+            Path(trajectory_path),
+            expected_sha256=trajectory_hash,
         )
-        comparison_module._validate_policy_row(
-            restart_row,
-            policy=RESTART_BEFORE_FIRST_FINITE_POLICY,
-            acquisition_state=restart_state,
-        )
-        frame_index, _, _, robot_id = strict_key
-        try:
-            expected_truth = trajectory["truth"][frame_index][robot_id]
-        except KeyError as error:
-            raise InputIntegrityError(
-                f"row key {strict_key!r} is outside the trajectory"
-            ) from error
-        if strict_row.get("truth_position") != expected_truth:
-            raise InputIntegrityError(
-                f"row truth does not match trajectory at key {strict_key!r}"
-            )
-        scientific.record(restart_row)
-        paired_rows += 1
+        raw_seeds = strict["summary"].get("settings", {}).get("run_seeds")
+        if not isinstance(raw_seeds, list) or any(
+            type(seed) is not int for seed in raw_seeds
+        ):
+            raise InputIntegrityError("strict run seeds are invalid")
+        scientific = _ScientificAccumulator(trajectory, raw_seeds)
 
-    expected_rows = _expected_paired_rows(strict, restart, trajectory)
-    if paired_rows != expected_rows:
-        raise InputIntegrityError(
-            "paired row cardinality does not match trajectory dimensions"
+        strict_state: dict[tuple[int, str, int], tuple[bool, bool]] = {}
+        restart_state: dict[tuple[int, str, int], tuple[bool, bool]] = {}
+        paired_rows = 0
+        pairs = zip_longest(
+            comparison_module._verified_rows(strict, live_guard=None),
+            comparison_module._verified_rows(restart, live_guard=None),
+            fillvalue=_MISSING,
         )
-    comparison_module._verify_bundle_unchanged(strict)
-    comparison_module._verify_bundle_unchanged(restart)
-    _verify_hash(source_path, comparison_hash, "comparison")
-    _verify_hash(parent_path, parent_hash, "paired parent manifest")
-    scientific_report = scientific.finish()
-    return {
-        "schema": SCHEMA_ID,
-        "integrity": {
-            "paired_rows": paired_rows,
-            "paired_inputs_equal": True,
-            "source_hashes_unchanged": True,
-        },
-        **scientific_report,
-    }
+        for strict_row, restart_row in pairs:
+            if strict_row is _MISSING or restart_row is _MISSING:
+                raise InputIntegrityError(
+                    "strict and restart streams have different cardinality"
+                )
+            strict_key = comparison_module._compact_key(strict_row)
+            restart_key = comparison_module._compact_key(restart_row)
+            if strict_key != restart_key:
+                raise InputIntegrityError(
+                    f"paired row key mismatch at {strict_key!r}/{restart_key!r}"
+                )
+            if not comparison_module._paired_inputs_equal(
+                strict_row, restart_row
+            ):
+                raise InputIntegrityError(
+                    f"paired external inputs differ at key {strict_key!r}"
+                )
+            comparison_module._reconcile_replay_row_inputs(strict_row)
+            comparison_module._reconcile_replay_row_inputs(restart_row)
+            comparison_module._validate_policy_row(
+                strict_row,
+                policy=STRICT_PREVIOUS_POLICY,
+                acquisition_state=strict_state,
+            )
+            comparison_module._validate_policy_row(
+                restart_row,
+                policy=RESTART_BEFORE_FIRST_FINITE_POLICY,
+                acquisition_state=restart_state,
+            )
+            frame_index, _, _, robot_id = strict_key
+            try:
+                expected_truth = trajectory["truth"][frame_index][robot_id]
+            except KeyError as error:
+                raise InputIntegrityError(
+                    f"row key {strict_key!r} is outside the trajectory"
+                ) from error
+            if strict_row.get("truth_position") != expected_truth:
+                raise InputIntegrityError(
+                    f"row truth does not match trajectory at {strict_key!r}"
+                )
+            scientific.record(restart_row)
+            paired_rows += 1
+            if (
+                active_guard is not None
+                and paired_rows % LIVE_CHECK_INTERVAL_ROWS == 0
+            ):
+                active_guard()
+
+        expected_rows = _expected_paired_rows(strict, restart, trajectory)
+        if paired_rows != expected_rows:
+            raise InputIntegrityError(
+                "paired row cardinality does not match trajectory dimensions"
+            )
+        scientific_report = scientific.finish()
+        report = {
+            "schema": SCHEMA_ID,
+            "status": "completed",
+            "source": {
+                "comparison_path": str(source_path.resolve()),
+                "comparison_sha256": comparison_hash,
+                "parent_manifest_sha256": parent_hash,
+                "strict_bundle": str(strict["dir"].resolve()),
+                "restart_bundle": str(restart["dir"].resolve()),
+                "input_data_path": trajectory["path"],
+                "input_data_sha256": trajectory_hash,
+                "source_commit": source_commit,
+                "analyzer_path": str(analyzer_path),
+                "analyzer_sha256": analyzer_hash,
+                "analyzer_revision_binding": (
+                    "source_commit identifies repository HEAD at analysis "
+                    "start; analyzer_sha256 identifies the working-tree "
+                    "source bytes frozen after disk preflight"
+                ),
+            },
+            "protocol": {
+                "scope": "post-hoc exploratory",
+                "truth_trajectory_count": 1,
+                "range_noise_seed_count": len(raw_seeds),
+                "time_bins_seconds": [0, 50, 100, 150, 200, 250],
+                "primary_geometry": "dynamic active-set geometry matrix",
+                "statistical_unit": (
+                    "range-noise seed nested in one truth trajectory"
+                ),
+            },
+            "integrity": {
+                "paired_rows": paired_rows,
+                "paired_inputs_equal": True,
+                "source_hashes_unchanged": True,
+            },
+            **scientific_report,
+            "claim_boundary": [
+                "not a deterministic true-error bound",
+                "not an arbitrary-depth stability result",
+                "not an unconditional controller-safety result",
+                "not a cross-trajectory generality result",
+            ],
+        }
+        _validate_json_tree(report, "geometric-stability report")
+
+        def reverify_sources() -> None:
+            comparison_module._verify_bundle_unchanged(strict)
+            comparison_module._verify_bundle_unchanged(restart)
+            _verify_hash(source_path, comparison_hash, "comparison")
+            _verify_hash(parent_path, parent_hash, "paired parent manifest")
+            _verify_hash(Path(trajectory["path"]), trajectory_hash, "trajectory")
+            if _sha256(analyzer_path) != analyzer_hash:
+                raise InputIntegrityError("analyzer source changed during analysis")
+            if _source_commit(analyzer_path) != source_commit:
+                raise InputIntegrityError("analyzer source commit changed")
+
+        if output_dir is None:
+            reverify_sources()
+        publication.publish(report, reverify_sources)
+        return report
+
+
+def _combined_live_guard(
+    external: Callable[[], None] | None,
+    resource: Callable[[], None] | None,
+) -> Callable[[], None] | None:
+    if external is None:
+        return resource
+    if resource is None:
+        return external
+
+    def guard() -> None:
+        resource()
+        external()
+
+    return guard
+
+
+def _validate_json_tree(value: object, description: str) -> None:
+    value_type = type(value)
+    if value_type is float:
+        if not math.isfinite(value):
+            raise InputIntegrityError(
+                f"{description} contains a non-finite number"
+            )
+        return
+    if value_type in (type(None), bool, int, str):
+        return
+    if value_type is list:
+        for index, item in enumerate(value):
+            _validate_json_tree(item, f"{description}[{index}]")
+        return
+    if value_type is dict:
+        for key, item in value.items():
+            if type(key) is not str:
+                raise InputIntegrityError(
+                    f"{description} contains a non-string object key"
+                )
+            _validate_json_tree(item, f"{description}.{key}")
+        return
+    raise InputIntegrityError(
+        f"{description} contains a non-JSON value of type "
+        f"{value_type.__name__}"
+    )
+
+
+def _json_bytes(report: dict) -> bytes:
+    _validate_json_tree(report, "geometric-stability report")
+    return (
+        json.dumps(report, sort_keys=True, indent=2, allow_nan=False) + "\n"
+    ).encode("utf-8")
+
+
+def _markdown_bytes(report: dict) -> bytes:
+    source = report["source"]
+    geometry = report["geometry"]
+    lines = [
+        "# Geometric stability audit",
+        "",
+        "## Scope and sources",
+        "",
+        "This is a post-hoc exploratory analysis of one truth trajectory and "
+        "the registered range-noise seeds.",
+        "",
+        "```json",
+        json.dumps(source, sort_keys=True, indent=2, allow_nan=False),
+        "```",
+        "",
+        "## Theory and empirical separation",
+        "",
+        "The dynamic active-set geometry matrix is the primary geometry "
+        "quantity. Its FIM interpretation is model-internal; the empirical "
+        "sections below separately report observed errors and calibration.",
+        "",
+        "## Geometry and FIM validity",
+        "",
+        "True active geometry and fixed-pair explanatory geometry are kept "
+        "separate from estimated geometry. Estimated-geometry and modeled-FIM "
+        "denominators are shown in the report data below.",
+        "",
+        "```json",
+        json.dumps(
+            {
+                "true_dynamic_all_primary": geometry[
+                    "true_dynamic_all_primary"
+                ],
+                "true_fixed_pair_all_primary": geometry[
+                    "true_fixed_pair_all_primary"
+                ],
+                "estimated_dynamic_finite": geometry[
+                    "estimated_dynamic_finite"
+                ],
+                "estimated_fixed_pair_finite": geometry[
+                    "estimated_fixed_pair_finite"
+                ],
+                "modeled_fim_valid": geometry["modeled_fim_valid"],
+            },
+            sort_keys=True,
+            indent=2,
+            allow_nan=False,
+        ),
+        "```",
+        "",
+        "## Absolute error and availability",
+        "",
+        "Absolute-error profiles are in metres. Availability includes the "
+        "longest unavailable and non-finite retained outages.",
+        "",
+        "```json",
+        json.dumps(
+            {
+                "absolute_error_metres": report["absolute_error"],
+                "availability": report["availability"],
+            },
+            sort_keys=True,
+            indent=2,
+            allow_nan=False,
+        ),
+        "```",
+        "",
+        "## Calibration diagnostics",
+        "",
+        "Epsilon containment and q>9 are calibration diagnostics, not "
+        "deterministic bounds. Their strata include UAV-reference count, "
+        "shared UAV ancestry, and the two-reference opposite-baseline-side "
+        "proxy.",
+        "",
+        "```json",
+        json.dumps(report["calibration"], sort_keys=True, indent=2, allow_nan=False),
+        "```",
+        "",
+        "## Claim boundary",
+        "",
+        *[f"- {claim}" for claim in report["claim_boundary"]],
+        "- one truth trajectory; no cross-trajectory generality is asserted.",
+        "",
+    ]
+    return "\n".join(lines).encode("utf-8")
+
+
+def _absolute_lexical_path(path: Path) -> Path:
+    raw_path = os.fspath(path)
+    if not os.path.isabs(raw_path):
+        raw_path = os.path.join(os.getcwd(), raw_path)
+    normalized = os.path.normpath(raw_path)
+    if not os.path.isabs(normalized):
+        raise AnalysisLimitError("output path must be absolute")
+    return Path(normalized)
+
+
+def _paths_overlap(first: Path, second: Path) -> bool:
+    first = first.resolve()
+    second = second.resolve()
+    return (
+        first == second
+        or first in second.parents
+        or second in first.parents
+    )
+
+
+def _rename_no_replace_at(
+    parent_fd: int,
+    source_name: str,
+    destination_name: str,
+) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    source_bytes = os.fsencode(source_name)
+    destination_bytes = os.fsencode(destination_name)
+    if sys.platform == "darwin":
+        try:
+            rename = libc.renameatx_np
+        except AttributeError as error:
+            raise AnalysisLimitError(
+                "descriptor-relative no-replace rename is unavailable"
+            ) from error
+        rename.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        rename.restype = ctypes.c_int
+        result = rename(
+            parent_fd,
+            source_bytes,
+            parent_fd,
+            destination_bytes,
+            0x00000004,
+        )
+    elif sys.platform.startswith("linux"):
+        try:
+            rename = libc.renameat2
+        except AttributeError as error:
+            raise AnalysisLimitError(
+                "atomic no-replace rename is unavailable"
+            ) from error
+        rename.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        rename.restype = ctypes.c_int
+        result = rename(
+            parent_fd,
+            source_bytes,
+            parent_fd,
+            destination_bytes,
+            1,
+        )
+    else:
+        raise AnalysisLimitError("atomic no-replace rename is unsupported")
+    if result == 0:
+        return
+    error_number = ctypes.get_errno()
+    if error_number in (errno.EEXIST, errno.ENOTEMPTY):
+        raise AnalysisLimitError("output directory already exists")
+    raise OSError(
+        error_number,
+        os.strerror(error_number),
+        destination_name,
+    )
+
+
+def _directory_identity(metadata: os.stat_result) -> tuple[int, int]:
+    return metadata.st_dev, metadata.st_ino
+
+
+def _available_bytes_for_guard(
+    parent_fd: int | None,
+    fallback_path: Path,
+) -> int:
+    if parent_fd is None:
+        return available_bytes(fallback_path)
+    filesystem = os.fstatvfs(parent_fd)
+    return filesystem.f_bavail * filesystem.f_frsize
+
+
+def _allocated_directory_fd(directory_fd: int) -> int:
+    total = os.fstat(directory_fd).st_blocks * 512
+    for name in os.listdir(directory_fd):
+        metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        total += metadata.st_blocks * 512
+        if stat.S_ISDIR(metadata.st_mode):
+            child_fd = os.open(
+                name,
+                os.O_RDONLY
+                | os.O_DIRECTORY
+                | os.O_NOFOLLOW
+                | os.O_CLOEXEC,
+                dir_fd=directory_fd,
+            )
+            try:
+                total += _allocated_directory_fd(child_fd) - (
+                    metadata.st_blocks * 512
+                )
+            finally:
+                os.close(child_fd)
+    return total
+
+
+def _write_all(file_fd: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    while view:
+        written = os.write(file_fd, view)
+        if written <= 0:
+            raise OSError("persistent output write made no progress")
+        view = view[written:]
+
+
+def _clear_directory_fd(directory_fd: int) -> None:
+    for name in os.listdir(directory_fd):
+        metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        if stat.S_ISDIR(metadata.st_mode):
+            child_fd = os.open(
+                name,
+                os.O_RDONLY
+                | os.O_DIRECTORY
+                | os.O_NOFOLLOW
+                | os.O_CLOEXEC,
+                dir_fd=directory_fd,
+            )
+            try:
+                _clear_directory_fd(child_fd)
+            finally:
+                os.close(child_fd)
+            os.rmdir(name, dir_fd=directory_fd)
+        else:
+            os.unlink(name, dir_fd=directory_fd)
+
+
+class _PublicationTransaction:
+    """Publish through pinned directory descriptors without following links."""
+
+    def __init__(self, output_dir: Path | None, protected: list[Path]) -> None:
+        self.output_dir = (
+            None
+            if output_dir is None
+            else _absolute_lexical_path(Path(output_dir))
+        )
+        self.protected = protected
+        self.output_name = (
+            None if self.output_dir is None else self.output_dir.name
+        )
+        self.parent_path = (
+            None if self.output_dir is None else self.output_dir.parent
+        )
+        self.canonical_parent: Path | None = None
+        self.preflight_path = (
+            None if self.parent_path is None else Path(os.sep)
+        )
+        self.parent_fd: int | None = None
+        self.parent_identity: tuple[int, int] | None = None
+        self.parent_container_fd: int | None = None
+        self.parent_name: str | None = None
+        self.chain_fds: list[int] = []
+        self.chain_records: list[
+            tuple[int, str, tuple[int, int], int]
+        ] = []
+        self.preflight_fd: int | None = None
+        self.staging_fd: int | None = None
+        self.artifact_fds: dict[str, int] = {}
+        self.staging_name: str | None = None
+        self.staging_identity: tuple[int, int] | None = None
+        self.staging_created = False
+        self.owns_parent = False
+        self.published = False
+        self.start_checked = False
+        self._live_guard: Callable[[], None] | None = None
+
+    def set_live_guard(self, guard: Callable[[], None] | None) -> None:
+        self._live_guard = guard
+
+    def resource_guard(self) -> None:
+        if self.output_dir is None or self.preflight_path is None:
+            return
+        if not self.start_checked:
+            self._pin_existing_path_chain()
+            free = _available_bytes_for_guard(
+                self.preflight_fd,
+                self.preflight_path,
+            )
+            if free < START_BYTES:
+                raise AnalysisLimitError(
+                    f"available={free} below start threshold={START_BYTES}"
+                )
+            self.start_checked = True
+            return
+        probe_fd = (
+            self.parent_fd
+            if self.parent_fd is not None
+            else self.preflight_fd
+        )
+        free = _available_bytes_for_guard(probe_fd, self.preflight_path)
+        if free < HARD_FLOOR_BYTES:
+            raise AnalysisLimitError(
+                f"available={free} below live threshold={HARD_FLOOR_BYTES}"
+            )
+        if (
+            self.staging_fd is not None
+            and _allocated_directory_fd(self.staging_fd) > OUTPUT_CAP_BYTES
+        ):
+            raise AnalysisLimitError(
+                "analysis output exceeds 10 MB allocation cap"
+            )
+
+    def _pin_existing_path_chain(self) -> None:
+        if self.output_dir is None or self.parent_path is None:
+            return
+        if self.chain_fds:
+            return
+        self.canonical_parent = self.parent_path
+        parts = self.canonical_parent.parts
+        if not parts or parts[0] != os.sep:
+            raise AnalysisLimitError("output path must be absolute")
+        root_fd = self._open_directory(Path(os.sep))
+        self.chain_fds.append(root_fd)
+        current_fd = root_fd
+        self.preflight_fd = root_fd
+        for index, component in enumerate(parts[1:]):
+            is_parent = index == len(parts[1:]) - 1
+            try:
+                child_fd = self._open_directory(
+                    Path(component),
+                    dir_fd=current_fd,
+                )
+            except FileNotFoundError:
+                if not is_parent:
+                    raise AnalysisLimitError(
+                        "only the exact output parent may be created"
+                    )
+                self.parent_container_fd = current_fd
+                self.parent_name = component
+                break
+            except OSError as error:
+                try:
+                    metadata = os.stat(
+                        component,
+                        dir_fd=current_fd,
+                        follow_symlinks=False,
+                    )
+                except OSError:
+                    raise AnalysisLimitError(
+                        "output path component cannot be pinned"
+                    ) from error
+                if stat.S_ISLNK(metadata.st_mode):
+                    raise AnalysisLimitError(
+                        "output path contains a symlink component"
+                    ) from error
+                raise AnalysisLimitError(
+                    "output path component is not a directory"
+                ) from error
+            self.chain_fds.append(child_fd)
+            metadata = os.fstat(child_fd)
+            identity = _directory_identity(metadata)
+            self.chain_records.append(
+                (current_fd, component, identity, child_fd)
+            )
+            current_fd = child_fd
+            self.preflight_fd = child_fd
+            if is_parent:
+                self.parent_fd = child_fd
+                self.parent_identity = identity
+                self.parent_container_fd = self.chain_records[-1][0]
+                self.parent_name = component
+
+    def _verify_path_chain(self) -> None:
+        if (
+            self.parent_path is None
+            or self.canonical_parent is None
+            or not self.chain_fds
+        ):
+            raise AnalysisLimitError("output path chain is not pinned")
+        if self.parent_identity is not None:
+            self._verify_parent_identity()
+        if self.parent_path != self.canonical_parent:
+            raise AnalysisLimitError("output path changed before publication")
+        for container_fd, name, identity, child_fd in self.chain_records:
+            try:
+                metadata = os.stat(
+                    name,
+                    dir_fd=container_fd,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError as error:
+                raise AnalysisLimitError(
+                    "output path changed before publication"
+                ) from error
+            if (
+                not stat.S_ISDIR(metadata.st_mode)
+                or _directory_identity(metadata) != identity
+                or _directory_identity(os.fstat(child_fd)) != identity
+            ):
+                raise AnalysisLimitError(
+                    "output path changed before publication"
+                )
+
+    def _guard(self) -> None:
+        if self._live_guard is not None:
+            self._live_guard()
+
+    @staticmethod
+    def _open_directory(path: Path, *, dir_fd: int | None = None) -> int:
+        return os.open(
+            path if dir_fd is None else path.name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=dir_fd,
+        )
+
+    def __enter__(self) -> _PublicationTransaction:
+        if self.output_dir is None:
+            return self
+        output = self.output_dir
+        try:
+            if output.is_symlink():
+                raise AnalysisLimitError("output directory must not be a symlink")
+            if output.exists():
+                raise AnalysisLimitError("output directory already exists")
+            if any(_paths_overlap(output, path) for path in self.protected):
+                raise AnalysisLimitError(
+                    "output directory overlaps a protected input"
+                )
+            self._verify_path_chain()
+            if self.parent_fd is None:
+                if self.parent_container_fd is None or not self.parent_name:
+                    raise AnalysisLimitError("output parent is not pinned")
+                self._guard()
+                os.mkdir(
+                    self.parent_name,
+                    mode=0o700,
+                    dir_fd=self.parent_container_fd,
+                )
+                self.owns_parent = True
+                parent_metadata = os.stat(
+                    self.parent_name,
+                    dir_fd=self.parent_container_fd,
+                    follow_symlinks=False,
+                )
+                self.parent_identity = _directory_identity(parent_metadata)
+                self.parent_fd = self._open_directory(
+                    Path(self.parent_name),
+                    dir_fd=self.parent_container_fd,
+                )
+                self.chain_fds.append(self.parent_fd)
+                if (
+                    _directory_identity(os.fstat(self.parent_fd))
+                    != self.parent_identity
+                ):
+                    raise AnalysisLimitError(
+                        "output parent changed while it was opened"
+                    )
+                self.chain_records.append(
+                    (
+                        self.parent_container_fd,
+                        self.parent_name,
+                        self.parent_identity,
+                        self.parent_fd,
+                    )
+                )
+                self._guard()
+            self._verify_path_chain()
+            if self._entry_exists(self.output_name):
+                raise AnalysisLimitError("output directory already exists")
+            self._guard()
+            for _ in range(100):
+                candidate = (
+                    f"{self.output_name}.incomplete-{uuid.uuid4().hex}"
+                )
+                try:
+                    os.mkdir(candidate, mode=0o700, dir_fd=self.parent_fd)
+                except FileExistsError:
+                    continue
+                self.staging_name = candidate
+                self.staging_created = True
+                self.staging_fd = self._open_directory(
+                    Path(candidate),
+                    dir_fd=self.parent_fd,
+                )
+                staging_metadata = os.fstat(self.staging_fd)
+                self.staging_identity = _directory_identity(staging_metadata)
+                name_metadata = os.stat(
+                    candidate,
+                    dir_fd=self.parent_fd,
+                    follow_symlinks=False,
+                )
+                if (
+                    not stat.S_ISDIR(name_metadata.st_mode)
+                    or _directory_identity(name_metadata)
+                    != self.staging_identity
+                ):
+                    raise AnalysisLimitError(
+                        "staging directory changed while it was opened"
+                    )
+                break
+            if self.staging_name is None:
+                raise AnalysisLimitError("could not allocate staging directory")
+            self._guard()
+            return self
+        except BaseException:
+            self._cleanup_with_retry(suppress_errors=True)
+            self._close_descriptors()
+            raise
+
+    def _entry_exists(self, name: str | None) -> bool:
+        if self.parent_fd is None or name is None:
+            return False
+        try:
+            os.stat(name, dir_fd=self.parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return False
+        return True
+
+    def _verify_parent_identity(self) -> None:
+        if (
+            self.parent_container_fd is None
+            or self.parent_name is None
+            or self.parent_identity is None
+        ):
+            raise AnalysisLimitError("output parent is not pinned")
+        try:
+            metadata = os.stat(
+                self.parent_name,
+                dir_fd=self.parent_container_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError as error:
+            raise AnalysisLimitError("output parent changed before publication") from error
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or _directory_identity(metadata) != self.parent_identity
+        ):
+            raise AnalysisLimitError("output parent changed before publication")
+
+    def _verify_staging_identity(self) -> None:
+        if (
+            self.parent_fd is None
+            or self.staging_fd is None
+            or self.staging_name is None
+            or self.staging_identity is None
+        ):
+            raise AnalysisLimitError("staging directory is not pinned")
+        try:
+            metadata = os.stat(
+                self.staging_name,
+                dir_fd=self.parent_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError as error:
+            raise AnalysisLimitError(
+                "staging directory changed before publication"
+            ) from error
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or _directory_identity(metadata) != self.staging_identity
+            or _directory_identity(os.fstat(self.staging_fd))
+            != self.staging_identity
+        ):
+            raise AnalysisLimitError(
+                "staging directory changed before publication"
+            )
+
+    def _destination_matches_staging(self) -> bool:
+        if (
+            self.parent_fd is None
+            or self.output_name is None
+            or self.staging_fd is None
+        ):
+            return False
+        try:
+            destination = os.stat(
+                self.output_name,
+                dir_fd=self.parent_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            return False
+        return (
+            stat.S_ISDIR(destination.st_mode)
+            and _directory_identity(destination)
+            == _directory_identity(os.fstat(self.staging_fd))
+        )
+
+    def _pin_artifacts(self, expected: dict[str, bytes]) -> None:
+        if self.staging_fd is None:
+            raise AnalysisLimitError("staging directory is not pinned")
+        if set(os.listdir(self.staging_fd)) != set(expected):
+            raise AnalysisLimitError(
+                "staging output contains unexpected artifacts"
+            )
+        for name in expected:
+            try:
+                descriptor = os.open(
+                    name,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=self.staging_fd,
+                )
+            except OSError as error:
+                raise AnalysisLimitError(
+                    f"artifact {name} cannot be opened without following links"
+                ) from error
+            self.artifact_fds[name] = descriptor
+        self._verify_artifact_contents(expected)
+        self._verify_artifact_name_identities(expected)
+
+    def _verify_artifact_contents(
+        self,
+        expected: dict[str, bytes],
+    ) -> None:
+        if set(self.artifact_fds) != set(expected):
+            raise AnalysisLimitError("both output artifacts must be pinned")
+        for name, expected_bytes in expected.items():
+            descriptor = self.artifact_fds[name]
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise AnalysisLimitError(
+                    f"artifact {name} is not a regular file"
+                )
+            if metadata.st_size != len(expected_bytes):
+                raise AnalysisLimitError(
+                    f"artifact {name} has an unexpected byte length"
+                )
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            chunks: list[bytes] = []
+            remaining = len(expected_bytes)
+            while remaining:
+                chunk = os.read(
+                    descriptor,
+                    min(remaining, 1024 * 1024),
+                )
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            if (
+                remaining
+                or os.read(descriptor, 1)
+                or b"".join(chunks) != expected_bytes
+            ):
+                raise AnalysisLimitError(
+                    f"artifact {name} bytes do not match generated output"
+                )
+
+    def _verify_artifact_name_identities(
+        self,
+        expected: dict[str, bytes],
+    ) -> None:
+        if self.staging_fd is None:
+            raise AnalysisLimitError("staging directory is not pinned")
+        if set(os.listdir(self.staging_fd)) != set(expected):
+            raise AnalysisLimitError(
+                "staging output contains unexpected artifacts"
+            )
+        for name, expected_bytes in expected.items():
+            try:
+                name_metadata = os.stat(
+                    name,
+                    dir_fd=self.staging_fd,
+                    follow_symlinks=False,
+                )
+            except OSError as error:
+                raise AnalysisLimitError(
+                    f"artifact {name} changed before publication"
+                ) from error
+            descriptor_metadata = os.fstat(self.artifact_fds[name])
+            if (
+                not stat.S_ISREG(name_metadata.st_mode)
+                or name_metadata.st_size != len(expected_bytes)
+                or _directory_identity(name_metadata)
+                != _directory_identity(descriptor_metadata)
+            ):
+                raise AnalysisLimitError(
+                    f"artifact {name} changed before publication"
+                )
+
+    def publish(self, report: dict, reverify_sources: Callable[[], None]) -> None:
+        if (
+            self.output_dir is None
+            or self.parent_fd is None
+            or self.staging_fd is None
+            or self.staging_name is None
+            or self.output_name is None
+        ):
+            return
+        json_bytes = _json_bytes(report)
+        markdown_bytes = _markdown_bytes(report)
+        expected_artifacts = {
+            OUTPUT_JSON_NAME: json_bytes,
+            OUTPUT_MARKDOWN_NAME: markdown_bytes,
+        }
+        if len(json_bytes) + len(markdown_bytes) > OUTPUT_CAP_BYTES:
+            raise AnalysisLimitError("serialized analysis exceeds 10 MB cap")
+        for name, payload in (
+            (OUTPUT_JSON_NAME, json_bytes),
+            (OUTPUT_MARKDOWN_NAME, markdown_bytes),
+        ):
+            self._guard()
+            file_fd = os.open(
+                name,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | os.O_NOFOLLOW
+                | os.O_CLOEXEC,
+                0o600,
+                dir_fd=self.staging_fd,
+            )
+            try:
+                _write_all(file_fd, payload)
+                os.fsync(file_fd)
+            finally:
+                os.close(file_fd)
+            self._guard()
+        # This is the final caller-visible checkpoint. Everything below is
+        # descriptor-relative validation and the commit closure.
+        self._guard()
+        reverify_sources()
+        self._pin_artifacts(expected_artifacts)
+        if len(json_bytes) + len(markdown_bytes) > OUTPUT_CAP_BYTES:
+            raise AnalysisLimitError("serialized analysis exceeds 10 MB cap")
+        if _allocated_directory_fd(self.staging_fd) > OUTPUT_CAP_BYTES:
+            raise AnalysisLimitError(
+                "analysis output exceeds 10 MB allocation cap"
+            )
+        self._verify_staging_identity()
+        os.fsync(self.staging_fd)
+        self._verify_path_chain()
+        _rename_no_replace_at(
+            self.parent_fd,
+            self.staging_name,
+            self.output_name,
+        )
+        if not self._destination_matches_staging():
+            raise AnalysisLimitError(
+                "publication destination changed at rename boundary"
+            )
+        self.staging_name = self.output_name
+        self._verify_artifact_contents(expected_artifacts)
+        self._verify_artifact_name_identities(expected_artifacts)
+        # Both registered names still identify the simultaneously pinned,
+        # byte-verified regular files. No caller callback occurs between this
+        # final closure and the authoritative commit transition.
+        self.published = True
+
+    def _cleanup(self) -> None:
+        staging_name = self._find_staging_name()
+        staging_identity = self.staging_identity
+        if (
+            self.staging_fd is None
+            and staging_name is not None
+            and staging_identity is not None
+        ):
+            try:
+                candidate_fd = self._open_directory(
+                    Path(staging_name),
+                    dir_fd=self.parent_fd,
+                )
+                candidate_identity = _directory_identity(
+                    os.fstat(candidate_fd)
+                )
+                if candidate_identity != staging_identity:
+                    self._close_no_fail(candidate_fd)
+                    staging_name = None
+                else:
+                    self.staging_fd = candidate_fd
+            except OSError:
+                self.staging_fd = None
+        if self.staging_fd is not None:
+            descriptor_identity = _directory_identity(
+                os.fstat(self.staging_fd)
+            )
+            if (
+                staging_identity is not None
+                and descriptor_identity == staging_identity
+            ):
+                _clear_directory_fd(self.staging_fd)
+            os.close(self.staging_fd)
+            self.staging_fd = None
+        if (
+            staging_name is not None
+            and staging_identity is not None
+            and self.parent_fd is not None
+        ):
+            try:
+                current = os.stat(
+                    staging_name,
+                    dir_fd=self.parent_fd,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                current = None
+            if (
+                current is not None
+                and stat.S_ISDIR(current.st_mode)
+                and _directory_identity(current) == staging_identity
+            ):
+                os.rmdir(staging_name, dir_fd=self.parent_fd)
+        self.staging_name = None
+        self.staging_identity = None
+        self.staging_created = False
+        if self.owns_parent and self._parent_name_still_matches():
+            if (
+                self.parent_container_fd is not None
+                and self.parent_name is not None
+            ):
+                os.rmdir(self.parent_name, dir_fd=self.parent_container_fd)
+        self.owns_parent = False
+
+    def _find_staging_name(self) -> str | None:
+        if self.parent_fd is None:
+            return None
+        identity = self.staging_identity
+        if self.staging_fd is not None:
+            descriptor_identity = _directory_identity(
+                os.fstat(self.staging_fd)
+            )
+            if identity is not None and descriptor_identity != identity:
+                return None
+            identity = descriptor_identity
+            self.staging_identity = identity
+        if identity is None:
+            return None
+        for name in os.listdir(self.parent_fd):
+            try:
+                metadata = os.stat(
+                    name,
+                    dir_fd=self.parent_fd,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                continue
+            if (
+                stat.S_ISDIR(metadata.st_mode)
+                and _directory_identity(metadata) == identity
+            ):
+                return name
+        return None
+
+    def _parent_name_still_matches(self) -> bool:
+        if (
+            self.parent_container_fd is None
+            or self.parent_name is None
+            or self.parent_identity is None
+        ):
+            return False
+        try:
+            metadata = os.stat(
+                self.parent_name,
+                dir_fd=self.parent_container_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            return False
+        return (
+            stat.S_ISDIR(metadata.st_mode)
+            and _directory_identity(metadata) == self.parent_identity
+        )
+
+    @staticmethod
+    def _close_no_fail(descriptor: int) -> None:
+        for _ in range(2):
+            try:
+                os.close(descriptor)
+                return
+            except BaseException:
+                pass
+
+    def _close_descriptors(self) -> None:
+        for descriptor in self.artifact_fds.values():
+            self._close_no_fail(descriptor)
+        self.artifact_fds.clear()
+        if self.staging_fd is not None:
+            self._close_no_fail(self.staging_fd)
+            self.staging_fd = None
+        for descriptor in reversed(self.chain_fds):
+            self._close_no_fail(descriptor)
+        self.chain_fds.clear()
+        self.chain_records.clear()
+        self.parent_fd = None
+        self.parent_container_fd = None
+        self.preflight_fd = None
+
+    def abort_preparation(self) -> None:
+        self._cleanup_with_retry(suppress_errors=True)
+        self._close_descriptors()
+
+    def _cleanup_with_retry(self, *, suppress_errors: bool) -> None:
+        last_error: BaseException | None = None
+        for _ in range(2):
+            try:
+                self._cleanup()
+                return
+            except BaseException as error:
+                last_error = error
+        if not suppress_errors and last_error is not None:
+            raise last_error
+
+    def __exit__(self, exc_type, exc_value, traceback) -> bool:
+        if exc_type is not None or not self.published:
+            try:
+                self._cleanup_with_retry(suppress_errors=exc_type is not None)
+            except BaseException:
+                self._close_descriptors()
+                raise
+        self._close_descriptors()
+        return False
+
+
+def _source_commit(analyzer_path: Path) -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=analyzer_path.parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    commit = result.stdout.strip()
+    if result.returncode != 0 or len(commit) != 40:
+        raise InputIntegrityError("cannot resolve analyzer source commit")
+    return commit
 
 
 def _verify_hash(path: Path, expected: object, description: str) -> str:
@@ -1656,3 +2737,36 @@ def _finite_positive(value: object, name: str) -> float:
     if type(value) not in (int, float) or not math.isfinite(float(value)) or value <= 0:
         raise InputIntegrityError(f"{name} must be finite and positive")
     return float(value)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run the registered geometric-stability publication command."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--comparison", required=True, type=Path)
+    parser.add_argument("--expected-comparison-sha256", required=True)
+    parser.add_argument("--expected-parent-manifest-sha256", required=True)
+    parser.add_argument("--output-dir", required=True, type=Path)
+    arguments = parser.parse_args(argv)
+    try:
+        analyze_geometric_stability(
+            arguments.comparison,
+            expected_comparison_sha256=(
+                arguments.expected_comparison_sha256
+            ),
+            expected_parent_manifest_sha256=(
+                arguments.expected_parent_manifest_sha256
+            ),
+            output_dir=arguments.output_dir,
+        )
+    except (
+        AnalysisLimitError,
+        InputIntegrityError,
+        OSError,
+        ValueError,
+    ) as error:
+        parser.error(str(error))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
