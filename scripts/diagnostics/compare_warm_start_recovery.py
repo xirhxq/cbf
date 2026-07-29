@@ -1670,6 +1670,13 @@ def compare_warm_start_recovery(
     baseline = _load_bundle(
         immutable_baseline_dir, verify_hashes=verify_hashes
     )
+    for field in ("input_data", "input_manifest"):
+        if not _json_type_exact_equal(
+            parent.get(field), baseline["manifest"].get(field)
+        ):
+            raise InputIntegrityError(
+                f"parent {field} does not match anchored baseline record"
+            )
     declared_baseline_hashes = parent.get("immutable_baseline_hashes")
     if not _json_type_exact_equal(
         declared_baseline_hashes, baseline["hashes"]

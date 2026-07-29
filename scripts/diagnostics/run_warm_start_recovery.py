@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import scripts.diagnostics.replay_localization_calibration as replay_module
+import scripts.diagnostics.run_diagnostic as run_diagnostic_module
 from scripts.diagnostics.replay_localization_calibration import (
     ESTIMATOR_CONTRACT_ID,
     RESTART_BEFORE_FIRST_FINITE_POLICY,
@@ -77,7 +78,33 @@ def _expected_hash(manifest: dict, field: str) -> str:
     return value
 
 
-def _verify_immutable_baseline(baseline_dir: Path) -> dict[str, str]:
+def _verify_external_hash(
+    path: Path,
+    expected_sha256: str,
+    description: str,
+) -> str:
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"external {description} must be a regular file")
+    if (
+        not isinstance(expected_sha256, str)
+        or len(expected_sha256) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in expected_sha256
+        )
+    ):
+        raise ValueError(f"external {description} SHA-256 is invalid")
+    actual = _sha256(path)
+    if actual != expected_sha256:
+        raise ValueError(f"external {description} SHA-256 mismatch")
+    return actual
+
+
+def _verify_immutable_baseline(
+    baseline_dir: Path,
+    expected_manifest_sha256: str,
+) -> dict[str, str]:
     baseline_dir = Path(baseline_dir)
     if baseline_dir.is_symlink() or not baseline_dir.is_dir():
         raise ValueError("immutable baseline must be a real directory")
@@ -86,6 +113,10 @@ def _verify_immutable_baseline(baseline_dir: Path) -> dict[str, str]:
         raise ValueError("immutable baseline is missing a required regular file")
 
     first_hashes = {name: _sha256(path) for name, path in paths.items()}
+    if first_hashes["manifest.json"] != expected_manifest_sha256:
+        raise ValueError(
+            "external immutable baseline manifest SHA-256 mismatch"
+        )
     manifest = _strict_json(paths["manifest.json"])
     if manifest.get("termination_reason") != "completed":
         raise ValueError("immutable baseline manifest is not completed")
@@ -116,14 +147,16 @@ def _validated_git_state(project_root: Path) -> tuple[str, str, str]:
     source_commit = _git_output(project_root, "rev-parse", "HEAD")
     source_branch = _git_output(project_root, "branch", "--show-current")
     tracked_status = _git_output(
-        project_root, "status", "--short", "--untracked-files=no"
+        project_root, "status", "--short"
     )
     if source_commit in {"", "unknown"} or source_branch in {"", "unknown"}:
         raise ValueError("source branch and commit must be available")
     if tracked_status == "unknown":
         raise ValueError("tracked working-tree status could not be verified")
-    if tracked_status:
-        raise ValueError("tracked working tree must be clean")
+    if tracked_status not in {"", "?? build-diagnostic/"}:
+        raise ValueError(
+            "working tree must be clean except for ?? build-diagnostic/"
+        )
     return source_commit, source_branch, tracked_status
 
 
@@ -211,6 +244,13 @@ def run_warm_start_recovery(
     seeds: list[int],
     project_root: Path,
     max_frames: int,
+    *,
+    expected_data_sha256: str,
+    expected_input_manifest_sha256: str,
+    expected_baseline_manifest_sha256: str,
+    expected_supervisor_source_sha256: str,
+    expected_replay_source_sha256: str,
+    expected_run_diagnostic_source_sha256: str,
 ) -> dict:
     """Create one parent with strict and restart child bundles."""
     data_path = Path(data_path)
@@ -226,8 +266,66 @@ def run_warm_start_recovery(
         data_path=data_path,
         input_manifest_path=input_manifest_path,
     )
-    baseline_hashes = _verify_immutable_baseline(immutable_baseline_dir)
     normalized_seeds = _validate_run_arguments(seeds, max_frames)
+    supervisor_path = Path(__file__).resolve()
+    implementation_path = Path(replay_module.__file__).resolve()
+    helper_path = Path(run_diagnostic_module.__file__).resolve()
+    external_trust_roots = {
+        "input_data": {
+            "path": str(data_path.resolve()),
+            "sha256": _verify_external_hash(
+                data_path,
+                expected_data_sha256,
+                "input data",
+            ),
+        },
+        "input_manifest": {
+            "path": str(input_manifest_path.resolve()),
+            "sha256": _verify_external_hash(
+                input_manifest_path,
+                expected_input_manifest_sha256,
+                "input manifest",
+            ),
+        },
+        "baseline_manifest": {
+            "path": str(
+                (immutable_baseline_dir / "manifest.json").resolve()
+            ),
+            "sha256": _verify_external_hash(
+                immutable_baseline_dir / "manifest.json",
+                expected_baseline_manifest_sha256,
+                "immutable baseline manifest",
+            ),
+        },
+        "supervisor_source": {
+            "path": str(supervisor_path),
+            "sha256": _verify_external_hash(
+                supervisor_path,
+                expected_supervisor_source_sha256,
+                "supervisor source",
+            ),
+        },
+        "replay_source": {
+            "path": str(implementation_path),
+            "sha256": _verify_external_hash(
+                implementation_path,
+                expected_replay_source_sha256,
+                "replay source",
+            ),
+        },
+        "run_diagnostic_source": {
+            "path": str(helper_path),
+            "sha256": _verify_external_hash(
+                helper_path,
+                expected_run_diagnostic_source_sha256,
+                "run_diagnostic source",
+            ),
+        },
+    }
+    baseline_hashes = _verify_immutable_baseline(
+        immutable_baseline_dir,
+        expected_baseline_manifest_sha256,
+    )
     _validate_output_root(project_root, output_root)
     free_before = available_bytes(_nearest_existing_ancestor(output_root))
     if free_before < START_BYTES:
@@ -235,15 +333,12 @@ def run_warm_start_recovery(
             f"available={free_before} below start threshold={START_BYTES}"
         )
     source_commit, source_branch, tracked_status = _validated_git_state(project_root)
-    if not data_path.is_file() or not input_manifest_path.is_file():
-        raise ValueError("data and input manifest must be regular files")
     input_manifest = _strict_json(input_manifest_path)
     input_hashes = {
-        "data": _sha256(data_path),
-        "input_manifest": _sha256(input_manifest_path),
+        "data": expected_data_sha256,
+        "input_manifest": expected_input_manifest_sha256,
     }
-    implementation_path = Path(replay_module.__file__).resolve()
-    implementation_sha256 = _sha256(implementation_path)
+    implementation_sha256 = expected_replay_source_sha256
 
     parent_root = _allocate_run_root(output_root / "warm-start-recovery")
     started_at = datetime.now(timezone.utc).isoformat()
@@ -261,12 +356,33 @@ def run_warm_start_recovery(
         return _limit_reason(output_root, parent_root, free)
 
     def inputs_unchanged() -> None:
-        if _sha256(data_path) != input_hashes["data"]:
-            raise ValueError("input data changed during paired replay")
-        if _sha256(input_manifest_path) != input_hashes["input_manifest"]:
-            raise ValueError("input manifest changed during paired replay")
-        if _sha256(implementation_path) != implementation_sha256:
-            raise ValueError("replay executable changed during paired replay")
+        for description, record in external_trust_roots.items():
+            _verify_external_hash(
+                Path(record["path"]),
+                record["sha256"],
+                description.replace("_", " "),
+            )
+
+    def reverify_for_completed_publication() -> None:
+        inputs_unchanged()
+        final_baseline_hashes = _verify_immutable_baseline(
+            immutable_baseline_dir,
+            expected_baseline_manifest_sha256,
+        )
+        if final_baseline_hashes != baseline_hashes:
+            raise ValueError("immutable baseline changed during paired replay")
+        if (
+            source_snapshot_sha256 is None
+            or _sha256(snapshot_path) != source_snapshot_sha256
+        ):
+            raise ValueError("source snapshot changed during paired replay")
+        final_git_state = _validated_git_state(project_root)
+        if final_git_state != (
+            source_commit,
+            source_branch,
+            tracked_status,
+        ):
+            raise ValueError("source Git state changed during paired replay")
 
     try:
         reason = probe_limits()
@@ -297,6 +413,7 @@ def run_warm_start_recovery(
                     max_frames,
                     initialization_policy=policy,
                     supervisor_probe=probe_limits,
+                    enforce_start_space=False,
                 )
                 children[label] = child
                 inputs_unchanged()
@@ -306,20 +423,7 @@ def run_warm_start_recovery(
                     break
 
         if termination_reason == "completed":
-            final_baseline_hashes = _verify_immutable_baseline(
-                immutable_baseline_dir
-            )
-            if final_baseline_hashes != baseline_hashes:
-                raise ValueError("immutable baseline changed during paired replay")
-            final_commit, final_branch, final_status = _validated_git_state(
-                project_root
-            )
-            if (final_commit, final_branch, final_status) != (
-                source_commit,
-                source_branch,
-                tracked_status,
-            ):
-                raise ValueError("source Git state changed during paired replay")
+            reverify_for_completed_publication()
             if any(
                 children.get(label, {}).get("termination_reason") != "completed"
                 for label in ("strict", "restart")
@@ -357,10 +461,17 @@ def run_warm_start_recovery(
         ),
         "source_snapshot_sha256": source_snapshot_sha256,
         "source_snapshot_policy": SOURCE_SNAPSHOT_POLICY,
+        "external_trust_roots": external_trust_roots,
+        "supervisor_implementation": external_trust_roots[
+            "supervisor_source"
+        ],
         "replay_implementation": {
             "path": str(implementation_path),
             "sha256": implementation_sha256,
         },
+        "shared_run_diagnostic_implementation": external_trust_roots[
+            "run_diagnostic_source"
+        ],
         "immutable_baseline_dir": str(immutable_baseline_dir.resolve()),
         "immutable_baseline_hashes": baseline_hashes,
         "input_data": {
@@ -437,7 +548,19 @@ def run_warm_start_recovery(
                             completed_staging_reason
                         )
                     else:
-                        completed_ready_for_publication = True
+                        try:
+                            reverify_for_completed_publication()
+                        except Exception as caught:
+                            error = caught
+                            manifest["termination_reason"] = (
+                                "runner_setup_error"
+                            )
+                            manifest["error"] = {
+                                "type": type(caught).__name__,
+                                "message": str(caught),
+                            }
+                        else:
+                            completed_ready_for_publication = True
 
     if completed_ready_for_publication:
         staging_path.replace(manifest_path)
@@ -461,6 +584,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-root", required=True, type=Path)
     parser.add_argument("--seed", action="append", type=int, default=[])
     parser.add_argument("--max-frames", required=True, type=int)
+    parser.add_argument("--expected-data-sha256", required=True)
+    parser.add_argument("--expected-input-manifest-sha256", required=True)
+    parser.add_argument("--expected-baseline-manifest-sha256", required=True)
+    parser.add_argument("--expected-supervisor-source-sha256", required=True)
+    parser.add_argument("--expected-replay-source-sha256", required=True)
+    parser.add_argument(
+        "--expected-run-diagnostic-source-sha256", required=True
+    )
     arguments = parser.parse_args(argv)
     project_root = Path(__file__).resolve().parents[2]
     try:
@@ -472,6 +603,22 @@ def main(argv: list[str] | None = None) -> int:
             arguments.seed,
             project_root,
             arguments.max_frames,
+            expected_data_sha256=arguments.expected_data_sha256,
+            expected_input_manifest_sha256=(
+                arguments.expected_input_manifest_sha256
+            ),
+            expected_baseline_manifest_sha256=(
+                arguments.expected_baseline_manifest_sha256
+            ),
+            expected_supervisor_source_sha256=(
+                arguments.expected_supervisor_source_sha256
+            ),
+            expected_replay_source_sha256=(
+                arguments.expected_replay_source_sha256
+            ),
+            expected_run_diagnostic_source_sha256=(
+                arguments.expected_run_diagnostic_source_sha256
+            ),
         )
     except (DiskSpaceError, ValueError, OSError) as caught:
         parser.error(str(caught))

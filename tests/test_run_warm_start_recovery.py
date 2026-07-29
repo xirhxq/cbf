@@ -3,11 +3,15 @@
 import gzip
 import hashlib
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import scripts.diagnostics.replay_localization_calibration as replay_module
+import scripts.diagnostics.run_diagnostic as run_diagnostic_module
+import scripts.diagnostics.run_warm_start_recovery as supervisor_module
 from scripts.diagnostics.replay_localization_calibration import (
     RESTART_BEFORE_FIRST_FINITE_POLICY,
     STRICT_PREVIOUS_POLICY,
@@ -88,9 +92,36 @@ class WarmStartRecoveryRunnerTests(unittest.TestCase):
             json.dumps(baseline_manifest)
         )
         self.output_root = self.root / "output"
+        self.available_patcher = patch.object(
+            supervisor_module,
+            "available_bytes",
+            return_value=9_000_000_000,
+        )
+        self.available_patcher.start()
 
     def tearDown(self):
+        self.available_patcher.stop()
         self.temporary.cleanup()
+
+    def expected_trust_roots(self) -> dict[str, str]:
+        return {
+            "expected_data_sha256": _sha256(self.data_path),
+            "expected_input_manifest_sha256": _sha256(
+                self.input_manifest_path
+            ),
+            "expected_baseline_manifest_sha256": _sha256(
+                self.immutable_baseline_dir / "manifest.json"
+            ),
+            "expected_supervisor_source_sha256": _sha256(
+                Path(supervisor_module.__file__)
+            ),
+            "expected_replay_source_sha256": _sha256(
+                Path(replay_module.__file__)
+            ),
+            "expected_run_diagnostic_source_sha256": _sha256(
+                Path(run_diagnostic_module.__file__)
+            ),
+        }
 
     def run_fixture(
         self,
@@ -100,7 +131,7 @@ class WarmStartRecoveryRunnerTests(unittest.TestCase):
             values = {
                 ("rev-parse", "HEAD"): "deadbeef",
                 ("branch", "--show-current"): "codex/fixture",
-                ("status", "--short", "--untracked-files=no"): "",
+                ("status", "--short"): "?? build-diagnostic/",
             }
             return values[arguments]
 
@@ -126,6 +157,7 @@ class WarmStartRecoveryRunnerTests(unittest.TestCase):
                 [20260727, 20260728],
                 self.project_root,
                 1,
+                **self.expected_trust_roots(),
             )
         return manifest, replay.call_args_list
 
@@ -152,6 +184,9 @@ class WarmStartRecoveryRunnerTests(unittest.TestCase):
         manifest, _ = self.run_fixture()
 
         self.assertEqual(manifest["source_commit"], "deadbeef")
+        self.assertEqual(
+            manifest["tracked_worktree_status"], "?? build-diagnostic/"
+        )
         self.assertEqual(len(manifest["source_snapshot_sha256"]), 64)
         self.assertEqual(
             set(manifest["immutable_baseline_hashes"]),
@@ -185,7 +220,7 @@ class WarmStartRecoveryRunnerTests(unittest.TestCase):
             values = {
                 ("rev-parse", "HEAD"): "deadbeef",
                 ("branch", "--show-current"): "codex/fixture",
-                ("status", "--short", "--untracked-files=no"): "",
+                ("status", "--short"): "?? build-diagnostic/",
             }
             return values[arguments]
 
@@ -204,6 +239,7 @@ class WarmStartRecoveryRunnerTests(unittest.TestCase):
                 [20260727],
                 self.project_root,
                 1,
+                **self.expected_trust_roots(),
             )
 
         self.assertEqual(manifest["termination_reason"], "child_failure")
@@ -217,7 +253,7 @@ class WarmStartRecoveryRunnerTests(unittest.TestCase):
             values = {
                 ("rev-parse", "HEAD"): "deadbeef",
                 ("branch", "--show-current"): "codex/fixture",
-                ("status", "--short", "--untracked-files=no"): "",
+                ("status", "--short"): "?? build-diagnostic/",
             }
             return values[arguments]
 
@@ -262,6 +298,7 @@ class WarmStartRecoveryRunnerTests(unittest.TestCase):
                 [20260727],
                 self.project_root,
                 1,
+                **self.expected_trust_roots(),
             )
 
         self.assertEqual(replay.call_count, 2)
@@ -318,7 +355,7 @@ class WarmStartRecoveryRunnerTests(unittest.TestCase):
             values = {
                 ("rev-parse", "HEAD"): "deadbeef",
                 ("branch", "--show-current"): "codex/fixture",
-                ("status", "--short", "--untracked-files=no"): "",
+                ("status", "--short"): "?? build-diagnostic/",
             }
             return values[arguments]
 
@@ -352,6 +389,7 @@ class WarmStartRecoveryRunnerTests(unittest.TestCase):
                     [20260727],
                     self.project_root,
                     1,
+                    **self.expected_trust_roots(),
                 )
             except OSError:
                 pass
@@ -384,6 +422,7 @@ class WarmStartRecoveryRunnerTests(unittest.TestCase):
                     [20260727 + index],
                     self.project_root,
                     1,
+                    **self.expected_trust_roots(),
                 )
             replay.assert_not_called()
             self.assertFalse((forbidden / "warm-start-recovery").exists())
@@ -397,33 +436,510 @@ class WarmStartRecoveryRunnerTests(unittest.TestCase):
 
         self.assertFalse(self.output_root.exists())
 
-    def test_dirty_tracked_tree_stops_before_parent_allocation(self):
-        """Breaks if a replay can start from an uncommitted executable snapshot."""
-        def dirty_git(_project_root, *arguments):
-            values = {
-                ("rev-parse", "HEAD"): "deadbeef",
-                ("branch", "--show-current"): "codex/fixture",
-                ("status", "--short", "--untracked-files=no"): " M source.py",
-            }
-            return values[arguments]
+    def test_external_trust_root_mismatch_stops_before_allocation(self):
+        """Breaks if self-consistent replacement inputs can certify themselves."""
+        for key in self.expected_trust_roots():
+            with self.subTest(key=key):
+                trust_roots = self.expected_trust_roots()
+                trust_roots[key] = "0" * 64
+                output_root = self.root / f"trust-mismatch-{key}"
 
-        with patch(
-            "scripts.diagnostics.run_warm_start_recovery._git_output",
-            side_effect=dirty_git,
-        ), patch(
-            "scripts.diagnostics.run_warm_start_recovery.replay_calibration"
-        ), self.assertRaisesRegex(ValueError, "tracked working tree"):
-            run_warm_start_recovery(
-                self.data_path,
-                self.input_manifest_path,
-                self.immutable_baseline_dir,
-                self.output_root,
-                [20260727],
-                self.project_root,
-                1,
+                with patch(
+                    "scripts.diagnostics.run_warm_start_recovery.replay_calibration"
+                ) as replay, self.assertRaisesRegex(ValueError, "external"):
+                    run_warm_start_recovery(
+                        self.data_path,
+                        self.input_manifest_path,
+                        self.immutable_baseline_dir,
+                        output_root,
+                        [20260727],
+                        self.project_root,
+                        1,
+                        **trust_roots,
+                    )
+
+                replay.assert_not_called()
+                self.assertFalse(output_root.exists())
+
+    def test_cli_requires_every_external_trust_root(self):
+        """Breaks if production CLI can derive any trust root from its inputs."""
+        with self.assertRaises(SystemExit) as caught:
+            supervisor_module.main(
+                [
+                    "--data",
+                    str(self.data_path),
+                    "--input-manifest",
+                    str(self.input_manifest_path),
+                    "--immutable-baseline",
+                    str(self.immutable_baseline_dir),
+                    "--output-root",
+                    str(self.output_root),
+                    "--seed",
+                    "20260727",
+                    "--max-frames",
+                    "1",
+                ]
             )
 
+        self.assertEqual(caught.exception.code, 2)
         self.assertFalse(self.output_root.exists())
+
+    def test_finalizing_data_or_snapshot_mutation_cannot_publish_completed(self):
+        """Breaks if final publication omits a unified input/snapshot recheck."""
+        original_data = self.data_path.read_bytes()
+        for target in ("data", "snapshot"):
+            with self.subTest(target=target):
+                output_root = self.root / f"mutation-{target}"
+                original_stage = supervisor_module._stage_manifest
+                mutated = False
+
+                def stage(path, manifest):
+                    nonlocal mutated
+                    original_stage(path, manifest)
+                    if (
+                        not mutated
+                        and manifest.get("termination_reason") == "completed"
+                    ):
+                        mutated = True
+                        if target == "data":
+                            self.data_path.write_text('{"mutated":true}\n')
+                        else:
+                            snapshot = (
+                                Path(manifest["source_snapshot_path"])
+                            )
+                            snapshot.write_bytes(
+                                snapshot.read_bytes() + b"mutation"
+                            )
+
+                def git_output(_project_root, *arguments):
+                    values = {
+                        ("rev-parse", "HEAD"): "deadbeef",
+                        ("branch", "--show-current"): "codex/fixture",
+                        ("status", "--short"): "?? build-diagnostic/",
+                    }
+                    return values[arguments]
+
+                children = [
+                    {
+                        "termination_reason": "completed",
+                        "output_dir": "strict",
+                    },
+                    {
+                        "termination_reason": "completed",
+                        "output_dir": "restart",
+                    },
+                ]
+                with patch.object(
+                    supervisor_module, "_stage_manifest", side_effect=stage
+                ), patch.object(
+                    supervisor_module, "_git_output", side_effect=git_output
+                ), patch.object(
+                    supervisor_module,
+                    "replay_calibration",
+                    side_effect=children,
+                ):
+                    manifest = run_warm_start_recovery(
+                        self.data_path,
+                        self.input_manifest_path,
+                        self.immutable_baseline_dir,
+                        output_root,
+                        [20260727],
+                        self.project_root,
+                        1,
+                        **self.expected_trust_roots(),
+                    )
+
+                self.assertTrue(mutated)
+                self.assertNotEqual(
+                    manifest["termination_reason"], "completed"
+                )
+                stored = json.loads(
+                    (Path(manifest["output_dir"]) / "manifest.json").read_text()
+                )
+                self.assertNotEqual(
+                    stored["termination_reason"], "completed"
+                )
+                if target == "data":
+                    self.data_path.write_bytes(original_data)
+
+    def test_finalizing_manifest_module_helper_or_baseline_mutation_is_closed(self):
+        """Breaks if any non-data trust category is absent from final closure."""
+        static_targets = {
+            "input-manifest": self.input_manifest_path,
+            "baseline-manifest": (
+                self.immutable_baseline_dir / "manifest.json"
+            ),
+            "baseline-artifact": (
+                self.immutable_baseline_dir / "summary.json"
+            ),
+            "supervisor": Path(supervisor_module.__file__),
+            "replay": Path(replay_module.__file__),
+            "helper": Path(run_diagnostic_module.__file__),
+        }
+        original_stage = supervisor_module._stage_manifest
+        original_sha256 = supervisor_module._sha256
+
+        for label, static_target in static_targets.items():
+            with self.subTest(label=label):
+                output_root = self.root / f"final-root-{label}"
+                trust_roots = self.expected_trust_roots()
+                final_target = None
+
+                def stage(path, manifest):
+                    nonlocal final_target
+                    original_stage(path, manifest)
+                    if manifest.get("termination_reason") == "completed":
+                        final_target = static_target.resolve()
+
+                def sha256(path):
+                    observed = original_sha256(path)
+                    if (
+                        final_target is not None
+                        and Path(path).resolve() == final_target
+                    ):
+                        return "0" * 64
+                    return observed
+
+                def git_output(_project_root, *arguments):
+                    values = {
+                        ("rev-parse", "HEAD"): "deadbeef",
+                        ("branch", "--show-current"): "codex/fixture",
+                        ("status", "--short"): "?? build-diagnostic/",
+                    }
+                    return values[arguments]
+
+                children = [
+                    {
+                        "termination_reason": "completed",
+                        "output_dir": "strict",
+                    },
+                    {
+                        "termination_reason": "completed",
+                        "output_dir": "restart",
+                    },
+                ]
+                with patch.object(
+                    supervisor_module, "_stage_manifest", side_effect=stage
+                ), patch.object(
+                    supervisor_module, "_sha256", side_effect=sha256
+                ), patch.object(
+                    supervisor_module, "_git_output", side_effect=git_output
+                ), patch.object(
+                    supervisor_module,
+                    "replay_calibration",
+                    side_effect=children,
+                ):
+                    manifest = run_warm_start_recovery(
+                        self.data_path,
+                        self.input_manifest_path,
+                        self.immutable_baseline_dir,
+                        output_root,
+                        [20260727],
+                        self.project_root,
+                        1,
+                        **trust_roots,
+                    )
+
+                self.assertIsNotNone(final_target)
+                self.assertNotEqual(
+                    manifest["termination_reason"], "completed"
+                )
+                stored = json.loads(
+                    (Path(manifest["output_dir"]) / "manifest.json").read_text()
+                )
+                self.assertNotEqual(
+                    stored["termination_reason"], "completed"
+                )
+
+    def test_finalizing_git_mutation_cannot_publish_completed(self):
+        """Breaks if final publication omits full Git-state revalidation."""
+        mutations = {
+            "commit": ("rev-parse", "HEAD"),
+            "branch": ("branch", "--show-current"),
+            "status": ("status", "--short"),
+        }
+        for label, mutated_arguments in mutations.items():
+            with self.subTest(label=label):
+                original_stage = supervisor_module._stage_manifest
+                finalizing = False
+
+                def stage(path, manifest):
+                    nonlocal finalizing
+                    original_stage(path, manifest)
+                    if manifest.get("termination_reason") == "completed":
+                        finalizing = True
+
+                def git_output(_project_root, *arguments):
+                    values = {
+                        ("rev-parse", "HEAD"): "deadbeef",
+                        ("branch", "--show-current"): "codex/fixture",
+                        ("status", "--short"): "?? build-diagnostic/",
+                    }
+                    if finalizing and arguments == mutated_arguments:
+                        return {
+                            "commit": "changed-commit",
+                            "branch": "changed-branch",
+                            "status": "?? unexpected-source.py",
+                        }[label]
+                    return values[arguments]
+
+                children = [
+                    {
+                        "termination_reason": "completed",
+                        "output_dir": "strict",
+                    },
+                    {
+                        "termination_reason": "completed",
+                        "output_dir": "restart",
+                    },
+                ]
+                with patch.object(
+                    supervisor_module, "_stage_manifest", side_effect=stage
+                ), patch.object(
+                    supervisor_module, "_git_output", side_effect=git_output
+                ), patch.object(
+                    supervisor_module,
+                    "replay_calibration",
+                    side_effect=children,
+                ):
+                    manifest = run_warm_start_recovery(
+                        self.data_path,
+                        self.input_manifest_path,
+                        self.immutable_baseline_dir,
+                        self.root / f"git-mutation-{label}",
+                        [20260727],
+                        self.project_root,
+                        1,
+                        **self.expected_trust_roots(),
+                    )
+
+                self.assertTrue(finalizing)
+                self.assertNotEqual(
+                    manifest["termination_reason"], "completed"
+                )
+
+    def test_dirty_tracked_tree_stops_before_parent_allocation(self):
+        """Breaks if tracked or non-allowlisted untracked source is accepted."""
+        for status in (" M source.py", "?? unexpected-source.py"):
+            with self.subTest(status=status):
+                def dirty_git(_project_root, *arguments):
+                    values = {
+                        ("rev-parse", "HEAD"): "deadbeef",
+                        ("branch", "--show-current"): "codex/fixture",
+                        ("status", "--short"): status,
+                    }
+                    return values[arguments]
+
+                with patch(
+                    "scripts.diagnostics.run_warm_start_recovery._git_output",
+                    side_effect=dirty_git,
+                ), patch(
+                    "scripts.diagnostics.run_warm_start_recovery.replay_calibration"
+                ), self.assertRaisesRegex(ValueError, "working tree"):
+                    run_warm_start_recovery(
+                        self.data_path,
+                        self.input_manifest_path,
+                        self.immutable_baseline_dir,
+                        self.output_root,
+                        [20260727],
+                        self.project_root,
+                        1,
+                        **self.expected_trust_roots(),
+                    )
+
+                self.assertFalse(self.output_root.exists())
+
+    def test_real_four_cell_parent_uses_one_8gb_gate_then_6gb_live_floor(self):
+        """Breaks if supervised children reapply 8 GB or four-cell pairing is mocked."""
+        project_root = self.root / "real-project"
+        project_root.mkdir()
+        (project_root / "source.txt").write_text("tracked\n")
+        for arguments in (
+            ("init", "-q"),
+            ("config", "user.email", "fixture@example.com"),
+            ("config", "user.name", "Fixture"),
+            ("add", "source.txt"),
+            ("commit", "-q", "-m", "fixture"),
+        ):
+            subprocess.run(
+                ["git", *arguments],
+                cwd=project_root,
+                check=True,
+                capture_output=True,
+            )
+
+        positions = [[1.0, 1.0], [2.0, 1.0], [1.0, 2.0], [2.0, 2.0]]
+        config = {
+            "num": 4,
+            "formation": {"parts": 2, "bases-id": [[0, 1], [1, 2]]},
+            "bases": [[0.0, 0.0], [4.0, 0.0], [0.0, 4.0]],
+            "initial": {"position": {"positions": positions}},
+            "execute": {"random-seed": 9},
+            "position_covariance": {"ranging_sigma": 0.5},
+            "cbfs": {
+                "without-slack": {
+                    "comm-fixed": {
+                        "max-range": 20.0,
+                        "min-neighbour-id-offset": -2,
+                        "max-neighbour-id-offset": 0,
+                    }
+                }
+            },
+        }
+        frames = [
+            {
+                "robots": [
+                    {
+                        "id": robot_id,
+                        "state": {"x": x + 0.1 * frame, "y": y},
+                    }
+                    for robot_id, (x, y) in enumerate(positions, 1)
+                ]
+            }
+            for frame in range(2)
+        ]
+        data_path = self.root / "real-input" / "data.json"
+        data_path.parent.mkdir()
+        data_path.write_text(json.dumps({"config": config, "state": frames}))
+        input_manifest_path = data_path.parent / "manifest.json"
+        input_manifest_path.write_text(
+            json.dumps(
+                {
+                    "termination_reason": "completed",
+                    "base_commit": "trajectory",
+                    "config_sha256": "fixture-config",
+                }
+            )
+        )
+        output_root = self.root / "real-output"
+        trust_roots = {
+            "expected_data_sha256": _sha256(data_path),
+            "expected_input_manifest_sha256": _sha256(input_manifest_path),
+            "expected_baseline_manifest_sha256": _sha256(
+                self.immutable_baseline_dir / "manifest.json"
+            ),
+            "expected_supervisor_source_sha256": _sha256(
+                Path(supervisor_module.__file__)
+            ),
+            "expected_replay_source_sha256": _sha256(
+                Path(replay_module.__file__)
+            ),
+            "expected_run_diagnostic_source_sha256": _sha256(
+                Path(run_diagnostic_module.__file__)
+            ),
+        }
+        parent_probes = 0
+
+        def parent_available(_path):
+            nonlocal parent_probes
+            parent_probes += 1
+            return 8_000_000_000 if parent_probes == 1 else 7_000_000_000
+
+        with patch.object(
+            supervisor_module,
+            "available_bytes",
+            side_effect=parent_available,
+        ), patch.object(
+            replay_module, "available_bytes", return_value=7_000_000_000
+        ), patch.object(
+            replay_module,
+            "require_start_space",
+            side_effect=AssertionError("nested 8 GB gate"),
+        ):
+            manifest = run_warm_start_recovery(
+                data_path,
+                input_manifest_path,
+                self.immutable_baseline_dir,
+                output_root,
+                [20260727],
+                project_root,
+                2,
+                **trust_roots,
+            )
+
+        self.assertEqual(manifest["termination_reason"], "completed")
+        self.assertEqual(manifest["free_bytes_before"], 8_000_000_000)
+        self.assertEqual(manifest["minimum_live_free_bytes"], 7_000_000_000)
+        self.assertEqual(set(manifest["children"]), {"strict", "restart"})
+        rows_by_policy = {}
+        for label, policy in (
+            ("strict", STRICT_PREVIOUS_POLICY),
+            ("restart", RESTART_BEFORE_FIRST_FINITE_POLICY),
+        ):
+            child = manifest["children"][label]
+            self.assertEqual(child["termination_reason"], "completed")
+            with gzip.open(
+                Path(child["output_dir"]) / "calibration.jsonl.gz", "rt"
+            ) as source:
+                rows = [json.loads(line) for line in source]
+            self.assertEqual(
+                {row["graph_case"] for row in rows},
+                {"dynamic_dag_wnls", "fixed_refs_wnls"},
+            )
+            self.assertTrue(
+                all(row["initialization_policy"] == policy for row in rows)
+            )
+            self.assertTrue(
+                all(
+                    "initial_estimate_source" in row
+                    and "ever_acquired_finite_before_attempt" in row
+                    for row in rows
+                )
+            )
+            rows_by_policy[policy] = rows
+
+        strict_by_key = {
+            (
+                row["seed"],
+                row["graph_case"],
+                row["frame_index"],
+                row["robot_id"],
+            ): row
+            for row in rows_by_policy[STRICT_PREVIOUS_POLICY]
+        }
+        restart_by_key = {
+            (
+                row["seed"],
+                row["graph_case"],
+                row["frame_index"],
+                row["robot_id"],
+            ): row
+            for row in rows_by_policy[RESTART_BEFORE_FIRST_FINITE_POLICY]
+        }
+        self.assertEqual(set(strict_by_key), set(restart_by_key))
+        for key in strict_by_key:
+            strict = strict_by_key[key]
+            restart = restart_by_key[key]
+            self.assertEqual(
+                strict["active_references"], restart["active_references"]
+            )
+            strict_noise = [
+                {
+                    field: measurement[field]
+                    for field in (
+                        "kind",
+                        "id",
+                        "true_range",
+                        "noise",
+                        "noisy_range",
+                    )
+                }
+                for measurement in strict["measurements"]
+            ]
+            restart_noise = [
+                {
+                    field: measurement[field]
+                    for field in (
+                        "kind",
+                        "id",
+                        "true_range",
+                        "noise",
+                        "noisy_range",
+                    )
+                }
+                for measurement in restart["measurements"]
+            ]
+            self.assertEqual(strict_noise, restart_noise)
 
 
 if __name__ == "__main__":

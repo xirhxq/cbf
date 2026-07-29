@@ -861,6 +861,17 @@ class WnlsAndFimTests(unittest.TestCase):
 
 
 class ReplayEvidenceBundleTests(unittest.TestCase):
+    def setUp(self):
+        # Unit tests must not depend on the host's transient free-space level.
+        # Tests of the live 6 GB floor still patch available_bytes directly.
+        launch_space = patch.object(
+            replay_module,
+            "require_start_space",
+            return_value=9_000_000_000,
+        )
+        launch_space.start()
+        self.addCleanup(launch_space.stop)
+
     def _fixture(self, directory: Path) -> tuple[Path, Path]:
         """Create a three-frame two-squad truth replay with non-collinear bases."""
         config = {

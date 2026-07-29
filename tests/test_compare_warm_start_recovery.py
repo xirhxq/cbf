@@ -58,6 +58,24 @@ class ComparisonFixture(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         self.fixture_count = 0
+        # Keep output-transaction tests deterministic when the developer
+        # machine happens to sit close to the real 8 GB launch threshold.
+        launch_space = patch.object(
+            _load_comparator(),
+            "require_start_space",
+            return_value=9_000_000_000,
+        )
+        launch_space.start()
+        self.addCleanup(launch_space.stop)
+        analysis_launch_space = patch.object(
+            importlib.import_module(
+                "scripts.diagnostics.analyze_localization_failures"
+            ),
+            "require_start_space",
+            return_value=9_000_000_000,
+        )
+        analysis_launch_space.start()
+        self.addCleanup(analysis_launch_space.stop)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -273,6 +291,7 @@ class ComparisonFixture(unittest.TestCase):
         output: bool = False,
         missing_output_parent: bool = False,
         expected_hash_mutation: Callable[[dict[str, str]], None] | None = None,
+        self_consistent_input_replacement: bool = False,
     ) -> dict:
         module = _load_comparator()
         if module is None:
@@ -335,6 +354,41 @@ class ComparisonFixture(unittest.TestCase):
             RESTART_BEFORE_FIRST_FINITE_POLICY,
             source_paths=sources,
         )
+        if self_consistent_input_replacement:
+            replacement_data = fixture_root / "replacement-data.json"
+            replacement_manifest = (
+                fixture_root / "replacement-input-manifest.json"
+            )
+            replacement_data.write_text(
+                '{"trajectory":"self-consistent-replacement"}\n',
+                encoding="utf-8",
+            )
+            replacement_manifest.write_text(
+                '{"termination_reason":"completed","replacement":true}\n',
+                encoding="utf-8",
+            )
+            replacement_records = {
+                "input_data": {
+                    "path": str(replacement_data),
+                    "sha256": _sha256(replacement_data),
+                },
+                "input_manifest": {
+                    "path": str(replacement_manifest),
+                    "sha256": _sha256(replacement_manifest),
+                },
+            }
+            for directory, manifest in (
+                (strict_dir, strict_manifest),
+                (restart_dir, restart_manifest),
+            ):
+                manifest.update(replacement_records)
+                (directory / "manifest.json").write_text(
+                    json.dumps(
+                        manifest, sort_keys=True, allow_nan=False
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
         if raw_process_nonfinite is not None:
             selected = {
                 "baseline": baseline_dir,
@@ -374,6 +428,23 @@ class ComparisonFixture(unittest.TestCase):
 
         parent_dir = fixture_root / "paired"
         parent_dir.mkdir()
+        parent_input_records = (
+            {
+                "input_data": strict_manifest["input_data"],
+                "input_manifest": strict_manifest["input_manifest"],
+            }
+            if self_consistent_input_replacement
+            else {
+                "input_data": {
+                    "path": str(data_path),
+                    "sha256": _sha256(data_path),
+                },
+                "input_manifest": {
+                    "path": str(input_manifest_path),
+                    "sha256": _sha256(input_manifest_path),
+                },
+            }
+        )
         parent = {
             "schema": "cbf2026-warm-start-recovery-parent-v1",
             "termination_reason": "completed",
@@ -399,14 +470,7 @@ class ComparisonFixture(unittest.TestCase):
                     PROCESS_NAME,
                 )
             },
-            "input_data": {
-                "path": str(data_path),
-                "sha256": _sha256(data_path),
-            },
-            "input_manifest": {
-                "path": str(input_manifest_path),
-                "sha256": _sha256(input_manifest_path),
-            },
+            **parent_input_records,
             "seeds": list(seeds),
             "max_frames": 2,
             "policies": [
@@ -575,6 +639,13 @@ class StrictAnchorTests(ComparisonFixture):
 
         with self.assertRaises(module.InputIntegrityError):
             self.compare_fixture(expected_hash_mutation=mutate)
+
+    def test_parent_and_children_cannot_self_certify_replacement_inputs(self):
+        """Breaks if paired records need not equal the anchored baseline records."""
+        module = _load_comparator()
+
+        with self.assertRaises(module.InputIntegrityError):
+            self.compare_fixture(self_consistent_input_replacement=True)
 
 
 class PairedOutcomeTests(ComparisonFixture):

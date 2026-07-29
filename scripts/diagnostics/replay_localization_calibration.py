@@ -14,6 +14,7 @@ from scripts.diagnostics.run_diagnostic import (
     HARD_FLOOR_BYTES,
     OUTPUT_ROOT_CAP_BYTES,
     RUN_CAP_BYTES,
+    START_BYTES,
     DiskSpaceError,
     _allocate_run_root,
     _nearest_existing_ancestor,
@@ -1099,13 +1100,28 @@ def replay_calibration(
     *,
     initialization_policy: str = STRICT_PREVIOUS_POLICY,
     supervisor_probe=None,
+    enforce_start_space: bool = True,
 ) -> dict:
     """Replay truth trajectories into a disk-guarded, paired calibration bundle."""
     data_path, manifest_path, output_root, project_root = map(Path, (data_path, manifest_path, output_root, project_root))
     if initialization_policy not in INITIALIZATION_POLICIES:
         raise ValueError(f"unknown initialization policy: {initialization_policy}")
+    if type(enforce_start_space) is not bool:
+        raise ValueError("enforce_start_space must be a boolean")
     _validate_output_root(project_root, output_root)
-    free_before = require_start_space(_nearest_existing_ancestor(output_root))
+    output_ancestor = _nearest_existing_ancestor(output_root)
+    if enforce_start_space:
+        free_before = require_start_space(output_ancestor)
+    else:
+        if supervisor_probe is None:
+            raise ValueError(
+                "supervised start-space bypass requires supervisor_probe"
+            )
+        free_before = available_bytes(output_ancestor)
+        if free_before < HARD_FLOOR_BYTES:
+            raise DiskSpaceError(
+                f"available={free_before} below live floor={HARD_FLOOR_BYTES}"
+            )
     data = _strict_load(data_path)
     input_manifest = _strict_load(manifest_path)
     config = data.get("config")
@@ -1159,6 +1175,10 @@ def replay_calibration(
             "termination_reason": termination_reason,
             "estimator_contract": ESTIMATOR_CONTRACT_ID,
             "initialization_policy": initialization_policy,
+            "launch_space_gate_bytes": (
+                START_BYTES if enforce_start_space else HARD_FLOOR_BYTES
+            ),
+            "supervised_parent_guard": not enforce_start_space,
             "output_dir": str(run_root),
             "started_at": started_at,
             "ended_at": datetime.now(timezone.utc).isoformat(),
