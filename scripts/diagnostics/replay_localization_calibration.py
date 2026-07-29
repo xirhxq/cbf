@@ -989,8 +989,25 @@ def _limit_reason(output_root: Path, run_root: Path) -> str | None:
     return None
 
 
-def _enforce_limits(output_root: Path, run_root: Path) -> None:
-    reason = _limit_reason(output_root, run_root)
+def _enforce_limits(
+    output_root: Path,
+    run_root: Path,
+    supervisor_probe=None,
+) -> None:
+    local_reason = _limit_reason(output_root, run_root)
+    supervisor_reason = None
+    if supervisor_probe is not None:
+        supervisor_reason = supervisor_probe()
+        if supervisor_reason not in {
+            None,
+            "disk_hard_floor",
+            "cache_root_cap",
+            "cache_run_cap",
+        }:
+            raise ValueError(
+                f"unknown supervisor limit reason: {supervisor_reason}"
+            )
+    reason = supervisor_reason or local_reason
     if reason is not None:
         raise _ReplayLimitError(reason)
 
@@ -1081,6 +1098,7 @@ def replay_calibration(
     max_frames=None,
     *,
     initialization_policy: str = STRICT_PREVIOUS_POLICY,
+    supervisor_probe=None,
 ) -> dict:
     """Replay truth trajectories into a disk-guarded, paired calibration bundle."""
     data_path, manifest_path, output_root, project_root = map(Path, (data_path, manifest_path, output_root, project_root))
@@ -1187,7 +1205,7 @@ def replay_calibration(
         return manifest
 
     try:
-        _enforce_limits(output_root, run_root)
+        _enforce_limits(output_root, run_root, supervisor_probe)
         with process_path.open("wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as compressed:
             for frame_index, frame in enumerate(frames):
                 truth = _truth_positions(frame, expected_ids)
@@ -1304,11 +1322,11 @@ def replay_calibration(
                             previous_epsilon[robot_id] = epsilon
                         states[state_key] = (previous, previous_active, previous_epsilon)
                 compressed.flush()
-                _enforce_limits(output_root, run_root)
+                _enforce_limits(output_root, run_root, supervisor_probe)
         summary = _summary(samples, expected_count, settings)
         summary_path.write_bytes(_strict_json_bytes(summary, indent=2) + b"\n")
         markdown_path.write_text(_summary_markdown(summary))
-        _enforce_limits(output_root, run_root)
+        _enforce_limits(output_root, run_root, supervisor_probe)
     except _ReplayLimitError as caught:
         error = caught
         termination_reason = caught.reason

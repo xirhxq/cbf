@@ -30,7 +30,9 @@ class WarmStartRecoveryRunnerTests(unittest.TestCase):
         self.project_root.mkdir()
         (self.project_root / "tracked-source.py").write_text("VALUE = 1\n")
 
-        self.data_path = self.root / "data.json"
+        self.input_bundle = self.root / "input-bundle"
+        self.input_bundle.mkdir()
+        self.data_path = self.input_bundle / "data.json"
         self.data_path.write_text(
             json.dumps(
                 {
@@ -52,7 +54,7 @@ class WarmStartRecoveryRunnerTests(unittest.TestCase):
                 }
             )
         )
-        self.input_manifest_path = self.root / "trajectory-manifest.json"
+        self.input_manifest_path = self.input_bundle / "trajectory-manifest.json"
         self.input_manifest_path.write_text(
             json.dumps(
                 {
@@ -207,6 +209,69 @@ class WarmStartRecoveryRunnerTests(unittest.TestCase):
         self.assertEqual(manifest["termination_reason"], "child_failure")
         self.assertEqual(replay.call_count, 1)
 
+    def test_child_live_probe_enforces_parent_cap_and_records_minimum_free(self):
+        """Breaks if aggregate limits are invisible while a blocking child runs."""
+        inside_child = False
+
+        def git_output(_project_root, *arguments):
+            values = {
+                ("rev-parse", "HEAD"): "deadbeef",
+                ("branch", "--show-current"): "codex/fixture",
+                ("status", "--short", "--untracked-files=no"): "",
+            }
+            return values[arguments]
+
+        def available(_path):
+            return 6_250_000_000 if inside_child else 9_000_000_000
+
+        def allocation(path):
+            if inside_child and Path(path).name.startswith("20"):
+                return 250_000_001
+            return 0
+
+        def child(*_arguments, **kwargs):
+            nonlocal inside_child
+            inside_child = True
+            try:
+                reason = kwargs["supervisor_probe"]()
+            finally:
+                inside_child = False
+            return {
+                "termination_reason": reason or "completed",
+                "output_dir": str(self.root / "child"),
+            }
+
+        with patch(
+            "scripts.diagnostics.run_warm_start_recovery._git_output",
+            side_effect=git_output,
+        ), patch(
+            "scripts.diagnostics.run_warm_start_recovery.available_bytes",
+            side_effect=available,
+        ), patch(
+            "scripts.diagnostics.run_warm_start_recovery.allocated_bytes",
+            side_effect=allocation,
+        ), patch(
+            "scripts.diagnostics.run_warm_start_recovery.replay_calibration",
+            side_effect=child,
+        ) as replay:
+            manifest = run_warm_start_recovery(
+                self.data_path,
+                self.input_manifest_path,
+                self.immutable_baseline_dir,
+                self.output_root,
+                [20260727],
+                self.project_root,
+                1,
+            )
+
+        self.assertEqual(replay.call_count, 2)
+        self.assertEqual(manifest["termination_reason"], "child_failure")
+        self.assertEqual(
+            manifest["children"]["strict"]["termination_reason"],
+            "cache_run_cap",
+        )
+        self.assertEqual(manifest["minimum_live_free_bytes"], 6_250_000_000)
+
     def test_parent_enforces_8gb_6gb_2gb_and_250mb_limits(self):
         """Breaks if the parent launches without the registered disk reserves."""
         with patch(
@@ -246,6 +311,82 @@ class WarmStartRecoveryRunnerTests(unittest.TestCase):
             manifest, child_calls = self.run_fixture()
         self.assertEqual(manifest["termination_reason"], "disk_hard_floor")
         self.assertEqual(child_calls, [])
+
+    def test_final_probe_failure_cannot_leave_completed_manifest(self):
+        """Breaks if a failing final probe follows publication of completed status."""
+        def git_output(_project_root, *arguments):
+            values = {
+                ("rev-parse", "HEAD"): "deadbeef",
+                ("branch", "--show-current"): "codex/fixture",
+                ("status", "--short", "--untracked-files=no"): "",
+            }
+            return values[arguments]
+
+        def available(_path):
+            if list(self.output_root.rglob("manifest.json")) or list(
+                self.output_root.rglob(".manifest*.tmp")
+            ):
+                raise OSError("synthetic final disk probe failure")
+            return 9_000_000_000
+
+        children = [
+            {"termination_reason": "completed", "output_dir": "strict"},
+            {"termination_reason": "completed", "output_dir": "restart"},
+        ]
+        with patch(
+            "scripts.diagnostics.run_warm_start_recovery._git_output",
+            side_effect=git_output,
+        ), patch(
+            "scripts.diagnostics.run_warm_start_recovery.available_bytes",
+            side_effect=available,
+        ), patch(
+            "scripts.diagnostics.run_warm_start_recovery.replay_calibration",
+            side_effect=children,
+        ):
+            try:
+                run_warm_start_recovery(
+                    self.data_path,
+                    self.input_manifest_path,
+                    self.immutable_baseline_dir,
+                    self.output_root,
+                    [20260727],
+                    self.project_root,
+                    1,
+                )
+            except OSError:
+                pass
+
+        published = list(self.output_root.rglob("manifest.json"))
+        self.assertTrue(
+            not published
+            or all(
+                json.loads(path.read_text())["termination_reason"] != "completed"
+                for path in published
+            )
+        )
+
+    def test_output_overlap_with_frozen_inputs_stops_before_allocation(self):
+        """Breaks if parent output can be allocated inside or around frozen inputs."""
+        forbidden_roots = (
+            self.immutable_baseline_dir / "new-output",
+            self.input_bundle / "new-output",
+            self.root,
+        )
+        for index, forbidden in enumerate(forbidden_roots):
+            with self.subTest(forbidden=forbidden), patch(
+                "scripts.diagnostics.run_warm_start_recovery.replay_calibration"
+            ) as replay, self.assertRaisesRegex(ValueError, "overlap"):
+                run_warm_start_recovery(
+                    self.data_path,
+                    self.input_manifest_path,
+                    self.immutable_baseline_dir,
+                    forbidden,
+                    [20260727 + index],
+                    self.project_root,
+                    1,
+                )
+            replay.assert_not_called()
+            self.assertFalse((forbidden / "warm-start-recovery").exists())
 
     def test_baseline_hash_mismatch_stops_before_parent_allocation(self):
         """Breaks if a mutated immutable baseline can anchor a new intervention."""

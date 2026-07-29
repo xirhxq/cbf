@@ -1149,6 +1149,32 @@ class ReplayEvidenceBundleTests(unittest.TestCase):
             "strict_previous_missing",
         )
 
+    def test_replay_enforces_supervisor_live_guard_at_frame_checkpoints(self):
+        """Breaks if a child can exceed its parent cap between supervisor calls."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project_root = root / "project"
+            project_root.mkdir()
+            data_path, manifest_path = self._fixture(root)
+            probes = 0
+
+            def supervisor_probe():
+                nonlocal probes
+                probes += 1
+                return "cache_run_cap" if probes >= 2 else None
+
+            manifest = replay_calibration(
+                data_path,
+                manifest_path,
+                root / "output",
+                [17],
+                project_root,
+                supervisor_probe=supervisor_probe,
+            )
+
+        self.assertGreaterEqual(probes, 2)
+        self.assertEqual(manifest["termination_reason"], "cache_run_cap")
+
     def test_attempt_failures_reduce_containment_and_no_worse_rates(self):
         """Breaks if stale retained state hides current failures or inflates coverage."""
         samples = replay_module._SummarySamples(6, [17])

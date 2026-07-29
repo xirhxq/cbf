@@ -1,6 +1,7 @@
 """Run one supervised strict-versus-restart localization replay."""
 
 import argparse
+import copy
 import gzip
 import hashlib
 import json
@@ -28,7 +29,6 @@ from scripts.diagnostics.run_diagnostic import (
     _nearest_existing_ancestor,
     _sha256,
     _validate_output_root,
-    _write_manifest,
     allocated_bytes,
     available_bytes,
 )
@@ -127,6 +127,37 @@ def _validated_git_state(project_root: Path) -> tuple[str, str, str]:
     return source_commit, source_branch, tracked_status
 
 
+def _paths_overlap(first: Path, second: Path) -> bool:
+    first_resolved = first.resolve()
+    second_resolved = second.resolve()
+    return (
+        first_resolved == second_resolved
+        or first_resolved in second_resolved.parents
+        or second_resolved in first_resolved.parents
+    )
+
+
+def _validate_output_separation(
+    output_root: Path,
+    *,
+    project_root: Path,
+    immutable_baseline_dir: Path,
+    data_path: Path,
+    input_manifest_path: Path,
+) -> None:
+    protected = {
+        "project root": project_root,
+        "immutable baseline": immutable_baseline_dir,
+        "input data": data_path,
+        "input data bundle": data_path.parent,
+        "input manifest": input_manifest_path,
+        "input manifest bundle": input_manifest_path.parent,
+    }
+    for label, path in protected.items():
+        if _paths_overlap(output_root, path):
+            raise ValueError(f"output_root overlap with protected {label}")
+
+
 def _validate_run_arguments(seeds: list[int], max_frames: int) -> list[int]:
     if not isinstance(max_frames, int) or max_frames <= 0:
         raise ValueError("max_frames must be a positive integer")
@@ -156,6 +187,22 @@ def _limit_reason(
     return None
 
 
+def _manifest_bytes(manifest: dict) -> bytes:
+    return (
+        json.dumps(
+            manifest,
+            allow_nan=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _stage_manifest(path: Path, manifest: dict) -> None:
+    path.write_bytes(_manifest_bytes(manifest))
+
+
 def run_warm_start_recovery(
     data_path: Path,
     input_manifest_path: Path,
@@ -172,6 +219,13 @@ def run_warm_start_recovery(
     output_root = Path(output_root)
     project_root = Path(project_root)
 
+    _validate_output_separation(
+        output_root,
+        project_root=project_root,
+        immutable_baseline_dir=immutable_baseline_dir,
+        data_path=data_path,
+        input_manifest_path=input_manifest_path,
+    )
     baseline_hashes = _verify_immutable_baseline(immutable_baseline_dir)
     normalized_seeds = _validate_run_arguments(seeds, max_frames)
     _validate_output_root(project_root, output_root)
@@ -242,6 +296,7 @@ def run_warm_start_recovery(
                     project_root,
                     max_frames,
                     initialization_policy=policy,
+                    supervisor_probe=probe_limits,
                 )
                 children[label] = child
                 inputs_unchanged()
@@ -276,9 +331,16 @@ def run_warm_start_recovery(
             "child_failure" if child_started else "runner_setup_error"
         )
 
-    before_manifest_reason = probe_limits()
-    if termination_reason == "completed" and before_manifest_reason is not None:
-        termination_reason = before_manifest_reason
+    try:
+        before_manifest_reason = probe_limits()
+    except Exception as caught:
+        if error is None:
+            error = caught
+        if termination_reason == "completed":
+            termination_reason = "runner_setup_error"
+    else:
+        if termination_reason == "completed" and before_manifest_reason is not None:
+            termination_reason = before_manifest_reason
 
     manifest = {
         "schema": PARENT_SCHEMA_ID,
@@ -332,20 +394,62 @@ def run_warm_start_recovery(
             "type": type(error).__name__,
             "message": str(error),
         }
-    _write_manifest(parent_root, manifest)
 
-    post_free = available_bytes(output_root)
-    free_probes.append(post_free)
-    post_reason = _limit_reason(output_root, parent_root, post_free)
-    if termination_reason == "completed" and post_reason is not None:
-        termination_reason = post_reason
-        manifest["termination_reason"] = post_reason
+    manifest_path = parent_root / "manifest.json"
+    staging_path = parent_root / ".manifest.json.finalizing.tmp"
+    finalizing = copy.deepcopy(manifest)
+    finalizing["termination_reason"] = "finalizing"
+    _stage_manifest(staging_path, finalizing)
+    completed_ready_for_publication = False
+
+    if manifest["termination_reason"] == "completed":
+        try:
+            staged_reason = probe_limits()
+        except Exception as caught:
+            error = caught
+            manifest["termination_reason"] = "runner_setup_error"
+            manifest["error"] = {
+                "type": type(caught).__name__,
+                "message": str(caught),
+            }
+        else:
+            if staged_reason is not None:
+                manifest["termination_reason"] = staged_reason
+            manifest["ended_at"] = datetime.now(timezone.utc).isoformat()
+            manifest["minimum_live_free_bytes"] = min(free_probes)
+            manifest["free_bytes_after"] = free_probes[-1]
+            manifest["output_root_allocated_bytes"] = _allocation(output_root)
+            manifest["parent_allocated_bytes"] = _allocation(parent_root)
+            if manifest["termination_reason"] == "completed":
+                _stage_manifest(staging_path, manifest)
+                try:
+                    completed_staging_reason = probe_limits()
+                except Exception as caught:
+                    error = caught
+                    manifest["termination_reason"] = "runner_setup_error"
+                    manifest["error"] = {
+                        "type": type(caught).__name__,
+                        "message": str(caught),
+                    }
+                else:
+                    if completed_staging_reason is not None:
+                        manifest["termination_reason"] = (
+                            completed_staging_reason
+                        )
+                    else:
+                        completed_ready_for_publication = True
+
+    if completed_ready_for_publication:
+        staging_path.replace(manifest_path)
+        return manifest
+
     manifest["ended_at"] = datetime.now(timezone.utc).isoformat()
     manifest["minimum_live_free_bytes"] = min(free_probes)
-    manifest["free_bytes_after"] = post_free
+    manifest["free_bytes_after"] = free_probes[-1]
     manifest["output_root_allocated_bytes"] = _allocation(output_root)
     manifest["parent_allocated_bytes"] = _allocation(parent_root)
-    _write_manifest(parent_root, manifest)
+    _stage_manifest(staging_path, manifest)
+    staging_path.replace(manifest_path)
     return manifest
 
 
