@@ -19,6 +19,7 @@ from scripts.diagnostics.compare_warm_start_recovery import InputIntegrityError
 from scripts.diagnostics.replay_localization_calibration import (
     RESTART_BEFORE_FIRST_FINITE_POLICY,
     STRICT_PREVIOUS_POLICY,
+    active_references,
     fixed_references,
 )
 
@@ -311,6 +312,7 @@ class _ScientificAccumulator:
             "estimated_dynamic_finite": _geometry_family(),
             "estimated_fixed_pair_finite": _geometry_family(),
         }
+        self.modeled_fim = _geometry_family()
         self.tracking_true = _stratified_samples()
         self.tracking_estimated = _stratified_samples()
         self.absolute_error = _stratified_samples()
@@ -348,7 +350,31 @@ class _ScientificAccumulator:
         context = (frame_index, seed)
         estimated = self.estimated_positions.setdefault(context, {})
         observer_estimate = _optional_finite_point(row.get("estimate"))
-        active_uav_references = row["active_references"]["uav_ids"]
+        truth_by_robot = self.trajectory["truth"][frame_index]
+        immutable_truth = _point(
+            truth_by_robot[robot_id],
+            "immutable trajectory truth",
+        )
+        error_state = _reconcile_error_state(
+            row,
+            immutable_truth,
+            observer_estimate,
+        )
+        expected_active = active_references(
+            self.config,
+            robot_id,
+            {
+                identifier: np.asarray(position, dtype=float)
+                for identifier, position in truth_by_robot.items()
+            },
+        )
+        if row["active_references"] != expected_active:
+            raise InputIntegrityError(
+                f"recorded dynamic references do not match frozen "
+                f"config and truth at "
+                f"{comparison_module._compact_key(row)!r}"
+            )
+        active_uav_references = expected_active["uav_ids"]
         lineage = self.lineage_by_context.setdefault(
             (frame_index, seed, squad), {}
         )
@@ -372,16 +398,16 @@ class _ScientificAccumulator:
         self._record_availability(row, strata, depth, squad)
 
         if row.get("primary_statistics") is True:
-            truth = _point(row["truth_position"], "row truth position")
+            truth = immutable_truth
             active = _active_reference_positions(
-                row["active_references"],
+                expected_active,
                 self.config,
-                self.trajectory["truth"][frame_index],
+                truth_by_robot,
             )
             fixed_ids = fixed_references(self.config, robot_id)
             _require_fixed_subset(
                 fixed_ids,
-                row["active_references"],
+                expected_active,
                 comparison_module._compact_key(row),
             )
             fixed_truth = _active_reference_positions(
@@ -391,8 +417,8 @@ class _ScientificAccumulator:
             )
             signature = (
                 tuple(row["truth_position"]),
-                tuple(row["active_references"]["base_ids"]),
-                tuple(row["active_references"]["uav_ids"]),
+                tuple(expected_active["base_ids"]),
+                tuple(expected_active["uav_ids"]),
                 tuple(tuple(point) for point in active.tolist()),
             )
             tuple_key = (frame_index, robot_id)
@@ -441,7 +467,7 @@ class _ScientificAccumulator:
                 )
 
             estimated_active, active_reason = _estimated_references(
-                row["active_references"],
+                expected_active,
                 self.config,
                 estimated,
             )
@@ -457,6 +483,12 @@ class _ScientificAccumulator:
                 active_reason,
             )
             if row.get("finite") is True and observer_estimate is not None:
+                modeled_metrics = _modeled_fim_metrics(row)
+                _record_geometry(
+                    self.modeled_fim,
+                    modeled_metrics,
+                    strata,
+                )
                 if active_reason is None:
                     _record_geometry(
                         self.geometry_samples[
@@ -530,6 +562,11 @@ class _ScientificAccumulator:
                 _record_sample_inapplicable(
                     self.tracking_estimated, reason, strata
                 )
+                _record_inapplicable(
+                    self.modeled_fim,
+                    reason,
+                    strata,
+                )
             self._record_error_and_calibration(
                 row,
                 strata,
@@ -538,6 +575,7 @@ class _ScientificAccumulator:
                     "pairs_with_shared_uav_ancestor"
                 ],
                 baseline_side_label=side_label,
+                error_state=error_state,
             )
 
         if row.get("finite") is True:
@@ -638,12 +676,10 @@ class _ScientificAccumulator:
         uav_reference_count: int,
         shared_pair_count: int,
         baseline_side_label: str,
+        error_state: dict,
     ) -> None:
-        error_norm = row.get("error_norm")
-        error_finite = (
-            type(error_norm) in (int, float)
-            and math.isfinite(float(error_norm))
-        )
+        error_norm = error_state["error_norm"]
+        error_finite = error_norm is not None
         if error_finite:
             _record_sample(
                 self.absolute_error, float(error_norm), strata
@@ -683,16 +719,16 @@ class _ScientificAccumulator:
         for bucket in _selected_buckets(self.calibration, strata):
             bucket["converged_error_denominator"] += 1
             bucket["contained"] += int(
-                row.get("state_containment") is True
+                error_state["state_containment"] is True
             )
         for bucket in mechanism_buckets:
             bucket["converged_error_denominator"] += 1
             bucket["contained"] += int(
-                row.get("state_containment") is True
+                error_state["state_containment"] is True
             )
         try:
             q_value = _normalized_squared_error(
-                row.get("error_vector"),
+                error_state["error_vector"],
                 row.get("covariance"),
             )
         except ValueError:
@@ -723,6 +759,9 @@ class _ScientificAccumulator:
             name: _finish_geometry_family(family)
             for name, family in self.geometry_samples.items()
         }
+        geometry["modeled_fim_valid"] = _finish_geometry_family(
+            self.modeled_fim
+        )
         true_tuple_count = len(self.true_seed_repetitions)
         for name in (
             "true_dynamic_all_primary",
@@ -734,10 +773,21 @@ class _ScientificAccumulator:
             geometry[name]["overall"][
                 "range_seed_repetitions_verified"
             ] = len(self.seeds)
+            geometry[name].pop("by_seed", None)
+            geometry[name]["seed_stratification"] = {
+                "applicable": False,
+                "reason": "trajectory_level_quantity",
+            }
+        true_tracking = _finish_stratified_samples(
+            self.tracking_true
+        )
+        true_tracking.pop("by_seed", None)
+        true_tracking["seed_stratification"] = {
+            "applicable": False,
+            "reason": "trajectory_level_quantity",
+        }
         geometry["target_tracking"] = {
-            "true_position": _finish_stratified_samples(
-                self.tracking_true
-            ),
+            "true_position": true_tracking,
             "estimated_position_finite": _finish_stratified_samples(
                 self.tracking_estimated
             ),
@@ -1128,6 +1178,122 @@ def _mechanism_bucket(target: dict, label: str) -> dict:
             "q_above_9": 0,
         },
     )
+
+
+def _modeled_fim_metrics(row: dict) -> dict[str, float]:
+    values = {
+        "phi_min_eigenvalue": row.get("phi_min_eigenvalue"),
+        "phi_condition": row.get("phi_condition"),
+        "epsilon": row.get("epsilon"),
+    }
+    if any(
+        type(value) not in (int, float)
+        or not math.isfinite(float(value))
+        for value in values.values()
+    ):
+        raise InputIntegrityError(
+            f"finite row has invalid modeled FIM metrics at "
+            f"{comparison_module._compact_key(row)!r}"
+        )
+    metrics = {
+        name: float(value) for name, value in values.items()
+    }
+    if (
+        metrics["phi_min_eigenvalue"] <= 0.0
+        or metrics["phi_condition"] < 1.0
+        or metrics["epsilon"] <= 0.0
+    ):
+        raise InputIntegrityError(
+            f"finite row has out-of-domain modeled FIM metrics at "
+            f"{comparison_module._compact_key(row)!r}"
+        )
+    return metrics
+
+
+def _reconcile_error_state(
+    row: dict,
+    truth: np.ndarray,
+    estimate: np.ndarray | None,
+) -> dict:
+    key = comparison_module._compact_key(row)
+    raw_estimate = row.get("estimate")
+    if raw_estimate is not None and estimate is None:
+        raise InputIntegrityError(
+            f"retained estimate is malformed at key {key!r}"
+        )
+    if estimate is None:
+        error_vector = None
+        error_norm = None
+    else:
+        vector = truth - estimate
+        if not np.isfinite(vector).all():
+            raise InputIntegrityError(
+                f"recomputed error is not finite at key {key!r}"
+            )
+        error_vector = vector.tolist()
+        error_norm = float(np.linalg.norm(vector))
+        if not math.isfinite(error_norm):
+            raise InputIntegrityError(
+                f"recomputed error norm is not finite at key {key!r}"
+            )
+
+    epsilon = row.get("epsilon")
+    if epsilon is not None and (
+        type(epsilon) not in (int, float)
+        or not math.isfinite(float(epsilon))
+    ):
+        raise InputIntegrityError(
+            f"retained epsilon is invalid at key {key!r}"
+        )
+    if error_norm is None or epsilon is None:
+        error_to_epsilon_ratio = None
+        state_containment = None
+    else:
+        epsilon_value = float(epsilon)
+        error_to_epsilon_ratio = (
+            None
+            if epsilon_value <= 0.0
+            else error_norm / epsilon_value
+        )
+        state_containment = error_norm <= epsilon_value
+    containment = (
+        row.get("attempt_status") == "converged"
+        and state_containment is True
+    )
+    expected = {
+        "error_vector": error_vector,
+        "error_norm": error_norm,
+        "error_to_epsilon_ratio": error_to_epsilon_ratio,
+        "state_containment": state_containment,
+        "containment": containment,
+    }
+    for field, value in expected.items():
+        if not _stored_error_value_equal(row.get(field), value):
+            raise InputIntegrityError(
+                f"stored {field} does not match immutable truth and "
+                f"retained estimate at key {key!r}"
+            )
+    return {
+        "error_vector": error_vector,
+        "error_norm": error_norm,
+        "state_containment": state_containment,
+        "containment": containment,
+    }
+
+
+def _stored_error_value_equal(stored: object, expected: object) -> bool:
+    if expected is None or type(expected) is bool:
+        return stored is expected
+    if isinstance(expected, list):
+        return (
+            isinstance(stored, list)
+            and len(stored) == len(expected)
+            and all(
+                type(observed) is float and observed == wanted
+                for observed, wanted in zip(stored, expected)
+            )
+        )
+    return type(stored) is float and stored == expected
 
 
 def _baseline_side_label(

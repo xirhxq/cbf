@@ -26,6 +26,7 @@ from scripts.diagnostics.analyze_geometric_stability import (
 from scripts.diagnostics.replay_localization_calibration import (
     RESTART_BEFORE_FIRST_FINITE_POLICY,
     STRICT_PREVIOUS_POLICY,
+    active_references,
     fixed_references,
 )
 
@@ -118,7 +119,11 @@ class GeometricAnalysisFixture(unittest.TestCase):
         squad_count = 2 if robot_count >= 4 else 1
         return {
             "config": {
-                "bases": [[-3.0, -2.0], [3.0, 4.0]],
+                "bases": [
+                    [-3.0, -2.0],
+                    [3.0, 4.0],
+                    [2000.0, 2000.0],
+                ],
                 "num": robot_count,
                 "execute": {"time-step": 0.5},
                 "formation": {
@@ -166,9 +171,19 @@ class GeometricAnalysisFixture(unittest.TestCase):
                 for graph_case in GRAPH_CASES:
                     for robot_id in range(1, robot_count + 1):
                         truth = truth_by_id[robot_id]
-                        references = fixed_references(
-                            trajectory["config"], robot_id
-                        )
+                        if graph_case == "dynamic_dag_wnls":
+                            references = active_references(
+                                trajectory["config"],
+                                robot_id,
+                                {
+                                    identifier: np.asarray(position)
+                                    for identifier, position in truth_by_id.items()
+                                },
+                            )
+                        else:
+                            references = fixed_references(
+                                trajectory["config"], robot_id
+                            )
                         measurements = []
                         for base_id in references["base_ids"]:
                             base = trajectory["config"]["bases"][base_id]
@@ -210,6 +225,11 @@ class GeometricAnalysisFixture(unittest.TestCase):
                                 }
                             )
                         estimate = [truth[0] + 0.1, truth[1]]
+                        error_vector = [
+                            truth[0] - estimate[0],
+                            truth[1] - estimate[1],
+                        ]
+                        error_norm = float(np.linalg.norm(error_vector))
                         squad_size = math.ceil(
                             robot_count
                             / trajectory["config"]["formation"]["parts"]
@@ -238,9 +258,11 @@ class GeometricAnalysisFixture(unittest.TestCase):
                                 "epsilon": 3.0,
                                 "finite": True,
                                 "covariance_spd": True,
-                                "error_vector": [0.1, 0.0],
-                                "error_norm": 0.1,
-                                "error_to_epsilon_ratio": 1.0 / 30.0,
+                                "error_vector": error_vector,
+                                "error_norm": error_norm,
+                                "error_to_epsilon_ratio": (
+                                    error_norm / 3.0
+                                ),
                                 "state_containment": True,
                                 "containment": True,
                                 "phi_min_eigenvalue": 1.0,
@@ -378,10 +400,30 @@ class GeometricAnalysisFixture(unittest.TestCase):
             )
         }
 
+    @staticmethod
+    def reconcile_restart_provenance(rows: list[dict]) -> None:
+        state: dict[tuple[int, str, int], tuple[bool, bool]] = {}
+        for row in rows:
+            key = (row["seed"], row["graph_case"], row["robot_id"])
+            ever, previous_finite = state.get(key, (False, False))
+            row["ever_acquired_finite_before_attempt"] = ever
+            if row["frame_index"] == 0:
+                source = "deployment_frame_zero"
+            elif previous_finite:
+                source = "previous_finite"
+            elif not ever:
+                source = "deployment_restart_before_first_finite"
+            else:
+                source = "strict_previous_missing"
+            row["initial_estimate_source"] = source
+            finite = row["finite"]
+            state[key] = (ever or finite, finite)
+
     def write_complete_fixture(
         self,
         *,
         mutation: Callable[[list[dict]], None] | None = None,
+        paired_mutation: Callable[[list[dict]], None] | None = None,
         trajectory: dict | None = None,
         seeds: tuple[int, ...] = (101,),
     ) -> GeometricFixture:
@@ -405,6 +447,9 @@ class GeometricAnalysisFixture(unittest.TestCase):
         )
         if mutation is not None:
             mutation(restart_rows)
+        if paired_mutation is not None:
+            paired_mutation(strict_rows)
+            paired_mutation(restart_rows)
         strict_dir = fixture_root / "strict"
         restart_dir = fixture_root / "restart"
         self._write_bundle(
@@ -475,6 +520,50 @@ class GeometricAnalysisFixture(unittest.TestCase):
     def mutate_restart_truth(rows: list[dict]) -> None:
         rows[-1]["truth_position"][0] += 1.0
 
+    @staticmethod
+    def omit_dynamic_addition(rows: list[dict]) -> None:
+        row = next(
+            item
+            for item in rows
+            if item["graph_case"] == "dynamic_dag_wnls"
+            and item["frame_index"] == 1
+            and item["robot_id"] == 2
+        )
+        row["active_references"]["base_ids"].remove(1)
+        row["measurements"] = [
+            measurement
+            for measurement in row["measurements"]
+            if not (
+                measurement["kind"] == "base"
+                and measurement["id"] == 1
+            )
+        ]
+
+    @staticmethod
+    def add_ineligible_dynamic_reference(rows: list[dict]) -> None:
+        row = next(
+            item
+            for item in rows
+            if item["graph_case"] == "dynamic_dag_wnls"
+            and item["frame_index"] == 1
+            and item["robot_id"] == 2
+        )
+        truth = np.asarray(row["truth_position"])
+        reference = np.asarray([2000.0, 2000.0])
+        true_range = float(np.linalg.norm(truth - reference))
+        row["active_references"]["base_ids"].append(2)
+        row["measurements"].insert(
+            2,
+            {
+                "kind": "base",
+                "id": 2,
+                "true_range": true_range,
+                "noise": 0.125,
+                "noisy_range": true_range + 0.125,
+                "estimated_reference_available": True,
+            },
+        )
+
 
 class EvidenceIntegrityTests(GeometricAnalysisFixture):
     def test_exact_trust_roots_and_every_pair_are_verified(self):
@@ -510,6 +599,24 @@ class EvidenceIntegrityTests(GeometricAnalysisFixture):
             with self.assertRaises(InputIntegrityError):
                 analyze_geometric_stability(**fixture.call_args())
 
+    def test_dynamic_topology_is_reconstructed_not_trusted_from_rows(self):
+        complete = self.write_complete_fixture()
+        report = analyze_geometric_stability(**complete.call_args())
+        dynamic = report["geometry"]["true_dynamic_all_primary"]["overall"]
+        self.assertGreater(
+            dynamic["metrics"]["reference_count"]["maximum"],
+            2,
+        )
+        for mutation in (
+            self.omit_dynamic_addition,
+            self.add_ineligible_dynamic_reference,
+        ):
+            fixture = self.write_complete_fixture(
+                paired_mutation=mutation
+            )
+            with self.assertRaises(InputIntegrityError):
+                analyze_geometric_stability(**fixture.call_args())
+
 
 class ScientificAggregationTests(GeometricAnalysisFixture):
     @staticmethod
@@ -538,7 +645,7 @@ class ScientificAggregationTests(GeometricAnalysisFixture):
                 "error_vector": None,
                 "error_norm": None,
                 "error_to_epsilon_ratio": None,
-                "state_containment": False,
+                "state_containment": None,
                 "containment": False,
                 "phi_min_eigenvalue": None,
                 "phi_condition": None,
@@ -550,7 +657,15 @@ class ScientificAggregationTests(GeometricAnalysisFixture):
 
     def one_invalid_restart_row_fixture(self) -> GeometricFixture:
         def mutation(rows: list[dict]) -> None:
-            self._make_invalid(self._dynamic_primary(rows)[-1])
+            selected = [
+                row
+                for row in rows
+                if row["graph_case"] == "dynamic_dag_wnls"
+                and row["robot_id"] == 2
+            ]
+            for row in selected:
+                self._make_invalid(row)
+            self.reconcile_restart_provenance(rows)
 
         return self.write_complete_fixture(mutation=mutation)
 
@@ -568,16 +683,33 @@ class ScientificAggregationTests(GeometricAnalysisFixture):
         def mutation(rows: list[dict]) -> None:
             row = self._dynamic_primary(rows)[0]
             row["estimate"] = [
-                row["truth_position"][0] + float(error[0]),
-                row["truth_position"][1] + float(error[1]),
+                row["truth_position"][0] - float(error[0]),
+                row["truth_position"][1] - float(error[1]),
             ]
-            row["error_vector"] = [float(error[0]), float(error[1])]
-            row["error_norm"] = float(np.linalg.norm(error))
+            row["error_vector"] = [
+                row["truth_position"][index] - row["estimate"][index]
+                for index in range(2)
+            ]
+            row["error_norm"] = float(
+                np.linalg.norm(row["error_vector"])
+            )
+            row["error_to_epsilon_ratio"] = (
+                row["error_norm"] / row["epsilon"]
+            )
             row["covariance"] = np.asarray(covariance).tolist()
             row["state_containment"] = False
             row["containment"] = False
 
         return self.write_complete_fixture(mutation=mutation)
+
+    def error_semantic_drift_fixture(
+        self,
+        mutation: Callable[[dict], None],
+    ) -> GeometricFixture:
+        def mutate_rows(rows: list[dict]) -> None:
+            mutation(self._dynamic_primary(rows)[0])
+
+        return self.write_complete_fixture(mutation=mutate_rows)
 
     def invalid_covariance_fixture(self) -> GeometricFixture:
         def mutation(rows: list[dict]) -> None:
@@ -596,6 +728,25 @@ class ScientificAggregationTests(GeometricAnalysisFixture):
         geometry = report["geometry"]["true_dynamic_all_primary"]["overall"]
         self.assertEqual(geometry["trajectory_tuple_count"], 2)
         self.assertEqual(geometry["range_seed_repetitions_verified"], 2)
+
+    def test_true_trajectory_metrics_are_not_assigned_to_first_seed(self):
+        report = self.analyze(self.two_seed_fixture())
+        for name in (
+            "true_dynamic_all_primary",
+            "true_fixed_pair_all_primary",
+        ):
+            family = report["geometry"][name]
+            self.assertNotIn("by_seed", family)
+            self.assertFalse(family["seed_stratification"]["applicable"])
+            self.assertEqual(
+                family["seed_stratification"]["reason"],
+                "trajectory_level_quantity",
+            )
+        tracking = report["geometry"]["target_tracking"][
+            "true_position"
+        ]
+        self.assertNotIn("by_seed", tracking)
+        self.assertFalse(tracking["seed_stratification"]["applicable"])
 
     def test_estimated_geometry_uses_only_finite_restart_rows(self):
         report = self.analyze(self.one_invalid_restart_row_fixture())
@@ -641,6 +792,53 @@ class ScientificAggregationTests(GeometricAnalysisFixture):
             calibration["finite_q_denominator"],
         )
 
+    def test_stored_error_and_containment_semantic_drift_fails_closed(self):
+        mutations = (
+            lambda row: row.update({"error_vector": [9.0, 0.0]}),
+            lambda row: row.update({"error_norm": 9.0}),
+            lambda row: row.update({"error_to_epsilon_ratio": 9.0}),
+            lambda row: row.update({"state_containment": False}),
+            lambda row: row.update({"containment": False}),
+        )
+        for mutation in mutations:
+            fixture = self.error_semantic_drift_fixture(mutation)
+            with self.assertRaises(InputIntegrityError):
+                self.analyze(fixture)
+
+    def test_modeled_fim_radius_stats_use_valid_rows_and_frozen_strata(self):
+        report = self.analyze(self.one_invalid_restart_row_fixture())
+        modeled = report["geometry"]["modeled_fim_valid"]
+        self.assertEqual(modeled["overall"]["denominator"], 1)
+        for metric in (
+            "phi_min_eigenvalue",
+            "phi_condition",
+            "epsilon",
+        ):
+            self.assertEqual(
+                modeled["overall"]["metrics"][metric]["denominator"],
+                1,
+            )
+        self.assertEqual(
+            sum(
+                bucket["denominator"]
+                for bucket in modeled["by_depth"].values()
+            ),
+            modeled["overall"]["denominator"],
+        )
+        self.assertEqual(
+            sum(
+                bucket["denominator"]
+                for bucket in modeled["by_time_bin"].values()
+            ),
+            modeled["overall"]["denominator"],
+        )
+        self.assertEqual(
+            modeled["overall"]["inapplicability_reasons"][
+                "restart_row_not_finite"
+            ],
+            1,
+        )
+
 
 class AvailabilityTests(GeometricAnalysisFixture):
     @staticmethod
@@ -662,7 +860,7 @@ class AvailabilityTests(GeometricAnalysisFixture):
                 "error_vector": None,
                 "error_norm": None,
                 "error_to_epsilon_ratio": None,
-                "state_containment": False,
+                "state_containment": None,
                 "containment": False,
                 "phi_min_eigenvalue": None,
                 "phi_condition": None,
@@ -671,22 +869,7 @@ class AvailabilityTests(GeometricAnalysisFixture):
 
     @staticmethod
     def _reconcile_restart_provenance(rows: list[dict]) -> None:
-        state: dict[tuple[int, str, int], tuple[bool, bool]] = {}
-        for row in rows:
-            key = (row["seed"], row["graph_case"], row["robot_id"])
-            ever, previous_finite = state.get(key, (False, False))
-            row["ever_acquired_finite_before_attempt"] = ever
-            if row["frame_index"] == 0:
-                source = "deployment_frame_zero"
-            elif previous_finite:
-                source = "previous_finite"
-            elif not ever:
-                source = "deployment_restart_before_first_finite"
-            else:
-                source = "strict_previous_missing"
-            row["initial_estimate_source"] = source
-            finite = row["finite"]
-            state[key] = (ever or finite, finite)
+        GeometricAnalysisFixture.reconcile_restart_provenance(rows)
 
     def status_series(self, statuses: list[str]) -> GeometricFixture:
         trajectory = self._trajectory(
