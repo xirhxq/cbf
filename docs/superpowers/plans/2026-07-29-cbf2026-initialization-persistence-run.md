@@ -19,10 +19,10 @@ retry change.
 | Field | Frozen value |
 | --- | --- |
 | Worktree | `/private/tmp/cbf2026-diagnostic` |
-| Analyzer source commit | `8ca4e08f279465f09f314a794682761b89514341` |
+| Analyzer source commit | `567b39d330d7ab4afb1169f0a3085574dc600ea0` |
 | Analyzer module | `scripts.diagnostics.analyze_initialization_persistence` |
 | Analyzer file | `scripts/diagnostics/analyze_initialization_persistence.py` |
-| Analyzer SHA-256 | `388685805985446647e152ed981f8ac442ce1e026f40984c9d1a289b1305fb46` |
+| Analyzer SHA-256 | `0c9a19ec97c2b58c337abf30bc342f4e6a78f347593dcb0567e566be9a8050eb` |
 | Conda environment | `cbf_env` |
 | Output root | `/private/tmp/cbf2026-initialization-persistence` |
 | Final output directory | `/private/tmp/cbf2026-initialization-persistence/registered-gate-1` |
@@ -34,7 +34,12 @@ The sole registered production command is:
 conda run -n cbf_env python -m \
   scripts.diagnostics.analyze_initialization_persistence \
   --bundle-dir /private/tmp/cbf2026-localization-calibration-corrected/stage2/localization-calibration/20260728T185008.982732Z_ca76d378475447068e08f0921ba87288 \
-  --output-dir /private/tmp/cbf2026-initialization-persistence/registered-gate-1
+  --output-dir /private/tmp/cbf2026-initialization-persistence/registered-gate-1 \
+  --expected-manifest-sha256 39ee3b5494ed623d20d16766244427476cd081ed0869feecb9e5072c6c8f481d \
+  --expected-summary-json-sha256 f4f780dd4c9c1399d3f838c74054c9c0ba3159415bc13089aee53d0ebf7250bc \
+  --expected-compressed-process-sha256 38325523e395983d83491c81556bac1aae72ebd99508b3cdf148fdf72f3f8803 \
+  --expected-dynamic-broad-invalid-total 15469 \
+  --expected-fixed-broad-invalid-total 14471
 ```
 
 It must be launched at most once.
@@ -54,10 +59,11 @@ The sole source bundle is:
 
 The bundle manifest is SHA-256
 `39ee3b5494ed623d20d16766244427476cd081ed0869feecb9e5072c6c8f481d`.
-Its four artifact hashes are frozen below;
-the analyzer verifies the compressed and decompressed process stream as well
-as both summaries before processing and re-verifies unchanged inputs before
-publication.
+The command binds the manifest, `summary.json`, and compressed process bytes
+at the trust root. The decompressed process and `summary.md` hashes below are
+then bound by that frozen manifest; they are not independently supplied on
+the command line. The analyzer verifies all of them before processing and
+re-verifies unchanged inputs before publication.
 
 | Source artifact | SHA-256 |
 | --- | --- |
@@ -68,6 +74,9 @@ publication.
 
 The manifest must state `termination_reason == "completed"` and the estimator
 contract `variable_weight_nls_full_residual_jacobian_v1`.
+The expected completed-audit broad invalid totals are `15469` for
+`dynamic_dag_wnls` and `14471` for `fixed_refs_wnls`; the analyzer must
+reconcile each independently before a passing decision is possible.
 
 ## Frozen protocol and decision rule
 
