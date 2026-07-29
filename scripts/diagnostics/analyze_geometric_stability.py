@@ -49,10 +49,17 @@ def _references(value: object, count: int | None = None) -> np.ndarray:
 
 def _directions(center: np.ndarray, points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     differences = center[None, :] - points
-    ranges = np.linalg.norm(differences, axis=1)
-    if np.any(ranges <= 0.0):
+    ranges = np.hypot(differences[:, 0], differences[:, 1])
+    if (
+        not np.isfinite(differences).all()
+        or not np.isfinite(ranges).all()
+        or np.any(ranges <= 0.0)
+    ):
         raise InputIntegrityError("geometry contains a coincident or non-finite reference")
-    return differences, differences / ranges[:, None]
+    directions = differences / ranges[:, None]
+    if not np.isfinite(directions).all():
+        raise InputIntegrityError("geometry directions are not finite")
+    return differences, directions
 
 
 def geometry_metrics(observer: object, references: object) -> dict:
@@ -60,13 +67,23 @@ def geometry_metrics(observer: object, references: object) -> dict:
     center = _point(observer, "observer")
     points = _references(references)
     _, directions = _directions(center, points)
-    eigenvalues = np.linalg.eigvalsh(directions.T @ directions)
+    matrix = directions.T @ directions
+    eigenvalues = np.linalg.eigvalsh(matrix)
     minimum, maximum = map(float, eigenvalues)
+    if (
+        not np.isfinite(matrix).all()
+        or not np.isfinite(eigenvalues).all()
+        or maximum <= 0.0
+    ):
+        raise InputIntegrityError("geometry matrix or eigenvalues are not finite")
+    normalized_minimum = minimum / maximum
+    if not math.isfinite(normalized_minimum):
+        raise InputIntegrityError("normalized geometry eigenvalue is not finite")
     return {
         "reference_count": int(points.shape[0]),
         "lambda_min": minimum,
         "lambda_max": maximum,
-        "normalized_lambda_min": minimum / maximum,
+        "normalized_lambda_min": normalized_minimum,
         "finite": True,
         "positive_definite": minimum > 0.0,
     }

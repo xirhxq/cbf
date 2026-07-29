@@ -69,6 +69,12 @@ class GeometryPrimitiveTests(unittest.TestCase):
         )
         self.assertGreaterEqual(active["lambda_min"], pair["lambda_min"])
 
+    def test_extreme_finite_coordinates_produce_finite_geometry(self):
+        result = geometry_metrics([0.0, 0.0], [[1e308, 0.0], [0.0, 1e308]])
+        self.assertAlmostEqual(result["lambda_min"], 1.0)
+        self.assertAlmostEqual(result["lambda_max"], 1.0)
+        self.assertTrue(result["finite"])
+
     def test_fixed_pair_reports_smaller_angle_to_collinearity(self):
         result = fixed_pair_metrics(
             [0.0, 0.0],
