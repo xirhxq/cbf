@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import io
 import json
 import math
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
+import scripts.diagnostics.analyze_localization_failures as analyzer
+from scripts.diagnostics import run_diagnostic
 from scripts.diagnostics.analyze_localization_failures import (
+    AnalysisLimitError,
     InputIntegrityError,
     _attempt_class,
     _empty_failure_budget,
@@ -1090,3 +1096,179 @@ class PairedBootstrapTests(unittest.TestCase):
             [{"seed": 17, "dyn_up": 1, "fix_up": 0, "dyn_invalid": 1, "fix_invalid": 1, "ratio": None},
              {"seed": 18, "dyn_up": 1, "fix_up": 0, "dyn_invalid": 1, "fix_invalid": 1, "ratio": None}],
         )
+
+
+class OutputContractTests(unittest.TestCase):
+    def test_external_output_is_deterministic_and_source_immutable(self) -> None:
+        """Breaks if analysis writes beside inputs or renders nondeterministically."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bundle = root / "bundle"
+            _write_completed_bundle(bundle, effective_frame_count=2)
+            source_paths = [bundle / name for name in (PROCESS_NAME, "manifest.json", SUMMARY_NAME, SUMMARY_MARKDOWN_NAME)]
+            source_hashes = {path.name: _sha256(path) for path in source_paths}
+            first = root / "analysis-a"
+            second = root / "analysis-b"
+            analyze_localization_failures(bundle, output_dir=first)
+            analyze_localization_failures(bundle, output_dir=second)
+            self.assertEqual(
+                sorted(path.name for path in first.iterdir()),
+                ["failure-mechanisms.json", "failure-mechanisms.md"],
+            )
+            self.assertEqual(source_hashes, {path.name: _sha256(path) for path in source_paths})
+            self.assertLess(len((first / "failure-mechanisms.json").read_bytes()), 10_000_000)
+            self.assertFalse((first / PROCESS_NAME).exists())
+            self.assertEqual(
+                (first / "failure-mechanisms.json").read_bytes(),
+                (second / "failure-mechanisms.json").read_bytes(),
+            )
+            self.assertEqual(
+                (first / "failure-mechanisms.md").read_bytes(),
+                (second / "failure-mechanisms.md").read_bytes(),
+            )
+            markdown = (first / "failure-mechanisms.md").read_text(encoding="utf-8")
+            for required_heading in (
+                "## Integrity",
+                "## Failure budgets",
+                "#### Depth budgets",
+                "#### Time budgets",
+                "#### Dynamic depth/time cells",
+                "## Paired bootstrap",
+                "## Initialization and persistence",
+                "## Limitations",
+            ):
+                self.assertIn(required_heading, markdown)
+
+    def test_output_rejects_source_overlap_preexisting_paths_and_poststream_mutation(self) -> None:
+        """Breaks if an output can shadow inputs or survive a source TOCTOU change."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bundle = root / "bundle"
+            _write_completed_bundle(bundle, effective_frame_count=2)
+            for output in (bundle, bundle / "nested", root):
+                with self.assertRaises(ValueError):
+                    analyze_localization_failures(bundle, output_dir=output)
+            existing = root / "existing"
+            existing.mkdir()
+            with self.assertRaises(FileExistsError):
+                analyze_localization_failures(bundle, output_dir=existing)
+            reserved = root / "reserved"
+            (root / "reserved.incomplete").mkdir()
+            with self.assertRaises(FileExistsError):
+                analyze_localization_failures(bundle, output_dir=reserved)
+
+            output = root / "toctou"
+            original = analyzer._verify_unchanged_inputs
+
+            def mutate_then_verify(*args: object) -> None:
+                (bundle / SUMMARY_NAME).write_text("changed\n", encoding="utf-8")
+                original(*args)
+
+            with patch.object(analyzer, "_verify_unchanged_inputs", side_effect=mutate_then_verify):
+                with self.assertRaises(InputIntegrityError):
+                    analyze_localization_failures(bundle, output_dir=output)
+            self.assertFalse(output.exists())
+            self.assertFalse((output / "failure-mechanisms.json").exists())
+
+    def test_cli_without_output_prints_strict_json_and_accepts_example_boundaries(self) -> None:
+        """Breaks if no-output analysis writes artifacts or accepts invalid example limits."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bundle = root / "bundle"
+            _write_completed_bundle(bundle, effective_frame_count=2)
+            for maximum in (0, 20):
+                stdout = io.StringIO()
+                with redirect_stdout(stdout):
+                    self.assertEqual(
+                        analyzer.main([
+                            "--bundle-dir", str(bundle),
+                            "--max-examples-per-bucket", str(maximum),
+                        ]),
+                        0,
+                    )
+                self.assertEqual(json.loads(stdout.getvalue())["status"], "completed")
+            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                analyzer.main([
+                    "--bundle-dir", str(bundle),
+                    "--max-examples-per-bucket", "21",
+                ])
+            self.assertEqual(sorted(path.name for path in root.iterdir()), ["bundle"])
+
+
+class AnalysisLimitTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temporary_directory = tempfile.TemporaryDirectory()
+        self.root = Path(self._temporary_directory.name)
+        self.bundle = self.root / "bundle"
+        _write_completed_bundle(self.bundle, effective_frame_count=2)
+
+    def tearDown(self) -> None:
+        self._temporary_directory.cleanup()
+
+    def test_rejects_exact_start_live_and_output_caps_without_completed_artifact(self) -> None:
+        """Breaks if a disk boundary permits registered completed output."""
+        output = self.root / "start-analysis"
+        with patch.object(run_diagnostic, "available_bytes", return_value=7_999_999_999):
+            with self.assertRaises(AnalysisLimitError):
+                analyze_localization_failures(self.bundle, output_dir=output)
+        self.assertFalse(output.exists())
+
+        output = self.root / "live-analysis"
+        with patch.object(run_diagnostic, "available_bytes", return_value=8_000_000_000), \
+             patch.object(analyzer, "available_bytes", return_value=5_999_999_999):
+            with self.assertRaises(AnalysisLimitError):
+                analyze_localization_failures(self.bundle, output_dir=output)
+        self.assertFalse(output.exists())
+
+        output = self.root / "cap-analysis"
+        with patch.object(run_diagnostic, "available_bytes", return_value=8_000_000_000), \
+             patch.object(analyzer, "available_bytes", return_value=6_000_000_000), \
+             patch.object(analyzer, "allocated_bytes", return_value=2_000_000_001):
+            with self.assertRaises(AnalysisLimitError):
+                analyze_localization_failures(self.bundle, output_dir=output)
+        self.assertFalse(output.exists())
+
+    def test_rejects_incomplete_cap_before_registered_output_exists(self) -> None:
+        """Breaks if the ten-megabyte staging cap can publish a completed result."""
+        output = self.root / "analysis"
+
+        def allocations(path: Path) -> int:
+            return 10_000_001 if path.name == "analysis.incomplete" else 0
+
+        with patch.object(run_diagnostic, "available_bytes", return_value=8_000_000_000), \
+             patch.object(analyzer, "available_bytes", return_value=6_000_000_000), \
+             patch.object(analyzer, "allocated_bytes", side_effect=allocations):
+            with self.assertRaises(AnalysisLimitError):
+                analyze_localization_failures(self.bundle, output_dir=output)
+        self.assertFalse(output.exists())
+        self.assertFalse((output / "failure-mechanisms.json").exists())
+
+    def test_checks_live_space_at_the_ten_thousand_row_boundary(self) -> None:
+        """Breaks if a long stream skips the required periodic live-space probe."""
+        bundle = self.root / "ten-thousand-row-bundle"
+        _write_completed_bundle(bundle, effective_frame_count=2500)
+        output = self.root / "long-analysis"
+        with patch.object(run_diagnostic, "available_bytes", return_value=8_000_000_000), \
+             patch.object(analyzer, "available_bytes", side_effect=[6_000_000_000, 5_999_999_999]):
+            with self.assertRaises(AnalysisLimitError):
+                analyze_localization_failures(bundle, output_dir=output)
+        self.assertFalse(output.exists())
+
+    def test_postwrite_cap_failure_removes_completed_json_from_staging(self) -> None:
+        """Breaks if a post-write limit error leaves a completed JSON document."""
+        output = self.root / "postwrite-analysis"
+        calls = 0
+
+        def allocations(path: Path) -> int:
+            nonlocal calls
+            calls += 1
+            return 10_000_001 if calls >= 4 and path.name == "postwrite-analysis.incomplete" else 0
+
+        with patch.object(run_diagnostic, "available_bytes", return_value=8_000_000_000), \
+             patch.object(analyzer, "available_bytes", return_value=6_000_000_000), \
+             patch.object(analyzer, "allocated_bytes", side_effect=allocations):
+            with self.assertRaises(AnalysisLimitError):
+                analyze_localization_failures(self.bundle, output_dir=output)
+        self.assertFalse(output.exists())
+        staging = self.root / "postwrite-analysis.incomplete"
+        self.assertFalse((staging / "failure-mechanisms.json").exists())

@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+import argparse
 import gzip
 import hashlib
 import json
 import math
 import random
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
+
+from scripts.diagnostics.run_diagnostic import (
+    HARD_FLOOR_BYTES,
+    OUTPUT_ROOT_CAP_BYTES,
+    DiskSpaceError,
+    allocated_bytes,
+    available_bytes,
+    require_start_space,
+)
 
 
 SCHEMA_ID = "cbf2026-localization-failure-analysis-v1"
@@ -17,6 +27,10 @@ _HASH_CHUNK_SIZE = 8192
 _PROCESS_NAME = "calibration.jsonl.gz"
 _SUMMARY_NAME = "summary.json"
 _SUMMARY_MARKDOWN_NAME = "summary.md"
+_OUTPUT_JSON_NAME = "failure-mechanisms.json"
+_OUTPUT_MARKDOWN_NAME = "failure-mechanisms.md"
+_INCOMPLETE_OUTPUT_CAP_BYTES = 10_000_000
+_LIVE_CHECK_INTERVAL_ROWS = 10_000
 _REQUIRED_ROW_FIELDS = {
     "frame_index",
     "seed",
@@ -722,7 +736,13 @@ def _validate_summary_counts(summary: dict, observed: dict[str, dict[str, dict[s
                     )
 
 
-def _iter_verified_rows(bundle_dir: Path, manifest: dict, summary: dict) -> Iterator[dict]:
+def _iter_verified_rows(
+    bundle_dir: Path,
+    manifest: dict,
+    summary: dict,
+    *,
+    live_guard: Callable[[], None] | None = None,
+) -> Iterator[dict]:
     process_path = bundle_dir / _PROCESS_NAME
     verify_hashes = bool(manifest.get("_verify_hashes", True))
     if verify_hashes:
@@ -770,6 +790,8 @@ def _iter_verified_rows(bundle_dir: Path, manifest: dict, summary: dict) -> Iter
                 _increment(observed_counts[graph_case][bucket]["status_counts"], status)
                 observed_rows += 1
                 yield row
+                if live_guard is not None and observed_rows % _LIVE_CHECK_INTERVAL_ROWS == 0:
+                    live_guard()
     except InputIntegrityError:
         raise
     except (OSError, EOFError, ValueError) as error:
@@ -808,6 +830,133 @@ def _verify_unchanged_inputs(
     )
 
 
+def _nearest_existing_ancestor(path: Path) -> Path:
+    candidate = path
+    while not candidate.exists():
+        if candidate.parent == candidate:
+            raise ValueError(f"no existing ancestor for output path {path}")
+        candidate = candidate.parent
+    return candidate
+
+
+def _validate_output_path(bundle_dir: Path, output_dir: Path) -> tuple[Path, Path]:
+    bundle = bundle_dir.resolve()
+    output = output_dir.resolve()
+    if output == bundle or bundle in output.parents or output in bundle.parents:
+        raise ValueError("output directory must be separate from the source bundle")
+    incomplete = output.with_name(f"{output.name}.incomplete")
+    if output.exists() or incomplete.exists():
+        raise FileExistsError("output directory or its incomplete sibling already exists")
+    if not output.parent.exists():
+        raise ValueError("output directory parent must already exist")
+    return output, incomplete
+
+
+def _require_live_space(path: Path) -> None:
+    free = available_bytes(path)
+    if free < HARD_FLOOR_BYTES:
+        raise AnalysisLimitError(
+            f"available={free} below live threshold={HARD_FLOOR_BYTES}"
+        )
+
+
+def _check_output_limits(output_dir: Path, incomplete_dir: Path) -> None:
+    output_root_bytes = allocated_bytes(output_dir.parent)
+    if output_root_bytes > OUTPUT_ROOT_CAP_BYTES:
+        raise AnalysisLimitError(
+            f"output root allocated={output_root_bytes} exceeds cap={OUTPUT_ROOT_CAP_BYTES}"
+        )
+    incomplete_bytes = allocated_bytes(incomplete_dir)
+    if incomplete_bytes > _INCOMPLETE_OUTPUT_CAP_BYTES:
+        raise AnalysisLimitError(
+            f"incomplete output allocated={incomplete_bytes} exceeds cap={_INCOMPLETE_OUTPUT_CAP_BYTES}"
+        )
+
+
+def _strict_json_bytes(report: dict) -> bytes:
+    return (json.dumps(report, sort_keys=True, indent=2, allow_nan=False) + "\n").encode("utf-8")
+
+
+def _render_markdown(report: dict) -> bytes:
+    lines = [
+        "# Localization failure mechanisms",
+        "",
+        "## Integrity",
+        "",
+        f"- Status: {report['status']}",
+        f"- Observed rows: {report['integrity']['observed_rows']}",
+        f"- Primary rows: {report['integrity']['primary_rows']}",
+        "",
+        "## Failure budgets",
+        "",
+    ]
+    for graph_case in sorted(report["cases"]):
+        case = report["cases"][graph_case]
+        budget = case["failure_budget"]
+        lines.extend([f"### {graph_case}", "", f"- Denominator: {budget['denominator']}"])
+        lines.extend(f"- {key}: {budget['counts'][key]}" for key in _FAILURE_CLASSES)
+        calibration = case["calibration"]
+        lines.extend([
+            f"- Conditional containment: {calibration['epsilon_contained']}/{calibration['converged_denominator']}",
+            f"- q > 5.991464547: {calibration['q']['above_5_991464547']}",
+            f"- q > 9: {calibration['q']['above_9']}",
+            "",
+            "#### Depth budgets",
+            "",
+        ])
+        for depth in sorted(case["strata"]["depth"], key=int):
+            budget = case["strata"]["depth"][depth]["budget"]
+            counts = ", ".join(f"{key}={budget['counts'][key]}" for key in _FAILURE_CLASSES)
+            lines.append(f"- depth {depth}: {counts}")
+        lines.extend(["", "#### Time budgets", ""])
+        for time_key in _TIME_BINS:
+            budget = case["strata"]["time"][time_key]["budget"]
+            counts = ", ".join(f"{key}={budget['counts'][key]}" for key in _FAILURE_CLASSES)
+            lines.append(f"- time {time_key}: {counts}")
+        lines.extend(["", "#### Dynamic depth/time cells", ""])
+        for depth in sorted(case["dynamic_depth_time"], key=int):
+            for time_key in _TIME_BINS:
+                cell = case["dynamic_depth_time"][depth][time_key]
+                counts = ", ".join(f"{key}={cell['counts'][key]}" for key in _FAILURE_CLASSES)
+                lines.append(f"- depth {depth}, time {time_key}: {counts}")
+        lines.append("")
+    bootstrap = report["bootstrap"]
+    lines.extend([
+        "## Paired bootstrap",
+        "",
+        f"- D_upstream: {bootstrap['point_estimate']}",
+        f"- Estimable resamples: {bootstrap['estimable_resamples']}",
+        f"- Non-estimable resamples: {bootstrap['non_estimable_resamples']}",
+        "",
+        "## Initialization and persistence",
+        "",
+        f"- Persistence records: {len(report['initialization']['persistence'])}",
+        "",
+        "## Limitations",
+        "",
+        "This read-only summary attributes recorded failure mechanisms; it does not establish causal counterfactuals or replace replay validation.",
+        "",
+    ])
+    return "\n".join(lines).encode("utf-8")
+
+
+def _write_output(report: dict, output_dir: Path, incomplete_dir: Path) -> None:
+    json_path = incomplete_dir / _OUTPUT_JSON_NAME
+    markdown_path = incomplete_dir / _OUTPUT_MARKDOWN_NAME
+    try:
+        _require_live_space(incomplete_dir)
+        _check_output_limits(output_dir, incomplete_dir)
+        json_path.write_bytes(_strict_json_bytes(report))
+        markdown_path.write_bytes(_render_markdown(report))
+        _require_live_space(incomplete_dir)
+        _check_output_limits(output_dir, incomplete_dir)
+        incomplete_dir.replace(output_dir)
+    except Exception:
+        json_path.unlink(missing_ok=True)
+        markdown_path.unlink(missing_ok=True)
+        raise
+
+
 def analyze_localization_failures(
     bundle_dir: Path,
     *,
@@ -815,8 +964,21 @@ def analyze_localization_failures(
     output_dir: Path | None = None,
     max_examples_per_bucket: int = 5,
 ) -> dict:
-    del output_dir, max_examples_per_bucket
     bundle_dir = Path(bundle_dir)
+    if type(max_examples_per_bucket) is not int or not 0 <= max_examples_per_bucket <= 20:
+        raise ValueError("max_examples_per_bucket must be between 0 and 20")
+    output_path: Path | None = None
+    incomplete_path: Path | None = None
+    live_guard: Callable[[], None] | None = None
+    if output_dir is not None:
+        output_path, incomplete_path = _validate_output_path(bundle_dir, Path(output_dir))
+        try:
+            require_start_space(_nearest_existing_ancestor(output_path))
+        except DiskSpaceError as error:
+            raise AnalysisLimitError(str(error)) from error
+        incomplete_path.mkdir()
+        _require_live_space(incomplete_path)
+        live_guard = lambda: _require_live_space(incomplete_path)
     manifest, manifest_raw = _read_object(bundle_dir / "manifest.json", "manifest")
     if manifest.get("termination_reason") != "completed":
         raise InputIntegrityError("manifest termination reason must be completed")
@@ -844,7 +1006,7 @@ def analyze_localization_failures(
                    for seed in manifest_settings["run_seeds"]}
     predecessor_group: tuple[int, str, int] | None = None
     predecessors: dict[int, dict] = {}
-    for row in _iter_verified_rows(bundle_dir, manifest, summary):
+    for row in _iter_verified_rows(bundle_dir, manifest, summary, live_guard=live_guard):
         observed_rows += 1
         group = (row["seed"], row["graph_case"], row["frame_index"])
         if group != predecessor_group:
@@ -966,7 +1128,7 @@ def analyze_localization_failures(
     bootstrap = _paired_seed_bootstrap([
         {"seed": seed, **counts} for seed, counts in sorted(seed_counts.items())
     ])
-    return {
+    report = {
         "schema": SCHEMA_ID,
         "status": "completed",
         "integrity": {
@@ -979,3 +1141,31 @@ def analyze_localization_failures(
         "comparisons": comparisons,
         "bootstrap": bootstrap,
     }
+    if output_path is not None and incomplete_path is not None:
+        _write_output(report, output_path, incomplete_path)
+    return report
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--bundle-dir", required=True, type=Path)
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--max-examples-per-bucket", type=int, default=5)
+    arguments = parser.parse_args(argv)
+    if not 0 <= arguments.max_examples_per_bucket <= 20:
+        parser.error("--max-examples-per-bucket must be between 0 and 20")
+    try:
+        report = analyze_localization_failures(
+            arguments.bundle_dir,
+            output_dir=arguments.output_dir,
+            max_examples_per_bucket=arguments.max_examples_per_bucket,
+        )
+    except (AnalysisLimitError, InputIntegrityError, ValueError, OSError) as error:
+        parser.error(str(error))
+    if arguments.output_dir is None:
+        print(_strict_json_bytes(report).decode("utf-8"), end="")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
