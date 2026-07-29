@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -158,7 +159,7 @@ def _write_real_schema_bundle(bundle: Path, rows: list[dict], robot_count: int) 
         return counts
 
     frame_count = max(row["frame_index"] for row in rows) + 1
-    graph_cases = ["dynamic_dag_wnls", "fixed_refs_wnls"]
+    graph_cases = sorted({row["graph_case"] for row in rows})
     summary_cases = {}
     for graph_case in graph_cases:
         case_rows = [row for row in rows if row["graph_case"] == graph_case]
@@ -175,7 +176,7 @@ def _write_real_schema_bundle(bundle: Path, rows: list[dict], robot_count: int) 
             },
         }
     settings = {
-        "run_seeds": [17],
+        "run_seeds": sorted({row["seed"] for row in rows}),
         "graph_cases": graph_cases,
         "effective_frame_count": frame_count,
     }
@@ -741,66 +742,186 @@ class PredecessorLineageTests(unittest.TestCase):
         self.assertEqual(lineage["predecessor_attempt_classes"]["not_observed"], 1)
 
 
+def _analyze_rows(rows: list[dict], robot_count: int) -> dict:
+    with tempfile.TemporaryDirectory() as temporary:
+        bundle = Path(temporary) / "bundle"
+        _write_real_schema_bundle(bundle, rows, robot_count)
+        return analyze_localization_failures(bundle)
+
+
 class ConditionalCalibrationTests(unittest.TestCase):
-    def test_hand_derived_nees_and_fixed_bins(self) -> None:
-        """Breaks if covariance inversion or half-open endpoint assignment changes."""
-        self.assertEqual(
-            _normalized_squared_error([2.0, 1.0], [[4.0, 0.0], [0.0, 1.0]]),
-            2.0,
-        )
+    def test_streamed_converged_rows_populate_overall_and_all_geometry_calibrations(self) -> None:
+        """Breaks if a converged observation reaches overall but not geometry calibration."""
+        qs = (0.0, 2.295748929, 5.991464547, 9.0, 9.000000001, 1e308)
+        rows = []
+        for frame in range(2):
+            for case in GRAPH_CASES:
+                for robot in range(1, 12):
+                    row = _real_schema_row(frame, case, robot)
+                    row.update({"active_references": {"base_ids": list(range(min(robot - 1, 10))), "uav_ids": []}, "phi_condition": (1, 10, 30, 100, 9.999, 29.999, 99.999, 100, 1, 10, 100)[robot - 1], "phi_min_eigenvalue": (0.01, 0.05, 0.2, 1.0, 0.199, 0.999, 0.01, 0.05, 0.2, 1.0, 1.0)[robot - 1]})
+                    if frame and robot <= 6:
+                        row.update({"containment": robot <= 2, "error_to_epsilon_ratio": (0.0, .5, 1.0, 2.0, 5.0, 5.0)[robot - 1], "error_vector": [math.sqrt(qs[robot - 1]), 0.0], "covariance": [[1.0, 0.0], [0.0, 1.0]]})
+                    elif frame:
+                        invalid = (None, [["Infinity", 0.0], [0.0, 1.0]], [[1.0, 1e-6], [0.0, 1.0]], [[1.0, 0.0], [0.0, 0.0]], [[1.0, 0.0], [0.0, 0.0]])[robot - 7]
+                        row.update({"containment": False, "error_to_epsilon_ratio": 5.0, "error_vector": [1.0, 0.0], "covariance": invalid})
+                    rows.append(row)
+        report = _analyze_rows(rows, 11)
+        calibration = report["cases"]["dynamic_dag_wnls"]["calibration"]
+        self.assertEqual(calibration["converged_denominator"], 11)
+        self.assertEqual(calibration["conditional_covariance_invalid"], 5)
+        self.assertEqual(calibration["epsilon_contained"], 2)
+        self.assertEqual(calibration["epsilon_containment_rate"], 2 / 11)
+        self.assertEqual(calibration["q"]["finite_count"], 6)
+        self.assertEqual(calibration["q"]["max"], 1e308)
+        self.assertEqual(calibration["q"]["bins"], {"[0,2.295748929)": 1, "[2.295748929,5.991464547)": 1, "[5.991464547,9]": 2, "(9,infinity)": 2})
+        self.assertEqual(calibration["q"]["above_5_991464547"], 3)
+        self.assertEqual(calibration["q"]["above_5_991464547_rate"], .5)
+        self.assertEqual(calibration["q"]["above_9"], 2)
+        self.assertEqual(calibration["q"]["above_9_rate"], 1 / 3)
+        self.assertEqual(calibration["ratio"]["finite_count"], 11)
+        self.assertEqual(calibration["ratio"]["mean"], 3.5)
+        self.assertEqual(calibration["ratio"]["max"], 5.0)
+        self.assertEqual(calibration["ratio"]["bins"], {"[0,0.5)": 1, "[0.5,1)": 1, "[1,2)": 1, "[2,5)": 1, "[5,infinity)": 7})
+        for group in ("depth", "reference_count", "phi_condition", "phi_min"):
+            for value in report["cases"]["dynamic_dag_wnls"]["strata"][group].values():
+                calibration = value["calibration"]
+                self.assertEqual(
+                    set(calibration),
+                    {"converged_denominator", "epsilon_contained", "epsilon_containment_rate", "conditional_covariance_invalid", "q", "ratio"},
+                )
+                self.assertIn("finite_count", calibration["q"])
+                self.assertIn("above_9", calibration["q"])
 
-    def test_covariance_validation_rejects_absent_nonfinite_asymmetric_singular_and_overflow(self) -> None:
-        """Breaks if invalid conditional covariance enters the q denominator."""
-        for covariance in (None, [[float("inf"), 0.0], [0.0, 1.0]], [[1.0, 1e-6], [0.0, 1.0]], [[1.0, 0.0], [0.0, 0.0]], [[1e-308, 0.0], [0.0, 1e-308]]):
-            with self.assertRaises(ValueError):
-                _normalized_squared_error([1e308, 1e308], covariance)
-
-    def test_fixed_conditional_shapes_include_all_bins(self) -> None:
-        case = _empty_task3_case()
-        self.assertEqual(set(case["strata"]["depth"]), {str(i) for i in range(1, 8)})
-        self.assertEqual(set(case["strata"]["reference_count"]), {str(i) for i in range(10)} | {"10_or_more"})
-        self.assertEqual(set(case["strata"]["phi_condition"]), {"[1,10)", "[10,30)", "[30,100)", "[100,infinity)"})
-
-
-class PairedBootstrapTests(unittest.TestCase):
-    def test_recomputes_paired_aggregate_counts_and_marks_non_estimable_resamples(self) -> None:
-        """Breaks if bootstrap averages seed ratios instead of resampling summed paired counts."""
-        seed_counts = [
-            {"dyn_up": 8, "fix_up": 2, "dyn_invalid": 10, "fix_invalid": 4},
-            {"dyn_up": 1, "fix_up": 3, "dyn_invalid": 2, "fix_invalid": 5},
-        ]
-        report = _paired_seed_bootstrap(seed_counts, resamples=20, rng_seed=20260729)
-        self.assertEqual(report["point_estimate"], 4 / 3)
-        self.assertEqual(report["seed_specific"], [1.0, None])
-        self.assertGreater(report["non_estimable_resamples"], 0)
-        self.assertIsNone(report["percentile_interval"])
+    def test_ratio_and_q_boundaries_are_reported_from_a_streamed_bundle(self) -> None:
+        """Breaks if boundary values are moved to an adjacent conditional bin."""
+        rows = []
+        for frame in range(2):
+            for case in GRAPH_CASES:
+                for robot, (ratio, q) in enumerate(zip((0.0, .5, 1.0, 2.0, 5.0), (0.0, 2.295748929, 5.991464547, 9.0, 9.000000001)), 1):
+                    row = _real_schema_row(frame, case, robot)
+                    if frame:
+                        row.update({"error_to_epsilon_ratio": ratio, "error_vector": [math.sqrt(q), 0.0], "covariance": [[1.0, 0.0], [0.0, 1.0]]})
+                    rows.append(row)
+        calibration = _analyze_rows(rows, 5)["cases"]["dynamic_dag_wnls"]["calibration"]
+        self.assertEqual(calibration["ratio"]["bins"], {"[0,0.5)": 1, "[0.5,1)": 1, "[1,2)": 1, "[2,5)": 1, "[5,infinity)": 1})
+        self.assertEqual(calibration["q"]["bins"], {"[0,2.295748929)": 1, "[2.295748929,5.991464547)": 1, "[5.991464547,9]": 2, "(9,infinity)": 1})
 
 
 class StratificationTests(unittest.TestCase):
-    def test_dynamic_depth_time_has_all_fixed_cells_and_six_class_budgets(self) -> None:
-        """Breaks if an empty dynamic depth/time cell or class is omitted."""
-        case = _empty_task3_case()
-        self.assertEqual(set(case["dynamic_depth_time"]), {str(i) for i in range(1, 8)})
-        for cells in case["dynamic_depth_time"].values():
-            self.assertEqual(len(cells), 5)
-            for budget in cells.values():
-                self.assertEqual(len(budget["counts"]), 6)
+    def test_streamed_boundaries_reconcile_all_depth_time_and_dynamic_cells(self) -> None:
+        """Breaks if streamed rows disappear from a fixed depth/time budget."""
+        rows = []
+        for frame in range(500):
+            for case in GRAPH_CASES:
+                for robot in range(1, 8):
+                    row = _real_schema_row(frame, case, robot)
+                    if frame == 1 and robot <= 6:
+                        attempt, status, contain, reason = (("converged", "converged", True, None), ("converged", "converged", False, None), ("invalid", "invalid", False, "invalid upstream UAV reference"), ("invalid", "invalid", False, "bad"), ("failed", "stale", False, "maximum WNLS iterations exceeded"), ("failed", "failed", False, "other"))[robot - 1]
+                        row.update({"attempt_status": attempt, "status": status, "containment": contain, "attempt_failure_reason": reason})
+                    rows.append(row)
+        report = _analyze_rows(rows, 7)
+        case = report["cases"]["dynamic_dag_wnls"]
+        self.assertEqual(sum(cell["denominator"] for cells in case["dynamic_depth_time"].values() for cell in cells.values()), case["failure_budget"]["denominator"])
+        self.assertEqual(set(case["dynamic_depth_time"]["1"]), {"1-100", "101-200", "201-300", "301-400", "401-499"})
+        self.assertEqual(set(case["dynamic_depth_time"]["1"]["1-100"]["counts"]), set(case["failure_budget"]["counts"]))
+        self.assertEqual(set(report["comparisons"]["dynamic_minus_fixed"]), set(case["failure_budget"]["counts"]))
+
+    def test_streamed_frame_zero_records_same_frame_predecessor_lineage_by_depth(self) -> None:
+        """Breaks if frame-zero upstream failures do not see lower-index parents."""
+        rows = []
+        for frame in range(2):
+            for case in GRAPH_CASES:
+                for robot in range(1, 5):
+                    row = _real_schema_row(frame, case, robot)
+                    if frame == 0 and robot == 2:
+                        row.update({"containment": False})
+                    elif frame == 0 and robot == 3:
+                        row.update({"attempt_status": "invalid", "status": "invalid", "containment": False,
+                                    "attempt_failure_reason": "invalid upstream UAV reference",
+                                    "measurements": [{"kind": "uav", "id": 1, "estimated_reference_available": False},
+                                                     {"kind": "uav", "id": 2, "estimated_reference_available": False}]})
+                    elif frame == 0 and robot == 4:
+                        row.update({"attempt_status": "failed", "status": "failed", "containment": False,
+                                    "attempt_failure_reason": "maximum WNLS iterations exceeded"})
+                    rows.append(row)
+        report = _analyze_rows(rows, 4)
+        initialization = report["cases"]["dynamic_dag_wnls"]["initialization"]["by_depth"]
+        self.assertEqual(initialization["3"]["budget"]["counts"]["upstream_unavailable"], 1)
+        self.assertEqual(initialization["3"]["lineage"]["upstream_unavailable_rows"], 1)
+        self.assertEqual(initialization["3"]["lineage"]["unavailable_uav_reference_edges"], 2)
+        self.assertEqual(initialization["3"]["lineage"]["predecessor_attempt_classes"]["contained"], 1)
+        self.assertEqual(initialization["3"]["lineage"]["predecessor_attempt_classes"]["converged_outside_radius"], 1)
+        self.assertEqual(initialization["3"]["lineage"]["propagation_depth_counts"]["1"], 1)
+        self.assertEqual(initialization["4"]["max_iteration_failures"], 1)
+
+    def test_streamed_legacy_depth_and_missing_time_use_explicit_unstratified_budgets(self) -> None:
+        """Breaks if non-7x5 legacy rows silently disappear from reconciliation."""
+        rows = []
+        for frame in range(501):
+            for case in GRAPH_CASES:
+                row = _real_schema_row(frame, case, 1)
+                row["squad_local_index"] = 8
+                rows.append(row)
+        report = _analyze_rows(rows, 1)
+        case = report["cases"]["dynamic_dag_wnls"]
+        self.assertEqual(case["initialization"]["unstratified"]["budget"]["denominator"], 1)
+        self.assertEqual(case["strata"]["unstratified"]["depth"]["denominator"], 500)
+        self.assertEqual(case["strata"]["unstratified"]["time"]["denominator"], 1)
+        self.assertEqual(case["dynamic_depth_time_unstratified"]["denominator"], 500)
+        self.assertEqual(
+            sum(cell["denominator"] for cells in case["dynamic_depth_time"].values() for cell in cells.values()),
+            0,
+        )
 
 
 class PersistenceTests(unittest.TestCase):
-    def test_persistence_records_are_json_safe_identity_records(self) -> None:
-        """Breaks if tuple-key state escapes into the derived report."""
-        record = {"seed": 17, "graph_case": "dynamic_dag_wnls", "robot_id": 1,
-                  "first_primary_converged_frame": 3,
-                  "primary_frames_before_first_convergence": 2,
-                  "longest_upstream_unavailable_streak": 3,
-                  "longest_wnls_nonconvergence_streak": 0, "never_primary_converged": False}
-        self.assertEqual(json.loads(json.dumps(record))["first_primary_converged_frame"], 3)
+    def test_streamed_primary_sequence_reports_sorted_persistence_and_never_converged(self) -> None:
+        """Breaks if primary streaks are inferred from retained states or unsorted keys."""
+        rows = []
+        for frame in range(8):
+            for case in GRAPH_CASES:
+                for robot in (1, 2):
+                    row = _real_schema_row(frame, case, robot)
+                    if frame and robot == 1:
+                        upstream = frame in (1, 2, 4, 5, 6)
+                        row.update({"attempt_status": "invalid" if upstream else "converged", "status": "invalid" if upstream else "converged", "containment": not upstream, "attempt_failure_reason": "invalid upstream UAV reference" if upstream else None, "measurements": []})
+                    elif frame and robot == 2:
+                        row.update({"attempt_status": "invalid", "status": "invalid", "containment": False, "attempt_failure_reason": "invalid upstream UAV reference", "measurements": []})
+                    rows.append(row)
+        report = _analyze_rows(rows, 2)
+        records = report["initialization"]["persistence"]
+        self.assertEqual(records, sorted(records, key=lambda r: (r["seed"], r["graph_case"], r["robot_id"])))
+        first = next(r for r in records if r["graph_case"] == "dynamic_dag_wnls" and r["robot_id"] == 1)
+        self.assertEqual({key: first[key] for key in ("first_primary_converged_frame", "primary_frames_before_first_convergence", "longest_upstream_unavailable_streak", "longest_wnls_nonconvergence_streak", "never_primary_converged")}, {"first_primary_converged_frame": 3, "primary_frames_before_first_convergence": 2, "longest_upstream_unavailable_streak": 3, "longest_wnls_nonconvergence_streak": 0, "never_primary_converged": False})
+        self.assertTrue(next(r for r in records if r["graph_case"] == "dynamic_dag_wnls" and r["robot_id"] == 2)["never_primary_converged"])
+
+
+class PairedBootstrapTests(unittest.TestCase):
+    def test_two_seed_stream_and_helper_return_auditable_paired_records(self) -> None:
+        """Breaks if bootstrap records omit seed identity or resample per-seed ratios."""
+        seed_counts = [{"seed": 17, "dyn_up": 8, "fix_up": 2, "dyn_invalid": 10, "fix_invalid": 4}, {"seed": 18, "dyn_up": 1, "fix_up": 3, "dyn_invalid": 2, "fix_invalid": 5}]
+        bootstrap = _paired_seed_bootstrap(seed_counts, resamples=20, rng_seed=20260729)
+        self.assertEqual(bootstrap["point_estimate"], 4 / 3)
+        self.assertEqual([r["ratio"] for r in bootstrap["seed_records"]], [1.0, None])
+        self.assertGreater(bootstrap["non_estimable_resamples"], 0)
+
+    def test_streamed_two_seed_bundle_feeds_paired_counts_before_bootstrap(self) -> None:
+        """Breaks if analyzer bootstraps one-record ratios instead of paired counts."""
+        rows = []
+        for frame in (0, 1):
+            for seed in (17, 18):
+                for case in GRAPH_CASES:
+                    row = _real_schema_row(frame, case, 1)
+                    row["seed"] = seed
+                    if frame:
+                        reason = "invalid upstream UAV reference" if case == "dynamic_dag_wnls" else "invalid input"
+                        row.update({"attempt_status": "invalid", "status": "invalid", "containment": False,
+                                    "attempt_failure_reason": reason})
+                    rows.append(row)
+        report = _analyze_rows(rows, 1)
+        records = report["bootstrap"]["seed_records"]
         self.assertEqual(
-            [_ratio_bin(value) for value in (0.0, 0.5, 1.0, 2.0, 5.0)],
-            ["[0,0.5)", "[0.5,1)", "[1,2)", "[2,5)", "[5,infinity)"],
-        )
-        self.assertEqual(
-            [_q_bin(value) for value in (0.0, 2.295748929, 5.991464547, 9.0, 9.000000001)],
-            ["[0,2.295748929)", "[2.295748929,5.991464547)", "[5.991464547,9]", "[5.991464547,9]", "(9,infinity)"],
+            records,
+            [{"seed": 17, "dyn_up": 1, "fix_up": 0, "dyn_invalid": 1, "fix_invalid": 1, "ratio": None},
+             {"seed": 18, "dyn_up": 1, "fix_up": 0, "dyn_invalid": 1, "fix_invalid": 1, "ratio": None}],
         )
