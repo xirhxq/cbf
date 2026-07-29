@@ -32,6 +32,14 @@ STEP_TOLERANCE = 1e-9
 COST_TOLERANCE = 1e-12
 RANGE_EPSILON = 1e-12
 RELATIVE_SPECTRAL_THRESHOLD = 1e-12
+STRICT_PREVIOUS_POLICY = "strict_previous_v1"
+RESTART_BEFORE_FIRST_FINITE_POLICY = (
+    "deployment_restart_before_first_finite_v1"
+)
+INITIALIZATION_POLICIES = (
+    STRICT_PREVIOUS_POLICY,
+    RESTART_BEFORE_FIRST_FINITE_POLICY,
+)
 
 
 def stable_measurement_seed(
@@ -499,6 +507,38 @@ def _valid_prior_result(
         phi_minimum,
         phi_condition,
     )
+
+
+def select_initial_estimate(
+    policy: str,
+    *,
+    frame_index: int,
+    deployment: np.ndarray,
+    previous_result: dict | None,
+    ever_acquired_finite: bool,
+) -> tuple[np.ndarray, str]:
+    """Return the initial estimate and its auditable source label."""
+    if policy not in INITIALIZATION_POLICIES:
+        raise ValueError(f"unknown initialization policy: {policy}")
+    if frame_index == 0:
+        return np.asarray(deployment, dtype=float), "deployment_frame_zero"
+    valid_previous = _valid_prior_result(previous_result)
+    if valid_previous is not None:
+        return valid_previous[0], "previous_finite"
+    if (
+        policy == RESTART_BEFORE_FIRST_FINITE_POLICY
+        and not ever_acquired_finite
+    ):
+        return (
+            np.asarray(deployment, dtype=float),
+            "deployment_restart_before_first_finite",
+        )
+    raw = (
+        previous_result.get("estimate", deployment)
+        if isinstance(previous_result, dict)
+        else deployment
+    )
+    return np.asarray(raw, dtype=float), "strict_previous_missing"
 
 
 def solve_later_frame(

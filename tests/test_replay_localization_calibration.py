@@ -13,9 +13,13 @@ import numpy as np
 
 import scripts.diagnostics.replay_localization_calibration as replay_module
 from scripts.diagnostics.replay_localization_calibration import (
+    INITIALIZATION_POLICIES,
+    RESTART_BEFORE_FIRST_FINITE_POLICY,
+    STRICT_PREVIOUS_POLICY,
     active_references,
     fixed_references,
     fim_radius,
+    select_initial_estimate,
     solve_later_frame,
     solve_wnls,
     stable_measurement_seed,
@@ -154,6 +158,81 @@ class LocalizationGraphTests(unittest.TestCase):
                     self.assertLess(
                         (reference_id - 1) % squad_size, observer_local
                     )
+
+
+class InitializationPolicyTests(unittest.TestCase):
+    def test_frame_zero_uses_deployment_for_both_policies(self):
+        """Breaks if either policy changes the registered frame-zero seed."""
+        deployment = np.array([10.0, 20.0])
+        for policy in INITIALIZATION_POLICIES:
+            with self.subTest(policy=policy):
+                initial, source = select_initial_estimate(
+                    policy,
+                    frame_index=0,
+                    deployment=deployment,
+                    previous_result=None,
+                    ever_acquired_finite=False,
+                )
+                np.testing.assert_array_equal(initial, deployment)
+                self.assertEqual(source, "deployment_frame_zero")
+
+    def test_finite_previous_estimate_wins_for_both_policies(self):
+        """Breaks if a restart overrides an available finite warm start."""
+        previous = {
+            "status": "converged",
+            "estimate": [1.0, 2.0],
+            "covariance": [[1.0, 0.0], [0.0, 1.0]],
+            "epsilon": 3.0,
+            "phi_min_eigenvalue": 1.0,
+            "phi_condition": 1.0,
+        }
+        for policy in INITIALIZATION_POLICIES:
+            with self.subTest(policy=policy):
+                initial, source = select_initial_estimate(
+                    policy,
+                    frame_index=1,
+                    deployment=np.array([10.0, 20.0]),
+                    previous_result=previous,
+                    ever_acquired_finite=True,
+                )
+                np.testing.assert_array_equal(initial, [1.0, 2.0])
+                self.assertEqual(source, "previous_finite")
+
+    def test_strict_policy_preserves_null_warm_start(self):
+        """Breaks if strict mode silently repairs a missing prior estimate."""
+        initial, source = select_initial_estimate(
+            STRICT_PREVIOUS_POLICY,
+            frame_index=1,
+            deployment=np.array([10.0, 20.0]),
+            previous_result={"estimate": None},
+            ever_acquired_finite=False,
+        )
+        self.assertEqual(initial.shape, ())
+        self.assertEqual(source, "strict_previous_missing")
+
+    def test_restart_uses_deployment_only_before_first_finite(self):
+        """Breaks if restart mode cannot recover an uninitialized robot."""
+        initial, source = select_initial_estimate(
+            RESTART_BEFORE_FIRST_FINITE_POLICY,
+            frame_index=1,
+            deployment=np.array([10.0, 20.0]),
+            previous_result={"estimate": None},
+            ever_acquired_finite=False,
+        )
+        np.testing.assert_array_equal(initial, [10.0, 20.0])
+        self.assertEqual(source, "deployment_restart_before_first_finite")
+
+    def test_restart_does_not_restart_after_ever_finite(self):
+        """Breaks if restart mode masks a post-acquisition prior-state failure."""
+        initial, source = select_initial_estimate(
+            RESTART_BEFORE_FIRST_FINITE_POLICY,
+            frame_index=2,
+            deployment=np.array([10.0, 20.0]),
+            previous_result={"estimate": None},
+            ever_acquired_finite=True,
+        )
+        self.assertEqual(initial.shape, ())
+        self.assertEqual(source, "strict_previous_missing")
 
 
 class WnlsAndFimTests(unittest.TestCase):
