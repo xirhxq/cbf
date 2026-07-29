@@ -27,6 +27,7 @@ _REQUIRED_ROW_FIELDS = {
 _COUNT_FIELDS = ("attempt_status_counts", "status_counts")
 _ATTEMPT_STATUSES = {"converged", "invalid", "failed"}
 _RETAINED_STATUSES = {"converged", "stale", "invalid", "failed"}
+_COUNT_STATUSES = ("converged", "stale", "invalid", "failed")
 
 
 class InputIntegrityError(RuntimeError):
@@ -171,10 +172,19 @@ def _validate_row(row: dict) -> tuple[int, int, str, int, bool, str, str]:
 
 
 def _empty_case_counts(graph_cases: list[str]) -> dict[str, dict[str, dict[str, dict[str, int]]]]:
+    def empty_status_counts() -> dict[str, int]:
+        return {status: 0 for status in _COUNT_STATUSES}
+
     return {
         graph_case: {
-            "overall": {"attempt_status_counts": {}, "status_counts": {}},
-            "initialization_frame": {"attempt_status_counts": {}, "status_counts": {}},
+            "overall": {
+                "attempt_status_counts": empty_status_counts(),
+                "status_counts": empty_status_counts(),
+            },
+            "initialization_frame": {
+                "attempt_status_counts": empty_status_counts(),
+                "status_counts": empty_status_counts(),
+            },
         }
         for graph_case in graph_cases
     }
@@ -200,6 +210,10 @@ def _validate_summary_counts(summary: dict, observed: dict[str, dict[str, dict[s
                 declared_counts = _require_mapping(
                     declared_bucket[count_field], f"summary {graph_case} {bucket} {count_field}"
                 )
+                if set(declared_counts) != set(_COUNT_STATUSES):
+                    raise InputIntegrityError(
+                        f"summary {graph_case} {bucket} {count_field} has unrecognized statuses"
+                    )
                 for status, count in declared_counts.items():
                     _require_string(status, f"summary {graph_case} {bucket} status")
                     _require_nonnegative_int(

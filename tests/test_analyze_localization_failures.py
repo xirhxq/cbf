@@ -19,6 +19,7 @@ PROCESS_NAME = "calibration.jsonl.gz"
 SUMMARY_NAME = "summary.json"
 SUMMARY_MARKDOWN_NAME = "summary.md"
 GRAPH_CASES = ("dynamic_dag_wnls", "fixed_refs_wnls")
+STATUS_KEYS = ("converged", "stale", "invalid", "failed")
 
 
 def _sha256(path: Path) -> str:
@@ -38,9 +39,11 @@ def _settings() -> dict:
 
 
 def _bucket_counts(rows: int) -> dict:
+    counts = {status: 0 for status in STATUS_KEYS}
+    counts["converged"] = rows
     return {
-        "attempt_status_counts": {"converged": rows} if rows else {},
-        "status_counts": {"converged": rows} if rows else {},
+        "attempt_status_counts": counts.copy(),
+        "status_counts": counts.copy(),
     }
 
 
@@ -154,6 +157,17 @@ class LocalizationFailureInputTests(unittest.TestCase):
         self.assertEqual(report["integrity"]["primary_rows"], 0)
         self.assertTrue(report["integrity"]["hashes_match"])
 
+    def test_accepts_zero_valued_counts_for_all_frozen_statuses(self) -> None:
+        summary = _read_summary(self.bundle)
+        expected_counts = {status: 0 for status in STATUS_KEYS}
+        expected_counts["converged"] = 2
+        self.assertEqual(
+            summary["graph_cases"]["dynamic_dag_wnls"]["initialization_frame"]
+            ["attempt_status_counts"],
+            expected_counts,
+        )
+        self.assertEqual(analyze_localization_failures(self.bundle)["integrity"]["observed_rows"], 4)
+
     def test_reports_primary_rows_from_the_verified_stream(self) -> None:
         two_frame_bundle = Path(self._temporary_directory.name) / "two-frame-bundle"
         _write_completed_bundle(two_frame_bundle, effective_frame_count=2)
@@ -247,6 +261,14 @@ class LocalizationFailureInputTests(unittest.TestCase):
             "attempt_status_counts": {"arbitrary": 1, "converged": 1},
             "status_counts": {"arbitrary": 1, "converged": 1},
         }
+        _write_summary(self.bundle, summary)
+        self._assert_integrity_error()
+
+    def test_rejects_an_unknown_summary_status_key(self) -> None:
+        summary = _read_summary(self.bundle)
+        summary["graph_cases"]["dynamic_dag_wnls"]["initialization_frame"][
+            "attempt_status_counts"
+        ]["unknown"] = 0
         _write_summary(self.bundle, summary)
         self._assert_integrity_error()
 
