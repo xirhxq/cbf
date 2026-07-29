@@ -26,8 +26,10 @@ from scripts.diagnostics.analyze_geometric_stability import (
     InputIntegrityError,
     analyze_geometric_stability,
     fixed_pair_metrics,
+    fixed_pair_tracking_margin,
     geometry_metrics,
     load_trajectory,
+    nominal_fixed_pair_metrics,
     opposite_baseline_side,
     shared_uav_ancestor_metrics,
 )
@@ -626,6 +628,17 @@ class EvidenceIntegrityTests(GeometricAnalysisFixture):
             with self.assertRaises(InputIntegrityError):
                 analyze_geometric_stability(**fixture.call_args())
 
+    def test_missing_uav_target_fails_closed_before_aggregation(self):
+        trajectory = self._trajectory()
+        del trajectory["state"][1]["robots"][0]["cvt"]["center"]
+        fixture = self.write_complete_fixture(trajectory=trajectory)
+
+        with self.assertRaisesRegex(
+            InputIntegrityError,
+            "finite 2D point",
+        ):
+            analyze_geometric_stability(**fixture.call_args())
+
 
 class ScientificAggregationTests(GeometricAnalysisFixture):
     @staticmethod
@@ -663,6 +676,24 @@ class ScientificAggregationTests(GeometricAnalysisFixture):
 
     def two_seed_fixture(self) -> GeometricFixture:
         return self.write_complete_fixture(seeds=(101, 102))
+
+    def base_and_uav_target_triangle_fixture(self) -> GeometricFixture:
+        trajectory = self._trajectory()
+        trajectory["config"]["bases"][0] = [0.0, 0.0]
+        trajectory["config"]["bases"][1] = [0.0, 5.0]
+        first = {
+            robot["id"]: robot
+            for robot in trajectory["state"][0]["robots"]
+        }
+        first[1]["cvt"]["center"] = [8.0, 7.0]
+        first[2]["cvt"]["center"] = [9.0, 6.0]
+        primary = {
+            robot["id"]: robot
+            for robot in trajectory["state"][1]["robots"]
+        }
+        primary[1]["cvt"]["center"] = [3.0, 4.0]
+        primary[2]["cvt"]["center"] = [3.0, 0.0]
+        return self.write_complete_fixture(trajectory=trajectory)
 
     def one_invalid_restart_row_fixture(self) -> GeometricFixture:
         def mutation(rows: list[dict]) -> None:
@@ -737,10 +768,16 @@ class ScientificAggregationTests(GeometricAnalysisFixture):
         geometry = report["geometry"]["true_dynamic_all_primary"]["overall"]
         self.assertEqual(geometry["trajectory_tuple_count"], 2)
         self.assertEqual(geometry["range_seed_repetitions_verified"], 2)
+        nominal = report["geometry"][
+            "nominal_fixed_pair_all_primary"
+        ]["overall"]
+        self.assertEqual(nominal["trajectory_tuple_count"], 2)
+        self.assertEqual(nominal["range_seed_repetitions_verified"], 2)
 
     def test_true_trajectory_metrics_are_not_assigned_to_first_seed(self):
         report = self.analyze(self.two_seed_fixture())
         for name in (
+            "nominal_fixed_pair_all_primary",
             "true_dynamic_all_primary",
             "true_fixed_pair_all_primary",
         ):
@@ -756,6 +793,42 @@ class ScientificAggregationTests(GeometricAnalysisFixture):
         ]
         self.assertNotIn("by_seed", tracking)
         self.assertFalse(tracking["seed_stratification"]["applicable"])
+
+    def test_nominal_base_and_uav_targets_drive_hand_derived_margin(self):
+        report = self.analyze(self.base_and_uav_target_triangle_fixture())
+        nominal = report["geometry"][
+            "nominal_fixed_pair_all_primary"
+        ]["by_depth"]["2"]
+
+        self.assertAlmostEqual(
+            nominal["metrics"][
+                "admissible_tracking_deviation_supremum"
+            ]["maximum"],
+            1.0 / 3.0,
+        )
+        self.assertAlmostEqual(
+            nominal["metrics"]["included_angle_rad"]["maximum"],
+            math.pi / 2.0,
+        )
+
+    def test_estimated_tracking_margin_uses_explicit_finite_denominator(self):
+        report = self.analyze(self.one_invalid_restart_row_fixture())
+        margin = report["geometry"][
+            "estimated_fixed_pair_tracking_margin_finite"
+        ]["overall"]
+
+        self.assertEqual(margin["denominator"], 1)
+        self.assertEqual(
+            margin["strictly_within_admissible_count"]
+            + margin["not_strictly_within_admissible_count"],
+            1,
+        )
+        self.assertEqual(
+            margin["inapplicability_reasons"][
+                "restart_row_not_finite"
+            ],
+            1,
+        )
 
     def test_estimated_geometry_uses_only_finite_restart_rows(self):
         report = self.analyze(self.one_invalid_restart_row_fixture())
@@ -1066,6 +1139,41 @@ class PublicationTests(GeometricAnalysisFixture):
         self.assertIn("post-hoc exploratory", text)
         self.assertIn("not a deterministic true-error bound", text)
         self.assertIn("one truth trajectory", text)
+
+    def test_json_and_markdown_render_compact_nominal_perturbation_families(self):
+        fixture = self.write_complete_fixture()
+        output = self.root / "analysis" / "run"
+
+        analyze_geometric_stability(**fixture.call_args(output_dir=output))
+
+        json_text = (output / OUTPUT_JSON_NAME).read_text(
+            encoding="utf-8"
+        )
+        report = json.loads(json_text)
+        markdown = (output / OUTPUT_MARKDOWN_NAME).read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "nominal_fixed_pair_all_primary",
+            report["geometry"],
+        )
+        self.assertIn(
+            "estimated_fixed_pair_tracking_margin_finite",
+            report["geometry"],
+        )
+        self.assertIn("Nominal target perturbation", markdown)
+        self.assertIn("nominal_fixed_pair_all_primary", markdown)
+        self.assertIn(
+            "estimated_fixed_pair_tracking_margin_finite",
+            markdown,
+        )
+        for raw_field in (
+            '"measurements"',
+            '"truth_position"',
+            '"calibration.jsonl.gz"',
+        ):
+            self.assertNotIn(raw_field, json_text)
+            self.assertNotIn(raw_field, markdown)
 
     def test_json_is_deterministic_complete_and_matches_returned_report(self):
         fixture = self.write_complete_fixture()
@@ -2336,6 +2444,7 @@ class PublicationIntegrityTests(GeometricAnalysisFixture):
     def test_live_guard_runs_once_at_exact_ten_thousand_pair_boundary(self):
         trajectory = self._trajectory(robot_count=1, frame_count=5_000)
         trajectory["config"]["execute"]["time-step"] = 0.05
+        trajectory["config"]["bases"][1] = [3.0, 10.0]
         fixture = self.write_complete_fixture(trajectory=trajectory)
         output = self.root / "analysis" / "run"
         processed = 0
@@ -2369,6 +2478,7 @@ class PublicationIntegrityTests(GeometricAnalysisFixture):
     def test_builtin_live_floor_stops_at_ten_thousand_pair_boundary(self):
         trajectory = self._trajectory(robot_count=1, frame_count=5_000)
         trajectory["config"]["execute"]["time-step"] = 0.05
+        trajectory["config"]["bases"][1] = [3.0, 10.0]
         fixture = self.write_complete_fixture(trajectory=trajectory)
         output = self.root / "analysis" / "run"
         processed = 0
@@ -2734,6 +2844,51 @@ class GeometryPrimitiveTests(unittest.TestCase):
             result["noncollinearity_angle_rad"],
             math.pi / 6.0,
         )
+
+
+class NominalPerturbationPrimitiveTests(unittest.TestCase):
+    def test_three_four_five_target_triangle_has_one_third_supremum(self):
+        result = nominal_fixed_pair_metrics(
+            [0.0, 0.0],
+            [[3.0, 0.0], [0.0, 4.0]],
+        )
+
+        self.assertAlmostEqual(result["included_angle_rad"], math.pi / 2.0)
+        self.assertAlmostEqual(result["observer_reference_1_length"], 3.0)
+        self.assertAlmostEqual(result["observer_reference_2_length"], 4.0)
+        self.assertAlmostEqual(result["reference_pair_length"], 5.0)
+        self.assertAlmostEqual(result["minimum_triangle_slack"], 2.0)
+        self.assertAlmostEqual(
+            result["admissible_tracking_deviation_supremum"],
+            1.0 / 3.0,
+        )
+
+    def test_equality_at_supremum_is_not_strictly_certified(self):
+        result = fixed_pair_tracking_margin(
+            observer_estimate=[1.0 / 3.0, 0.0],
+            reference_estimates=[[3.0, 0.0], [0.0, 4.0]],
+            observer_target=[0.0, 0.0],
+            reference_targets=[[3.0, 0.0], [0.0, 4.0]],
+        )
+
+        self.assertAlmostEqual(
+            result["maximum_vertex_target_deviation"],
+            1.0 / 3.0,
+        )
+        self.assertAlmostEqual(result["tracking_deviation_margin"], 0.0)
+        self.assertFalse(
+            result["strictly_within_admissible_tracking_deviation"]
+        )
+
+    def test_collinear_nominal_triangle_fails_closed(self):
+        with self.assertRaisesRegex(
+            InputIntegrityError,
+            "strictly nondegenerate",
+        ):
+            nominal_fixed_pair_metrics(
+                [0.0, 0.0],
+                [[1.0, 0.0], [2.0, 0.0]],
+            )
 
 
 class TrajectoryContractTests(unittest.TestCase):

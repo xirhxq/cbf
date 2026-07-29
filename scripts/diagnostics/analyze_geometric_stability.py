@@ -156,6 +156,113 @@ def fixed_pair_metrics(observer: object, references: object) -> dict:
     return metrics
 
 
+def _finite_distance(first: np.ndarray, second: np.ndarray, name: str) -> float:
+    difference = first - second
+    with np.errstate(over="ignore", invalid="ignore"):
+        distance = float(np.hypot(difference[0], difference[1]))
+    if not math.isfinite(distance):
+        raise InputIntegrityError(f"{name} is not finite")
+    return distance
+
+
+def nominal_fixed_pair_metrics(
+    observer_target: object,
+    reference_targets: object,
+) -> dict:
+    """Return nominal fixed-pair geometry and strict perturbation supremum."""
+    observer = _point(observer_target, "observer target")
+    references = _references(reference_targets, count=2)
+    first_length = _finite_distance(
+        observer,
+        references[0],
+        "first nominal observer-reference side",
+    )
+    second_length = _finite_distance(
+        observer,
+        references[1],
+        "second nominal observer-reference side",
+    )
+    reference_length = _finite_distance(
+        references[0],
+        references[1],
+        "nominal reference-pair side",
+    )
+    pair = fixed_pair_metrics(observer, references)
+    slacks = (
+        first_length + second_length - reference_length,
+        first_length + reference_length - second_length,
+        second_length + reference_length - first_length,
+    )
+    minimum_slack = min(slacks)
+    if (
+        first_length <= 0.0
+        or second_length <= 0.0
+        or reference_length <= 0.0
+        or pair["twice_triangle_area"] <= 0.0
+        or not all(math.isfinite(value) and value > 0.0 for value in slacks)
+    ):
+        raise InputIntegrityError(
+            "nominal fixed-reference target triangle is not strictly nondegenerate"
+        )
+    supremum = minimum_slack / 6.0
+    if not math.isfinite(supremum) or supremum <= 0.0:
+        raise InputIntegrityError(
+            "nominal tracking-deviation supremum is not finite and positive"
+        )
+    return {
+        **geometry_metrics(observer, references),
+        **pair,
+        "observer_reference_1_length": first_length,
+        "observer_reference_2_length": second_length,
+        "reference_pair_length": reference_length,
+        "minimum_triangle_slack": minimum_slack,
+        "admissible_tracking_deviation_supremum": supremum,
+    }
+
+
+def fixed_pair_tracking_margin(
+    *,
+    observer_estimate: object,
+    reference_estimates: object,
+    observer_target: object,
+    reference_targets: object,
+) -> dict:
+    """Measure the strict three-vertex target-tracking perturbation margin."""
+    observer = _point(observer_estimate, "observer estimate")
+    estimates = _references(reference_estimates, count=2)
+    target = _point(observer_target, "observer target")
+    targets = _references(reference_targets, count=2)
+    nominal = nominal_fixed_pair_metrics(target, targets)
+    deviations = (
+        _finite_distance(observer, target, "observer target deviation"),
+        _finite_distance(
+            estimates[0],
+            targets[0],
+            "first reference target deviation",
+        ),
+        _finite_distance(
+            estimates[1],
+            targets[1],
+            "second reference target deviation",
+        ),
+    )
+    maximum_deviation = max(deviations)
+    supremum = nominal["admissible_tracking_deviation_supremum"]
+    margin = supremum - maximum_deviation
+    if not math.isfinite(margin):
+        raise InputIntegrityError(
+            "fixed-pair target-tracking margin is not finite"
+        )
+    return {
+        "admissible_tracking_deviation_supremum": supremum,
+        "maximum_vertex_target_deviation": maximum_deviation,
+        "tracking_deviation_margin": margin,
+        "strictly_within_admissible_tracking_deviation": (
+            maximum_deviation < supremum
+        ),
+    }
+
+
 def shared_uav_ancestor_metrics(
     active_uav_references: list[int],
     lineage_by_robot: dict[int, frozenset[int]],
@@ -331,11 +438,13 @@ class _ScientificAccumulator:
             tuple[int, int], set[int]
         ] = {}
         self.geometry_samples = {
+            "nominal_fixed_pair_all_primary": _geometry_family(),
             "true_dynamic_all_primary": _geometry_family(),
             "true_fixed_pair_all_primary": _geometry_family(),
             "estimated_dynamic_finite": _geometry_family(),
             "estimated_fixed_pair_finite": _geometry_family(),
         }
+        self.fixed_pair_tracking_margin = _geometry_family()
         self.modeled_fim = _geometry_family()
         self.tracking_true = _stratified_samples()
         self.tracking_estimated = _stratified_samples()
@@ -439,11 +548,27 @@ class _ScientificAccumulator:
                 self.config,
                 self.trajectory["truth"][frame_index],
             )
+            targets_by_robot = self.trajectory["targets"][frame_index]
+            observer_target = _point(
+                targets_by_robot[robot_id],
+                "observer trajectory target",
+            )
+            fixed_targets = _fixed_reference_targets(
+                fixed_ids,
+                self.config,
+                targets_by_robot,
+            )
+            nominal_metrics = nominal_fixed_pair_metrics(
+                observer_target,
+                fixed_targets,
+            )
             signature = (
                 tuple(row["truth_position"]),
                 tuple(expected_active["base_ids"]),
                 tuple(expected_active["uav_ids"]),
                 tuple(tuple(point) for point in active.tolist()),
+                tuple(observer_target.tolist()),
+                tuple(tuple(point) for point in fixed_targets.tolist()),
             )
             tuple_key = (frame_index, robot_id)
             previous_signature = self.true_signatures.setdefault(
@@ -465,6 +590,13 @@ class _ScientificAccumulator:
             if len(repetitions) == 1:
                 _record_geometry(
                     self.geometry_samples[
+                        "nominal_fixed_pair_all_primary"
+                    ],
+                    nominal_metrics,
+                    strata,
+                )
+                _record_geometry(
+                    self.geometry_samples[
                         "true_dynamic_all_primary"
                     ],
                     geometry_metrics(truth, active),
@@ -480,13 +612,13 @@ class _ScientificAccumulator:
                     },
                     strata,
                 )
-                target = _point(
-                    self.trajectory["targets"][frame_index][robot_id],
-                    "trajectory target",
-                )
                 _record_sample(
                     self.tracking_true,
-                    float(np.linalg.norm(truth - target)),
+                    _finite_distance(
+                        truth,
+                        observer_target,
+                        "true-position target deviation",
+                    ),
                     strata,
                 )
 
@@ -546,6 +678,24 @@ class _ScientificAccumulator:
                         },
                         strata,
                     )
+                    perturbation = fixed_pair_tracking_margin(
+                        observer_estimate=observer_estimate,
+                        reference_estimates=estimated_fixed,
+                        observer_target=observer_target,
+                        reference_targets=fixed_targets,
+                    )
+                    _record_geometry(
+                        self.fixed_pair_tracking_margin,
+                        {
+                            key: (
+                                int(value)
+                                if type(value) is bool
+                                else value
+                            )
+                            for key, value in perturbation.items()
+                        },
+                        strata,
+                    )
                 else:
                     _record_inapplicable(
                         self.geometry_samples[
@@ -554,13 +704,18 @@ class _ScientificAccumulator:
                         fixed_reason,
                         strata,
                     )
-                target = _point(
-                    self.trajectory["targets"][frame_index][robot_id],
-                    "trajectory target",
-                )
+                    _record_inapplicable(
+                        self.fixed_pair_tracking_margin,
+                        fixed_reason,
+                        strata,
+                    )
                 _record_sample(
                     self.tracking_estimated,
-                    float(np.linalg.norm(observer_estimate - target)),
+                    _finite_distance(
+                        observer_estimate,
+                        observer_target,
+                        "estimated-position target deviation",
+                    ),
                     strata,
                 )
             else:
@@ -580,6 +735,11 @@ class _ScientificAccumulator:
                     self.geometry_samples[
                         "estimated_fixed_pair_finite"
                     ],
+                    reason,
+                    strata,
+                )
+                _record_inapplicable(
+                    self.fixed_pair_tracking_margin,
                     reason,
                     strata,
                 )
@@ -786,8 +946,14 @@ class _ScientificAccumulator:
         geometry["modeled_fim_valid"] = _finish_geometry_family(
             self.modeled_fim
         )
+        geometry[
+            "estimated_fixed_pair_tracking_margin_finite"
+        ] = _finish_tracking_margin_family(
+            self.fixed_pair_tracking_margin
+        )
         true_tuple_count = len(self.true_seed_repetitions)
         for name in (
+            "nominal_fixed_pair_all_primary",
             "true_dynamic_all_primary",
             "true_fixed_pair_all_primary",
         ):
@@ -1065,6 +1231,42 @@ def _finish_geometry_family(family: dict) -> dict:
         **{
             name: {
                 label: _finish_geometry_bucket(bucket)
+                for label, bucket in sorted(group.items())
+            }
+            for name, group in family.items()
+            if name != "overall"
+        },
+    }
+
+
+def _finish_tracking_margin_bucket(bucket: dict) -> dict:
+    result = _finish_geometry_bucket(bucket)
+    indicators = bucket["samples"].get(
+        "strictly_within_admissible_tracking_deviation",
+        [],
+    )
+    if any(value not in (0.0, 1.0) for value in indicators):
+        raise InputIntegrityError(
+            "strict tracking-deviation indicators are invalid"
+        )
+    result["metrics"].pop(
+        "strictly_within_admissible_tracking_deviation",
+        None,
+    )
+    satisfied = int(sum(indicators))
+    result["strictly_within_admissible_count"] = satisfied
+    result["not_strictly_within_admissible_count"] = (
+        len(indicators) - satisfied
+    )
+    return result
+
+
+def _finish_tracking_margin_family(family: dict) -> dict:
+    return {
+        "overall": _finish_tracking_margin_bucket(family["overall"]),
+        **{
+            name: {
+                label: _finish_tracking_margin_bucket(bucket)
                 for label, bucket in sorted(group.items())
             }
             for name, group in family.items()
@@ -1369,6 +1571,36 @@ def _active_reference_positions(
     if len(positions) < 2:
         raise InputIntegrityError("geometry requires at least two references")
     return np.asarray(positions)
+
+
+def _fixed_reference_targets(
+    references: dict,
+    config: dict,
+    targets_by_robot: dict[int, list[float]],
+) -> np.ndarray:
+    if (
+        not isinstance(references, dict)
+        or set(references) != {"base_ids", "uav_ids"}
+        or not isinstance(references["base_ids"], list)
+        or not isinstance(references["uav_ids"], list)
+    ):
+        raise InputIntegrityError("fixed-reference target semantics are unknown")
+    positions = [
+        _point(config["bases"][base_id], f"base target {base_id}")
+        for base_id in references["base_ids"]
+    ]
+    for reference_id in references["uav_ids"]:
+        if reference_id not in targets_by_robot:
+            raise InputIntegrityError(
+                f"target is missing for fixed UAV reference {reference_id}"
+            )
+        positions.append(
+            _point(
+                targets_by_robot[reference_id],
+                f"fixed UAV reference target {reference_id}",
+            )
+        )
+    return _references(positions, count=2)
 
 
 def _estimated_references(
@@ -1726,6 +1958,29 @@ def _markdown_bytes(report: dict) -> bytes:
                     "estimated_fixed_pair_finite"
                 ],
                 "modeled_fim_valid": geometry["modeled_fim_valid"],
+            },
+            sort_keys=True,
+            indent=2,
+            allow_nan=False,
+        ),
+        "```",
+        "",
+        "## Nominal target perturbation",
+        "",
+        "Nominal fixed-pair target geometry and its strict three-vertex "
+        "tracking-deviation supremum are explanatory. Equality at the "
+        "supremum is not certified. The complete dynamic active-set "
+        "geometry remains primary.",
+        "",
+        "```json",
+        json.dumps(
+            {
+                "nominal_fixed_pair_all_primary": geometry[
+                    "nominal_fixed_pair_all_primary"
+                ],
+                "estimated_fixed_pair_tracking_margin_finite": geometry[
+                    "estimated_fixed_pair_tracking_margin_finite"
+                ],
             },
             sort_keys=True,
             indent=2,
