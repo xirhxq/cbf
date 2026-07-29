@@ -28,6 +28,19 @@ _COUNT_FIELDS = ("attempt_status_counts", "status_counts")
 _ATTEMPT_STATUSES = {"converged", "invalid", "failed"}
 _RETAINED_STATUSES = {"converged", "stale", "invalid", "failed"}
 _COUNT_STATUSES = ("converged", "stale", "invalid", "failed")
+_UPSTREAM_UNAVAILABLE_REASON = "invalid upstream UAV reference"
+_WNLS_NONCONVERGENCE_REASON = "maximum WNLS iterations exceeded"
+_FAILURE_CLASSES = (
+    "contained",
+    "converged_outside_radius",
+    "upstream_unavailable",
+    "invalid_input_or_numeric",
+    "wnls_nonconvergence",
+    "other_failed",
+)
+_PRIMARY_ATTEMPT_STATUSES = ("converged", "invalid", "failed")
+_MAX_REASON_LABELS = 32
+_MAX_REASON_OVERFLOW_EXAMPLES = 5
 
 
 class InputIntegrityError(RuntimeError):
@@ -36,6 +49,146 @@ class InputIntegrityError(RuntimeError):
 
 class AnalysisLimitError(RuntimeError):
     pass
+
+
+def _attempt_class(row: dict) -> str:
+    """Classify the current solver attempt, never the retained state."""
+    attempt_status = row.get("attempt_status")
+    reason = row.get("attempt_failure_reason")
+    if attempt_status == "converged":
+        containment = row.get("containment")
+        if containment is True:
+            return "contained"
+        if containment is False:
+            return "converged_outside_radius"
+        raise InputIntegrityError("converged attempt containment must be boolean")
+    if attempt_status == "invalid":
+        return (
+            "upstream_unavailable"
+            if reason == _UPSTREAM_UNAVAILABLE_REASON
+            else "invalid_input_or_numeric"
+        )
+    if attempt_status == "failed":
+        return (
+            "wnls_nonconvergence"
+            if reason == _WNLS_NONCONVERGENCE_REASON
+            else "other_failed"
+        )
+    raise InputIntegrityError("row attempt status is not recognized")
+
+
+def _empty_failure_budget(graph_cases: list[str]) -> dict[str, dict]:
+    predecessor_classes = {
+        attempt_class: 0 for attempt_class in (*_FAILURE_CLASSES, "not_observed")
+    }
+    return {
+        graph_case: {
+            "failure_budget": {
+                "denominator": 0,
+                "counts": {attempt_class: 0 for attempt_class in _FAILURE_CLASSES},
+            },
+            "attempt_status_counts": {
+                attempt_status: 0 for attempt_status in _PRIMARY_ATTEMPT_STATUSES
+            },
+            "reason_labels": {
+                "counts": {},
+                "overflow_count": 0,
+                "overflow_examples": [],
+            },
+            "lineage": {
+                "upstream_unavailable_rows": 0,
+                "unavailable_uav_reference_edges": 0,
+                "predecessor_attempt_classes": predecessor_classes.copy(),
+                "propagation_depth_counts": {"not_observed": 0},
+            },
+        }
+        for graph_case in graph_cases
+    }
+
+
+def _record_reason_label(case: dict, reason: object) -> None:
+    if reason is None:
+        return
+    if not isinstance(reason, str) or not reason:
+        raise InputIntegrityError("attempt failure reason must be a string or null")
+    labels = case["reason_labels"]
+    counts = labels["counts"]
+    if reason in counts:
+        counts[reason] += 1
+        return
+    if len(counts) < _MAX_REASON_LABELS:
+        counts[reason] = 1
+        return
+    labels["overflow_count"] += 1
+    examples = labels["overflow_examples"]
+    if len(examples) < _MAX_REASON_OVERFLOW_EXAMPLES:
+        examples.append(reason)
+
+
+def _unavailable_uav_reference_ids(row: dict) -> list[int]:
+    measurements = row.get("measurements")
+    if not isinstance(measurements, list):
+        raise InputIntegrityError("upstream-unavailable row measurements must be a list")
+    unavailable_ids = []
+    for measurement in measurements:
+        if not isinstance(measurement, dict):
+            raise InputIntegrityError("measurement record must be an object")
+        if (
+            measurement.get("kind") == "uav"
+            and measurement.get("estimated_reference_available") is False
+        ):
+            reference_id = measurement.get("id")
+            if type(reference_id) is not int or reference_id < 0:
+                raise InputIntegrityError("unavailable UAV reference ID must be a non-negative integer")
+            unavailable_ids.append(reference_id)
+    return unavailable_ids
+
+
+def _lineage_depth(
+    attempt_class: str,
+    unavailable_ids: list[int],
+    predecessors: dict[int, dict],
+) -> int | None:
+    if attempt_class != "upstream_unavailable":
+        return 0
+    observed_depths = [
+        predecessor["propagation_depth"]
+        for reference_id in unavailable_ids
+        if (predecessor := predecessors.get(reference_id)) is not None
+        and predecessor["propagation_depth"] is not None
+    ]
+    return None if not observed_depths else 1 + max(observed_depths)
+
+
+def _record_lineage(
+    case: dict,
+    row: dict,
+    attempt_class: str,
+    predecessors: dict[int, dict],
+) -> int | None:
+    unavailable_ids = (
+        _unavailable_uav_reference_ids(row)
+        if attempt_class == "upstream_unavailable"
+        else []
+    )
+    propagation_depth = _lineage_depth(attempt_class, unavailable_ids, predecessors)
+    if attempt_class != "upstream_unavailable":
+        return propagation_depth
+
+    lineage = case["lineage"]
+    lineage["upstream_unavailable_rows"] += 1
+    for reference_id in unavailable_ids:
+        lineage["unavailable_uav_reference_edges"] += 1
+        predecessor = predecessors.get(reference_id)
+        predecessor_class = (
+            "not_observed" if predecessor is None else predecessor["attempt_class"]
+        )
+        lineage["predecessor_attempt_classes"][predecessor_class] += 1
+    depth_key = "not_observed" if propagation_depth is None else str(propagation_depth)
+    lineage["propagation_depth_counts"][depth_key] = (
+        lineage["propagation_depth_counts"].get(depth_key, 0) + 1
+    )
+    return propagation_depth
 
 
 def _strict_json_line(raw: bytes) -> dict:
@@ -339,10 +492,33 @@ def analyze_localization_failures(
     manifest["_verify_hashes"] = verify_hashes
     observed_rows = 0
     primary_rows = 0
+    _, _, _, graph_cases, _ = _stream_dimensions(summary)
+    cases = _empty_failure_budget(graph_cases)
+    predecessor_group: tuple[int, str, int] | None = None
+    predecessors: dict[int, dict] = {}
     for row in _iter_verified_rows(bundle_dir, manifest, summary):
         observed_rows += 1
+        group = (row["seed"], row["graph_case"], row["frame_index"])
+        if group != predecessor_group:
+            predecessor_group = group
+            predecessors = {}
         if row["primary_statistics"]:
             primary_rows += 1
+            attempt_class = _attempt_class(row)
+            case = cases[row["graph_case"]]
+            case["failure_budget"]["denominator"] += 1
+            case["failure_budget"]["counts"][attempt_class] += 1
+            case["attempt_status_counts"][row["attempt_status"]] += 1
+            _record_reason_label(case, row.get("attempt_failure_reason"))
+            propagation_depth = _record_lineage(case, row, attempt_class, predecessors)
+            predecessors[row["robot_id"]] = {
+                "robot_id": row["robot_id"],
+                "attempt_class": attempt_class,
+                "attempt_status": row["attempt_status"],
+                "retained_status": row["status"],
+                "attempt_failure_reason": row.get("attempt_failure_reason"),
+                "propagation_depth": propagation_depth,
+            }
     if verify_hashes:
         _verify_unchanged_inputs(bundle_dir, manifest_raw, manifest)
     return {
@@ -353,4 +529,5 @@ def analyze_localization_failures(
             "primary_rows": primary_rows,
             "hashes_match": verify_hashes,
         },
+        "cases": cases,
     }

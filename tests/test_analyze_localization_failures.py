@@ -11,6 +11,7 @@ from pathlib import Path
 
 from scripts.diagnostics.analyze_localization_failures import (
     InputIntegrityError,
+    _attempt_class,
     analyze_localization_failures,
 )
 
@@ -58,6 +59,9 @@ def _write_completed_bundle(bundle: Path, effective_frame_count: int = 1) -> Non
             "primary_statistics": frame_index != 0,
             "attempt_status": "converged",
             "status": "converged",
+            "containment": True,
+            "attempt_failure_reason": None,
+            "measurements": [],
         }
         for frame_index in range(effective_frame_count)
         for graph_case in GRAPH_CASES
@@ -99,6 +103,97 @@ def _write_completed_bundle(bundle: Path, effective_frame_count: int = 1) -> Non
         "summary_markdown_sha256": _sha256(summary_markdown_path),
     }
     _write_manifest(bundle, manifest)
+
+
+def _real_schema_row(
+    frame_index: int,
+    graph_case: str,
+    robot_id: int,
+    *,
+    attempt_status: str = "converged",
+    status: str = "converged",
+    containment: bool = True,
+    attempt_failure_reason: str | None = None,
+    measurements: list[dict] | None = None,
+) -> dict:
+    return {
+        "frame_index": frame_index,
+        "seed": 17,
+        "graph_case": graph_case,
+        "robot_id": robot_id,
+        "squad_local_index": robot_id,
+        "primary_statistics": frame_index != 0,
+        "attempt_status": attempt_status,
+        "status": status,
+        "containment": containment,
+        "attempt_failure_reason": attempt_failure_reason,
+        "measurements": [] if measurements is None else measurements,
+    }
+
+
+def _write_real_schema_bundle(bundle: Path, rows: list[dict], robot_count: int) -> None:
+    """Write a self-consistent canonical bundle without using analyzer helpers."""
+    bundle.mkdir()
+    lines = [
+        json.dumps(row, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+        for row in rows
+    ]
+    process_path = bundle / PROCESS_NAME
+    with process_path.open("wb") as raw:
+        with gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as compressed:
+            for line in lines:
+                compressed.write(line)
+
+    def status_counts(selected: list[dict], key: str) -> dict[str, int]:
+        counts = {status: 0 for status in STATUS_KEYS}
+        for row in selected:
+            counts[row[key]] += 1
+        return counts
+
+    frame_count = max(row["frame_index"] for row in rows) + 1
+    graph_cases = ["dynamic_dag_wnls", "fixed_refs_wnls"]
+    summary_cases = {}
+    for graph_case in graph_cases:
+        case_rows = [row for row in rows if row["graph_case"] == graph_case]
+        primary_rows = [row for row in case_rows if row["primary_statistics"]]
+        initialization_rows = [row for row in case_rows if not row["primary_statistics"]]
+        summary_cases[graph_case] = {
+            "overall": {
+                "attempt_status_counts": status_counts(primary_rows, "attempt_status"),
+                "status_counts": status_counts(primary_rows, "status"),
+            },
+            "initialization_frame": {
+                "attempt_status_counts": status_counts(initialization_rows, "attempt_status"),
+                "status_counts": status_counts(initialization_rows, "status"),
+            },
+        }
+    settings = {
+        "run_seeds": [17],
+        "graph_cases": graph_cases,
+        "effective_frame_count": frame_count,
+    }
+    summary = {
+        "expected_process_rows": len(rows),
+        "process_rows": len(rows),
+        "settings": settings,
+        "graph_cases": summary_cases,
+    }
+    summary_path = bundle / SUMMARY_NAME
+    summary_path.write_text(json.dumps(summary, sort_keys=True) + "\n", encoding="utf-8")
+    summary_markdown_path = bundle / SUMMARY_MARKDOWN_NAME
+    summary_markdown_path.write_text("# Completed localization diagnostic bundle\n", encoding="utf-8")
+    _write_manifest(
+        bundle,
+        {
+            "termination_reason": "completed",
+            "estimator_contract": "variable_weight_nls_full_residual_jacobian_v1",
+            "settings": settings,
+            "compressed_process_sha256": _sha256(process_path),
+            "decompressed_process_sha256": hashlib.sha256(b"".join(lines)).hexdigest(),
+            "summary_json_sha256": _sha256(summary_path),
+            "summary_markdown_sha256": _sha256(summary_markdown_path),
+        },
+    )
 
 
 def _read_manifest(bundle: Path) -> dict:
@@ -319,3 +414,268 @@ class LocalizationFailureInputTests(unittest.TestCase):
     def _assert_integrity_error(self) -> None:
         with self.assertRaises(InputIntegrityError):
             analyze_localization_failures(self.bundle)
+
+
+class FailureBudgetTests(unittest.TestCase):
+    def test_classifies_current_attempt_not_retained_state(self) -> None:
+        """Breaks if a stale retained result hides a failed current attempt."""
+        rows = [
+            {"attempt_status": "converged", "containment": True},
+            {"attempt_status": "converged", "containment": False},
+            {
+                "attempt_status": "invalid",
+                "attempt_failure_reason": "invalid upstream UAV reference",
+                "status": "invalid",
+            },
+            {
+                "attempt_status": "invalid",
+                "attempt_failure_reason": "non-finite or malformed WNLS input",
+                "status": "invalid",
+            },
+            {
+                "attempt_status": "failed",
+                "attempt_failure_reason": "maximum WNLS iterations exceeded",
+                "status": "stale",
+            },
+            {
+                "attempt_status": "failed",
+                "attempt_failure_reason": "new future failure",
+                "status": "failed",
+            },
+        ]
+
+        self.assertEqual(
+            [_attempt_class(row) for row in rows],
+            [
+                "contained",
+                "converged_outside_radius",
+                "upstream_unavailable",
+                "invalid_input_or_numeric",
+                "wnls_nonconvergence",
+                "other_failed",
+            ],
+        )
+
+    def test_reconciles_the_primary_attempt_partition(self) -> None:
+        """Breaks if a primary attempt is omitted or counted in two budget classes."""
+        classes = (
+            ("converged", "converged", True, None),
+            ("converged", "converged", False, None),
+            ("invalid", "invalid", False, "invalid upstream UAV reference"),
+            ("invalid", "invalid", False, "non-finite or malformed WNLS input"),
+            ("failed", "stale", False, "maximum WNLS iterations exceeded"),
+            ("failed", "failed", False, "new future failure"),
+        )
+        rows = []
+        for frame_index in range(2):
+            for graph_case in GRAPH_CASES:
+                for robot_id in range(1, 13):
+                    if frame_index == 0:
+                        rows.append(_real_schema_row(frame_index, graph_case, robot_id))
+                        continue
+                    attempt, status, containment, reason = classes[(robot_id - 1) // 2]
+                    rows.append(
+                        _real_schema_row(
+                            frame_index,
+                            graph_case,
+                            robot_id,
+                            attempt_status=attempt,
+                            status=status,
+                            containment=containment,
+                            attempt_failure_reason=reason,
+                        )
+                    )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle = Path(temporary) / "bundle"
+            _write_real_schema_bundle(bundle, rows, robot_count=12)
+            report = analyze_localization_failures(bundle)
+
+        case = report["cases"]["dynamic_dag_wnls"]
+        self.assertEqual(sum(case["failure_budget"]["counts"].values()), 12)
+        self.assertEqual(case["failure_budget"]["denominator"], 12)
+        self.assertEqual(
+            case["attempt_status_counts"],
+            {"converged": 4, "invalid": 4, "failed": 4},
+        )
+
+    def test_bounds_raw_reason_labels_without_dropping_overflow_evidence(self) -> None:
+        """Breaks if unbounded future failure reasons grow with process rows."""
+        rows = []
+        for frame_index in range(2):
+            for graph_case in GRAPH_CASES:
+                for robot_id in range(1, 34):
+                    if frame_index == 0:
+                        rows.append(_real_schema_row(frame_index, graph_case, robot_id))
+                    else:
+                        rows.append(
+                            _real_schema_row(
+                                frame_index,
+                                graph_case,
+                                robot_id,
+                                attempt_status="failed",
+                                status="failed",
+                                containment=False,
+                                attempt_failure_reason=f"future failure {robot_id}",
+                            )
+                        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle = Path(temporary) / "bundle"
+            _write_real_schema_bundle(bundle, rows, robot_count=33)
+            report = analyze_localization_failures(bundle)
+
+        reason_labels = report["cases"]["dynamic_dag_wnls"]["reason_labels"]
+        self.assertEqual(len(reason_labels["counts"]), 32)
+        self.assertEqual(reason_labels["overflow_count"], 1)
+        self.assertEqual(reason_labels["overflow_examples"], ["future failure 33"])
+
+
+class PredecessorLineageTests(unittest.TestCase):
+    def test_links_same_frame_unavailable_uav_to_the_lower_index_attempt(self) -> None:
+        """Breaks if upstream lineage is inferred from retained state or another frame."""
+        rows = []
+        for frame_index in range(2):
+            for graph_case in GRAPH_CASES:
+                rows.append(
+                    _real_schema_row(
+                        frame_index,
+                        graph_case,
+                        1,
+                        attempt_status="failed" if frame_index else "converged",
+                        status="stale" if frame_index else "converged",
+                        containment=False if frame_index else True,
+                        attempt_failure_reason=(
+                            "maximum WNLS iterations exceeded" if frame_index else None
+                        ),
+                    )
+                )
+                rows.append(
+                    _real_schema_row(
+                        frame_index,
+                        graph_case,
+                        2,
+                        attempt_status="invalid" if frame_index else "converged",
+                        status="invalid" if frame_index else "converged",
+                        containment=False if frame_index else True,
+                        attempt_failure_reason=(
+                            "invalid upstream UAV reference" if frame_index else None
+                        ),
+                        measurements=(
+                            [
+                                {
+                                    "kind": "uav",
+                                    "id": 1,
+                                    "estimated_reference_available": False,
+                                }
+                            ]
+                            if frame_index
+                            else []
+                        ),
+                    )
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle = Path(temporary) / "bundle"
+            _write_real_schema_bundle(bundle, rows, robot_count=2)
+            report = analyze_localization_failures(bundle)
+
+        lineage = report["cases"]["dynamic_dag_wnls"]["lineage"]
+        self.assertEqual(lineage["upstream_unavailable_rows"], 1)
+        self.assertEqual(lineage["unavailable_uav_reference_edges"], 1)
+        self.assertEqual(
+            lineage["predecessor_attempt_classes"]["wnls_nonconvergence"], 1
+        )
+
+    def test_counts_only_observed_same_frame_chain_depth(self) -> None:
+        """Breaks if a two-hop unavailable chain is reported as a direct failure."""
+        rows = []
+        for frame_index in range(2):
+            for graph_case in GRAPH_CASES:
+                rows.append(
+                    _real_schema_row(
+                        frame_index,
+                        graph_case,
+                        1,
+                        attempt_status="failed" if frame_index else "converged",
+                        status="stale" if frame_index else "converged",
+                        containment=False if frame_index else True,
+                        attempt_failure_reason=(
+                            "maximum WNLS iterations exceeded" if frame_index else None
+                        ),
+                    )
+                )
+                for robot_id, parent_id in ((2, 1), (3, 2)):
+                    rows.append(
+                        _real_schema_row(
+                            frame_index,
+                            graph_case,
+                            robot_id,
+                            attempt_status="invalid" if frame_index else "converged",
+                            status="invalid" if frame_index else "converged",
+                            containment=False if frame_index else True,
+                            attempt_failure_reason=(
+                                "invalid upstream UAV reference" if frame_index else None
+                            ),
+                            measurements=(
+                                [
+                                    {
+                                        "kind": "uav",
+                                        "id": parent_id,
+                                        "estimated_reference_available": False,
+                                    }
+                                ]
+                                if frame_index
+                                else []
+                            ),
+                        )
+                    )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle = Path(temporary) / "bundle"
+            _write_real_schema_bundle(bundle, rows, robot_count=3)
+            report = analyze_localization_failures(bundle)
+
+        self.assertEqual(
+            report["cases"]["dynamic_dag_wnls"]["lineage"]["propagation_depth_counts"],
+            {"not_observed": 0, "1": 1, "2": 1},
+        )
+
+    def test_marks_a_referenced_predecessor_absent_from_the_same_frame_as_not_observed(self) -> None:
+        """Breaks if a nonexistent predecessor is assigned an inferred failure cause."""
+        rows = []
+        for frame_index in range(2):
+            for graph_case in GRAPH_CASES:
+                rows.append(_real_schema_row(frame_index, graph_case, 1))
+                rows.append(
+                    _real_schema_row(
+                        frame_index,
+                        graph_case,
+                        2,
+                        attempt_status="invalid" if frame_index else "converged",
+                        status="invalid" if frame_index else "converged",
+                        containment=False if frame_index else True,
+                        attempt_failure_reason=(
+                            "invalid upstream UAV reference" if frame_index else None
+                        ),
+                        measurements=(
+                            [
+                                {
+                                    "kind": "uav",
+                                    "id": 0,
+                                    "estimated_reference_available": False,
+                                }
+                            ]
+                            if frame_index
+                            else []
+                        ),
+                    )
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle = Path(temporary) / "bundle"
+            _write_real_schema_bundle(bundle, rows, robot_count=2)
+            report = analyze_localization_failures(bundle)
+
+        lineage = report["cases"]["dynamic_dag_wnls"]["lineage"]
+        self.assertEqual(lineage["predecessor_attempt_classes"]["not_observed"], 1)
