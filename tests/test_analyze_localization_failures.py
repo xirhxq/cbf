@@ -13,6 +13,7 @@ from scripts.diagnostics.analyze_localization_failures import (
     InputIntegrityError,
     _attempt_class,
     _empty_failure_budget,
+    _empty_task3_case,
     _normalized_squared_error,
     _paired_seed_bootstrap,
     _q_bin,
@@ -748,6 +749,18 @@ class ConditionalCalibrationTests(unittest.TestCase):
             2.0,
         )
 
+    def test_covariance_validation_rejects_absent_nonfinite_asymmetric_singular_and_overflow(self) -> None:
+        """Breaks if invalid conditional covariance enters the q denominator."""
+        for covariance in (None, [[float("inf"), 0.0], [0.0, 1.0]], [[1.0, 1e-6], [0.0, 1.0]], [[1.0, 0.0], [0.0, 0.0]], [[1e-308, 0.0], [0.0, 1e-308]]):
+            with self.assertRaises(ValueError):
+                _normalized_squared_error([1e308, 1e308], covariance)
+
+    def test_fixed_conditional_shapes_include_all_bins(self) -> None:
+        case = _empty_task3_case()
+        self.assertEqual(set(case["strata"]["depth"]), {str(i) for i in range(1, 8)})
+        self.assertEqual(set(case["strata"]["reference_count"]), {str(i) for i in range(10)} | {"10_or_more"})
+        self.assertEqual(set(case["strata"]["phi_condition"]), {"[1,10)", "[10,30)", "[30,100)", "[100,infinity)"})
+
 
 class PairedBootstrapTests(unittest.TestCase):
     def test_recomputes_paired_aggregate_counts_and_marks_non_estimable_resamples(self) -> None:
@@ -761,6 +774,28 @@ class PairedBootstrapTests(unittest.TestCase):
         self.assertEqual(report["seed_specific"], [1.0, None])
         self.assertGreater(report["non_estimable_resamples"], 0)
         self.assertIsNone(report["percentile_interval"])
+
+
+class StratificationTests(unittest.TestCase):
+    def test_dynamic_depth_time_has_all_fixed_cells_and_six_class_budgets(self) -> None:
+        """Breaks if an empty dynamic depth/time cell or class is omitted."""
+        case = _empty_task3_case()
+        self.assertEqual(set(case["dynamic_depth_time"]), {str(i) for i in range(1, 8)})
+        for cells in case["dynamic_depth_time"].values():
+            self.assertEqual(len(cells), 5)
+            for budget in cells.values():
+                self.assertEqual(len(budget["counts"]), 6)
+
+
+class PersistenceTests(unittest.TestCase):
+    def test_persistence_records_are_json_safe_identity_records(self) -> None:
+        """Breaks if tuple-key state escapes into the derived report."""
+        record = {"seed": 17, "graph_case": "dynamic_dag_wnls", "robot_id": 1,
+                  "first_primary_converged_frame": 3,
+                  "primary_frames_before_first_convergence": 2,
+                  "longest_upstream_unavailable_streak": 3,
+                  "longest_wnls_nonconvergence_streak": 0, "never_primary_converged": False}
+        self.assertEqual(json.loads(json.dumps(record))["first_primary_converged_frame"], 3)
         self.assertEqual(
             [_ratio_bin(value) for value in (0.0, 0.5, 1.0, 2.0, 5.0)],
             ["[0,0.5)", "[0.5,1)", "[1,2)", "[2,5)", "[5,infinity)"],

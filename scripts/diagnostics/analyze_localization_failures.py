@@ -76,10 +76,14 @@ def _normalized_squared_error(error_vector: object, covariance: object) -> float
     max_abs = max(abs(value) for value in (a, b, c, d))
     if abs(b - c) > 1e-12 * max(1.0, max_abs):
         raise ValueError("covariance must be symmetric")
-    determinant = a * d - b * c
+    off_diagonal = (b + c) / 2.0
+    determinant = a * d - off_diagonal * off_diagonal
     if a <= 0.0 or determinant <= 0.0:
         raise ValueError("covariance must be positive definite")
-    return (d * ex * ex - (b + c) * ex * ey + a * ey * ey) / determinant
+    result = (d * ex * ex - 2.0 * off_diagonal * ex * ey + a * ey * ey) / determinant
+    if not math.isfinite(result):
+        raise ValueError("normalized squared error must be finite")
+    return result
 
 
 def _ratio_bin(value: float) -> str:
@@ -197,11 +201,15 @@ def _empty_task3_case() -> dict:
             "phi_condition": {key: {"denominator": 0} for key in _CONDITION_BINS},
             "phi_min": {key: {"denominator": 0} for key in _MIN_EIGEN_BINS},
         },
+        "dynamic_depth_time": {
+            str(depth): {time_key: _budget() for time_key in _TIME_BINS}
+            for depth in range(1, 8)
+        },
         "calibration": {
             "epsilon_containment_denominator": 0,
             "epsilon_contained": 0,
             "conditional_covariance_invalid": 0,
-            "q": {"finite_count": 0, "sum": 0.0, "max": None,
+            "q": {"finite_count": 0, "sum": 0.0, "max": None, "above_5_991464547": 0, "above_9": 0,
                   "bins": {key: 0 for key in ("[0,2.295748929)", "[2.295748929,5.991464547)", "[5.991464547,9]", "(9,infinity)")}},
             "ratio": {"finite_count": 0, "sum": 0.0, "max": None,
                       "bins": {key: 0 for key in ("[0,0.5)", "[0.5,1)", "[1,2)", "[2,5)", "[5,infinity)")}},
@@ -238,6 +246,8 @@ def _record_calibration(case: dict, row: dict) -> None:
     target["sum"] += q
     target["max"] = q if target["max"] is None else max(target["max"], q)
     target["bins"][_q_bin(q)] += 1
+    target["above_5_991464547"] += int(q > 5.991464547)
+    target["above_9"] += int(q > 9.0)
 
 
 def _attempt_class(row: dict) -> str:
@@ -719,6 +729,8 @@ def analyze_localization_failures(
             time_key = _time_bin(row["frame_index"])
             if time_key is not None:
                 _record_budget(task3["strata"]["time"][time_key], attempt_class)
+                if row["graph_case"] == "dynamic_dag_wnls" and type(depth) is int and 1 <= depth <= 7:
+                    _record_budget(task3["dynamic_depth_time"][str(depth)][time_key], attempt_class)
             if row["attempt_status"] == "converged":
                 active = row.get("active_references", {})
                 if isinstance(active, dict):
@@ -726,7 +738,7 @@ def analyze_localization_failures(
                     uav = active.get("uav_ids", [])
                     if isinstance(base, list) and isinstance(uav, list):
                         task3["strata"]["reference_count"][_reference_bin(len(base) + len(uav))]["denominator"] += 1
-                for field, bins, bucket_fn in (("phi_condition", "phi_condition", _condition_bin), ("phi_min", "phi_min", _min_eigen_bin)):
+                for field, bins, bucket_fn in (("phi_condition", "phi_condition", _condition_bin), ("phi_min_eigenvalue", "phi_min", _min_eigen_bin)):
                     value = row.get(field)
                     if type(value) in (int, float) and math.isfinite(value):
                         bucket = bucket_fn(value)
@@ -758,12 +770,14 @@ def analyze_localization_failures(
         _verify_unchanged_inputs(bundle_dir, manifest_raw, manifest)
     for graph_case in graph_cases:
         cases[graph_case].update(task3_cases[graph_case])
-    for state in persistence.values():
+    persistence_records = []
+    for (seed, graph_case, robot_id), state in sorted(persistence.items()):
         state["never_primary_converged"] = state["first_primary_converged_frame"] is None
         state["longest_upstream_unavailable_streak"] = state.pop("upstream_longest")
         state["longest_wnls_nonconvergence_streak"] = state.pop("wnls_longest")
         state.pop("upstream_current")
         state.pop("wnls_current")
+        persistence_records.append({"seed": seed, "graph_case": graph_case, "robot_id": robot_id, **state})
     comparisons = {"dynamic_minus_fixed": {key: {
         "count_difference": cases["dynamic_dag_wnls"]["failure_budget"]["counts"][key] - cases["fixed_refs_wnls"]["failure_budget"]["counts"][key],
         "percentage_point_difference": (
@@ -771,6 +785,11 @@ def analyze_localization_failures(
             - 100 * cases["fixed_refs_wnls"]["failure_budget"]["counts"][key] / cases["fixed_refs_wnls"]["failure_budget"]["denominator"]
         ) if cases["dynamic_dag_wnls"]["failure_budget"]["denominator"] and cases["fixed_refs_wnls"]["failure_budget"]["denominator"] else None
     } for key in _FAILURE_CLASSES}}
+    bootstrap = _paired_seed_bootstrap(list(seed_counts.values()))
+    bootstrap["seed_records"] = [
+        {"seed": seed, **counts, "ratio": _paired_seed_bootstrap([counts], resamples=1)["point_estimate"]}
+        for seed, counts in sorted(seed_counts.items())
+    ]
     return {
         "schema": SCHEMA_ID,
         "status": "completed",
@@ -780,7 +799,7 @@ def analyze_localization_failures(
             "hashes_match": verify_hashes,
         },
         "cases": cases,
-        "initialization": {"persistence": persistence},
+        "initialization": {"persistence": persistence_records},
         "comparisons": comparisons,
-        "bootstrap": _paired_seed_bootstrap(list(seed_counts.values())),
+        "bootstrap": bootstrap,
     }
