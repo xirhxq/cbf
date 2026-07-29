@@ -1155,13 +1155,109 @@ class OutputContractTests(unittest.TestCase):
             self.assertEqual(payload["source"]["hashes"]["manifest_sha256"], _sha256(bundle / "manifest.json"))
             self.assertEqual(payload["source"]["hashes"]["compressed_process_sha256"], _sha256(bundle / PROCESS_NAME))
             self.assertEqual(payload["source"]["estimator_contract"], analyzer.ESTIMATOR_CONTRACT_ID)
-            self.assertEqual(payload["protocol"]["bootstrap"], {"resamples": 10000, "rng_seed": 20260729})
-            self.assertEqual(payload["protocol"]["example_and_reason_caps"]["max_examples_per_bucket"], 5)
-            self.assertEqual(len(payload["limitations"]), 6)
+            self.assertEqual(payload["limitations"], [
+                "post-hoc exploratory mechanism audit",
+                "one preserved trajectory with 20 paired noise seeds",
+                "offline estimator outside the controller",
+                "no shared-ancestor cross-covariance model",
+                "no causal estimator or graph comparison",
+                "no radius, mission-probability, robustness, or safety validation",
+            ])
+            self.assertEqual(payload["protocol"]["failure_class_predicates"], [
+                {"class": "contained", "attempt_status": "converged", "containment": True},
+                {"class": "converged_outside_radius", "attempt_status": "converged", "containment": False},
+                {"class": "upstream_unavailable", "attempt_status": "invalid", "attempt_failure_reason": "invalid upstream UAV reference"},
+                {"class": "invalid_input_or_numeric", "attempt_status": "invalid", "attempt_failure_reason": {"not_equal": "invalid upstream UAV reference"}},
+                {"class": "wnls_nonconvergence", "attempt_status": "failed", "attempt_failure_reason": "maximum WNLS iterations exceeded"},
+                {"class": "other_failed", "attempt_status": "failed", "attempt_failure_reason": {"not_equal": "maximum WNLS iterations exceeded"}},
+            ])
+            self.assertEqual(payload["protocol"]["bin_edges"], {
+                "error_to_epsilon_ratio": [
+                    {"label": "[0,0.5)", "lower": 0.0, "upper": 0.5, "lower_closed": True, "upper_closed": False},
+                    {"label": "[0.5,1)", "lower": 0.5, "upper": 1.0, "lower_closed": True, "upper_closed": False},
+                    {"label": "[1,2)", "lower": 1.0, "upper": 2.0, "lower_closed": True, "upper_closed": False},
+                    {"label": "[2,5)", "lower": 2.0, "upper": 5.0, "lower_closed": True, "upper_closed": False},
+                    {"label": "[5,infinity)", "lower": 5.0, "upper": None, "lower_closed": True, "upper_closed": False},
+                ],
+                "normalized_squared_error": [
+                    {"label": "[0,2.295748929)", "lower": 0.0, "upper": 2.295748929, "lower_closed": True, "upper_closed": False},
+                    {"label": "[2.295748929,5.991464547)", "lower": 2.295748929, "upper": 5.991464547, "lower_closed": True, "upper_closed": False},
+                    {"label": "[5.991464547,9]", "lower": 5.991464547, "upper": 9.0, "lower_closed": True, "upper_closed": True},
+                    {"label": "(9,infinity)", "lower": 9.0, "upper": None, "lower_closed": False, "upper_closed": False},
+                ],
+                "phi_condition": [
+                    {"label": "[1,10)", "lower": 1.0, "upper": 10.0, "lower_closed": True, "upper_closed": False},
+                    {"label": "[10,30)", "lower": 10.0, "upper": 30.0, "lower_closed": True, "upper_closed": False},
+                    {"label": "[30,100)", "lower": 30.0, "upper": 100.0, "lower_closed": True, "upper_closed": False},
+                    {"label": "[100,infinity)", "lower": 100.0, "upper": None, "lower_closed": True, "upper_closed": False},
+                ],
+                "phi_min_eigenvalue": [
+                    {"label": "(0,0.05)", "lower": 0.0, "upper": 0.05, "lower_closed": False, "upper_closed": False},
+                    {"label": "[0.05,0.2)", "lower": 0.05, "upper": 0.2, "lower_closed": True, "upper_closed": False},
+                    {"label": "[0.2,1)", "lower": 0.2, "upper": 1.0, "lower_closed": True, "upper_closed": False},
+                    {"label": "[1,infinity)", "lower": 1.0, "upper": None, "lower_closed": True, "upper_closed": False},
+                ],
+                "reference_count": {"singleton_values": list(range(10)), "ten_or_more": {"lower": 10, "upper": None, "lower_closed": True, "upper_closed": False}},
+                "squad_local_index": {"integer": True, "lower": 1, "upper": 7, "lower_closed": True, "upper_closed": True},
+                "time_frame_index": [
+                    {"label": "1-100", "lower": 1, "upper": 100, "lower_closed": True, "upper_closed": True},
+                    {"label": "101-200", "lower": 101, "upper": 200, "lower_closed": True, "upper_closed": True},
+                    {"label": "201-300", "lower": 201, "upper": 300, "lower_closed": True, "upper_closed": True},
+                    {"label": "301-400", "lower": 301, "upper": 400, "lower_closed": True, "upper_closed": True},
+                    {"label": "401-499", "lower": 401, "upper": 499, "lower_closed": True, "upper_closed": True},
+                ],
+            })
+            self.assertEqual(payload["protocol"]["bootstrap"], {
+                "resampling_unit": "paired seed record",
+                "draws_per_resample": 20,
+                "sampling": "with_replacement",
+                "aggregate_counts": ["dyn_up", "fix_up", "dyn_invalid", "fix_invalid"],
+                "formula": "(sum(dyn_up) - sum(fix_up)) / (sum(dyn_invalid) - sum(fix_invalid))",
+                "nonpositive_denominator": "not_estimable",
+                "resamples": 10000,
+                "rng_seed": 20260729,
+                "percentiles": [2.5, 97.5],
+                "interval_confidence_level": 0.95,
+                "minimum_estimable_resamples": 9500,
+                "p_value": "not_reported",
+            })
+            self.assertEqual(payload["protocol"]["denominators"], {
+                "overall": "all primary_statistics rows for the graph case",
+                "depth": "all primary_statistics rows in the squad-local depth bin",
+                "time": "all primary_statistics rows in the frame-index time bin",
+                "dynamic_depth_time_cell": "all dynamic_dag_wnls primary_statistics rows in the depth and time cell",
+                "seed": "all primary_statistics rows for the graph case and seed",
+                "initialization": "all frame-zero rows for the graph case and depth",
+                "containment": "converged rows in the reported graph case or stratum",
+                "q": "converged rows with finite, symmetric, positive-definite covariance and finite normalized squared error",
+                "ratio": "converged rows with finite non-negative error-to-epsilon ratio",
+                "persistence": "one record per observed (seed, graph_case, robot_id) primary sequence",
+                "lineage": "upstream_unavailable rows and their unavailable UAV-reference edges",
+                "d_upstream": "sum(dyn_invalid) - sum(fix_invalid); not_estimable when non-positive",
+            })
+            self.assertEqual(payload["protocol"]["operational_limits"], {
+                "start_available_bytes": 8000000000,
+                "live_available_bytes": 6000000000,
+                "output_root_allocated_bytes": 2000000000,
+                "incomplete_run_allocated_bytes": 10000000,
+                "live_check_interval_rows": 10000,
+            })
+            self.assertEqual(payload["protocol"]["example_and_reason_caps"], {
+                "max_raw_reason_labels": 32,
+                "max_reason_overflow_examples": 5,
+                "max_examples_per_bucket": 5,
+            })
             self.assertIn("D_upstream: not_estimable", markdown)
             self.assertIn("#### Frame-zero initialization", markdown)
             self.assertIn("- Persistence record count:", markdown)
-            for limitation in payload["limitations"]:
+            for limitation in [
+                "post-hoc exploratory mechanism audit",
+                "one preserved trajectory with 20 paired noise seeds",
+                "offline estimator outside the controller",
+                "no shared-ancestor cross-covariance model",
+                "no causal estimator or graph comparison",
+                "no radius, mission-probability, robustness, or safety validation",
+            ]:
                 self.assertIn(limitation, markdown)
 
     def test_output_rejects_source_overlap_preexisting_paths_and_poststream_mutation(self) -> None:
