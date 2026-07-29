@@ -8,7 +8,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+import scripts.diagnostics.analyze_initialization_persistence as analyzer
 from scripts.diagnostics.analyze_initialization_persistence import (
     EXACT_REASON,
     InputIntegrityError,
@@ -163,6 +165,26 @@ class InitializationPersistenceAnalyzerTests(unittest.TestCase):
             },
         )
         self.assertLess(allocated_bytes(output), 10_000_000)
+
+    def test_output_rejects_source_mutation_during_publication(self) -> None:
+        """Breaks if a completed report survives a source change while it is rendered."""
+        bundle = self.write_fixture(self.persistence_rows(primary_frames=2))
+        output = self.root / "analysis" / "run"
+        output.parent.mkdir()
+        render_markdown = analyzer._render_markdown
+
+        def mutate_source(report: dict) -> bytes:
+            (bundle / SUMMARY_MARKDOWN_NAME).write_text("mutated\n", encoding="utf-8")
+            return render_markdown(report)
+
+        with patch.object(analyzer, "_render_markdown", side_effect=mutate_source):
+            with self.assertRaises(InputIntegrityError):
+                analyze_initialization_persistence(bundle, output_dir=output)
+        self.assertFalse(output.exists())
+        self.assertEqual(
+            list(output.with_name("run.incomplete").iterdir()),
+            [],
+        )
 
     def analyze_fixture(self, rows: list[dict], robot_count: int = 1) -> dict:
         """Write a canonical, rehashed real-schema bundle and run the public API."""

@@ -192,7 +192,13 @@ def _render_markdown(report: dict) -> bytes:
     return "\n".join(lines).encode("utf-8")
 
 
-def _write_output(report: dict, output_dir: Path, incomplete_dir: Path) -> None:
+def _write_output(
+    report: dict,
+    output_dir: Path,
+    incomplete_dir: Path,
+    *,
+    verify_before_publish: Callable[[], None],
+) -> None:
     json_path = incomplete_dir / _OUTPUT_JSON_NAME
     markdown_path = incomplete_dir / _OUTPUT_MARKDOWN_NAME
     try:
@@ -206,6 +212,7 @@ def _write_output(report: dict, output_dir: Path, incomplete_dir: Path) -> None:
         markdown_path.write_bytes(_render_markdown(report))
         _require_live_space(incomplete_dir)
         _check_output_limits(output_dir, incomplete_dir)
+        verify_before_publish()
         incomplete_dir.replace(output_dir)
     except Exception:
         json_path.unlink(missing_ok=True)
@@ -343,5 +350,12 @@ def analyze_initialization_persistence(
         "gate_passed": all(case["gate_passed"] for case in cases.values()),
     }
     if output_path is not None and incomplete_path is not None:
-        _write_output(report, output_path, incomplete_path)
+        _write_output(
+            report,
+            output_path,
+            incomplete_path,
+            verify_before_publish=lambda: _verify_unchanged_inputs(
+                bundle_dir, manifest_raw, manifest
+            ),
+        )
     return report
