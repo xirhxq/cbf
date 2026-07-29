@@ -12,15 +12,19 @@ from pathlib import Path
 SCHEMA_ID = "cbf2026-localization-failure-analysis-v1"
 ESTIMATOR_CONTRACT_ID = "variable_weight_nls_full_residual_jacobian_v1"
 _HASH_CHUNK_SIZE = 8192
-_ROW_KEYS = {
-    "frame",
+_PROCESS_NAME = "process.jsonl.gz"
+_SUMMARY_NAME = "summary.json"
+_SUMMARY_MARKDOWN_NAME = "summary.md"
+_REQUIRED_ROW_FIELDS = {
+    "frame_index",
     "seed",
     "graph_case",
     "robot_id",
-    "primary",
-    "initialization_frame",
+    "primary_statistics",
+    "attempt_status",
+    "status",
 }
-_COUNT_KEYS = {"attempts", "retained"}
+_COUNT_FIELDS = ("attempt_status_counts", "status_counts")
 
 
 class InputIntegrityError(RuntimeError):
@@ -40,14 +44,6 @@ def _strict_json_line(raw: bytes) -> dict:
     )
     if not isinstance(value, dict):
         raise InputIntegrityError("every process line must be a JSON object")
-    return value
-
-
-def _read_object(path: Path, description: str) -> dict:
-    try:
-        value = _strict_json_line(path.read_bytes())
-    except (OSError, ValueError) as error:
-        raise InputIntegrityError(f"invalid {description}: {error}") from error
     return value
 
 
@@ -77,128 +73,151 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _verify_file_hash(bundle_dir: Path, record: object, description: str) -> Path:
-    details = _require_mapping(record, description)
-    path = bundle_dir / _require_string(details.get("path"), f"{description} path")
-    expected_hash = _require_string(details.get("sha256"), f"{description} hash")
+def _read_object(path: Path, description: str) -> tuple[dict, bytes]:
+    try:
+        raw = path.read_bytes()
+        value = _strict_json_line(raw)
+    except (OSError, ValueError) as error:
+        raise InputIntegrityError(f"invalid {description}: {error}") from error
+    return value, raw
+
+
+def _verify_hash(path: Path, expected: object, description: str) -> None:
+    expected_hash = _require_string(expected, f"{description} hash")
     try:
         observed_hash = _sha256_file(path)
     except OSError as error:
         raise InputIntegrityError(f"cannot read {description}: {error}") from error
     if observed_hash != expected_hash:
         raise InputIntegrityError(f"{description} hash does not match manifest")
-    return path
 
 
-def _stream_dimensions(summary: dict) -> tuple[int, list[int], list[str], int]:
-    expected_rows = _require_nonnegative_int(summary.get("expected_rows"), "expected row count")
-    effective_frame_count = _require_nonnegative_int(
-        summary.get("effective_frame_count"), "effective frame count"
+def _settings_dimensions(settings_value: object) -> tuple[int, list[int], list[str], int]:
+    settings = _require_mapping(settings_value, "settings")
+    frame_count = _require_nonnegative_int(
+        settings.get("effective_frame_count"), "effective frame count"
     )
-    if effective_frame_count == 0:
+    if frame_count <= 0:
         raise InputIntegrityError("effective frame count must be positive")
-    run_seeds_value = summary.get("run_seeds")
-    graph_cases_value = summary.get("graph_cases")
-    if not isinstance(run_seeds_value, list) or not run_seeds_value:
+    seeds_value = settings.get("run_seeds")
+    graph_cases_value = settings.get("graph_cases")
+    if not isinstance(seeds_value, list) or not seeds_value:
         raise InputIntegrityError("run seeds must be a non-empty list")
-    if not isinstance(graph_cases_value, dict) or not graph_cases_value:
-        raise InputIntegrityError("graph cases must be a non-empty object")
-    run_seeds = []
-    for seed in run_seeds_value:
+    if not isinstance(graph_cases_value, list) or not graph_cases_value:
+        raise InputIntegrityError("graph cases must be a non-empty list")
+    seeds: list[int] = []
+    for seed in seeds_value:
         if type(seed) is not int:
             raise InputIntegrityError("every run seed must be an integer")
-        run_seeds.append(seed)
-    graph_cases = list(graph_cases_value)
-    if any(not isinstance(graph_case, str) or not graph_case for graph_case in graph_cases):
-        raise InputIntegrityError("every graph case must be a non-empty string")
-    dimension = effective_frame_count * len(run_seeds) * len(graph_cases)
+        seeds.append(seed)
+    graph_cases: list[str] = []
+    for graph_case in graph_cases_value:
+        graph_cases.append(_require_string(graph_case, "graph case"))
+    if len(set(graph_cases)) != len(graph_cases):
+        raise InputIntegrityError("graph cases must not repeat")
+    return frame_count, seeds, graph_cases, frame_count * len(seeds) * len(graph_cases)
+
+
+def _stream_dimensions(summary: dict) -> tuple[int, int, list[int], list[str], int]:
+    expected_rows = _require_nonnegative_int(
+        summary.get("expected_process_rows"), "expected process row count"
+    )
+    process_rows = _require_nonnegative_int(summary.get("process_rows"), "process row count")
+    if expected_rows != process_rows:
+        raise InputIntegrityError("expected process rows and process rows must match")
+    frame_count, seeds, graph_cases, dimension = _settings_dimensions(summary.get("settings"))
     if expected_rows % dimension:
-        raise InputIntegrityError("expected row count is not divisible by key dimensions")
+        raise InputIntegrityError("expected process row count is not divisible by key dimensions")
     robot_count = expected_rows // dimension
     if robot_count <= 0:
-        raise InputIntegrityError("expected row count produces a non-positive robot count")
-    return expected_rows, run_seeds, graph_cases, robot_count
-
-
-def _row_counts(row: dict, field: str) -> tuple[int, int]:
-    counts = _require_mapping(row.get(field), f"row {field}")
-    if set(counts) != _COUNT_KEYS:
-        raise InputIntegrityError(f"row {field} must contain attempts and retained only")
-    attempts = _require_nonnegative_int(counts["attempts"], f"row {field} attempts")
-    retained = _require_nonnegative_int(counts["retained"], f"row {field} retained")
-    if retained > attempts:
-        raise InputIntegrityError(f"row {field} retained count exceeds attempts")
-    return attempts, retained
+        raise InputIntegrityError("expected process row count produces a non-positive robot count")
+    cases = _require_mapping(summary.get("graph_cases"), "summary graph cases")
+    if set(cases) != set(graph_cases):
+        raise InputIntegrityError("summary graph cases do not match settings")
+    return expected_rows, frame_count, seeds, graph_cases, robot_count
 
 
 def _expected_keys(
-    effective_frame_count: int,
-    run_seeds: list[int],
-    graph_cases: list[str],
-    robot_count: int,
+    frame_count: int, seeds: list[int], graph_cases: list[str], robot_count: int
 ) -> Iterator[tuple[int, int, str, int]]:
-    for frame in range(effective_frame_count):
-        for seed in run_seeds:
+    for frame_index in range(frame_count):
+        for seed in seeds:
             for graph_case in graph_cases:
                 for robot_id in range(1, robot_count + 1):
-                    yield frame, seed, graph_case, robot_id
+                    yield frame_index, seed, graph_case, robot_id
 
 
-def _validate_summary_counts(summary: dict, counts: dict[str, dict[str, dict[str, int]]]) -> None:
-    cases = _require_mapping(summary.get("graph_cases"), "graph cases")
-    for graph_case, observed in counts.items():
-        case_summary = _require_mapping(cases.get(graph_case), f"summary graph case {graph_case}")
-        for block in ("overall", "initialization_frame"):
-            declared = _require_mapping(case_summary.get(block), f"summary {graph_case} {block}")
-            if set(declared) != _COUNT_KEYS:
+def _validate_row(row: dict) -> tuple[int, int, str, int, bool, str, str]:
+    missing = _REQUIRED_ROW_FIELDS - set(row)
+    if missing:
+        raise InputIntegrityError(f"process row is missing fields: {sorted(missing)!r}")
+    frame_index = _require_nonnegative_int(row["frame_index"], "row frame index")
+    seed = _require_nonnegative_int(row["seed"], "row seed")
+    graph_case = _require_string(row["graph_case"], "row graph case")
+    robot_id = _require_nonnegative_int(row["robot_id"], "row robot id")
+    if type(row["primary_statistics"]) is not bool:
+        raise InputIntegrityError("row primary statistics must be boolean")
+    attempt_status = _require_string(row["attempt_status"], "row attempt status")
+    status = _require_string(row["status"], "row status")
+    return frame_index, seed, graph_case, robot_id, row["primary_statistics"], attempt_status, status
+
+
+def _empty_case_counts(graph_cases: list[str]) -> dict[str, dict[str, dict[str, dict[str, int]]]]:
+    return {
+        graph_case: {
+            "overall": {"attempt_status_counts": {}, "status_counts": {}},
+            "initialization_frame": {"attempt_status_counts": {}, "status_counts": {}},
+        }
+        for graph_case in graph_cases
+    }
+
+
+def _increment(counter: dict[str, int], value: str) -> None:
+    counter[value] = counter.get(value, 0) + 1
+
+
+def _validate_summary_counts(summary: dict, observed: dict[str, dict[str, dict[str, dict[str, int]]]]) -> None:
+    cases = _require_mapping(summary.get("graph_cases"), "summary graph cases")
+    for graph_case, observed_case in observed.items():
+        declared_case = _require_mapping(cases.get(graph_case), f"summary graph case {graph_case}")
+        for bucket in ("overall", "initialization_frame"):
+            declared_bucket = _require_mapping(
+                declared_case.get(bucket), f"summary {graph_case} {bucket}"
+            )
+            if set(declared_bucket) != set(_COUNT_FIELDS):
                 raise InputIntegrityError(
-                    f"summary {graph_case} {block} must contain attempts and retained only"
+                    f"summary {graph_case} {bucket} must contain both count maps"
                 )
-            for count in ("attempts", "retained"):
-                expected = _require_nonnegative_int(
-                    declared[count], f"summary {graph_case} {block} {count}"
+            for count_field in _COUNT_FIELDS:
+                declared_counts = _require_mapping(
+                    declared_bucket[count_field], f"summary {graph_case} {bucket} {count_field}"
                 )
-                if observed[block][count] != expected:
+                for status, count in declared_counts.items():
+                    _require_string(status, f"summary {graph_case} {bucket} status")
+                    _require_nonnegative_int(
+                        count, f"summary {graph_case} {bucket} {count_field} count"
+                    )
+                if declared_counts != observed_case[bucket][count_field]:
                     raise InputIntegrityError(
-                        f"summary {graph_case} {block} {count} does not match process stream"
+                        f"summary {graph_case} {bucket} {count_field} does not match process stream"
                     )
 
 
 def _iter_verified_rows(bundle_dir: Path, manifest: dict, summary: dict) -> Iterator[dict]:
-    process = _require_mapping(manifest.get("process"), "process record")
-    process_path = bundle_dir / _require_string(process.get("path"), "process path")
+    process_path = bundle_dir / _PROCESS_NAME
     verify_hashes = bool(manifest.get("_verify_hashes", True))
     if verify_hashes:
-        expected_compressed_hash = _require_string(
-            process.get("compressed_sha256"), "compressed process hash"
-        )
-        try:
-            observed_compressed_hash = _sha256_file(process_path)
-        except OSError as error:
-            raise InputIntegrityError(f"cannot read compressed process stream: {error}") from error
-        if observed_compressed_hash != expected_compressed_hash:
-            raise InputIntegrityError("compressed process hash does not match manifest")
+        _verify_hash(process_path, manifest.get("compressed_process_sha256"), "compressed process")
         expected_decompressed_hash = _require_string(
-            process.get("decompressed_sha256"), "decompressed process hash"
+            manifest.get("decompressed_process_sha256"), "decompressed process hash"
         )
     else:
         expected_decompressed_hash = ""
 
-    expected_rows, run_seeds, graph_cases, robot_count = _stream_dimensions(summary)
-    cursor = _expected_keys(
-        _require_nonnegative_int(summary["effective_frame_count"], "effective frame count"),
-        run_seeds,
-        graph_cases,
-        robot_count,
-    )
+    expected_rows, frame_count, seeds, graph_cases, robot_count = _stream_dimensions(summary)
+    cursor = _expected_keys(frame_count, seeds, graph_cases, robot_count)
+    observed_counts = _empty_case_counts(graph_cases)
     digest = hashlib.sha256()
-    counts = {
-        graph_case: {
-            "overall": {"attempts": 0, "retained": 0},
-            "initialization_frame": {"attempts": 0, "retained": 0},
-        }
-        for graph_case in graph_cases
-    }
     observed_rows = 0
     try:
         with gzip.open(process_path, "rb") as stream:
@@ -208,32 +227,28 @@ def _iter_verified_rows(bundle_dir: Path, manifest: dict, summary: dict) -> Iter
                     row = _strict_json_line(raw)
                 except ValueError as error:
                     raise InputIntegrityError(f"invalid process JSON line: {error}") from error
-                if set(row) != _ROW_KEYS:
-                    raise InputIntegrityError("process row has unexpected fields")
+                (
+                    frame_index,
+                    seed,
+                    graph_case,
+                    robot_id,
+                    primary_statistics,
+                    attempt_status,
+                    status,
+                ) = _validate_row(row)
                 try:
                     expected_key = next(cursor)
                 except StopIteration as error:
                     raise InputIntegrityError("process stream has more rows than expected") from error
-                actual_key = (
-                    row["frame"],
-                    row["seed"],
-                    row["graph_case"],
-                    row["robot_id"],
-                )
+                actual_key = (frame_index, seed, graph_case, robot_id)
                 if actual_key != expected_key:
                     raise InputIntegrityError(
                         "row key does not match canonical expected key "
                         f"{expected_key!r}: got {actual_key!r}"
                     )
-                primary_attempts, primary_retained = _row_counts(row, "primary")
-                initialization_attempts, initialization_retained = _row_counts(
-                    row, "initialization_frame"
-                )
-                graph_counts = counts[row["graph_case"]]
-                graph_counts["overall"]["attempts"] += primary_attempts
-                graph_counts["overall"]["retained"] += primary_retained
-                graph_counts["initialization_frame"]["attempts"] += initialization_attempts
-                graph_counts["initialization_frame"]["retained"] += initialization_retained
+                bucket = "overall" if primary_statistics else "initialization_frame"
+                _increment(observed_counts[graph_case][bucket]["attempt_status_counts"], attempt_status)
+                _increment(observed_counts[graph_case][bucket]["status_counts"], status)
                 observed_rows += 1
                 yield row
     except InputIntegrityError:
@@ -251,7 +266,27 @@ def _iter_verified_rows(bundle_dir: Path, manifest: dict, summary: dict) -> Iter
         raise InputIntegrityError("observed process row count does not match expected row count")
     if verify_hashes and digest.hexdigest() != expected_decompressed_hash:
         raise InputIntegrityError("decompressed process hash does not match manifest")
-    _validate_summary_counts(summary, counts)
+    _validate_summary_counts(summary, observed_counts)
+
+
+def _verify_unchanged_inputs(
+    bundle_dir: Path,
+    manifest_raw: bytes,
+    manifest: dict,
+) -> None:
+    try:
+        current_manifest = (bundle_dir / "manifest.json").read_bytes()
+    except OSError as error:
+        raise InputIntegrityError(f"cannot re-read manifest: {error}") from error
+    if hashlib.sha256(current_manifest).digest() != hashlib.sha256(manifest_raw).digest():
+        raise InputIntegrityError("manifest changed while process stream was read")
+    _verify_hash(bundle_dir / _PROCESS_NAME, manifest.get("compressed_process_sha256"), "compressed process")
+    _verify_hash(bundle_dir / _SUMMARY_NAME, manifest.get("summary_json_sha256"), "summary JSON")
+    _verify_hash(
+        bundle_dir / _SUMMARY_MARKDOWN_NAME,
+        manifest.get("summary_markdown_sha256"),
+        "summary Markdown",
+    )
 
 
 def analyze_localization_failures(
@@ -263,30 +298,37 @@ def analyze_localization_failures(
 ) -> dict:
     del output_dir, max_examples_per_bucket
     bundle_dir = Path(bundle_dir)
-    manifest = _read_object(bundle_dir / "manifest.json", "manifest")
-    if manifest.get("status") != "completed":
-        raise InputIntegrityError("manifest status must be completed")
+    manifest, manifest_raw = _read_object(bundle_dir / "manifest.json", "manifest")
     if manifest.get("termination_reason") != "completed":
         raise InputIntegrityError("manifest termination reason must be completed")
     if manifest.get("estimator_contract") != ESTIMATOR_CONTRACT_ID:
         raise InputIntegrityError("manifest estimator contract does not match")
+    manifest_settings = _require_mapping(manifest.get("settings"), "manifest settings")
+    summary, _ = _read_object(bundle_dir / _SUMMARY_NAME, "summary JSON")
+    if manifest_settings != _require_mapping(summary.get("settings"), "summary settings"):
+        raise InputIntegrityError("manifest and summary settings do not match")
     if verify_hashes:
-        _verify_file_hash(bundle_dir, manifest.get("summary"), "summary JSON")
-        _verify_file_hash(bundle_dir, manifest.get("summary_markdown"), "summary Markdown")
-    summary_record = _require_mapping(manifest.get("summary"), "summary record")
-    summary = _read_object(
-        bundle_dir / _require_string(summary_record.get("path"), "summary path"), "summary JSON"
-    )
+        _verify_hash(bundle_dir / _SUMMARY_NAME, manifest.get("summary_json_sha256"), "summary JSON")
+        _verify_hash(
+            bundle_dir / _SUMMARY_MARKDOWN_NAME,
+            manifest.get("summary_markdown_sha256"),
+            "summary Markdown",
+        )
     manifest["_verify_hashes"] = verify_hashes
     observed_rows = 0
-    for _ in _iter_verified_rows(bundle_dir, manifest, summary):
+    primary_rows = 0
+    for row in _iter_verified_rows(bundle_dir, manifest, summary):
         observed_rows += 1
+        if row["primary_statistics"]:
+            primary_rows += 1
+    if verify_hashes:
+        _verify_unchanged_inputs(bundle_dir, manifest_raw, manifest)
     return {
         "schema": SCHEMA_ID,
         "status": "completed",
         "integrity": {
             "observed_rows": observed_rows,
-            "primary_rows": 0,
+            "primary_rows": primary_rows,
             "hashes_match": verify_hashes,
         },
     }
