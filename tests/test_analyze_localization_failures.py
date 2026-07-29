@@ -12,6 +12,8 @@ from pathlib import Path
 from scripts.diagnostics.analyze_localization_failures import (
     InputIntegrityError,
     _attempt_class,
+    _empty_failure_budget,
+    _record_lineage,
     analyze_localization_failures,
 )
 
@@ -532,6 +534,59 @@ class FailureBudgetTests(unittest.TestCase):
 
 
 class PredecessorLineageTests(unittest.TestCase):
+    def test_counts_two_unavailable_edges_for_one_observer_at_the_maximum_parent_depth(self) -> None:
+        """Breaks if one observer's two unavailable parents are collapsed or under-depth."""
+        case = _empty_failure_budget(["dynamic_dag_wnls"])["dynamic_dag_wnls"]
+        row = {
+            "primary_statistics": True,
+            "measurements": [
+                {
+                    "kind": "uav",
+                    "id": 1,
+                    "estimated_reference_available": False,
+                },
+                {
+                    "kind": "uav",
+                    "id": 2,
+                    "estimated_reference_available": False,
+                },
+            ],
+        }
+        predecessors = {
+            1: {
+                "robot_id": 1,
+                "attempt_class": "wnls_nonconvergence",
+                "attempt_status": "failed",
+                "retained_status": "stale",
+                "attempt_failure_reason": "maximum WNLS iterations exceeded",
+                "propagation_depth": 0,
+            },
+            2: {
+                "robot_id": 2,
+                "attempt_class": "upstream_unavailable",
+                "attempt_status": "invalid",
+                "retained_status": "invalid",
+                "attempt_failure_reason": "invalid upstream UAV reference",
+                "propagation_depth": 1,
+            },
+        }
+
+        observer_depth = _record_lineage(
+            case, row, "upstream_unavailable", predecessors
+        )
+
+        lineage = case["lineage"]
+        self.assertEqual(lineage["upstream_unavailable_rows"], 1)
+        self.assertEqual(lineage["unavailable_uav_reference_edges"], 2)
+        self.assertEqual(
+            lineage["predecessor_attempt_classes"]["wnls_nonconvergence"], 1
+        )
+        self.assertEqual(
+            lineage["predecessor_attempt_classes"]["upstream_unavailable"], 1
+        )
+        self.assertEqual(observer_depth, 2)
+        self.assertEqual(lineage["propagation_depth_counts"], {"not_observed": 0, "2": 1})
+
     def test_links_same_frame_unavailable_uav_to_the_lower_index_attempt(self) -> None:
         """Breaks if upstream lineage is inferred from retained state or another frame."""
         rows = []
