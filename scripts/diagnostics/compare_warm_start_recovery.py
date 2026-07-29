@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
+import errno
 import gzip
 import hashlib
 import json
 import math
+import os
+import sys
 import tempfile
 from itertools import zip_longest
 from pathlib import Path
@@ -15,9 +19,6 @@ from typing import Callable
 import numpy as np
 import scripts.diagnostics.analyze_localization_failures as failure_analyzer
 import scripts.diagnostics.replay_localization_calibration as replay_module
-from scripts.diagnostics.analyze_initialization_persistence import (
-    _rename_no_replace,
-)
 from scripts.diagnostics.analyze_localization_failures import (
     AnalysisLimitError,
     InputIntegrityError,
@@ -589,7 +590,7 @@ def _measurement_noise_identity(row: dict) -> list[dict]:
     return identity
 
 
-def _validate_paired_row_inputs(row: dict) -> None:
+def _reconcile_replay_row_inputs(row: dict) -> dict:
     key = _compact_key(row)
     if type(row.get("squad_local_index")) is not int:
         raise InputIntegrityError(
@@ -612,6 +613,12 @@ def _validate_paired_row_inputs(row: dict) -> None:
             raise InputIntegrityError(
                 f"paired {family} are invalid at key {key!r}"
             )
+        if identifiers != sorted(identifiers) or len(identifiers) != len(
+            set(identifiers)
+        ):
+            raise InputIntegrityError(
+                f"paired {family} must be sorted and unique at key {key!r}"
+            )
     truth = row.get("truth_position")
     if (
         type(truth) is not list
@@ -624,12 +631,58 @@ def _validate_paired_row_inputs(row: dict) -> None:
         raise InputIntegrityError(
             f"paired truth position is invalid at key {key!r}"
         )
+    measurements = row.get("measurements")
     _measurement_noise_identity(row)
+    expected_edges = [
+        ("base", reference_id)
+        for reference_id in references["base_ids"]
+    ] + [
+        ("uav", reference_id)
+        for reference_id in references["uav_ids"]
+    ]
+    observed_edges = [
+        (measurement["kind"], measurement["id"])
+        for measurement in measurements
+    ]
+    if not _json_type_exact_equal(observed_edges, expected_edges):
+        raise InputIntegrityError(
+            f"measurement order/IDs do not match active references at key "
+            f"{key!r}"
+        )
+    pre_wnls_reason = None
+    for measurement in measurements:
+        if measurement["true_range"] is None:
+            pre_wnls_reason = "invalid reference truth"
+            break
+        if measurement["estimated_reference_available"] is False:
+            pre_wnls_reason = "invalid upstream UAV reference"
+            break
+    if pre_wnls_reason is None and len(measurements) < 2:
+        pre_wnls_reason = "fewer than two active references"
+    if pre_wnls_reason is not None:
+        if (
+            row.get("attempt_status") != "invalid"
+            or row.get("attempt_failure_reason") != pre_wnls_reason
+        ):
+            raise InputIntegrityError(
+                f"pre-WNLS outcome does not reconcile at key {key!r}"
+            )
+        return {
+            "wnls_invoked": False,
+            "short_circuit_reason": pre_wnls_reason,
+        }
+    if (
+        row.get("attempt_status") == "invalid"
+        and row.get("attempt_failure_reason")
+        in _PRE_WNLS_SHORT_CIRCUIT_REASONS
+    ):
+        raise InputIntegrityError(
+            f"invoked WNLS row reports a pre-WNLS reason at key {key!r}"
+        )
+    return {"wnls_invoked": True, "short_circuit_reason": None}
 
 
 def _paired_inputs_equal(strict_row: dict, restart_row: dict) -> bool:
-    _validate_paired_row_inputs(strict_row)
-    _validate_paired_row_inputs(restart_row)
     fields = (
         "seed",
         "graph_case",
@@ -814,7 +867,11 @@ def _increment_reason(target: dict[str, int], reason: object, key: tuple) -> Non
     target[label] = target.get(label, 0) + 1
 
 
-def _record_restart_provenance(record: dict, row: dict) -> None:
+def _record_restart_provenance(
+    record: dict,
+    row: dict,
+    execution: dict,
+) -> None:
     case = record["by_graph_case"][row["graph_case"]]
     case["total_rows"] += 1
     source = row["initial_estimate_source"]
@@ -823,13 +880,10 @@ def _record_restart_provenance(record: dict, row: dict) -> None:
         return
     case["restart_source_selections"] += 1
     reason = row.get("attempt_failure_reason")
-    if (
-        row.get("attempt_status") == "invalid"
-        and reason in _PRE_WNLS_SHORT_CIRCUIT_REASONS
-    ):
+    if execution["wnls_invoked"] is False:
         _increment_reason(
             case["restart_short_circuit_reasons"],
-            reason,
+            execution["short_circuit_reason"],
             _compact_key(row),
         )
         return
@@ -954,6 +1008,8 @@ def _stream_paired_rows(
                 "strict and restart row key mismatch at "
                 f"{strict_key!r}/{restart_key!r}"
             )
+        _reconcile_replay_row_inputs(strict_row)
+        restart_execution = _reconcile_replay_row_inputs(restart_row)
         if not _paired_inputs_equal(strict_row, restart_row):
             raise InputIntegrityError(
                 f"paired trajectory or noise inputs differ at key {strict_key!r}"
@@ -968,7 +1024,11 @@ def _stream_paired_rows(
             policy=RESTART_BEFORE_FIRST_FINITE_POLICY,
             acquisition_state=acquisition["restart"],
         )
-        _record_restart_provenance(provenance, restart_row)
+        _record_restart_provenance(
+            provenance,
+            restart_row,
+            restart_execution,
+        )
         for policy, row in (
             ("strict", strict_row),
             ("restart", restart_row),
@@ -1277,6 +1337,56 @@ def _paths_overlap(first: Path, second: Path) -> bool:
         first == second
         or first in second.parents
         or second in first.parents
+    )
+
+
+def _rename_no_replace(source: Path, destination: Path) -> None:
+    """Atomically rename a directory while refusing to replace a destination."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    source_bytes = os.fsencode(source)
+    destination_bytes = os.fsencode(destination)
+    if sys.platform == "darwin":
+        rename = libc.renamex_np
+        rename.argtypes = [
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        rename.restype = ctypes.c_int
+        result = rename(source_bytes, destination_bytes, 0x00000004)
+    elif sys.platform.startswith("linux"):
+        try:
+            rename = libc.renameat2
+        except AttributeError as error:
+            raise AnalysisLimitError(
+                "atomic no-replace rename is unavailable"
+            ) from error
+        rename.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        rename.restype = ctypes.c_int
+        result = rename(-100, source_bytes, -100, destination_bytes, 1)
+    else:
+        raise AnalysisLimitError(
+            "atomic no-replace rename is unsupported on this platform"
+        )
+    if result == 0:
+        return
+    error_number = ctypes.get_errno()
+    if error_number in (errno.EEXIST, errno.ENOTEMPTY):
+        raise FileExistsError(
+            error_number,
+            os.strerror(error_number),
+            str(destination),
+        )
+    raise OSError(
+        error_number,
+        os.strerror(error_number),
+        str(destination),
     )
 
 

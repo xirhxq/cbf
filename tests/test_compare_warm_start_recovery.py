@@ -79,11 +79,28 @@ class ComparisonFixture(unittest.TestCase):
                             "robot_id": robot_id,
                             "squad_local_index": robot_id,
                             "primary_statistics": frame_index != 0,
-                        "active_references": {
-                            "base_ids": [0, 1],
-                            "uav_ids": [],
-                        },
-                            "measurements": [],
+                            "active_references": {
+                                "base_ids": [0, 1],
+                                "uav_ids": [],
+                            },
+                            "measurements": [
+                                {
+                                    "kind": "base",
+                                    "id": 0,
+                                    "true_range": 1.0,
+                                    "noise": 0.1,
+                                    "noisy_range": 1.1,
+                                    "estimated_reference_available": True,
+                                },
+                                {
+                                    "kind": "base",
+                                    "id": 1,
+                                    "true_range": 2.0,
+                                    "noise": -0.1,
+                                    "noisy_range": 1.9,
+                                    "estimated_reference_available": True,
+                                },
+                            ],
                             "truth_position": [1.0, 1.0],
                             "status": "converged",
                             "estimate": [1.0, 1.0],
@@ -719,9 +736,59 @@ class PairedOutcomeTests(ComparisonFixture):
                         source, "dynamic_dag_wnls", seed=seed
                     )
                     self._set_invalid(rows[0], self.EXACT_REASON)
+                    rows[1]["active_references"] = {
+                        "base_ids": [0],
+                        "uav_ids": [1],
+                    }
+                    rows[1]["measurements"] = [
+                        {
+                            "kind": "base",
+                            "id": 0,
+                            "true_range": 1.0,
+                            "noise": 0.1,
+                            "noisy_range": 1.1,
+                            "estimated_reference_available": True,
+                        },
+                        {
+                            "kind": "uav",
+                            "id": 1,
+                            "true_range": 2.0,
+                            "noise": -0.1,
+                            "noisy_range": 1.9,
+                            "estimated_reference_available": False,
+                        },
+                    ]
                     self._set_invalid(
                         rows[1], "invalid upstream UAV reference"
                     )
+            for seed in FROZEN_SEEDS:
+                recovered = self._primary(
+                    restart,
+                    "dynamic_dag_wnls",
+                    seed=seed,
+                )[1]
+                recovered["active_references"] = {
+                    "base_ids": [0],
+                    "uav_ids": [1],
+                }
+                recovered["measurements"] = [
+                    {
+                        "kind": "base",
+                        "id": 0,
+                        "true_range": 1.0,
+                        "noise": 0.1,
+                        "noisy_range": 1.1,
+                        "estimated_reference_available": True,
+                    },
+                    {
+                        "kind": "uav",
+                        "id": 1,
+                        "true_range": 2.0,
+                        "noise": -0.1,
+                        "noisy_range": 1.9,
+                        "estimated_reference_available": True,
+                    },
+                ]
 
         cascade = self.compare_fixture(outcome_setup=with_cascade)
         self.assertTrue(
@@ -845,10 +912,33 @@ class SafeguardAndProvenanceTests(ComparisonFixture):
             strict_row = self._primary(strict, "dynamic_dag_wnls")[0]
             strict_row["initial_estimate_source"] = "strict_previous_missing"
             strict_row["ever_acquired_finite_before_attempt"] = False
-            restart_row = self._primary(restart, "dynamic_dag_wnls")[0]
-            self._set_invalid(
-                restart_row, "invalid upstream UAV reference"
-            )
+            for source in (baseline, strict, restart):
+                later = self._primary(source, "dynamic_dag_wnls")[0]
+                later["active_references"] = {
+                    "base_ids": [0],
+                    "uav_ids": [1],
+                }
+                later["measurements"] = [
+                    {
+                        "kind": "base",
+                        "id": 0,
+                        "true_range": 1.0,
+                        "noise": 0.1,
+                        "noisy_range": 1.1,
+                        "estimated_reference_available": True,
+                    },
+                    {
+                        "kind": "uav",
+                        "id": 1,
+                        "true_range": 2.0,
+                        "noise": -0.1,
+                        "noisy_range": 1.9,
+                        "estimated_reference_available": False,
+                    },
+                ]
+                self._set_invalid(
+                    later, "invalid upstream UAV reference"
+                )
 
         def select_restart(rows):
             row = self._primary(rows, "dynamic_dag_wnls")[0]
@@ -908,10 +998,21 @@ class SafeguardAndProvenanceTests(ComparisonFixture):
             "noisy_range": 1.25,
             "estimated_reference_available": True,
         }
+        second_record = {
+            "kind": "base",
+            "id": 1,
+            "true_range": 2.0,
+            "noise": -0.25,
+            "noisy_range": 1.75,
+            "estimated_reference_available": True,
+        }
 
         def add_measurement(baseline, strict, restart):
             for source in (baseline, strict, restart):
-                source[0]["measurements"] = [dict(record)]
+                source[0]["measurements"] = [
+                    dict(record),
+                    dict(second_record),
+                ]
 
         def boolean_measurement_id(rows):
             rows[0]["measurements"][0]["id"] = False
@@ -929,6 +1030,94 @@ class SafeguardAndProvenanceTests(ComparisonFixture):
             self.compare_fixture(
                 outcome_setup=add_measurement,
                 restart_scientific_mutation=inconsistent_noise,
+            )
+
+    def test_each_policy_row_reconciles_reference_order_and_pre_wnls_outcome(self):
+        """Breaks if mutually consistent fabricated rows bypass replay semantics."""
+        module = _load_comparator()
+
+        def zero_measurements(baseline, strict, restart):
+            for source in (baseline, strict, restart):
+                source[0]["measurements"] = []
+
+        with self.assertRaises(module.InputIntegrityError):
+            self.compare_fixture(outcome_setup=zero_measurements)
+
+        unavailable_uav = {
+            "kind": "uav",
+            "id": 1,
+            "true_range": 2.0,
+            "noise": -0.1,
+            "noisy_range": 1.9,
+            "estimated_reference_available": False,
+        }
+
+        def unavailable_but_converged(baseline, strict, restart):
+            for source in (baseline, strict, restart):
+                row = source[0]
+                row["active_references"] = {
+                    "base_ids": [0],
+                    "uav_ids": [1],
+                }
+                row["measurements"] = [
+                    {
+                        "kind": "base",
+                        "id": 0,
+                        "true_range": 1.0,
+                        "noise": 0.1,
+                        "noisy_range": 1.1,
+                        "estimated_reference_available": True,
+                    },
+                    dict(unavailable_uav),
+                ]
+
+        with self.assertRaises(module.InputIntegrityError):
+            self.compare_fixture(outcome_setup=unavailable_but_converged)
+
+        def reversed_measurements(baseline, strict, restart):
+            for source in (baseline, strict, restart):
+                source[0]["measurements"].reverse()
+
+        with self.assertRaises(module.InputIntegrityError):
+            self.compare_fixture(outcome_setup=reversed_measurements)
+
+        def mismatched_measurement_id(baseline, strict, restart):
+            for source in (baseline, strict, restart):
+                source[0]["measurements"][1]["id"] = 2
+
+        with self.assertRaises(module.InputIntegrityError):
+            self.compare_fixture(outcome_setup=mismatched_measurement_id)
+
+        def duplicate_unsorted_references(baseline, strict, restart):
+            for source in (baseline, strict, restart):
+                source[0]["active_references"]["base_ids"] = [1, 0, 0]
+
+        with self.assertRaises(module.InputIntegrityError):
+            self.compare_fixture(
+                outcome_setup=duplicate_unsorted_references
+            )
+
+        def invalidate_restart_only(rows):
+            row = rows[0]
+            row["active_references"] = {
+                "base_ids": [0],
+                "uav_ids": [1],
+            }
+            row["measurements"] = [
+                {
+                    "kind": "base",
+                    "id": 0,
+                    "true_range": 1.0,
+                    "noise": 0.1,
+                    "noisy_range": 1.1,
+                    "estimated_reference_available": True,
+                },
+                dict(unavailable_uav),
+            ]
+
+        with self.assertRaises(module.InputIntegrityError):
+            self.compare_fixture(
+                restart_scientific_mutation=invalidate_restart_only
             )
 
     def test_output_is_exactly_two_atomic_files_and_cap_failure_is_unpublished(self):
