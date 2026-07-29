@@ -750,6 +750,13 @@ def _analyze_rows(rows: list[dict], robot_count: int) -> dict:
 
 
 class ConditionalCalibrationTests(unittest.TestCase):
+    def test_hand_derived_nonidentity_nees_is_exact(self) -> None:
+        """Breaks if the calibrated nonidentity covariance is inverted incorrectly."""
+        self.assertEqual(
+            _normalized_squared_error([2.0, 1.0], [[4.0, 0.0], [0.0, 1.0]]),
+            2.0,
+        )
+
     def test_streamed_converged_rows_populate_overall_and_all_geometry_calibrations(self) -> None:
         """Breaks if a converged observation reaches overall but not geometry calibration."""
         qs = (0.0, 2.295748929, 5.991464547, 9.0, 9.000000001, 1e308)
@@ -806,8 +813,114 @@ class ConditionalCalibrationTests(unittest.TestCase):
         self.assertEqual(calibration["ratio"]["bins"], {"[0,0.5)": 1, "[0.5,1)": 1, "[1,2)": 1, "[2,5)": 1, "[5,infinity)": 1})
         self.assertEqual(calibration["q"]["bins"], {"[0,2.295748929)": 1, "[2.295748929,5.991464547)": 1, "[5.991464547,9]": 2, "(9,infinity)": 1})
 
+    def test_streamed_geometry_boundaries_and_applicability_reconcile_to_overall(self) -> None:
+        """Breaks if a converged row is dropped from a geometry family."""
+        geometry = (
+            ({"base_ids": [], "uav_ids": []}, 1.0, 0.01, 0.0),
+            ({"base_ids": [1], "uav_ids": []}, 9.999, 0.05, 1.0),
+            ({"base_ids": [1, 2], "uav_ids": []}, 10.0, 0.199, 10.0),
+            ({"base_ids": list(range(9)), "uav_ids": []}, 29.999, 0.2, 9.0),
+            ({"base_ids": list(range(10)), "uav_ids": []}, 30.0, 0.999, 0.0),
+            ({"base_ids": "malformed", "uav_ids": []}, 99.999, 1.0, 10.0),
+            ({"base_ids": [], "uav_ids": []}, 100.0, 0.01, 0.0),
+            (None, None, -1.0, 0.0),
+        )
+        rows = []
+        for frame in range(2):
+            for case in GRAPH_CASES:
+                for robot, (references, condition, minimum, q) in enumerate(geometry, 1):
+                    row = _real_schema_row(frame, case, robot)
+                    if frame:
+                        row.update({
+                            "phi_condition": condition,
+                            "phi_min_eigenvalue": minimum,
+                            "containment": robot % 2 == 1,
+                            "error_vector": [math.sqrt(q), 0.0],
+                            "covariance": [[1.0, 0.0], [0.0, 1.0]],
+                        })
+                        if references is not None:
+                            row["active_references"] = references
+                    rows.append(row)
+        case = _analyze_rows(rows, 8)["cases"]["dynamic_dag_wnls"]
+        overall = case["calibration"]
+        strata = case["strata"]
+        self.assertEqual(overall["converged_denominator"], 8)
+        self.assertEqual(strata["time"]["1-100"]["calibration"]["converged_denominator"], 8)
+        self.assertEqual(strata["time"]["1-100"]["calibration"]["epsilon_contained"], 4)
+        self.assertEqual(strata["time"]["1-100"]["calibration"]["q"]["above_9"], 2)
+        self.assertEqual(
+            sum(item["calibration"]["converged_denominator"] for item in strata["time"].values())
+            + strata["unstratified"]["time"]["calibration"]["converged_denominator"],
+            overall["converged_denominator"],
+        )
+        self.assertEqual(strata["reference_count"]["0"]["calibration"]["converged_denominator"], 2)
+        self.assertEqual(strata["reference_count"]["1"]["calibration"]["converged_denominator"], 1)
+        self.assertEqual(strata["reference_count"]["2"]["calibration"]["converged_denominator"], 1)
+        self.assertEqual(strata["reference_count"]["2"]["calibration"]["epsilon_contained"], 1)
+        self.assertEqual(strata["reference_count"]["2"]["calibration"]["q"]["above_9"], 1)
+        self.assertEqual(strata["reference_count"]["9"]["calibration"]["converged_denominator"], 1)
+        self.assertEqual(strata["reference_count"]["10_or_more"]["calibration"]["converged_denominator"], 1)
+        self.assertEqual(strata["unstratified"]["reference_count"]["calibration"]["converged_denominator"], 2)
+        self.assertEqual(strata["phi_condition"]["[1,10)"]["calibration"]["converged_denominator"], 2)
+        self.assertEqual(strata["phi_condition"]["[10,30)"]["calibration"]["converged_denominator"], 2)
+        self.assertEqual(strata["phi_condition"]["[10,30)"]["calibration"]["epsilon_contained"], 1)
+        self.assertEqual(strata["phi_condition"]["[10,30)"]["calibration"]["q"]["above_9"], 1)
+        self.assertEqual(strata["phi_condition"]["[30,100)"]["calibration"]["converged_denominator"], 2)
+        self.assertEqual(strata["phi_condition"]["[100,infinity)"]["calibration"]["converged_denominator"], 1)
+        self.assertEqual(strata["unstratified"]["phi_condition"]["calibration"]["converged_denominator"], 1)
+        self.assertEqual(strata["phi_min"]["(0,0.05)"]["calibration"]["converged_denominator"], 2)
+        self.assertEqual(strata["phi_min"]["[0.05,0.2)"]["calibration"]["converged_denominator"], 2)
+        self.assertEqual(strata["phi_min"]["[0.05,0.2)"]["calibration"]["epsilon_contained"], 1)
+        self.assertEqual(strata["phi_min"]["[0.05,0.2)"]["calibration"]["q"]["above_9"], 1)
+        self.assertEqual(strata["phi_min"]["[0.2,1)"]["calibration"]["converged_denominator"], 2)
+        self.assertEqual(strata["phi_min"]["[1,infinity)"]["calibration"]["converged_denominator"], 1)
+        self.assertEqual(strata["unstratified"]["phi_min"]["calibration"]["converged_denominator"], 1)
+
+    def test_streamed_overflowing_valid_spd_error_is_not_a_finite_q(self) -> None:
+        """Breaks if q overflow is retained merely because the covariance is SPD."""
+        rows = []
+        for frame in range(2):
+            for case in GRAPH_CASES:
+                row = _real_schema_row(frame, case, 1)
+                if frame:
+                    row.update({
+                        "error_vector": [1e308, 0.0],
+                        "covariance": [[1.0, 0.0], [0.0, 1.0]],
+                        "error_to_epsilon_ratio": 1.0,
+                    })
+                rows.append(row)
+        calibration = _analyze_rows(rows, 1)["cases"]["dynamic_dag_wnls"]["calibration"]
+        self.assertEqual(calibration["converged_denominator"], 1)
+        self.assertEqual(calibration["conditional_covariance_invalid"], 1)
+        self.assertEqual(calibration["q"]["finite_count"], 0)
+
 
 class StratificationTests(unittest.TestCase):
+    def test_streamed_seed_budgets_reconcile_every_primary_attempt(self) -> None:
+        """Breaks if per-seed budgets omit a primary attempt or a failure class."""
+        rows = []
+        for frame in range(2):
+            for seed in (17, 18):
+                for case in GRAPH_CASES:
+                    row = _real_schema_row(frame, case, 1)
+                    row["seed"] = seed
+                    if frame and seed == 18:
+                        row.update({
+                            "attempt_status": "invalid",
+                            "status": "invalid",
+                            "containment": False,
+                            "attempt_failure_reason": "invalid upstream UAV reference",
+                        })
+                    rows.append(row)
+        case = _analyze_rows(rows, 1)["cases"]["dynamic_dag_wnls"]
+        seed_budgets = case["strata"]["seed"]
+        self.assertEqual(set(seed_budgets), {"17", "18"})
+        self.assertEqual(seed_budgets["17"]["denominator"], 1)
+        self.assertEqual(seed_budgets["17"]["counts"]["contained"], 1)
+        self.assertEqual(seed_budgets["18"]["denominator"], 1)
+        self.assertEqual(seed_budgets["18"]["counts"]["upstream_unavailable"], 1)
+        self.assertTrue(all(set(budget["counts"]) == set(case["failure_budget"]["counts"]) for budget in seed_budgets.values()))
+        self.assertEqual(sum(budget["denominator"] for budget in seed_budgets.values()), case["failure_budget"]["denominator"])
     def test_streamed_boundaries_reconcile_all_depth_time_and_dynamic_cells(self) -> None:
         """Breaks if streamed rows disappear from a fixed depth/time budget."""
         rows = []
@@ -865,8 +978,8 @@ class StratificationTests(unittest.TestCase):
         report = _analyze_rows(rows, 1)
         case = report["cases"]["dynamic_dag_wnls"]
         self.assertEqual(case["initialization"]["unstratified"]["budget"]["denominator"], 1)
-        self.assertEqual(case["strata"]["unstratified"]["depth"]["denominator"], 500)
-        self.assertEqual(case["strata"]["unstratified"]["time"]["denominator"], 1)
+        self.assertEqual(case["strata"]["unstratified"]["depth"]["budget"]["denominator"], 500)
+        self.assertEqual(case["strata"]["unstratified"]["time"]["budget"]["denominator"], 1)
         self.assertEqual(case["dynamic_depth_time_unstratified"]["denominator"], 500)
         self.assertEqual(
             sum(cell["denominator"] for cells in case["dynamic_depth_time"].values() for cell in cells.values()),
@@ -904,6 +1017,24 @@ class PairedBootstrapTests(unittest.TestCase):
         self.assertEqual(bootstrap["point_estimate"], 4 / 3)
         self.assertEqual([r["ratio"] for r in bootstrap["seed_records"]], [1.0, None])
         self.assertGreater(bootstrap["non_estimable_resamples"], 0)
+        self.assertEqual(
+            bootstrap["estimable_resamples"] + bootstrap["non_estimable_resamples"], 20
+        )
+        self.assertIsNone(bootstrap["percentile_interval"])
+
+    def test_all_estimable_resamples_produce_a_percentile_interval(self) -> None:
+        """Breaks if valid paired resamples never reach the interval calculation."""
+        bootstrap = _paired_seed_bootstrap(
+            [
+                {"seed": 17, "dyn_up": 4, "fix_up": 1, "dyn_invalid": 5, "fix_invalid": 1},
+                {"seed": 18, "dyn_up": 6, "fix_up": 2, "dyn_invalid": 7, "fix_invalid": 2},
+            ],
+            resamples=20,
+            rng_seed=20260729,
+        )
+        self.assertEqual(bootstrap["estimable_resamples"], 20)
+        self.assertEqual(bootstrap["non_estimable_resamples"], 0)
+        self.assertIsNotNone(bootstrap["percentile_interval"])
 
     def test_streamed_two_seed_bundle_feeds_paired_counts_before_bootstrap(self) -> None:
         """Breaks if analyzer bootstraps one-record ratios instead of paired counts."""

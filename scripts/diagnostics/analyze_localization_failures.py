@@ -207,14 +207,14 @@ def _calibration() -> dict:
     return {"converged_denominator": 0, "epsilon_contained": 0,
             "epsilon_containment_rate": None, "conditional_covariance_invalid": 0,
             "q": {"finite_count": 0, "sum": 0.0, "mean": None, "max": None, "above_5_991464547": 0, "above_5_991464547_rate": None, "above_9": 0, "above_9_rate": None, "bins": {key: 0 for key in ("[0,2.295748929)", "[2.295748929,5.991464547)", "[5.991464547,9]", "(9,infinity)")}},
-            "ratio": {"finite_count": 0, "sum": 0.0, "mean": None, "max": None, "bins": {key: 0 for key in ("[0,0.5)", "[0.5,1)", "[1,2)", "[2,5)", "[5,infinity)")}}}
+            "ratio": {"finite_count": 0, "invalid_count": 0, "sum": 0.0, "mean": None, "max": None, "bins": {key: 0 for key in ("[0,0.5)", "[0.5,1)", "[1,2)", "[2,5)", "[5,infinity)")}}}
 
 
 def _stratum() -> dict:
     return {"budget": _budget(), "calibration": _calibration()}
 
 
-def _empty_task3_case() -> dict:
+def _empty_task3_case(seeds: list[int]) -> dict:
     return {
         "initialization": {
             "by_depth": {
@@ -231,7 +231,18 @@ def _empty_task3_case() -> dict:
                 "max_iteration_failures": 0,
             },
         },
-        "strata": {"depth": {str(i): _stratum() for i in range(1, 8)}, "time": {key: _stratum() for key in _TIME_BINS}, "reference_count": {key: _stratum() for key in _REFERENCE_BINS}, "phi_condition": {key: _stratum() for key in _CONDITION_BINS}, "phi_min": {key: _stratum() for key in _MIN_EIGEN_BINS}, "unstratified": {"depth": _budget(), "time": _budget()}},
+        "strata": {
+            "depth": {str(i): _stratum() for i in range(1, 8)},
+            "time": {key: _stratum() for key in _TIME_BINS},
+            "reference_count": {key: _stratum() for key in _REFERENCE_BINS},
+            "phi_condition": {key: _stratum() for key in _CONDITION_BINS},
+            "phi_min": {key: _stratum() for key in _MIN_EIGEN_BINS},
+            "seed": {str(seed): _budget() for seed in seeds},
+            "unstratified": {
+                key: _stratum()
+                for key in ("depth", "time", "reference_count", "phi_condition", "phi_min")
+            },
+        },
         "dynamic_depth_time": {
             str(depth): {time_key: _budget() for time_key in _TIME_BINS}
             for depth in range(1, 8)
@@ -260,6 +271,8 @@ def _record_calibration(case: dict, row: dict) -> None:
         target["sum"] += ratio
         target["max"] = ratio if target["max"] is None else max(target["max"], ratio)
         target["bins"][_ratio_bin(ratio)] += 1
+    else:
+        calibration["ratio"]["invalid_count"] += 1
     try:
         q = _normalized_squared_error(row.get("error_vector"), row.get("covariance"))
     except ValueError:
@@ -289,6 +302,51 @@ def _finalize_calibration(calibration: dict) -> None:
     q["above_9_rate"] = None if not q_denominator else q["above_9"] / q_denominator
 
 
+def _calibration_counts(calibration: dict) -> dict[str, int]:
+    q = calibration["q"]
+    ratio = calibration["ratio"]
+    return {
+        "converged_denominator": calibration["converged_denominator"],
+        "epsilon_contained": calibration["epsilon_contained"],
+        "conditional_covariance_invalid": calibration["conditional_covariance_invalid"],
+        "q_finite_count": q["finite_count"],
+        "q_bin_count": sum(q["bins"].values()),
+        "q_above_5_991464547": q["above_5_991464547"],
+        "q_above_9": q["above_9"],
+        "ratio_finite_count": ratio["finite_count"],
+        "ratio_invalid_count": ratio["invalid_count"],
+        "ratio_bin_count": sum(ratio["bins"].values()),
+    }
+
+
+def _reconcile_calibration(calibration: dict, description: str) -> None:
+    counts = _calibration_counts(calibration)
+    denominator = counts["converged_denominator"]
+    if counts["epsilon_contained"] > denominator:
+        raise InputIntegrityError(f"Task 3 {description} containment exceeds denominator")
+    if counts["q_finite_count"] + counts["conditional_covariance_invalid"] != denominator:
+        raise InputIntegrityError(f"Task 3 {description} q denominator does not reconcile")
+    if counts["q_bin_count"] != counts["q_finite_count"]:
+        raise InputIntegrityError(f"Task 3 {description} q bins do not reconcile")
+    if not 0 <= counts["q_above_9"] <= counts["q_above_5_991464547"] <= counts["q_finite_count"]:
+        raise InputIntegrityError(f"Task 3 {description} q tail counts are invalid")
+    if counts["ratio_finite_count"] + counts["ratio_invalid_count"] != denominator:
+        raise InputIntegrityError(f"Task 3 {description} ratio denominator does not reconcile")
+    if counts["ratio_bin_count"] != counts["ratio_finite_count"]:
+        raise InputIntegrityError(f"Task 3 {description} ratio bins do not reconcile")
+
+
+def _reconcile_calibration_family(
+    family: str, items: list[dict], overall: dict
+) -> None:
+    for index, calibration in enumerate(items):
+        _reconcile_calibration(calibration, f"{family} calibration {index}")
+    fields = _calibration_counts(overall)
+    totals = {key: sum(_calibration_counts(item)[key] for item in items) for key in fields}
+    if totals != fields:
+        raise InputIntegrityError(f"Task 3 {family} calibration does not reconcile")
+
+
 def _reconcile_task3_case(case: dict, *, dynamic_case: bool) -> None:
     def reconcile_budget(budget: dict, description: str) -> None:
         if budget["denominator"] != sum(budget["counts"].values()):
@@ -305,7 +363,7 @@ def _reconcile_task3_case(case: dict, *, dynamic_case: bool) -> None:
         reconcile_budget(item["budget"], f"time {key} budget")
         time_total += item["budget"]["denominator"]
     for key in ("depth", "time"):
-        budget = case["strata"]["unstratified"][key]
+        budget = case["strata"]["unstratified"][key]["budget"]
         reconcile_budget(budget, f"unstratified {key} budget")
         if key == "depth":
             depth_total += budget["denominator"]
@@ -321,13 +379,20 @@ def _reconcile_task3_case(case: dict, *, dynamic_case: bool) -> None:
     reconcile_budget(case["dynamic_depth_time_unstratified"], "dynamic unstratified budget")
     if dynamic_case and dynamic_total + case["dynamic_depth_time_unstratified"]["denominator"] != overall:
         raise InputIntegrityError("Task 3 dynamic depth/time budgets do not reconcile")
-    for item in case["strata"]["depth"].values():
-        _finalize_calibration(item["calibration"])
-    for item in case["strata"]["time"].values():
-        _finalize_calibration(item["calibration"])
-    for group in ("reference_count", "phi_condition", "phi_min"):
-        for item in case["strata"][group].values():
-            _finalize_calibration(item["calibration"])
+    seed_total = 0
+    for seed, budget in case["strata"]["seed"].items():
+        reconcile_budget(budget, f"seed {seed} budget")
+        seed_total += budget["denominator"]
+    if seed_total != overall:
+        raise InputIntegrityError("Task 3 seed budgets do not reconcile")
+    overall_calibration = case["calibration"]
+    for family in ("depth", "time", "reference_count", "phi_condition", "phi_min"):
+        items = [item["calibration"] for item in case["strata"][family].values()]
+        items.append(case["strata"]["unstratified"][family]["calibration"])
+        _reconcile_calibration_family(family, items, overall_calibration)
+        for calibration in items:
+            _finalize_calibration(calibration)
+    _reconcile_calibration(overall_calibration, "overall")
     _finalize_calibration(case["calibration"])
 
 
@@ -764,9 +829,9 @@ def analyze_localization_failures(
     manifest["_verify_hashes"] = verify_hashes
     observed_rows = 0
     primary_rows = 0
-    _, _, _, graph_cases, _ = _stream_dimensions(summary)
+    _, _, seeds, graph_cases, _ = _stream_dimensions(summary)
     cases = _empty_failure_budget(graph_cases)
-    task3_cases = {graph_case: _empty_task3_case() for graph_case in graph_cases}
+    task3_cases = {graph_case: _empty_task3_case(seeds) for graph_case in graph_cases}
     persistence: dict[tuple[int, str, int], dict] = {}
     seed_counts = {seed: {"dyn_up": 0, "fix_up": 0, "dyn_invalid": 0, "fix_invalid": 0}
                    for seed in manifest_settings["run_seeds"]}
@@ -796,42 +861,51 @@ def analyze_localization_failures(
                 "propagation_depth": propagation_depth,
             }
             task3 = task3_cases[row["graph_case"]]
+            _record_budget(task3["strata"]["seed"][str(row["seed"])], attempt_class)
             depth = row.get("squad_local_index", row["robot_id"])
             if type(depth) is int and 1 <= depth <= 7:
                 depth_item = task3["strata"]["depth"][str(depth)]
-                _record_budget(depth_item["budget"], attempt_class)
+            else:
+                depth_item = task3["strata"]["unstratified"]["depth"]
+            _record_budget(depth_item["budget"], attempt_class)
             time_key = _time_bin(row["frame_index"])
             if time_key is not None:
                 time_item = task3["strata"]["time"][time_key]
-                _record_budget(time_item["budget"], attempt_class)
                 if row["graph_case"] == "dynamic_dag_wnls" and type(depth) is int and 1 <= depth <= 7:
                     _record_budget(task3["dynamic_depth_time"][str(depth)][time_key], attempt_class)
                 elif row["graph_case"] == "dynamic_dag_wnls":
                     _record_budget(task3["dynamic_depth_time_unstratified"], attempt_class)
             else:
-                _record_budget(task3["strata"]["unstratified"]["time"], attempt_class)
+                time_item = task3["strata"]["unstratified"]["time"]
                 if row["graph_case"] == "dynamic_dag_wnls":
                     _record_budget(task3["dynamic_depth_time_unstratified"], attempt_class)
-            if not (type(depth) is int and 1 <= depth <= 7):
-                _record_budget(task3["strata"]["unstratified"]["depth"], attempt_class)
+            _record_budget(time_item["budget"], attempt_class)
             if row["attempt_status"] == "converged":
                 _record_calibration(task3, row)
-                if type(depth) is int and 1 <= depth <= 7:
-                    _record_calibration(depth_item, row)
-                if time_key is not None:
-                    _record_calibration(time_item, row)
-                active = row.get("active_references", {})
+                _record_calibration(depth_item, row)
+                _record_calibration(time_item, row)
+                active = row.get("active_references")
                 if isinstance(active, dict):
-                    base = active.get("base_ids", [])
-                    uav = active.get("uav_ids", [])
+                    base = active.get("base_ids")
+                    uav = active.get("uav_ids")
                     if isinstance(base, list) and isinstance(uav, list):
-                        _record_calibration(task3["strata"]["reference_count"][_reference_bin(len(base) + len(uav))], row)
+                        reference_item = task3["strata"]["reference_count"][_reference_bin(len(base) + len(uav))]
+                    else:
+                        reference_item = task3["strata"]["unstratified"]["reference_count"]
+                else:
+                    reference_item = task3["strata"]["unstratified"]["reference_count"]
+                _record_calibration(reference_item, row)
                 for field, bins, bucket_fn in (("phi_condition", "phi_condition", _condition_bin), ("phi_min_eigenvalue", "phi_min", _min_eigen_bin)):
                     value = row.get(field)
                     if type(value) in (int, float) and math.isfinite(value):
                         bucket = bucket_fn(value)
                         if bucket is not None:
-                            _record_calibration(task3["strata"][bins][bucket], row)
+                            geometry_item = task3["strata"][bins][bucket]
+                        else:
+                            geometry_item = task3["strata"]["unstratified"][bins]
+                    else:
+                        geometry_item = task3["strata"]["unstratified"][bins]
+                    _record_calibration(geometry_item, row)
             key = (row["seed"], row["graph_case"], row["robot_id"])
             state = persistence.setdefault(key, {"first_primary_converged_frame": None,
                 "primary_frames_before_first_convergence": 0, "upstream_current": 0,
