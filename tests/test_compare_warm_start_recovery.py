@@ -22,6 +22,7 @@ PROCESS_NAME = "calibration.jsonl.gz"
 SUMMARY_NAME = "summary.json"
 SUMMARY_MARKDOWN_NAME = "summary.md"
 GRAPH_CASES = ("dynamic_dag_wnls", "fixed_refs_wnls")
+FROZEN_SEEDS = tuple(range(20260727, 20260747))
 STATUS_KEYS = ("converged", "stale", "invalid", "failed")
 PROSPECTIVE_FIELDS = {
     "initialization_policy",
@@ -64,7 +65,7 @@ class ComparisonFixture(unittest.TestCase):
         self,
         policy: str | None,
         *,
-        seeds: tuple[int, ...] = (17,),
+        seeds: tuple[int, ...] = FROZEN_SEEDS,
     ) -> list[dict]:
         rows = []
         for frame_index in range(2):
@@ -78,7 +79,10 @@ class ComparisonFixture(unittest.TestCase):
                             "robot_id": robot_id,
                             "squad_local_index": robot_id,
                             "primary_statistics": frame_index != 0,
-                            "active_references": [0, 1],
+                        "active_references": {
+                            "base_ids": [0, 1],
+                            "uav_ids": [],
+                        },
                             "measurements": [],
                             "truth_position": [1.0, 1.0],
                             "status": "converged",
@@ -240,12 +244,17 @@ class ComparisonFixture(unittest.TestCase):
         strict_mutation: Callable[[dict], None] | None = None,
         key_mutation: str | None = None,
         *,
-        seeds: tuple[int, ...] = (17,),
+        seeds: tuple[int, ...] = FROZEN_SEEDS,
         outcome_setup: (
             Callable[[list[dict], list[dict], list[dict]], None] | None
         ) = None,
         restart_provenance_mutation: Callable[[list[dict]], None] | None = None,
+        restart_scientific_mutation: Callable[[list[dict]], None] | None = None,
+        raw_parent_mutation: Callable[[str], str] | None = None,
+        raw_process_nonfinite: str | None = None,
         output: bool = False,
+        missing_output_parent: bool = False,
+        expected_hash_mutation: Callable[[dict[str, str]], None] | None = None,
     ) -> dict:
         module = _load_comparator()
         if module is None:
@@ -279,6 +288,8 @@ class ComparisonFixture(unittest.TestCase):
             outcome_setup(baseline_rows, strict_rows, restart_rows)
         if restart_provenance_mutation is not None:
             restart_provenance_mutation(restart_rows)
+        if restart_scientific_mutation is not None:
+            restart_scientific_mutation(restart_rows)
         if strict_mutation is not None:
             strict_mutation(strict_rows[0])
         if key_mutation == "missing":
@@ -306,6 +317,42 @@ class ComparisonFixture(unittest.TestCase):
             RESTART_BEFORE_FIRST_FINITE_POLICY,
             source_paths=sources,
         )
+        if raw_process_nonfinite is not None:
+            selected = {
+                "baseline": baseline_dir,
+                "strict": strict_dir,
+                "restart": restart_dir,
+            }[raw_process_nonfinite]
+            with gzip.open(selected / PROCESS_NAME, "rb") as source:
+                lines = list(source)
+            first = lines[0].rstrip(b"\n")
+            lines[0] = (
+                first[:-1]
+                + b',"unused_nested":{"overflow":1e309}}\n'
+            )
+            process_path = selected / PROCESS_NAME
+            with process_path.open("wb") as raw:
+                with gzip.GzipFile(
+                    fileobj=raw, mode="wb", mtime=0
+                ) as compressed:
+                    for line in lines:
+                        compressed.write(line)
+            manifest_path = selected / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            manifest["compressed_process_sha256"] = _sha256(process_path)
+            manifest["decompressed_process_sha256"] = hashlib.sha256(
+                b"".join(lines)
+            ).hexdigest()
+            manifest_path.write_text(
+                json.dumps(manifest, sort_keys=True, allow_nan=False) + "\n",
+                encoding="utf-8",
+            )
+            if raw_process_nonfinite == "strict":
+                strict_manifest = manifest
+            elif raw_process_nonfinite == "restart":
+                restart_manifest = manifest
+            else:
+                baseline_manifest = manifest
 
         parent_dir = fixture_root / "paired"
         parent_dir.mkdir()
@@ -353,20 +400,56 @@ class ComparisonFixture(unittest.TestCase):
                 "restart": restart_manifest,
             },
         }
-        (parent_dir / "manifest.json").write_text(
-            json.dumps(parent, sort_keys=True, allow_nan=False) + "\n",
-            encoding="utf-8",
-        )
-        comparison_output = fixture_root / "comparison" if output else None
+        parent_json = json.dumps(parent, sort_keys=True, allow_nan=False) + "\n"
+        if raw_parent_mutation is not None:
+            parent_json = raw_parent_mutation(parent_json)
+        parent_manifest_path = parent_dir / "manifest.json"
+        parent_manifest_path.write_text(parent_json, encoding="utf-8")
+        if output and missing_output_parent:
+            comparison_output = (
+                fixture_root / "missing-analysis-root" / "comparison"
+            )
+        else:
+            comparison_output = fixture_root / "comparison" if output else None
         self.last_output_dir = comparison_output
+        expected_hashes = {
+            "paired_parent": _sha256(parent_manifest_path),
+            "baseline_manifest": _sha256(baseline_dir / "manifest.json"),
+            "comparator_source": _sha256(Path(module.__file__)),
+            "failure_analyzer_source": _sha256(
+                Path(
+                    importlib.import_module(
+                        "scripts.diagnostics.analyze_localization_failures"
+                    ).__file__
+                )
+            ),
+        }
+        if expected_hash_mutation is not None:
+            expected_hash_mutation(expected_hashes)
         try:
             return module.compare_warm_start_recovery(
                 parent_dir,
                 baseline_dir,
                 output_dir=comparison_output,
+                expected_paired_parent_manifest_sha256=expected_hashes[
+                    "paired_parent"
+                ],
+                expected_baseline_manifest_sha256=expected_hashes[
+                    "baseline_manifest"
+                ],
+                expected_comparator_source_sha256=expected_hashes[
+                    "comparator_source"
+                ],
+                expected_failure_analyzer_source_sha256=expected_hashes[
+                    "failure_analyzer_source"
+                ],
             )
         except NotImplementedError as error:
             self.fail(str(error))
+        except TypeError as error:
+            if "unexpected keyword argument" in str(error):
+                self.fail(str(error))
+            raise
 
     @staticmethod
     def _set_invalid(row: dict, reason: str) -> None:
@@ -412,7 +495,7 @@ class StrictAnchorTests(ComparisonFixture):
     def test_strict_rows_equal_immutable_rows_after_normalization(self):
         report = self.compare_fixture()
         self.assertTrue(report["strict_anchor"]["normalized_rows_equal"])
-        self.assertEqual(report["strict_anchor"]["rows_compared"], 8)
+        self.assertEqual(report["strict_anchor"]["rows_compared"], 160)
 
     def test_any_scientific_field_drift_stops_before_policy_statistics(self):
         def mutate(row):
@@ -421,6 +504,16 @@ class StrictAnchorTests(ComparisonFixture):
         module = _load_comparator()
         if module is None:
             self.fail("warm-start recovery comparator is not implemented")
+        with self.assertRaises(module.InputIntegrityError):
+            self.compare_fixture(strict_mutation=mutate)
+
+    def test_recursive_type_exact_anchor_rejects_boolean_truth_coordinates(self):
+        """Breaks if Python equality aliases bool and numeric evidence."""
+
+        def mutate(row):
+            row["truth_position"] = [True, True]
+
+        module = _load_comparator()
         with self.assertRaises(module.InputIntegrityError):
             self.compare_fixture(strict_mutation=mutate)
 
@@ -433,6 +526,38 @@ class StrictAnchorTests(ComparisonFixture):
                 with self.assertRaises(module.InputIntegrityError):
                     self.compare_fixture(key_mutation=mutation)
 
+    def test_nonfrozen_seed_list_stops_before_policy_statistics(self):
+        """Breaks if a tiny or selected seed set can enter confirmatory stats."""
+        module = _load_comparator()
+        with self.assertRaises(module.InputIntegrityError):
+            self.compare_fixture(seeds=(FROZEN_SEEDS[0],))
+
+    def test_recursive_nonfinite_parent_and_process_values_are_rejected(self):
+        """Breaks if unused nested overflow values bypass strict JSON checks."""
+        module = _load_comparator()
+
+        def overflow_parent(raw: str) -> str:
+            return raw.replace(
+                '"tracked_worktree_status": ""',
+                '"unused_nested": {"overflow": 1e309}, '
+                '"tracked_worktree_status": ""',
+            )
+
+        with self.assertRaises(module.InputIntegrityError):
+            self.compare_fixture(raw_parent_mutation=overflow_parent)
+        with self.assertRaises(module.InputIntegrityError):
+            self.compare_fixture(raw_process_nonfinite="strict")
+
+    def test_external_trust_root_mismatch_stops_before_streaming(self):
+        """Breaks if a self-consistent replacement bundle can be analyzed."""
+        module = _load_comparator()
+
+        def mutate(hashes):
+            hashes["paired_parent"] = "0" * 64
+
+        with self.assertRaises(module.InputIntegrityError):
+            self.compare_fixture(expected_hash_mutation=mutate)
+
 
 class PairedOutcomeTests(ComparisonFixture):
     EXACT_REASON = "non-finite or malformed WNLS input"
@@ -443,21 +568,20 @@ class PairedOutcomeTests(ComparisonFixture):
         def setup(baseline, strict, restart):
             for source in (baseline, strict):
                 dynamic_17 = self._primary(
-                    source, "dynamic_dag_wnls", seed=17
+                    source, "dynamic_dag_wnls", seed=FROZEN_SEEDS[0]
                 )
                 dynamic_18 = self._primary(
-                    source, "dynamic_dag_wnls", seed=18
+                    source, "dynamic_dag_wnls", seed=FROZEN_SEEDS[1]
                 )
                 self._set_invalid(dynamic_17[0], self.EXACT_REASON)
                 for row in dynamic_18:
                     self._set_invalid(row, self.EXACT_REASON)
             restart_18 = self._primary(
-                restart, "dynamic_dag_wnls", seed=18
+                restart, "dynamic_dag_wnls", seed=FROZEN_SEEDS[1]
             )
             self._set_invalid(restart_18[0], self.EXACT_REASON)
 
         report = self.compare_fixture(
-            seeds=(17, 18),
             outcome_setup=setup,
         )
         self.assertIn("comparisons", report)
@@ -465,18 +589,30 @@ class PairedOutcomeTests(ComparisonFixture):
             "exact_direct"
         ]
 
-        self.assertEqual(outcome["aggregate"]["strict"]["denominator"], 4)
+        self.assertEqual(outcome["aggregate"]["strict"]["denominator"], 40)
         self.assertEqual(outcome["aggregate"]["strict"]["count"], 3)
-        self.assertEqual(outcome["aggregate"]["restart"]["denominator"], 4)
+        self.assertEqual(outcome["aggregate"]["restart"]["denominator"], 40)
         self.assertEqual(outcome["aggregate"]["restart"]["count"], 1)
-        self.assertEqual(len(outcome["seed_records"]), 2)
+        self.assertEqual(len(outcome["seed_records"]), 20)
         self.assertEqual(
-            [record["strict_fraction"] for record in outcome["seed_records"]],
+            [
+                record["strict_fraction"]
+                for record in outcome["seed_records"][:2]
+            ],
             [0.5, 1.0],
         )
         self.assertEqual(
-            [record["paired_difference"] for record in outcome["seed_records"]],
+            [
+                record["paired_difference"]
+                for record in outcome["seed_records"][:2]
+            ],
             [-0.5, -0.5],
+        )
+        self.assertTrue(
+            all(
+                record["paired_difference"] == 0.0
+                for record in outcome["seed_records"][2:]
+            )
         )
 
     def test_dynamic_gate_requires_interval_and_ninety_percent_reduction(self):
@@ -493,10 +629,13 @@ class PairedOutcomeTests(ComparisonFixture):
 
         def insufficient_reduction(baseline, strict, restart):
             passing(baseline, strict, restart)
-            self._set_invalid(
-                self._primary(restart, "dynamic_dag_wnls")[0],
-                self.EXACT_REASON,
-            )
+            for seed in FROZEN_SEEDS:
+                self._set_invalid(
+                    self._primary(
+                        restart, "dynamic_dag_wnls", seed=seed
+                    )[0],
+                    self.EXACT_REASON,
+                )
 
         count_failed = self.compare_fixture(
             outcome_setup=insufficient_reduction
@@ -506,17 +645,16 @@ class PairedOutcomeTests(ComparisonFixture):
         self.assertFalse(count_gate["aggregate_reduction_at_least_0_90"])
         self.assertFalse(count_gate["passed"])
 
-        sparse_seeds = tuple(range(1, 21))
-
         def interval_touches_zero(baseline, strict, restart):
             for source in (baseline, strict):
                 for row in self._primary(
-                    source, "dynamic_dag_wnls", seed=1
+                    source,
+                    "dynamic_dag_wnls",
+                    seed=FROZEN_SEEDS[0],
                 ):
                     self._set_invalid(row, self.EXACT_REASON)
 
         interval_failed = self.compare_fixture(
-            seeds=sparse_seeds,
             outcome_setup=interval_touches_zero,
         )
         interval_gate = interval_failed["gates"]["dynamic_exact_direct"]
@@ -559,6 +697,42 @@ class PairedOutcomeTests(ComparisonFixture):
         self.assertNotIn(
             "passed", report["comparisons"]["fixed_refs_wnls"]["exact_direct"]
         )
+        self.assertIsNone(report["claim_boundary"]["allowed"])
+
+    def test_claim_is_local_until_the_hierarchical_gate_passes(self):
+        """Breaks if a local recovery result is overstated as cascade evidence."""
+
+        def local_only(baseline, strict, restart):
+            for source in (baseline, strict):
+                for row in self._primary(source, "dynamic_dag_wnls"):
+                    self._set_invalid(row, self.EXACT_REASON)
+
+        local = self.compare_fixture(outcome_setup=local_only)
+        local_claim = local["claim_boundary"]["allowed"]
+        self.assertIn("local initialization", local_claim)
+        self.assertNotIn("downstream unavailability", local_claim)
+
+        def with_cascade(baseline, strict, restart):
+            for source in (baseline, strict):
+                for seed in FROZEN_SEEDS:
+                    rows = self._primary(
+                        source, "dynamic_dag_wnls", seed=seed
+                    )
+                    self._set_invalid(rows[0], self.EXACT_REASON)
+                    self._set_invalid(
+                        rows[1], "invalid upstream UAV reference"
+                    )
+
+        cascade = self.compare_fixture(outcome_setup=with_cascade)
+        self.assertTrue(
+            cascade["gates"]["dynamic_upstream_secondary"][
+                "cascade_interruption_supported"
+            ]
+        )
+        self.assertIn(
+            "downstream unavailability",
+            cascade["claim_boundary"]["allowed"],
+        )
 
 
 class SafeguardAndProvenanceTests(ComparisonFixture):
@@ -587,14 +761,16 @@ class SafeguardAndProvenanceTests(ComparisonFixture):
         self.assertIn("calibration_safeguards", report)
         dynamic = report["calibration_safeguards"]["dynamic_dag_wnls"]
 
-        self.assertEqual(dynamic["strict"]["converged_attempts"], 2)
+        self.assertEqual(dynamic["strict"]["converged_attempts"], 40)
         self.assertEqual(dynamic["strict"]["q_above_9_count"], 0)
-        self.assertEqual(dynamic["restart"]["converged_attempts"], 1)
-        self.assertEqual(dynamic["restart"]["q_finite_count"], 1)
+        self.assertEqual(dynamic["restart"]["converged_attempts"], 39)
+        self.assertEqual(dynamic["restart"]["q_finite_count"], 39)
         self.assertEqual(dynamic["restart"]["q_above_9_count"], 1)
-        self.assertEqual(dynamic["restart"]["q_above_9_rate"], 1.0)
         self.assertEqual(
-            dynamic["restart"]["epsilon_containment_rate"], 0.0
+            dynamic["restart"]["q_above_9_rate"], 1.0 / 39.0
+        )
+        self.assertEqual(
+            dynamic["restart"]["epsilon_containment_rate"], 38.0 / 39.0
         )
         self.assertFalse(dynamic["advance_to_multi_trajectory"])
 
@@ -629,12 +805,17 @@ class SafeguardAndProvenanceTests(ComparisonFixture):
         self.assertIn("restart_provenance", report)
         provenance = report["restart_provenance"]
 
-        self.assertEqual(provenance["total_rows"], 8)
-        self.assertEqual(provenance["source_counts_total"], 8)
-        self.assertEqual(provenance["restart_attempts"], 1)
-        self.assertEqual(provenance["restart_convergences"], 1)
-        self.assertEqual(provenance["restart_failure_reasons"], {})
-        self.assertTrue(provenance["reconciled"])
+        self.assertEqual(provenance["aggregate"]["total_rows"], 160)
+        self.assertEqual(
+            provenance["aggregate"]["source_counts_total"], 160
+        )
+        dynamic = provenance["by_graph_case"]["dynamic_dag_wnls"]
+        self.assertEqual(dynamic["restart_source_selections"], 1)
+        self.assertEqual(dynamic["restart_valid_input_attempts"], 1)
+        self.assertEqual(dynamic["restart_convergences"], 1)
+        self.assertEqual(dynamic["restart_short_circuit_reasons"], {})
+        self.assertEqual(dynamic["restart_attempt_failure_reasons"], {})
+        self.assertTrue(dynamic["reconciled"])
 
         def inconsistent(rows):
             restart_once(rows)
@@ -646,6 +827,108 @@ class SafeguardAndProvenanceTests(ComparisonFixture):
             self.compare_fixture(
                 outcome_setup=lose_frame_zero,
                 restart_provenance_mutation=inconsistent
+            )
+
+    def test_restart_short_circuit_is_a_selection_but_not_a_wnls_attempt(self):
+        """Breaks if invalid references inflate intervention attempt counts."""
+
+        def lose_frame_zero(baseline, strict, restart):
+            for source in (baseline, strict, restart):
+                row = next(
+                    row
+                    for row in source
+                    if row["frame_index"] == 0
+                    and row["graph_case"] == "dynamic_dag_wnls"
+                    and row["robot_id"] == 1
+                )
+                self._set_invalid(row, "synthetic frame-zero loss")
+            strict_row = self._primary(strict, "dynamic_dag_wnls")[0]
+            strict_row["initial_estimate_source"] = "strict_previous_missing"
+            strict_row["ever_acquired_finite_before_attempt"] = False
+            restart_row = self._primary(restart, "dynamic_dag_wnls")[0]
+            self._set_invalid(
+                restart_row, "invalid upstream UAV reference"
+            )
+
+        def select_restart(rows):
+            row = self._primary(rows, "dynamic_dag_wnls")[0]
+            row["initial_estimate_source"] = (
+                "deployment_restart_before_first_finite"
+            )
+            row["ever_acquired_finite_before_attempt"] = False
+
+        report = self.compare_fixture(
+            outcome_setup=lose_frame_zero,
+            restart_provenance_mutation=select_restart,
+        )
+        dynamic = report["restart_provenance"]["by_graph_case"][
+            "dynamic_dag_wnls"
+        ]
+        self.assertEqual(dynamic["restart_source_selections"], 1)
+        self.assertEqual(dynamic["restart_valid_input_attempts"], 0)
+        self.assertEqual(dynamic["restart_convergences"], 0)
+        self.assertEqual(
+            dynamic["restart_short_circuit_reasons"],
+            {"invalid upstream UAV reference": 1},
+        )
+        self.assertEqual(dynamic["restart_attempt_failure_reasons"], {})
+        self.assertTrue(dynamic["reconciled"])
+
+    def test_row_finite_flag_must_match_recomputed_retained_validity(self):
+        """Breaks if a claimed finite flag can drive provenance by itself."""
+
+        def invalidate_estimate(rows):
+            row = self._primary(rows, "dynamic_dag_wnls")[0]
+            row["estimate"] = None
+            row["finite"] = True
+
+        module = _load_comparator()
+        with self.assertRaises(module.InputIntegrityError):
+            self.compare_fixture(
+                restart_scientific_mutation=invalidate_estimate
+            )
+
+    def test_paired_inputs_reject_type_drift_and_validate_measurement_noise(self):
+        """Breaks if paired scientific inputs use loose or incomplete equality."""
+        module = _load_comparator()
+
+        def boolean_reference(rows):
+            rows[0]["active_references"]["base_ids"][0] = False
+
+        with self.assertRaises(module.InputIntegrityError):
+            self.compare_fixture(
+                restart_scientific_mutation=boolean_reference
+            )
+
+        record = {
+            "kind": "base",
+            "id": 0,
+            "true_range": 1.0,
+            "noise": 0.25,
+            "noisy_range": 1.25,
+            "estimated_reference_available": True,
+        }
+
+        def add_measurement(baseline, strict, restart):
+            for source in (baseline, strict, restart):
+                source[0]["measurements"] = [dict(record)]
+
+        def boolean_measurement_id(rows):
+            rows[0]["measurements"][0]["id"] = False
+
+        with self.assertRaises(module.InputIntegrityError):
+            self.compare_fixture(
+                outcome_setup=add_measurement,
+                restart_scientific_mutation=boolean_measurement_id,
+            )
+
+        def inconsistent_noise(rows):
+            rows[0]["measurements"][0]["noise"] = 0.5
+
+        with self.assertRaises(module.InputIntegrityError):
+            self.compare_fixture(
+                outcome_setup=add_measurement,
+                restart_scientific_mutation=inconsistent_noise,
             )
 
     def test_output_is_exactly_two_atomic_files_and_cap_failure_is_unpublished(self):
@@ -665,6 +948,44 @@ class SafeguardAndProvenanceTests(ComparisonFixture):
             with self.assertRaises(module.AnalysisLimitError):
                 self.compare_fixture(output=True)
         self.assertFalse(self.last_output_dir.exists())
+        self.assertEqual(
+            list(self.last_output_dir.parent.glob("comparison.incomplete-*")),
+            [],
+        )
+
+    def test_missing_output_parent_is_safely_created(self):
+        """Breaks if the registered production analysis root must pre-exist."""
+        report = self.compare_fixture(
+            output=True,
+            missing_output_parent=True,
+        )
+        self.assertEqual(report["status"], "completed")
+        self.assertTrue(self.last_output_dir.is_dir())
+        self.assertEqual(
+            {path.name for path in self.last_output_dir.iterdir()},
+            {
+                "warm-start-recovery-comparison.json",
+                "warm-start-recovery-comparison.md",
+            },
+        )
+
+    def test_race_created_foreign_output_is_never_replaced_or_deleted(self):
+        """Breaks if publication cleanup can erase a competing destination."""
+        module = _load_comparator()
+
+        def race(_source, destination):
+            destination.mkdir()
+            (destination / "foreign-sentinel.txt").write_text("owned elsewhere")
+            raise FileExistsError("synthetic publication race")
+
+        with patch.object(
+            module, "_rename_no_replace", side_effect=race, create=True
+        ):
+            with self.assertRaises(FileExistsError):
+                self.compare_fixture(output=True)
+
+        sentinel = self.last_output_dir / "foreign-sentinel.txt"
+        self.assertEqual(sentinel.read_text(), "owned elsewhere")
         self.assertEqual(
             list(self.last_output_dir.parent.glob("comparison.incomplete-*")),
             [],

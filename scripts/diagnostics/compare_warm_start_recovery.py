@@ -14,6 +14,10 @@ from typing import Callable
 
 import numpy as np
 import scripts.diagnostics.analyze_localization_failures as failure_analyzer
+import scripts.diagnostics.replay_localization_calibration as replay_module
+from scripts.diagnostics.analyze_initialization_persistence import (
+    _rename_no_replace,
+)
 from scripts.diagnostics.analyze_localization_failures import (
     AnalysisLimitError,
     InputIntegrityError,
@@ -60,6 +64,7 @@ _OUTPUT_MARKDOWN_NAME = "warm-start-recovery-comparison.md"
 _ANALYSIS_OUTPUT_CAP_BYTES = 10_000_000
 _LIVE_CHECK_INTERVAL_ROWS = 10_000
 _GRAPH_CASES = ("dynamic_dag_wnls", "fixed_refs_wnls")
+_FROZEN_SEEDS = tuple(range(20260727, 20260747))
 _EXACT_DIRECT_REASON = "non-finite or malformed WNLS input"
 _UPSTREAM_REASON = "invalid upstream UAV reference"
 _WNLS_REASON = "maximum WNLS iterations exceeded"
@@ -69,7 +74,59 @@ _INITIAL_SOURCE_LABELS = {
     "strict_previous_missing",
     "deployment_restart_before_first_finite",
 }
+_PRE_WNLS_SHORT_CIRCUIT_REASONS = {
+    "invalid upstream UAV reference",
+    "invalid reference truth",
+    "fewer than two active references",
+}
 _MISSING = object()
+
+
+def _validate_json_tree(value: object, description: str) -> None:
+    value_type = type(value)
+    if value_type is float:
+        if not math.isfinite(value):
+            raise InputIntegrityError(
+                f"{description} contains a non-finite number"
+            )
+        return
+    if value_type in (type(None), bool, int, str):
+        return
+    if value_type is list:
+        for index, item in enumerate(value):
+            _validate_json_tree(item, f"{description}[{index}]")
+        return
+    if value_type is dict:
+        for key, item in value.items():
+            if type(key) is not str:
+                raise InputIntegrityError(
+                    f"{description} contains a non-string object key"
+                )
+            _validate_json_tree(item, f"{description}.{key}")
+        return
+    raise InputIntegrityError(
+        f"{description} contains a non-JSON value of type "
+        f"{value_type.__name__}"
+    )
+
+
+def _json_type_exact_equal(first: object, second: object) -> bool:
+    if type(first) is not type(second):
+        return False
+    if type(first) is dict:
+        return (
+            set(first) == set(second)
+            and all(
+                _json_type_exact_equal(first[key], second[key])
+                for key in first
+            )
+        )
+    if type(first) is list:
+        return len(first) == len(second) and all(
+            _json_type_exact_equal(left, right)
+            for left, right in zip(first, second)
+        )
+    return first == second
 
 
 def _strict_object(path: Path, description: str) -> tuple[dict, bytes]:
@@ -85,6 +142,7 @@ def _strict_object(path: Path, description: str) -> tuple[dict, bytes]:
         raise InputIntegrityError(f"invalid {description}: {error}") from error
     if not isinstance(value, dict):
         raise InputIntegrityError(f"{description} must be a JSON object")
+    _validate_json_tree(value, description)
     return value, raw
 
 
@@ -107,6 +165,20 @@ def _expected_hash(value: object, description: str) -> str:
     ):
         raise InputIntegrityError(f"{description} must be a lowercase SHA-256")
     return value
+
+
+def _verify_external_hash(
+    path: Path,
+    expected: object,
+    description: str,
+) -> str:
+    expected_hash = _expected_hash(expected, f"expected {description} hash")
+    observed = _sha256(path)
+    if observed != expected_hash:
+        raise InputIntegrityError(
+            f"{description} does not match its external trust root"
+        )
+    return expected_hash
 
 
 def _regular_file(path: Path, description: str) -> None:
@@ -166,7 +238,9 @@ def _load_bundle(
         raise InputIntegrityError(
             f"{bundle_dir.name} estimator contract does not match"
         )
-    if manifest.get("settings") != summary.get("settings"):
+    if not _json_type_exact_equal(
+        manifest.get("settings"), summary.get("settings")
+    ):
         raise InputIntegrityError(
             f"{bundle_dir.name} manifest and summary settings differ"
         )
@@ -212,12 +286,17 @@ def _verified_rows(
     *,
     live_guard: Callable[[], None] | None = None,
 ):
-    yield from failure_analyzer._iter_verified_rows(
+    for row in failure_analyzer._iter_verified_rows(
         bundle["dir"],
         bundle["stream_manifest"],
         bundle["summary"],
         live_guard=live_guard,
-    )
+    ):
+        _validate_json_tree(
+            row,
+            f"{bundle['dir'].name} process row {_compact_key(row)!r}",
+        )
+        yield row
 
 
 def _verify_bundle_unchanged(bundle: dict) -> None:
@@ -250,7 +329,9 @@ def _strict_anchor(
                 "strict and immutable row key mismatch at "
                 f"{baseline_key!r}/{strict_key!r}"
             )
-        if _normalized(baseline_row) != _normalized(strict_row):
+        if not _json_type_exact_equal(
+            _normalized(baseline_row), _normalized(strict_row)
+        ):
             raise InputIntegrityError(
                 f"strict scientific row drift at key {baseline_key!r}"
             )
@@ -328,13 +409,10 @@ def _require_dimensions(
     restart: dict,
 ) -> list[int]:
     seeds = parent.get("seeds")
-    if (
-        not isinstance(seeds, list)
-        or not seeds
-        or any(type(seed) is not int for seed in seeds)
-        or len(seeds) != len(set(seeds))
-    ):
-        raise InputIntegrityError("parent seeds must be unique integers")
+    if not _json_type_exact_equal(seeds, list(_FROZEN_SEEDS)):
+        raise InputIntegrityError(
+            "parent seeds must equal the frozen 20260727..20260746 list"
+        )
     if type(parent.get("max_frames")) is not int or parent["max_frames"] <= 0:
         raise InputIntegrityError("parent max_frames must be a positive integer")
     for label, bundle in (
@@ -345,13 +423,18 @@ def _require_dimensions(
         settings = bundle["manifest"].get("settings")
         if not isinstance(settings, dict):
             raise InputIntegrityError(f"{label} settings must be an object")
-        if settings.get("run_seeds") != seeds:
+        if not _json_type_exact_equal(settings.get("run_seeds"), seeds):
             raise InputIntegrityError(f"{label} seeds do not match parent")
-        if settings.get("graph_cases") != list(_GRAPH_CASES):
+        if not _json_type_exact_equal(
+            settings.get("graph_cases"), list(_GRAPH_CASES)
+        ):
             raise InputIntegrityError(
                 f"{label} graph cases do not match the frozen order"
             )
-        if settings.get("effective_frame_count") != parent["max_frames"]:
+        if (
+            type(settings.get("effective_frame_count")) is not int
+            or settings["effective_frame_count"] != parent["max_frames"]
+        ):
             raise InputIntegrityError(
                 f"{label} frame count does not match parent max_frames"
             )
@@ -365,7 +448,7 @@ def _require_dimensions(
         for key, value in restart["manifest"]["settings"].items()
         if key != "initialization_policy"
     }
-    if strict_settings != restart_settings:
+    if not _json_type_exact_equal(strict_settings, restart_settings):
         raise InputIntegrityError(
             "strict and restart settings differ beyond initialization policy"
         )
@@ -380,7 +463,9 @@ def _require_child_sources(
     for label, bundle in (("strict", strict), ("restart", restart)):
         manifest = bundle["manifest"]
         for field in ("input_data", "input_manifest"):
-            if manifest.get(field) != parent.get(field):
+            if not _json_type_exact_equal(
+                manifest.get(field), parent.get(field)
+            ):
                 raise InputIntegrityError(
                     f"{label} {field} does not match paired parent"
                 )
@@ -403,17 +488,19 @@ def _require_child_sources(
             raise InputIntegrityError(
                 f"{label} replay implementation does not match parent"
             )
-    if strict["manifest"].get("input_data") != restart["manifest"].get(
-        "input_data"
+    if not _json_type_exact_equal(
+        strict["manifest"].get("input_data"),
+        restart["manifest"].get("input_data"),
     ):
         raise InputIntegrityError("child input data records differ")
-    if strict["manifest"].get("input_manifest") != restart["manifest"].get(
-        "input_manifest"
+    if not _json_type_exact_equal(
+        strict["manifest"].get("input_manifest"),
+        restart["manifest"].get("input_manifest"),
     ):
         raise InputIntegrityError("child input manifest records differ")
 
 
-def _measurement_noise_identity(row: dict) -> list[tuple]:
+def _measurement_noise_identity(row: dict) -> list[dict]:
     measurements = row.get("measurements")
     if not isinstance(measurements, list):
         raise InputIntegrityError(
@@ -421,22 +508,128 @@ def _measurement_noise_identity(row: dict) -> list[tuple]:
         )
     identity = []
     for measurement in measurements:
-        if not isinstance(measurement, dict):
+        if type(measurement) is not dict:
             raise InputIntegrityError(
                 f"paired measurement must be an object at key {_compact_key(row)!r}"
             )
-        identity.append(
-            (
-                measurement.get("kind"),
-                measurement.get("id"),
-                measurement.get("true_range"),
-                measurement.get("noisy_range"),
+        required = {
+            "kind",
+            "id",
+            "true_range",
+            "noise",
+            "noisy_range",
+            "estimated_reference_available",
+        }
+        if not required <= set(measurement):
+            raise InputIntegrityError(
+                f"paired measurement fields are incomplete at key "
+                f"{_compact_key(row)!r}"
             )
+        kind = measurement["kind"]
+        reference_id = measurement["id"]
+        true_range = measurement["true_range"]
+        noise = measurement["noise"]
+        noisy_range = measurement["noisy_range"]
+        available = measurement["estimated_reference_available"]
+        if kind not in {"base", "uav"} or type(kind) is not str:
+            raise InputIntegrityError(
+                f"paired measurement kind is invalid at key "
+                f"{_compact_key(row)!r}"
+            )
+        if type(reference_id) is not int or reference_id < 0:
+            raise InputIntegrityError(
+                f"paired measurement ID is invalid at key "
+                f"{_compact_key(row)!r}"
+            )
+        if type(noise) is not float or not math.isfinite(noise):
+            raise InputIntegrityError(
+                f"paired measurement noise is invalid at key "
+                f"{_compact_key(row)!r}"
+            )
+        if type(available) is not bool:
+            raise InputIntegrityError(
+                f"paired measurement availability is invalid at key "
+                f"{_compact_key(row)!r}"
+            )
+        if true_range is None:
+            if noisy_range is not None:
+                raise InputIntegrityError(
+                    f"paired measurement range semantics are invalid at key "
+                    f"{_compact_key(row)!r}"
+                )
+        elif (
+            type(true_range) is not float
+            or not math.isfinite(true_range)
+            or type(noisy_range) is not float
+            or not math.isfinite(noisy_range)
+            or not math.isclose(
+                noisy_range,
+                true_range + noise,
+                rel_tol=1e-12,
+                abs_tol=1e-12,
+            )
+        ):
+            raise InputIntegrityError(
+                f"paired measurement range/noise values are invalid at key "
+                f"{_compact_key(row)!r}"
+            )
+        if kind == "base" and true_range is not None and available is not True:
+            raise InputIntegrityError(
+                f"base availability is invalid at key {_compact_key(row)!r}"
+            )
+        identity.append(
+            {
+                "kind": kind,
+                "id": reference_id,
+                "true_range": true_range,
+                "noise": noise,
+                "noisy_range": noisy_range,
+            }
         )
     return identity
 
 
+def _validate_paired_row_inputs(row: dict) -> None:
+    key = _compact_key(row)
+    if type(row.get("squad_local_index")) is not int:
+        raise InputIntegrityError(
+            f"paired squad-local index is invalid at key {key!r}"
+        )
+    references = row.get("active_references")
+    if type(references) is not dict or set(references) != {
+        "base_ids",
+        "uav_ids",
+    }:
+        raise InputIntegrityError(
+            f"paired active references are invalid at key {key!r}"
+        )
+    for family in ("base_ids", "uav_ids"):
+        identifiers = references[family]
+        if type(identifiers) is not list or any(
+            type(identifier) is not int or identifier < 0
+            for identifier in identifiers
+        ):
+            raise InputIntegrityError(
+                f"paired {family} are invalid at key {key!r}"
+            )
+    truth = row.get("truth_position")
+    if (
+        type(truth) is not list
+        or len(truth) != 2
+        or any(
+            type(value) is not float or not math.isfinite(value)
+            for value in truth
+        )
+    ):
+        raise InputIntegrityError(
+            f"paired truth position is invalid at key {key!r}"
+        )
+    _measurement_noise_identity(row)
+
+
 def _paired_inputs_equal(strict_row: dict, restart_row: dict) -> bool:
+    _validate_paired_row_inputs(strict_row)
+    _validate_paired_row_inputs(restart_row)
     fields = (
         "seed",
         "graph_case",
@@ -447,9 +640,16 @@ def _paired_inputs_equal(strict_row: dict, restart_row: dict) -> bool:
         "truth_position",
     )
     return (
-        all(strict_row.get(field) == restart_row.get(field) for field in fields)
-        and _measurement_noise_identity(strict_row)
-        == _measurement_noise_identity(restart_row)
+        all(
+            _json_type_exact_equal(
+                strict_row.get(field), restart_row.get(field)
+            )
+            for field in fields
+        )
+        and _json_type_exact_equal(
+            _measurement_noise_identity(strict_row),
+            _measurement_noise_identity(restart_row),
+        )
     )
 
 
@@ -559,44 +759,148 @@ def _validate_policy_row(
         raise InputIntegrityError(
             f"row initialization source does not reconcile at key {key!r}"
         )
-    finite = row.get("finite")
-    if type(finite) is not bool:
+    finite_recorded = row.get("finite")
+    if type(finite_recorded) is not bool:
         raise InputIntegrityError(
             f"row finite provenance is not boolean at key {key!r}"
         )
-    acquisition_state[state_key] = (ever_expected or finite, finite)
+    finite_recomputed = replay_module._valid_prior_result(row) is not None
+    if finite_recorded is not finite_recomputed:
+        raise InputIntegrityError(
+            f"row finite provenance does not match retained state at key "
+            f"{key!r}"
+        )
+    covariance_spd = row.get("covariance_spd")
+    if type(covariance_spd) is not bool or covariance_spd is not finite_recomputed:
+        raise InputIntegrityError(
+            f"row covariance-SPD provenance does not match retained state at "
+            f"key {key!r}"
+        )
+    acquisition_state[state_key] = (
+        ever_expected or finite_recomputed,
+        finite_recomputed,
+    )
 
 
-def _provenance_record() -> dict:
+def _provenance_case() -> dict:
     return {
         "total_rows": 0,
         "source_counts": {
             source: 0 for source in sorted(_INITIAL_SOURCE_LABELS)
         },
-        "restart_attempts": 0,
+        "restart_source_selections": 0,
+        "restart_valid_input_attempts": 0,
         "restart_convergences": 0,
-        "restart_failure_reasons": {},
+        "restart_short_circuit_reasons": {},
+        "restart_attempt_failure_reasons": {},
     }
 
 
+def _provenance_record() -> dict:
+    return {
+        "by_graph_case": {
+            graph_case: _provenance_case()
+            for graph_case in _GRAPH_CASES
+        }
+    }
+
+
+def _increment_reason(target: dict[str, int], reason: object, key: tuple) -> None:
+    label = "<none>" if reason is None else reason
+    if type(label) is not str:
+        raise InputIntegrityError(
+            f"restart reason is invalid at key {key!r}"
+        )
+    target[label] = target.get(label, 0) + 1
+
+
 def _record_restart_provenance(record: dict, row: dict) -> None:
-    record["total_rows"] += 1
+    case = record["by_graph_case"][row["graph_case"]]
+    case["total_rows"] += 1
     source = row["initial_estimate_source"]
-    record["source_counts"][source] += 1
+    case["source_counts"][source] += 1
     if source != "deployment_restart_before_first_finite":
         return
-    record["restart_attempts"] += 1
-    if row["attempt_status"] == "converged":
-        record["restart_convergences"] += 1
-        return
+    case["restart_source_selections"] += 1
     reason = row.get("attempt_failure_reason")
-    label = "<none>" if reason is None else reason
-    if not isinstance(label, str):
-        raise InputIntegrityError(
-            f"restart failure reason is invalid at key {_compact_key(row)!r}"
+    if (
+        row.get("attempt_status") == "invalid"
+        and reason in _PRE_WNLS_SHORT_CIRCUIT_REASONS
+    ):
+        _increment_reason(
+            case["restart_short_circuit_reasons"],
+            reason,
+            _compact_key(row),
         )
-    failures = record["restart_failure_reasons"]
-    failures[label] = failures.get(label, 0) + 1
+        return
+    case["restart_valid_input_attempts"] += 1
+    if row.get("attempt_status") == "converged":
+        case["restart_convergences"] += 1
+    else:
+        _increment_reason(
+            case["restart_attempt_failure_reasons"],
+            reason,
+            _compact_key(row),
+        )
+
+
+def _merge_reason_counts(
+    target: dict[str, int],
+    source: dict[str, int],
+) -> None:
+    for reason, count in source.items():
+        target[reason] = target.get(reason, 0) + count
+
+
+def _finalize_provenance(record: dict) -> dict:
+    aggregate = _provenance_case()
+    for graph_case in _GRAPH_CASES:
+        case = record["by_graph_case"][graph_case]
+        source_total = sum(case["source_counts"].values())
+        selection_total = (
+            case["restart_valid_input_attempts"]
+            + sum(case["restart_short_circuit_reasons"].values())
+        )
+        attempted_total = (
+            case["restart_convergences"]
+            + sum(case["restart_attempt_failure_reasons"].values())
+        )
+        if (
+            source_total != case["total_rows"]
+            or selection_total != case["restart_source_selections"]
+            or attempted_total != case["restart_valid_input_attempts"]
+        ):
+            raise InputIntegrityError(
+                f"restart provenance does not reconcile for {graph_case}"
+            )
+        case["source_counts_total"] = source_total
+        case["reconciled"] = True
+        aggregate["total_rows"] += case["total_rows"]
+        for source, count in case["source_counts"].items():
+            aggregate["source_counts"][source] += count
+        for field in (
+            "restart_source_selections",
+            "restart_valid_input_attempts",
+            "restart_convergences",
+        ):
+            aggregate[field] += case[field]
+        _merge_reason_counts(
+            aggregate["restart_short_circuit_reasons"],
+            case["restart_short_circuit_reasons"],
+        )
+        _merge_reason_counts(
+            aggregate["restart_attempt_failure_reasons"],
+            case["restart_attempt_failure_reasons"],
+        )
+    aggregate["source_counts_total"] = sum(
+        aggregate["source_counts"].values()
+    )
+    aggregate["reconciled"] = all(
+        record["by_graph_case"][case]["reconciled"]
+        for case in _GRAPH_CASES
+    )
+    record["aggregate"] = aggregate
+    return record
 
 
 def _empty_streak_maxima() -> dict[str, dict[str, int]]:
@@ -697,18 +1001,7 @@ def _stream_paired_rows(
         rows_compared += 1
     _verify_bundle_unchanged(strict)
     _verify_bundle_unchanged(restart)
-    source_total = sum(provenance["source_counts"].values())
-    resolved_outcomes = (
-        provenance["restart_convergences"]
-        + sum(provenance["restart_failure_reasons"].values())
-    )
-    if (
-        source_total != provenance["total_rows"]
-        or resolved_outcomes != provenance["restart_attempts"]
-    ):
-        raise InputIntegrityError("restart provenance counts do not reconcile")
-    provenance["source_counts_total"] = source_total
-    provenance["reconciled"] = True
+    _finalize_provenance(provenance)
     return {
         "rows_compared": rows_compared,
         "counts": policy_counts,
@@ -997,6 +1290,9 @@ class _OutputTransaction:
         self.staging_dir: Path | None = None
         self.free_probes: list[int] = []
         self.protected_paths = protected_paths
+        self.owns_output_parent = False
+        self.owns_staging = False
+        self.owns_published_output = False
 
     def __enter__(self):
         if self.output_dir is None:
@@ -1011,22 +1307,44 @@ class _OutputTransaction:
                 )
         if output.exists():
             raise FileExistsError("output directory already exists")
-        if not output.parent.is_dir():
-            raise AnalysisLimitError(
-                "output directory parent must already exist"
-            )
         try:
-            require_start_space(_nearest_existing_ancestor(output))
+            nearest = _nearest_existing_ancestor(output.parent)
+            require_start_space(nearest)
         except DiskSpaceError as error:
             raise AnalysisLimitError(str(error)) from error
-        self._probe(output.parent)
-        staging = tempfile.mkdtemp(
-            prefix=f"{output.name}.incomplete-",
-            dir=output.parent,
-        )
-        self.staging_dir = Path(staging)
-        self._probe(self.staging_dir)
-        return self
+        try:
+            if not output.parent.exists():
+                if (
+                    not output.parent.parent.is_dir()
+                    or output.parent.parent.is_symlink()
+                ):
+                    raise AnalysisLimitError(
+                        "only the exact output parent may be created"
+                    )
+                try:
+                    output.parent.mkdir()
+                    self.owns_output_parent = True
+                except FileExistsError:
+                    self.owns_output_parent = False
+            if output.parent.is_symlink() or not output.parent.is_dir():
+                raise AnalysisLimitError(
+                    "output parent must be a real directory"
+                )
+            if output.exists():
+                raise FileExistsError("output directory already exists")
+            self._probe(output.parent)
+            staging = tempfile.mkdtemp(
+                prefix=f"{output.name}.incomplete-",
+                dir=output.parent,
+            )
+            self.staging_dir = Path(staging)
+            self.owns_staging = True
+            self._probe(self.staging_dir)
+            return self
+        except Exception:
+            self._cleanup_owned_staging()
+            self._cleanup_owned_parent_if_empty()
+            raise
 
     def _probe(self, path: Path) -> None:
         free = available_bytes(path)
@@ -1085,9 +1403,9 @@ class _OutputTransaction:
             )
         reverify()
         self._probe(self.staging_dir)
-        if self.output_dir.exists():
-            raise FileExistsError("output directory appeared before publication")
-        self.staging_dir.rename(self.output_dir)
+        _rename_no_replace(self.staging_dir, self.output_dir)
+        self.owns_published_output = True
+        self.owns_staging = False
         self.staging_dir = None
         self._probe(self.output_dir)
 
@@ -1101,15 +1419,40 @@ class _OutputTransaction:
                 self._cleanup_dir(path)
         directory.rmdir()
 
-    def __exit__(self, exc_type, exc_value, traceback):
-        if self.staging_dir is not None:
+    def _cleanup_owned_staging(self) -> None:
+        if (
+            self.owns_staging
+            and self.staging_dir is not None
+            and self.staging_dir.exists()
+        ):
             self._cleanup_dir(self.staging_dir)
+        self.owns_staging = False
+        self.staging_dir = None
+
+    def _cleanup_owned_parent_if_empty(self) -> None:
+        if (
+            self.owns_output_parent
+            and self.output_dir is not None
+            and self.output_dir.parent.exists()
+        ):
+            try:
+                self.output_dir.parent.rmdir()
+            except OSError:
+                pass
+        self.owns_output_parent = False
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self._cleanup_owned_staging()
         if (
             exc_type is not None
+            and self.owns_published_output
             and self.output_dir is not None
             and self.output_dir.exists()
         ):
             self._cleanup_dir(self.output_dir)
+            self.owns_published_output = False
+        if exc_type is not None:
+            self._cleanup_owned_parent_if_empty()
         return False
 
 
@@ -1153,6 +1496,10 @@ def compare_warm_start_recovery(
     paired_bundle_dir: Path,
     immutable_baseline_dir: Path,
     *,
+    expected_paired_parent_manifest_sha256: str,
+    expected_baseline_manifest_sha256: str,
+    expected_comparator_source_sha256: str,
+    expected_failure_analyzer_source_sha256: str,
     output_dir: Path | None = None,
     verify_hashes: bool = True,
 ) -> dict:
@@ -1165,6 +1512,32 @@ def compare_warm_start_recovery(
         raise InputIntegrityError("paired bundle must be a real directory")
     parent_path = paired_bundle_dir / "manifest.json"
     _regular_file(parent_path, "paired parent manifest")
+    baseline_manifest_path = immutable_baseline_dir / "manifest.json"
+    _regular_file(baseline_manifest_path, "immutable baseline manifest")
+    comparator_source_path = Path(__file__).resolve()
+    analyzer_source_path = Path(failure_analyzer.__file__).resolve()
+    external_trust_roots = {
+        "paired_parent_manifest_sha256": _verify_external_hash(
+            parent_path,
+            expected_paired_parent_manifest_sha256,
+            "paired parent manifest",
+        ),
+        "baseline_manifest_sha256": _verify_external_hash(
+            baseline_manifest_path,
+            expected_baseline_manifest_sha256,
+            "immutable baseline manifest",
+        ),
+        "comparator_source_sha256": _verify_external_hash(
+            comparator_source_path,
+            expected_comparator_source_sha256,
+            "comparator source",
+        ),
+        "failure_analyzer_source_sha256": _verify_external_hash(
+            analyzer_source_path,
+            expected_failure_analyzer_source_sha256,
+            "failure analyzer source",
+        ),
+    }
     parent, parent_raw = _strict_object(parent_path, "paired parent manifest")
     if parent.get("schema") != PARENT_SCHEMA_ID:
         raise InputIntegrityError("paired parent schema does not match")
@@ -1172,10 +1545,13 @@ def compare_warm_start_recovery(
         raise InputIntegrityError("paired parent is not completed")
     if parent.get("estimator_contract") != ESTIMATOR_CONTRACT_ID:
         raise InputIntegrityError("paired parent estimator contract does not match")
-    if parent.get("policies") != [
-        STRICT_PREVIOUS_POLICY,
-        RESTART_BEFORE_FIRST_FINITE_POLICY,
-    ]:
+    if not _json_type_exact_equal(
+        parent.get("policies"),
+        [
+            STRICT_PREVIOUS_POLICY,
+            RESTART_BEFORE_FIRST_FINITE_POLICY,
+        ],
+    ):
         raise InputIntegrityError("paired parent policies do not match")
     if Path(parent.get("immutable_baseline_dir", "")).resolve() != (
         immutable_baseline_dir.resolve()
@@ -1187,7 +1563,9 @@ def compare_warm_start_recovery(
         immutable_baseline_dir, verify_hashes=verify_hashes
     )
     declared_baseline_hashes = parent.get("immutable_baseline_hashes")
-    if declared_baseline_hashes != baseline["hashes"]:
+    if not _json_type_exact_equal(
+        declared_baseline_hashes, baseline["hashes"]
+    ):
         raise InputIntegrityError("parent immutable baseline hashes do not match")
 
     children = parent.get("children")
@@ -1202,7 +1580,7 @@ def compare_warm_start_recovery(
         if not isinstance(output_dir_value, str) or not output_dir_value:
             raise InputIntegrityError(f"{label} child output directory is invalid")
         child = _load_bundle(Path(output_dir_value), verify_hashes=verify_hashes)
-        if child["manifest"] != child_record:
+        if not _json_type_exact_equal(child["manifest"], child_record):
             raise InputIntegrityError(
                 f"parent {label} child record does not match child manifest"
             )
@@ -1217,6 +1595,26 @@ def compare_warm_start_recovery(
     _require_child_sources(parent, strict, restart)
 
     def reverify_all() -> None:
+        _verify_external_hash(
+            parent_path,
+            external_trust_roots["paired_parent_manifest_sha256"],
+            "paired parent manifest",
+        )
+        _verify_external_hash(
+            baseline_manifest_path,
+            external_trust_roots["baseline_manifest_sha256"],
+            "immutable baseline manifest",
+        )
+        _verify_external_hash(
+            comparator_source_path,
+            external_trust_roots["comparator_source_sha256"],
+            "comparator source",
+        )
+        _verify_external_hash(
+            analyzer_source_path,
+            external_trust_roots["failure_analyzer_source_sha256"],
+            "failure analyzer source",
+        )
         _verify_bundle_unchanged(baseline)
         _verify_bundle_unchanged(strict)
         _verify_bundle_unchanged(restart)
@@ -1341,6 +1739,21 @@ def compare_warm_start_recovery(
             paired,
             primary_gate_passed=dynamic_gate["passed"],
         )
+        allowed_claim = None
+        if dynamic_gate["passed"]:
+            allowed_claim = (
+                "Under the preserved trajectory and the exact frozen paired "
+                "range-noise seeds, deployment restart reduced the registered "
+                "local initialization failure event."
+            )
+            if (
+                upstream_gate is not None
+                and upstream_gate["cascade_interruption_supported"]
+            ):
+                allowed_claim += (
+                    " The hierarchical paired result also reduced observed "
+                    "downstream unavailability on this trajectory."
+                )
         report = {
             "schema": SCHEMA_ID,
             "status": "completed",
@@ -1367,6 +1780,7 @@ def compare_warm_start_recovery(
                 "input_manifest_sha256": parent_inputs[
                     "input_manifest"
                 ][1],
+                "external_trust_roots": dict(external_trust_roots),
             },
             "protocol": {
                 "statistical_unit": "paired range-noise seed",
@@ -1413,13 +1827,7 @@ def compare_warm_start_recovery(
             "calibration_safeguards": safeguards,
             "restart_provenance": paired["restart_provenance"],
             "claim_boundary": {
-                "allowed": (
-                    "Under the preserved trajectory and registered paired "
-                    "noise seeds, deployment restart recovered a replay "
-                    "initialization failure mechanism; downstream "
-                    "unavailability is included only if its hierarchical "
-                    "gate passes."
-                ),
+                "allowed": allowed_claim,
                 "not_supported": [
                     "graph superiority",
                     "controller, collision-avoidance, connectivity, or mission guarantees",
@@ -1438,12 +1846,34 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--paired-bundle-dir", required=True, type=Path)
     parser.add_argument("--immutable-baseline-dir", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument(
+        "--expected-paired-parent-manifest-sha256", required=True
+    )
+    parser.add_argument(
+        "--expected-baseline-manifest-sha256", required=True
+    )
+    parser.add_argument("--expected-comparator-source-sha256", required=True)
+    parser.add_argument(
+        "--expected-failure-analyzer-source-sha256", required=True
+    )
     arguments = parser.parse_args(argv)
     try:
         report = compare_warm_start_recovery(
             arguments.paired_bundle_dir,
             arguments.immutable_baseline_dir,
             output_dir=arguments.output_dir,
+            expected_paired_parent_manifest_sha256=(
+                arguments.expected_paired_parent_manifest_sha256
+            ),
+            expected_baseline_manifest_sha256=(
+                arguments.expected_baseline_manifest_sha256
+            ),
+            expected_comparator_source_sha256=(
+                arguments.expected_comparator_source_sha256
+            ),
+            expected_failure_analyzer_source_sha256=(
+                arguments.expected_failure_analyzer_source_sha256
+            ),
         )
     except (
         AnalysisLimitError,
