@@ -49,15 +49,15 @@ or retry change.
 ## Frozen source identity and executables
 
 The reviewed executable-code commit is
-`6646a6b7476c48ebd314778495ebce2c4e04202e`
+`f33035e828b892d4fec3e587928266356f82c599`
 on branch `codex/cbf2026-diagnostic`.
 The production environment is conda environment `cbf_env`.
 
 | Executable source | SHA-256 |
 | --- | --- |
-| `scripts/diagnostics/run_warm_start_recovery.py` | `2e144d552fdf3e7d2cef63a4402c3b1e911e9d6cc3544176c7112e6614bba6f1` |
-| `scripts/diagnostics/replay_localization_calibration.py` | `5c246b6b09be9cacbeec6a2f94b1a22e89f2d066d7177423e95e363e4ea665ec` |
-| `scripts/diagnostics/compare_warm_start_recovery.py` | `227f887dfa148500a16db6622b8b8cdcf7c5ba7d584eb717f1a0655eb0dbd12d` |
+| `scripts/diagnostics/run_warm_start_recovery.py` | `76733bb0748a63a63858ea24fc89240998f0dc1c58dbe96888da86d3c31e9ae5` |
+| `scripts/diagnostics/replay_localization_calibration.py` | `0123ed283917f6f9c6a005df4b8b7928e927d3aa4e098e5740816f272e24e4b8` |
+| `scripts/diagnostics/compare_warm_start_recovery.py` | `9a54c312183f7f2864aba104a5624ea247e15e1107deaa4590e276ab1eda120d` |
 | `scripts/diagnostics/analyze_localization_failures.py` | `1e3a7b7cd615b258fb83af53f7264d7aff327685f42c85787d0d9ae7df0b6315` |
 | `scripts/diagnostics/run_diagnostic.py` | `ccde94fa739649cb9b94a8304ef3867ae946f28b0e3a812d3feb3f30bb76fd23` |
 
@@ -173,8 +173,24 @@ conda run -n cbf_env python -m scripts.diagnostics.run_warm_start_recovery \
   --seed 20260744 \
   --seed 20260745 \
   --seed 20260746 \
-  --max-frames 500
+  --max-frames 500 \
+  --expected-data-sha256 3defc62d11bb5996301b21b95ab3902c998bb982640b0f9be7b9536005145527 \
+  --expected-input-manifest-sha256 6731444b7a4cdaaaba010a6297b8b258500978e8856f239c04c157bc4878d6fb \
+  --expected-baseline-manifest-sha256 39ee3b5494ed623d20d16766244427476cd081ed0869feecb9e5072c6c8f481d \
+  --expected-supervisor-source-sha256 76733bb0748a63a63858ea24fc89240998f0dc1c58dbe96888da86d3c31e9ae5 \
+  --expected-replay-source-sha256 0123ed283917f6f9c6a005df4b8b7928e927d3aa4e098e5740816f272e24e4b8 \
+  --expected-run-diagnostic-source-sha256 ccde94fa739649cb9b94a8304ef3867ae946f28b0e3a812d3feb3f30bb76fd23
 ```
+
+All six expected-hash arguments are external trust roots.
+The supervisor must verify them before allocation,
+record them in the parent manifest,
+and refuse any self-consistent replacement of the data,
+trajectory manifest,
+baseline manifest,
+supervisor source,
+replay source,
+or shared disk/snapshot helper.
 
 The supervisor must import one committed replay implementation and call it
 once for each policy,
@@ -273,7 +289,7 @@ conda run -n cbf_env python -m scripts.diagnostics.compare_warm_start_recovery \
   --output-dir /private/tmp/cbf2026-warm-start-recovery-analysis/registered-gate-2 \
   --expected-paired-parent-manifest-sha256 RECORDED_PAIRED_PARENT_MANIFEST_SHA256 \
   --expected-baseline-manifest-sha256 39ee3b5494ed623d20d16766244427476cd081ed0869feecb9e5072c6c8f481d \
-  --expected-comparator-source-sha256 227f887dfa148500a16db6622b8b8cdcf7c5ba7d584eb717f1a0655eb0dbd12d \
+  --expected-comparator-source-sha256 9a54c312183f7f2864aba104a5624ea247e15e1107deaa4590e276ab1eda120d \
   --expected-failure-analyzer-source-sha256 1e3a7b7cd615b258fb83af53f7264d7aff327685f42c85787d0d9ae7df0b6315
 ```
 
@@ -380,12 +396,25 @@ or generalization across trajectories or geometries.
 
 | Gate | Frozen limit |
 | --- | ---: |
-| Available bytes before each production launch | at least `8,000,000,000` |
+| Available bytes before the supervisor launch | at least `8,000,000,000` |
+| Available bytes before the separate comparator launch | at least `8,000,000,000` |
 | Live available-byte floor | stop below `6,000,000,000` |
 | Allocated bytes under a production output root | at most `2,000,000,000` |
 | Allocated bytes for the paired replay parent | at most `250,000,000` |
 | Allocated bytes for paired comparison output | at most `10,000,000` |
 | Streamed-row live probe interval | at least every `10,000` rows |
+
+Within the supervised four-cell replay,
+only the supervisor applies the one `8,000,000,000`-byte launch gate.
+The strict and restart child replays are invoked with their nested launch
+gate disabled.
+They remain continuously governed by the supervisor callback's
+`6,000,000,000`-byte live floor,
+the aggregate `2,000,000,000`-byte output-root cap,
+and the aggregate `250,000,000`-byte parent cap.
+The comparator is a later,
+separate production invocation and independently applies its own 8 GB launch
+gate.
 
 The supervisor also probes before allocation,
 before and after source snapshot creation,
@@ -397,8 +426,21 @@ The comparator probes before staging,
 during streaming,
 before and after each write,
 and after atomic no-replace publication.
-All immutable and executable trust roots are reverified before completed
-comparison publication.
+Before a completed parent manifest can be published,
+the supervisor performs one unified final reverify.
+It rehashes all six external trust roots,
+revalidates every immutable-baseline artifact including the decompressed
+stream,
+rehashes the exact source snapshot,
+and requires the full Git commit,
+branch,
+and status tuple to equal the launch tuple.
+It runs this closure after both children and again after staging the completed
+manifest,
+immediately before final replacement.
+The comparator independently reverifies its four external trust roots,
+all three evidence bundles,
+and parent-recorded source inputs before completed comparison publication.
 
 If launch space is below `8,000,000,000` bytes,
 do not launch.
@@ -421,35 +463,87 @@ directory.
 No production command is automatically or manually retried under this
 registration.
 
+## Four-cell end-to-end verification
+
+The committed test
+`WarmStartRecoveryRunnerTests.test_real_four_cell_parent_uses_one_8gb_gate_then_6gb_live_floor`
+is the required real four-cell end-to-end fixture.
+It does not mock either child replay.
+It creates one actual supervised parent,
+runs both explicit policies through `replay_calibration`,
+and requires each child stream to contain both
+`dynamic_dag_wnls` and `fixed_refs_wnls`.
+It verifies all four prospective cells,
+policy provenance,
+identical paired keys,
+identical active references,
+and bitwise-identical registered measurement-noise fields.
+Its disk fixture exposes `8,000,000,000` bytes only at the supervisor launch
+and `7,000,000,000` bytes thereafter;
+the test fails if either child reapplies an 8 GB gate instead of using the
+6 GB supervised live floor and aggregate caps.
+
 ## Registration preflight record
 
 At executable commit
-`6646a6b7476c48ebd314778495ebce2c4e04202e`,
-the following read-only preflight completed:
+`f33035e828b892d4fec3e587928266356f82c599`,
+the full suite discovered `219` tests.
+It completed with six errors solely because the real filesystem had already
+fallen below the tests' registered 8 GB publication threshold:
 
-- `212` tests passed in `8.489` seconds;
-- Python byte-compilation passed for the Gate 1 analyzer,
-  replay,
-  supervisor,
-  and comparator;
-- `git diff --check` passed;
-- tracked Git status was clean;
-- the only status entry was the tolerated unrelated
-  `?? build-diagnostic/`;
-- the supervisor output root and comparator final,
-  staging,
-  and parent paths were absent;
-- `/private/tmp` had `8,069,160,960` available bytes at the final recorded
-  probe,
-  above the `8,000,000,000` launch threshold; and
-- `/Users/xirhxq/.cache/codex-runtimes` occupied `1,591,384` KiB
-  (`1,629,577,216` bytes) and was not changed.
+```text
+Ran 219 tests in 9.230s
+FAILED (errors=6)
+available during failures: 7,905,427,456 bytes or less
+```
 
-Immediately before the single replay invocation,
-and again before the single comparator invocation,
-record:
+All six errors were fail-closed `AnalysisLimitError` results from output
+publication tests;
+there was no assertion failure.
+The implementation repair was also verified by a complete controlled suite
+in which only `run_diagnostic.available_bytes` was held in memory at 9 GB.
+All disk-boundary tests retained their own nested 8 GB and 6 GB patches:
+
+```text
+Ran 219 tests in 10.404s
+OK
+```
+
+This controlled result is implementation evidence,
+not a substitute for the native final preflight on the real filesystem.
+The focused supervisor suite,
+including the real four-cell end-to-end test,
+passed:
+
+```text
+Ran 16 tests in 0.830s
+OK
+```
+
+Python byte-compilation passed for the Gate 1 analyzer,
+replay,
+supervisor,
+and comparator,
+and `git diff --check` passed.
+The final registration-repair probe reported
+`7,895,961,600` available bytes,
+which is `104,038,400` bytes below the launch gate.
+The exact rebuildable cache occupied `1,591,384` KiB
+(`1,629,577,216` bytes) and was not changed.
+Both production output roots remained absent.
+Therefore production is blocked;
+the failed full suite is not waived.
+
+### Exact final preflight before the supervisor
+
+Run the following from `/private/tmp/cbf2026-diagnostic` in `zsh`.
+Every command is fail-closed.
+The block must exit `0` in full before the one supervisor invocation:
 
 ```bash
+set -e
+set -o pipefail
+
 conda run -n cbf_env python -m unittest discover -s tests -p 'test_*.py' -v
 conda run -n cbf_env python -m py_compile \
   scripts/diagnostics/analyze_initialization_persistence.py \
@@ -457,17 +551,147 @@ conda run -n cbf_env python -m py_compile \
   scripts/diagnostics/run_warm_start_recovery.py \
   scripts/diagnostics/compare_warm_start_recovery.py
 git diff --check
-git status --short --untracked-files=no
+
+status_output="$(git status --short --untracked-files=all)"
+print -r -- "$status_output"
+awk 'NF && index($0, "?? build-diagnostic/") != 1 {exit 1}' \
+  <<< "$status_output"
+
+printf '%s  %s\n' \
+  3defc62d11bb5996301b21b95ab3902c998bb982640b0f9be7b9536005145527 \
+  /private/tmp/cbf2026-results/mc-first-mechanism-250s/R/20260728T062752.357599Z_9cb3d4b121eb438c8688f0a121f01725/2026-07-28_14-27-53_R_seed_20260727_250s/data.json \
+  6731444b7a4cdaaaba010a6297b8b258500978e8856f239c04c157bc4878d6fb \
+  /private/tmp/cbf2026-results/mc-first-mechanism-250s/R/20260728T062752.357599Z_9cb3d4b121eb438c8688f0a121f01725/manifest.json \
+  39ee3b5494ed623d20d16766244427476cd081ed0869feecb9e5072c6c8f481d \
+  /private/tmp/cbf2026-localization-calibration-corrected/stage2/localization-calibration/20260728T185008.982732Z_ca76d378475447068e08f0921ba87288/manifest.json \
+  76733bb0748a63a63858ea24fc89240998f0dc1c58dbe96888da86d3c31e9ae5 \
+  scripts/diagnostics/run_warm_start_recovery.py \
+  0123ed283917f6f9c6a005df4b8b7928e927d3aa4e098e5740816f272e24e4b8 \
+  scripts/diagnostics/replay_localization_calibration.py \
+  9a54c312183f7f2864aba104a5624ea247e15e1107deaa4590e276ab1eda120d \
+  scripts/diagnostics/compare_warm_start_recovery.py \
+  1e3a7b7cd615b258fb83af53f7264d7aff327685f42c85787d0d9ae7df0b6315 \
+  scripts/diagnostics/analyze_localization_failures.py \
+  ccde94fa739649cb9b94a8304ef3867ae946f28b0e3a812d3feb3f30bb76fd23 \
+  scripts/diagnostics/run_diagnostic.py |
+  shasum -a 256 --check -
+
+test ! -e /private/tmp/cbf2026-warm-start-recovery
+test ! -e /private/tmp/cbf2026-warm-start-recovery-analysis
+test ! -e /private/tmp/cbf2026-warm-start-recovery-analysis/registered-gate-2
+test ! -e /private/tmp/cbf2026-warm-start-recovery-analysis/registered-gate-2.incomplete
+setopt NULL_GLOB
+staging_candidates=(
+  /private/tmp/cbf2026-warm-start-recovery-analysis/registered-gate-2.incomplete-*
+)
+(( ${#staging_candidates[@]} == 0 ))
+
 df -Pk /private/tmp
-du -sk /Users/xirhxq/.cache/codex-runtimes 2>/dev/null
+du -sk /Users/xirhxq/.cache/codex-runtimes
+for root in \
+  /private/tmp/cbf2026-warm-start-recovery \
+  /private/tmp/cbf2026-warm-start-recovery-analysis
+do
+  if [[ -e "$root" ]]; then
+    du -sk "$root"
+    exit 1
+  fi
+  print -r -- "0	$root"
+done
+
+available_kib="$(df -Pk /private/tmp | awk 'NR == 2 {print $4}')"
+test -n "$available_kib"
+(( available_kib * 1024 >= 8000000000 ))
 ```
 
-The full suite must pass,
-all frozen executable and input hashes must match,
-tracked status must be empty,
-the exact next output path must be absent,
-and available bytes must meet the launch threshold.
-The unrelated untracked `build-diagnostic/` remains outside the tracked-state
-test and must never be staged,
+The full status is intentionally collected with
+`--untracked-files=all`.
+It may be empty,
+or every nonempty line must begin exactly
+`?? build-diagnostic/`.
+Any tracked change or any untracked path outside that sole directory fails
+the preflight.
+`build-diagnostic/` must never be staged,
 deleted,
-or rewritten.
+or rewritten by this protocol.
+
+If the space gate fails,
+stop.
+The previously authorized pre-launch cleanup scope remains only
+`/Users/xirhxq/.cache/codex-runtimes`;
+after any separately recorded cleanup,
+the entire block,
+including all 219 tests,
+must pass from the beginning.
+
+### Exact final preflight before the comparator
+
+After the supervisor has completed once and the one-time handoff is recorded,
+repeat the full tests,
+byte-compilation,
+`git diff --check`,
+full-status allowlist,
+eight `shasum --check` entries,
+`df`,
+cache allocation,
+and 8 GB arithmetic gate above.
+At this stage the paired replay root is expected to exist,
+so replace only the replay-root absence assertion with fail-closed checks that
+the exact recorded parent exists,
+is a real directory,
+and contains a real regular manifest.
+Do not externally hash that manifest a second time:
+the one-time handoff hash is already recorded,
+and the comparator itself verifies it against the expected argument before
+streaming.
+Keep all three comparator output absence checks,
+the random staging-candidate check,
+and the comparator output-root zero-allocation probe.
+
+The exact comparator-specific replacement block is:
+
+```bash
+test -n "RECORDED_COMPLETED_PARENT_OUTPUT_DIR"
+test -n "RECORDED_PAIRED_PARENT_MANIFEST_SHA256"
+test -d RECORDED_COMPLETED_PARENT_OUTPUT_DIR
+test ! -L RECORDED_COMPLETED_PARENT_OUTPUT_DIR
+test -f RECORDED_COMPLETED_PARENT_OUTPUT_DIR/manifest.json
+test ! -L RECORDED_COMPLETED_PARENT_OUTPUT_DIR/manifest.json
+
+test ! -e /private/tmp/cbf2026-warm-start-recovery-analysis
+test ! -e /private/tmp/cbf2026-warm-start-recovery-analysis/registered-gate-2
+test ! -e /private/tmp/cbf2026-warm-start-recovery-analysis/registered-gate-2.incomplete
+setopt NULL_GLOB
+staging_candidates=(
+  /private/tmp/cbf2026-warm-start-recovery-analysis/registered-gate-2.incomplete-*
+)
+(( ${#staging_candidates[@]} == 0 ))
+
+df -Pk /private/tmp
+du -sk /Users/xirhxq/.cache/codex-runtimes
+du -sk /private/tmp/cbf2026-warm-start-recovery
+du -sk RECORDED_COMPLETED_PARENT_OUTPUT_DIR
+print -r -- "0	/private/tmp/cbf2026-warm-start-recovery-analysis"
+
+replay_root_kib="$(
+  du -sk /private/tmp/cbf2026-warm-start-recovery |
+  awk '{print $1}'
+)"
+parent_kib="$(
+  du -sk RECORDED_COMPLETED_PARENT_OUTPUT_DIR |
+  awk '{print $1}'
+)"
+test -n "$replay_root_kib"
+test -n "$parent_kib"
+(( replay_root_kib * 1024 <= 2000000000 ))
+(( parent_kib * 1024 <= 250000000 ))
+
+available_kib="$(df -Pk /private/tmp | awk 'NR == 2 {print $4}')"
+test -n "$available_kib"
+(( available_kib * 1024 >= 8000000000 ))
+```
+
+Replace both uppercase tokens with the two literal values already written in
+executor evidence;
+they are not shell variables.
+The comparator remains prohibited unless this second preflight exits `0`.
