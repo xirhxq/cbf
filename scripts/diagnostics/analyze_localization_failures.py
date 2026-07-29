@@ -12,7 +12,7 @@ from pathlib import Path
 SCHEMA_ID = "cbf2026-localization-failure-analysis-v1"
 ESTIMATOR_CONTRACT_ID = "variable_weight_nls_full_residual_jacobian_v1"
 _HASH_CHUNK_SIZE = 8192
-_PROCESS_NAME = "process.jsonl.gz"
+_PROCESS_NAME = "calibration.jsonl.gz"
 _SUMMARY_NAME = "summary.json"
 _SUMMARY_MARKDOWN_NAME = "summary.md"
 _REQUIRED_ROW_FIELDS = {
@@ -25,6 +25,8 @@ _REQUIRED_ROW_FIELDS = {
     "status",
 }
 _COUNT_FIELDS = ("attempt_status_counts", "status_counts")
+_ATTEMPT_STATUSES = {"converged", "invalid", "failed"}
+_RETAINED_STATUSES = {"converged", "stale", "invalid", "failed"}
 
 
 class InputIntegrityError(RuntimeError):
@@ -157,8 +159,14 @@ def _validate_row(row: dict) -> tuple[int, int, str, int, bool, str, str]:
     robot_id = _require_nonnegative_int(row["robot_id"], "row robot id")
     if type(row["primary_statistics"]) is not bool:
         raise InputIntegrityError("row primary statistics must be boolean")
+    if row["primary_statistics"] != (frame_index != 0):
+        raise InputIntegrityError("row primary statistics disagrees with frame index")
     attempt_status = _require_string(row["attempt_status"], "row attempt status")
     status = _require_string(row["status"], "row status")
+    if attempt_status not in _ATTEMPT_STATUSES:
+        raise InputIntegrityError("row attempt status is not recognized")
+    if status not in _RETAINED_STATUSES:
+        raise InputIntegrityError("row status is not recognized")
     return frame_index, seed, graph_case, robot_id, row["primary_statistics"], attempt_status, status
 
 
@@ -184,11 +192,11 @@ def _validate_summary_counts(summary: dict, observed: dict[str, dict[str, dict[s
             declared_bucket = _require_mapping(
                 declared_case.get(bucket), f"summary {graph_case} {bucket}"
             )
-            if set(declared_bucket) != set(_COUNT_FIELDS):
-                raise InputIntegrityError(
-                    f"summary {graph_case} {bucket} must contain both count maps"
-                )
             for count_field in _COUNT_FIELDS:
+                if count_field not in declared_bucket:
+                    raise InputIntegrityError(
+                        f"summary {graph_case} {bucket} is missing {count_field}"
+                    )
                 declared_counts = _require_mapping(
                     declared_bucket[count_field], f"summary {graph_case} {bucket} {count_field}"
                 )

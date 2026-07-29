@@ -15,7 +15,7 @@ from scripts.diagnostics.analyze_localization_failures import (
 )
 
 
-PROCESS_NAME = "process.jsonl.gz"
+PROCESS_NAME = "calibration.jsonl.gz"
 SUMMARY_NAME = "summary.json"
 SUMMARY_MARKDOWN_NAME = "summary.md"
 GRAPH_CASES = ("dynamic_dag_wnls", "fixed_refs_wnls")
@@ -37,29 +37,26 @@ def _settings() -> dict:
     }
 
 
-def _empty_counts() -> dict:
-    return {"attempt_status_counts": {}, "status_counts": {}}
-
-
-def _initialization_counts(rows: int = 2) -> dict:
+def _bucket_counts(rows: int) -> dict:
     return {
-        "attempt_status_counts": {"attempted": rows},
-        "status_counts": {"retained": rows},
+        "attempt_status_counts": {"converged": rows} if rows else {},
+        "status_counts": {"converged": rows} if rows else {},
     }
 
 
-def _write_completed_bundle(bundle: Path) -> None:
+def _write_completed_bundle(bundle: Path, effective_frame_count: int = 1) -> None:
     bundle.mkdir()
     rows = [
         {
-            "frame_index": 0,
+            "frame_index": frame_index,
             "seed": 17,
             "graph_case": graph_case,
             "robot_id": robot_id,
-            "primary_statistics": False,
-            "attempt_status": "attempted",
-            "status": "retained",
+            "primary_statistics": frame_index != 0,
+            "attempt_status": "converged",
+            "status": "converged",
         }
+        for frame_index in range(effective_frame_count)
         for graph_case in GRAPH_CASES
         for robot_id in (1, 2)
     ]
@@ -74,13 +71,13 @@ def _write_completed_bundle(bundle: Path) -> None:
                 compressed.write(line)
 
     summary = {
-        "expected_process_rows": 4,
-        "process_rows": 4,
-        "settings": _settings(),
+        "expected_process_rows": 4 * effective_frame_count,
+        "process_rows": 4 * effective_frame_count,
+        "settings": {**_settings(), "effective_frame_count": effective_frame_count},
         "graph_cases": {
             graph_case: {
-                "overall": _empty_counts(),
-                "initialization_frame": _initialization_counts(),
+                "overall": _bucket_counts(2 * (effective_frame_count - 1)),
+                "initialization_frame": _bucket_counts(2),
             }
             for graph_case in GRAPH_CASES
         },
@@ -92,7 +89,7 @@ def _write_completed_bundle(bundle: Path) -> None:
     manifest = {
         "termination_reason": "completed",
         "estimator_contract": "variable_weight_nls_full_residual_jacobian_v1",
-        "settings": _settings(),
+        "settings": {**_settings(), "effective_frame_count": effective_frame_count},
         "compressed_process_sha256": _sha256(process_path),
         "decompressed_process_sha256": hashlib.sha256(b"".join(lines)).hexdigest(),
         "summary_json_sha256": _sha256(summary_path),
@@ -158,16 +155,17 @@ class LocalizationFailureInputTests(unittest.TestCase):
         self.assertTrue(report["integrity"]["hashes_match"])
 
     def test_reports_primary_rows_from_the_verified_stream(self) -> None:
-        lines = _process_lines(self.bundle)
-        row = json.loads(lines[0])
-        row["primary_statistics"] = True
-        lines[0] = json.dumps(row, sort_keys=True, separators=(",", ":")).encode() + b"\n"
-        _rewrite_process(self.bundle, lines)
+        two_frame_bundle = Path(self._temporary_directory.name) / "two-frame-bundle"
+        _write_completed_bundle(two_frame_bundle, effective_frame_count=2)
+        self.assertEqual(
+            analyze_localization_failures(two_frame_bundle)["integrity"]["primary_rows"], 4
+        )
+
+    def test_accepts_extra_summary_statistics(self) -> None:
         summary = _read_summary(self.bundle)
-        summary["graph_cases"]["dynamic_dag_wnls"]["overall"] = _initialization_counts(1)
-        summary["graph_cases"]["dynamic_dag_wnls"]["initialization_frame"] = _initialization_counts(1)
+        summary["graph_cases"]["dynamic_dag_wnls"]["overall"]["mean_iterations"] = 3.5
         _write_summary(self.bundle, summary)
-        self.assertEqual(analyze_localization_failures(self.bundle)["integrity"]["primary_rows"], 1)
+        self.assertEqual(analyze_localization_failures(self.bundle)["integrity"]["observed_rows"], 4)
 
     def test_rejects_a_corrupted_compressed_byte(self) -> None:
         process_path = self.bundle / PROCESS_NAME
@@ -223,6 +221,33 @@ class LocalizationFailureInputTests(unittest.TestCase):
         row["frame_index"] = True
         lines[0] = json.dumps(row, sort_keys=True, separators=(",", ":")).encode() + b"\n"
         _rewrite_process(self.bundle, lines)
+        self._assert_integrity_error()
+
+    def test_rejects_primary_statistics_that_disagrees_with_frame_index(self) -> None:
+        lines = _process_lines(self.bundle)
+        row = json.loads(lines[0])
+        row["primary_statistics"] = True
+        lines[0] = json.dumps(row, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+        _rewrite_process(self.bundle, lines)
+        summary = _read_summary(self.bundle)
+        summary["graph_cases"]["dynamic_dag_wnls"]["overall"] = _bucket_counts(1)
+        summary["graph_cases"]["dynamic_dag_wnls"]["initialization_frame"] = _bucket_counts(1)
+        _write_summary(self.bundle, summary)
+        self._assert_integrity_error()
+
+    def test_rejects_an_arbitrary_attempt_or_retained_status(self) -> None:
+        lines = _process_lines(self.bundle)
+        row = json.loads(lines[0])
+        row["attempt_status"] = "arbitrary"
+        row["status"] = "arbitrary"
+        lines[0] = json.dumps(row, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+        _rewrite_process(self.bundle, lines)
+        summary = _read_summary(self.bundle)
+        summary["graph_cases"]["dynamic_dag_wnls"]["initialization_frame"] = {
+            "attempt_status_counts": {"arbitrary": 1, "converged": 1},
+            "status_counts": {"arbitrary": 1, "converged": 1},
+        }
+        _write_summary(self.bundle, summary)
         self._assert_integrity_error()
 
     def test_rejects_wrong_expected_process_row_count(self) -> None:
