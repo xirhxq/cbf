@@ -894,6 +894,40 @@ class ConditionalCalibrationTests(unittest.TestCase):
         self.assertEqual(calibration["conditional_covariance_invalid"], 1)
         self.assertEqual(calibration["q"]["finite_count"], 0)
 
+    def test_two_finite_ratio_values_cannot_overflow_the_accumulator(self) -> None:
+        """Breaks if finite ratio rows can serialize an infinite aggregate sum."""
+        rows = []
+        for frame in range(2):
+            for case in GRAPH_CASES:
+                for robot in (1, 2):
+                    row = _real_schema_row(frame, case, robot)
+                    if frame:
+                        row.update({
+                            "error_to_epsilon_ratio": 1e308,
+                            "error_vector": [0.0, 0.0],
+                            "covariance": [[1.0, 0.0], [0.0, 1.0]],
+                        })
+                    rows.append(row)
+        with self.assertRaisesRegex(InputIntegrityError, "ratio sum"):
+            _analyze_rows(rows, 2)
+
+    def test_two_finite_q_values_cannot_overflow_the_accumulator(self) -> None:
+        """Breaks if finite q rows can serialize an infinite aggregate sum."""
+        rows = []
+        for frame in range(2):
+            for case in GRAPH_CASES:
+                for robot in (1, 2):
+                    row = _real_schema_row(frame, case, robot)
+                    if frame:
+                        row.update({
+                            "error_to_epsilon_ratio": 1.0,
+                            "error_vector": [math.sqrt(1e308), 0.0],
+                            "covariance": [[1.0, 0.0], [0.0, 1.0]],
+                        })
+                    rows.append(row)
+        with self.assertRaisesRegex(InputIntegrityError, "q sum"):
+            _analyze_rows(rows, 2)
+
 
 class StratificationTests(unittest.TestCase):
     def test_streamed_seed_budgets_reconcile_every_primary_attempt(self) -> None:

@@ -257,6 +257,13 @@ def _record_budget(budget: dict, attempt_class: str) -> None:
     budget["counts"][attempt_class] += 1
 
 
+def _add_finite_sum(target: dict, value: float, name: str) -> None:
+    prospective_sum = target["sum"] + value
+    if not math.isfinite(prospective_sum):
+        raise InputIntegrityError(f"Task 3 {name} sum is not finite")
+    target["sum"] = prospective_sum
+
+
 def _record_calibration(case: dict, row: dict) -> None:
     if row["attempt_status"] != "converged":
         return
@@ -268,7 +275,7 @@ def _record_calibration(case: dict, row: dict) -> None:
     if type(ratio) in (int, float) and math.isfinite(ratio) and ratio >= 0:
         target = calibration["ratio"]
         target["finite_count"] += 1
-        target["sum"] += ratio
+        _add_finite_sum(target, ratio, "ratio")
         target["max"] = ratio if target["max"] is None else max(target["max"], ratio)
         target["bins"][_ratio_bin(ratio)] += 1
     else:
@@ -280,7 +287,7 @@ def _record_calibration(case: dict, row: dict) -> None:
         return
     target = calibration["q"]
     target["finite_count"] += 1
-    target["sum"] += q
+    _add_finite_sum(target, q, "q")
     target["max"] = q if target["max"] is None else max(target["max"], q)
     target["bins"][_q_bin(q)] += 1
     target["above_5_991464547"] += int(q > 5.991464547)
