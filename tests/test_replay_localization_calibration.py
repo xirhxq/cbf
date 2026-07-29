@@ -997,6 +997,158 @@ class ReplayEvidenceBundleTests(unittest.TestCase):
                 4,
             )
 
+    def test_replay_records_policy_restart_and_paired_row_provenance(self):
+        """Breaks if replay ignores the pre-acquisition restart policy or changes paired inputs."""
+        def run_policy(root: Path, policy: str) -> tuple[dict, list[dict]]:
+            data_path, manifest_path = self._fixture(root)
+            calls = 0
+
+            def fail_once_then_converge(*arguments):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    return replay_module._invalid_result(
+                        "synthetic frame-zero initialization failure"
+                    )
+                return replay_module._result(
+                    "converged",
+                    estimate=[1.0, 1.0],
+                    covariance=[[0.25, 0.0], [0.0, 0.25]],
+                    epsilon=1.5,
+                    phi_min_eigenvalue=4.0,
+                    phi_condition=1.0,
+                    iterations=1,
+                    cost=0.0,
+                    stationarity_norm=0.0,
+                )
+
+            with patch.object(
+                replay_module,
+                "solve_wnls",
+                side_effect=fail_once_then_converge,
+            ):
+                manifest = replay_calibration(
+                    data_path,
+                    manifest_path,
+                    root / f"output-{policy}",
+                    [17],
+                    root / "project",
+                    max_frames=2,
+                    initialization_policy=policy,
+                )
+            with gzip.open(
+                Path(manifest["output_dir"]) / "calibration.jsonl.gz", "rt"
+            ) as source:
+                rows = [json.loads(line) for line in source]
+            return manifest, rows
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "strict" / "project").mkdir(parents=True)
+            (root / "restart" / "project").mkdir(parents=True)
+            strict_manifest, strict_rows = run_policy(
+                root / "strict", STRICT_PREVIOUS_POLICY
+            )
+            restart_manifest, restart_rows = run_policy(
+                root / "restart", RESTART_BEFORE_FIRST_FINITE_POLICY
+            )
+
+        strict_row = next(
+            row
+            for row in strict_rows
+            if row["graph_case"] == "dynamic_dag_wnls"
+            and row["frame_index"] == 1
+            and row["robot_id"] == 1
+        )
+        restart_row = next(
+            row
+            for row in restart_rows
+            if row["graph_case"] == "dynamic_dag_wnls"
+            and row["frame_index"] == 1
+            and row["robot_id"] == 1
+        )
+        self.assertEqual(
+            strict_row["initial_estimate_source"], "strict_previous_missing"
+        )
+        self.assertEqual(
+            restart_row["initial_estimate_source"],
+            "deployment_restart_before_first_finite",
+        )
+        self.assertFalse(restart_row["ever_acquired_finite_before_attempt"])
+        self.assertEqual(
+            strict_row["active_references"], restart_row["active_references"]
+        )
+        self.assertEqual(strict_row["measurements"], restart_row["measurements"])
+        self.assertEqual(
+            strict_manifest["settings"]["initialization_policy"],
+            STRICT_PREVIOUS_POLICY,
+        )
+        self.assertEqual(
+            restart_manifest["settings"]["initialization_policy"],
+            RESTART_BEFORE_FIRST_FINITE_POLICY,
+        )
+
+    def test_replay_restart_policy_stays_strict_after_a_finite_acquisition(self):
+        """Breaks if a later missing state restarts from deployment after finite acquisition."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project_root = root / "project"
+            project_root.mkdir()
+            data_path, manifest_path = self._fixture(root)
+            original_solve_later_frame = replay_module.solve_later_frame
+            calls = 0
+
+            def converge(*arguments):
+                return replay_module._result(
+                    "converged",
+                    estimate=[1.0, 1.0],
+                    covariance=[[0.25, 0.0], [0.0, 0.25]],
+                    epsilon=1.5,
+                    phi_min_eigenvalue=4.0,
+                    phi_condition=1.0,
+                    iterations=1,
+                    cost=0.0,
+                    stationarity_norm=0.0,
+                )
+
+            def lose_first_later_state(*arguments):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    return replay_module._invalid_result(
+                        "synthetic post-acquisition missing state"
+                    )
+                return original_solve_later_frame(*arguments)
+
+            with patch.object(replay_module, "solve_wnls", side_effect=converge), patch.object(
+                replay_module, "solve_later_frame", side_effect=lose_first_later_state
+            ):
+                manifest = replay_calibration(
+                    data_path,
+                    manifest_path,
+                    root / "output",
+                    [17],
+                    project_root,
+                    initialization_policy=RESTART_BEFORE_FIRST_FINITE_POLICY,
+                )
+            with gzip.open(
+                Path(manifest["output_dir"]) / "calibration.jsonl.gz", "rt"
+            ) as source:
+                rows = [json.loads(line) for line in source]
+
+        post_loss_row = next(
+            row
+            for row in rows
+            if row["graph_case"] == "dynamic_dag_wnls"
+            and row["frame_index"] == 2
+            and row["robot_id"] == 1
+        )
+        self.assertTrue(post_loss_row["ever_acquired_finite_before_attempt"])
+        self.assertEqual(
+            post_loss_row["initial_estimate_source"],
+            "strict_previous_missing",
+        )
+
     def test_attempt_failures_reduce_containment_and_no_worse_rates(self):
         """Breaks if stale retained state hides current failures or inflates coverage."""
         samples = replay_module._SummarySamples(6, [17])

@@ -581,7 +581,7 @@ def solve_later_frame(
 
 GRAPH_CASES = ("dynamic_dag_wnls", "fixed_refs_wnls")
 PREREGISTERED_RANGING_SIGMA = 0.5
-IMPLEMENTATION_ID = "cbf2026-localization-calibration-v2"
+IMPLEMENTATION_ID = "cbf2026-localization-calibration-v3"
 ESTIMATOR_CONTRACT_ID = "variable_weight_nls_full_residual_jacobian_v1"
 BOOTSTRAP_RESAMPLES = 10_000
 BOOTSTRAP_SEED = 20260728
@@ -1021,12 +1021,14 @@ def _settings(
     max_frames: int | None,
     effective_frames: int,
     ranging_sigma: float,
+    initialization_policy: str,
 ) -> dict:
     implementation_path = Path(__file__).resolve()
     return {
         "estimator_contract": ESTIMATOR_CONTRACT_ID,
         "run_seeds": seeds,
         "graph_cases": list(GRAPH_CASES),
+        "initialization_policy": initialization_policy,
         "max_frames": max_frames,
         "effective_frame_count": effective_frames,
         "ranging_sigma": ranging_sigma,
@@ -1070,9 +1072,20 @@ def _retained_after_attempt(previous_result: dict | None, attempt: dict) -> dict
     return stale
 
 
-def replay_calibration(data_path, manifest_path, output_root, run_seeds, project_root, max_frames=None) -> dict:
+def replay_calibration(
+    data_path,
+    manifest_path,
+    output_root,
+    run_seeds,
+    project_root,
+    max_frames=None,
+    *,
+    initialization_policy: str = STRICT_PREVIOUS_POLICY,
+) -> dict:
     """Replay truth trajectories into a disk-guarded, paired calibration bundle."""
     data_path, manifest_path, output_root, project_root = map(Path, (data_path, manifest_path, output_root, project_root))
+    if initialization_policy not in INITIALIZATION_POLICIES:
+        raise ValueError(f"unknown initialization policy: {initialization_policy}")
     _validate_output_root(project_root, output_root)
     free_before = require_start_space(_nearest_existing_ancestor(output_root))
     data = _strict_load(data_path)
@@ -1102,7 +1115,13 @@ def replay_calibration(data_path, manifest_path, output_root, run_seeds, project
     ranging_sigma = _parse_ranging_sigma(config)
     expected_ids = set(range(1, number + 1))
     deployment = _initial_positions(config, expected_ids)
-    settings = _settings(seeds, max_frames, len(frames), ranging_sigma)
+    settings = _settings(
+        seeds,
+        max_frames,
+        len(frames),
+        ranging_sigma,
+        initialization_policy,
+    )
     run_root = _allocate_run_root(output_root / "localization-calibration")
     started_at = datetime.now(timezone.utc).isoformat()
     process_path = run_root / "calibration.jsonl.gz"
@@ -1113,6 +1132,7 @@ def replay_calibration(data_path, manifest_path, output_root, run_seeds, project
     termination_reason = "completed"
     error = None
     states = {}
+    ever_finite: dict[tuple[int, str, int], bool] = {}
     decompressed_digest = hashlib.sha256()
 
     def terminal_manifest():
@@ -1120,6 +1140,7 @@ def replay_calibration(data_path, manifest_path, output_root, run_seeds, project
         manifest = {
             "termination_reason": termination_reason,
             "estimator_contract": ESTIMATOR_CONTRACT_ID,
+            "initialization_policy": initialization_policy,
             "output_dir": str(run_root),
             "started_at": started_at,
             "ended_at": datetime.now(timezone.utc).isoformat(),
@@ -1190,7 +1211,15 @@ def replay_calibration(data_path, manifest_path, output_root, run_seeds, project
                                 ranging_sigma,
                             )
                             reference_positions, reference_covariances, measurements, records, input_error = inputs
-                            initial = deployment[robot_id] if frame_index == 0 else np.asarray(previous.get(robot_id, {}).get("estimate", deployment[robot_id]), dtype=float)
+                            acquisition_key = (seed, graph_case, robot_id)
+                            ever_before = ever_finite.get(acquisition_key, False)
+                            initial, initial_source = select_initial_estimate(
+                                initialization_policy,
+                                frame_index=frame_index,
+                                deployment=deployment[robot_id],
+                                previous_result=previous.get(robot_id),
+                                ever_acquired_finite=ever_before,
+                            )
                             if input_error is not None:
                                 attempt = _invalid_result(input_error)
                                 result = (
@@ -1222,6 +1251,8 @@ def replay_calibration(data_path, manifest_path, output_root, run_seeds, project
                             error_norm = None if error_vector is None else float(np.linalg.norm(error_vector))
                             epsilon = result.get("epsilon")
                             valid_result = _valid_prior_result(result)
+                            if valid_result is not None:
+                                ever_finite[acquisition_key] = True
                             state_containment = (
                                 None
                                 if error_norm is None or epsilon is None
@@ -1234,6 +1265,9 @@ def replay_calibration(data_path, manifest_path, output_root, run_seeds, project
                             row = {
                                 "seed": seed, "graph_case": graph_case, "frame_index": frame_index,
                                 "robot_id": robot_id, "squad_local_index": local_index,
+                                "initialization_policy": initialization_policy,
+                                "initial_estimate_source": initial_source,
+                                "ever_acquired_finite_before_attempt": ever_before,
                                 "primary_statistics": frame_index != 0, "active_references": refs,
                                 "measurements": records, "truth_position": truth[robot_id].tolist(),
                                 "status": result["status"], "estimate": estimate,
