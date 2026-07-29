@@ -96,12 +96,17 @@ def fixed_pair_metrics(observer: object, references: object) -> dict:
     differences, directions = _directions(center, points)
     cosine = float(np.clip(np.dot(directions[0], directions[1]), -1.0, 1.0))
     included_angle = float(np.arccos(cosine))
-    return {
+    with np.errstate(over="ignore", invalid="ignore"):
+        twice_triangle_area = abs(float(np.linalg.det(differences)))
+    metrics = {
         "included_angle_rad": included_angle,
         "noncollinearity_angle_rad": min(included_angle, np.pi - included_angle),
         "absolute_cosine": abs(cosine),
-        "twice_triangle_area": abs(float(np.linalg.det(differences))),
+        "twice_triangle_area": twice_triangle_area,
     }
+    if not all(math.isfinite(value) for value in metrics.values()):
+        raise InputIntegrityError("fixed-pair geometry metrics are not finite")
+    return metrics
 
 
 def load_trajectory(path: Path, *, expected_sha256: str) -> dict:

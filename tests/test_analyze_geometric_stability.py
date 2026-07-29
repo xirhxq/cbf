@@ -75,6 +75,10 @@ class GeometryPrimitiveTests(unittest.TestCase):
         self.assertAlmostEqual(result["lambda_max"], 1.0)
         self.assertTrue(result["finite"])
 
+    def test_fixed_pair_extreme_finite_coordinates_fail_closed(self):
+        with self.assertRaises(InputIntegrityError):
+            fixed_pair_metrics([0.0, 0.0], [[1e308, 0.0], [0.0, 1e308]])
+
     def test_fixed_pair_reports_smaller_angle_to_collinearity(self):
         result = fixed_pair_metrics(
             [0.0, 0.0],
