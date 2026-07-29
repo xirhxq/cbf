@@ -518,7 +518,7 @@ class FailureBudgetTests(unittest.TestCase):
         rows = []
         for frame_index in range(2):
             for graph_case in GRAPH_CASES:
-                for robot_id in range(1, 34):
+                for robot_id in range(1, 36):
                     if frame_index == 0:
                         rows.append(_real_schema_row(frame_index, graph_case, robot_id))
                     else:
@@ -536,13 +536,19 @@ class FailureBudgetTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             bundle = Path(temporary) / "bundle"
-            _write_real_schema_bundle(bundle, rows, robot_count=33)
-            report = analyze_localization_failures(bundle)
-
-        reason_labels = report["cases"]["dynamic_dag_wnls"]["reason_labels"]
-        self.assertEqual(len(reason_labels["counts"]), 32)
-        self.assertEqual(reason_labels["overflow_count"], 1)
-        self.assertEqual(reason_labels["overflow_examples"], ["future failure 33"])
+            _write_real_schema_bundle(bundle, rows, robot_count=35)
+            for maximum, expected_examples in (
+                (0, []),
+                (1, ["future failure 33"]),
+                (20, ["future failure 33", "future failure 34", "future failure 35"]),
+            ):
+                report = analyze_localization_failures(
+                    bundle, max_examples_per_bucket=maximum
+                )
+                reason_labels = report["cases"]["dynamic_dag_wnls"]["reason_labels"]
+                self.assertEqual(len(reason_labels["counts"]), 32)
+                self.assertEqual(reason_labels["overflow_count"], 3)
+                self.assertEqual(reason_labels["overflow_examples"], expected_examples)
 
 
 class PredecessorLineageTests(unittest.TestCase):
@@ -1138,6 +1144,25 @@ class OutputContractTests(unittest.TestCase):
                 "## Limitations",
             ):
                 self.assertIn(required_heading, markdown)
+            payload = json.loads((first / "failure-mechanisms.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload["source"]["paths"], {
+                "bundle_dir": str(bundle.resolve()),
+                "manifest": str((bundle / "manifest.json").resolve()),
+                "summary_json": str((bundle / SUMMARY_NAME).resolve()),
+                "summary_markdown": str((bundle / SUMMARY_MARKDOWN_NAME).resolve()),
+                "compressed_process": str((bundle / PROCESS_NAME).resolve()),
+            })
+            self.assertEqual(payload["source"]["hashes"]["manifest_sha256"], _sha256(bundle / "manifest.json"))
+            self.assertEqual(payload["source"]["hashes"]["compressed_process_sha256"], _sha256(bundle / PROCESS_NAME))
+            self.assertEqual(payload["source"]["estimator_contract"], analyzer.ESTIMATOR_CONTRACT_ID)
+            self.assertEqual(payload["protocol"]["bootstrap"], {"resamples": 10000, "rng_seed": 20260729})
+            self.assertEqual(payload["protocol"]["example_and_reason_caps"]["max_examples_per_bucket"], 5)
+            self.assertEqual(len(payload["limitations"]), 6)
+            self.assertIn("D_upstream: not_estimable", markdown)
+            self.assertIn("#### Frame-zero initialization", markdown)
+            self.assertIn("- Persistence record count:", markdown)
+            for limitation in payload["limitations"]:
+                self.assertIn(limitation, markdown)
 
     def test_output_rejects_source_overlap_preexisting_paths_and_poststream_mutation(self) -> None:
         """Breaks if an output can shadow inputs or survive a source TOCTOU change."""
@@ -1146,7 +1171,7 @@ class OutputContractTests(unittest.TestCase):
             bundle = root / "bundle"
             _write_completed_bundle(bundle, effective_frame_count=2)
             for output in (bundle, bundle / "nested", root):
-                with self.assertRaises(ValueError):
+                with self.assertRaises(AnalysisLimitError):
                     analyze_localization_failures(bundle, output_dir=output)
             existing = root / "existing"
             existing.mkdir()
@@ -1169,6 +1194,39 @@ class OutputContractTests(unittest.TestCase):
                     analyze_localization_failures(bundle, output_dir=output)
             self.assertFalse(output.exists())
             self.assertFalse((output / "failure-mechanisms.json").exists())
+
+    def test_rejects_lexical_output_symlinks_and_finally_rehashes_when_preflight_is_disabled(self) -> None:
+        """Breaks if output symlinks bypass the source policy or false disables final rehashing."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bundle = root / "bundle"
+            _write_completed_bundle(bundle, effective_frame_count=2)
+            external = root / "external"
+            external.mkdir()
+            links = {
+                "source-link": bundle,
+                "external-link": external,
+                "dangling-link": root / "missing-target",
+            }
+            for name, target in links.items():
+                output = root / name
+                output.symlink_to(target, target_is_directory=True)
+                with self.assertRaises(AnalysisLimitError):
+                    analyze_localization_failures(bundle, output_dir=output)
+
+            output = root / "false-toctou"
+            original = analyzer._verify_unchanged_inputs
+
+            def mutate_then_verify(*args: object) -> None:
+                (bundle / SUMMARY_NAME).write_text("changed\n", encoding="utf-8")
+                original(*args)
+
+            with patch.object(analyzer, "_verify_unchanged_inputs", side_effect=mutate_then_verify):
+                with self.assertRaises(InputIntegrityError):
+                    analyze_localization_failures(
+                        bundle, verify_hashes=False, output_dir=output
+                    )
+            self.assertFalse(output.exists())
 
     def test_cli_without_output_prints_strict_json_and_accepts_example_boundaries(self) -> None:
         """Breaks if no-output analysis writes artifacts or accepts invalid example limits."""

@@ -57,10 +57,22 @@ _FAILURE_CLASSES = (
 _PRIMARY_ATTEMPT_STATUSES = ("converged", "invalid", "failed")
 _MAX_REASON_LABELS = 32
 _MAX_REASON_OVERFLOW_EXAMPLES = 5
+_BOOTSTRAP_RESAMPLES = 10_000
+_BOOTSTRAP_RNG_SEED = 20260729
 _TIME_BINS = ("1-100", "101-200", "201-300", "301-400", "401-499")
 _REFERENCE_BINS = tuple(str(value) for value in range(10)) + ("10_or_more",)
 _CONDITION_BINS = ("[1,10)", "[10,30)", "[30,100)", "[100,infinity)")
 _MIN_EIGEN_BINS = ("(0,0.05)", "[0.05,0.2)", "[0.2,1)", "[1,infinity)")
+_RATIO_BINS = ("[0,0.5)", "[0.5,1)", "[1,2)", "[2,5)", "[5,infinity)")
+_Q_BINS = ("[0,2.295748929)", "[2.295748929,5.991464547)", "[5.991464547,9]", "(9,infinity)")
+_LIMITATIONS = (
+    "This read-only analysis summarizes recorded attempts and does not establish causal counterfactuals.",
+    "The report is valid only for a completed, immutable diagnostic bundle that satisfies the declared estimator contract.",
+    "Failure classes use the current attempt status and recorded reason, not the retained estimator state.",
+    "Calibration and geometry statistics condition on converged attempts with the required finite inputs.",
+    "D_upstream is not estimable when its paired invalid-attempt denominator is non-positive.",
+    "The analysis does not rerun localization, replay controllers, recompute Fisher information, or perform Monte Carlo simulation.",
+)
 
 
 class InputIntegrityError(RuntimeError):
@@ -129,7 +141,8 @@ def _upstream_ratio(record: dict) -> float | None:
 
 
 def _paired_seed_bootstrap(
-    seed_counts: list[dict], *, resamples: int = 10000, rng_seed: int = 20260729
+    seed_counts: list[dict], *, resamples: int = _BOOTSTRAP_RESAMPLES,
+    rng_seed: int = _BOOTSTRAP_RNG_SEED,
 ) -> dict:
     """Bootstrap D_upstream by resampling paired seed count records."""
     if not seed_counts or type(resamples) is not int or resamples <= 0:
@@ -220,8 +233,8 @@ def _lineage() -> dict:
 def _calibration() -> dict:
     return {"converged_denominator": 0, "epsilon_contained": 0,
             "epsilon_containment_rate": None, "conditional_covariance_invalid": 0,
-            "q": {"finite_count": 0, "sum": 0.0, "mean": None, "max": None, "above_5_991464547": 0, "above_5_991464547_rate": None, "above_9": 0, "above_9_rate": None, "bins": {key: 0 for key in ("[0,2.295748929)", "[2.295748929,5.991464547)", "[5.991464547,9]", "(9,infinity)")}},
-            "ratio": {"finite_count": 0, "invalid_count": 0, "sum": 0.0, "mean": None, "max": None, "bins": {key: 0 for key in ("[0,0.5)", "[0.5,1)", "[1,2)", "[2,5)", "[5,infinity)")}}}
+            "q": {"finite_count": 0, "sum": 0.0, "mean": None, "max": None, "above_5_991464547": 0, "above_5_991464547_rate": None, "above_9": 0, "above_9_rate": None, "bins": {key: 0 for key in _Q_BINS}},
+            "ratio": {"finite_count": 0, "invalid_count": 0, "sum": 0.0, "mean": None, "max": None, "bins": {key: 0 for key in _RATIO_BINS}}}
 
 
 def _stratum() -> dict:
@@ -464,7 +477,7 @@ def _empty_failure_budget(graph_cases: list[str]) -> dict[str, dict]:
     }
 
 
-def _record_reason_label(case: dict, reason: object) -> None:
+def _record_reason_label(case: dict, reason: object, *, example_cap: int) -> None:
     if reason is None:
         return
     if not isinstance(reason, str) or not reason:
@@ -479,7 +492,7 @@ def _record_reason_label(case: dict, reason: object) -> None:
         return
     labels["overflow_count"] += 1
     examples = labels["overflow_examples"]
-    if len(examples) < _MAX_REASON_OVERFLOW_EXAMPLES:
+    if len(examples) < example_cap:
         examples.append(reason)
 
 
@@ -840,10 +853,13 @@ def _nearest_existing_ancestor(path: Path) -> Path:
 
 
 def _validate_output_path(bundle_dir: Path, output_dir: Path) -> tuple[Path, Path]:
+    incomplete_lexical = output_dir.with_name(f"{output_dir.name}.incomplete")
+    if output_dir.is_symlink() or incomplete_lexical.is_symlink():
+        raise AnalysisLimitError("output directory and its incomplete sibling must not be symlinks")
     bundle = bundle_dir.resolve()
     output = output_dir.resolve()
     if output == bundle or bundle in output.parents or output in bundle.parents:
-        raise ValueError("output directory must be separate from the source bundle")
+        raise AnalysisLimitError("output directory must be separate from the source bundle")
     incomplete = output.with_name(f"{output.name}.incomplete")
     if output.exists() or incomplete.exists():
         raise FileExistsError("output directory or its incomplete sibling already exists")
@@ -875,6 +891,32 @@ def _check_output_limits(output_dir: Path, incomplete_dir: Path) -> None:
 
 def _strict_json_bytes(report: dict) -> bytes:
     return (json.dumps(report, sort_keys=True, indent=2, allow_nan=False) + "\n").encode("utf-8")
+
+
+def _format_budget(budget: dict) -> str:
+    return ", ".join(
+        [f"denominator={budget['denominator']}"]
+        + [f"{key}={budget['counts'][key]}" for key in _FAILURE_CLASSES]
+    )
+
+
+def _format_lineage(lineage: dict) -> str:
+    predecessors = ", ".join(
+        f"{key}={lineage['predecessor_attempt_classes'][key]}"
+        for key in (*_FAILURE_CLASSES, "not_observed")
+    )
+    depths = ", ".join(
+        f"{key}={value}"
+        for key, value in sorted(
+            lineage["propagation_depth_counts"].items(),
+            key=lambda item: (item[0] == "not_observed", item[0]),
+        )
+    )
+    return (
+        f"upstream_rows={lineage['upstream_unavailable_rows']}; "
+        f"unavailable_edges={lineage['unavailable_uav_reference_edges']}; "
+        f"predecessor_classes=({predecessors}); propagation_depths=({depths})"
+    )
 
 
 def _render_markdown(report: dict) -> bytes:
@@ -919,24 +961,45 @@ def _render_markdown(report: dict) -> bytes:
                 cell = case["dynamic_depth_time"][depth][time_key]
                 counts = ", ".join(f"{key}={cell['counts'][key]}" for key in _FAILURE_CLASSES)
                 lines.append(f"- depth {depth}, time {time_key}: {counts}")
+        lines.extend(["", "#### Frame-zero initialization", ""])
+        initialization = case["initialization"]
+        for depth in sorted(initialization["by_depth"], key=int):
+            item = initialization["by_depth"][depth]
+            lines.append(
+                f"- depth {depth}: {_format_budget(item['budget'])}; "
+                f"{_format_lineage(item['lineage'])}; "
+                f"max_iteration_failures={item['max_iteration_failures']}"
+            )
+        item = initialization["unstratified"]
+        lines.append(
+            f"- unstratified: {_format_budget(item['budget'])}; "
+            f"{_format_lineage(item['lineage'])}; "
+            f"max_iteration_failures={item['max_iteration_failures']}"
+        )
         lines.append("")
     bootstrap = report["bootstrap"]
+    point_estimate = bootstrap["point_estimate"]
+    persistence = report["initialization"]["aggregate"]
     lines.extend([
         "## Paired bootstrap",
         "",
-        f"- D_upstream: {bootstrap['point_estimate']}",
+        f"- D_upstream: {'not_estimable' if point_estimate is None else point_estimate}",
         f"- Estimable resamples: {bootstrap['estimable_resamples']}",
         f"- Non-estimable resamples: {bootstrap['non_estimable_resamples']}",
         "",
         "## Initialization and persistence",
         "",
-        f"- Persistence records: {len(report['initialization']['persistence'])}",
+        f"- Persistence record count: {persistence['record_count']}",
+        f"- Never primary converged: {persistence['never_primary_converged_count']}",
+        f"- Maximum primary frames before first convergence: {persistence['max_primary_frames_before_first_convergence']}",
+        f"- Maximum upstream-unavailable streak: {persistence['max_longest_upstream_unavailable_streak']}",
+        f"- Maximum WNLS-nonconvergence streak: {persistence['max_longest_wnls_nonconvergence_streak']}",
         "",
         "## Limitations",
         "",
-        "This read-only summary attributes recorded failure mechanisms; it does not establish causal counterfactuals or replace replay validation.",
-        "",
     ])
+    lines.extend(f"- {limitation}" for limitation in report["limitations"])
+    lines.append("")
     return "\n".join(lines).encode("utf-8")
 
 
@@ -955,6 +1018,82 @@ def _write_output(report: dict, output_dir: Path, incomplete_dir: Path) -> None:
         json_path.unlink(missing_ok=True)
         markdown_path.unlink(missing_ok=True)
         raise
+
+
+def _source_record(bundle_dir: Path, manifest_raw: bytes, manifest: dict) -> dict:
+    return {
+        "paths": {
+            "bundle_dir": str(bundle_dir.resolve()),
+            "manifest": str((bundle_dir / "manifest.json").resolve()),
+            "summary_json": str((bundle_dir / _SUMMARY_NAME).resolve()),
+            "summary_markdown": str((bundle_dir / _SUMMARY_MARKDOWN_NAME).resolve()),
+            "compressed_process": str((bundle_dir / _PROCESS_NAME).resolve()),
+        },
+        "hashes": {
+            "manifest_sha256": hashlib.sha256(manifest_raw).hexdigest(),
+            "summary_json_sha256": manifest["summary_json_sha256"],
+            "summary_markdown_sha256": manifest["summary_markdown_sha256"],
+            "compressed_process_sha256": manifest["compressed_process_sha256"],
+            "decompressed_process_sha256": manifest["decompressed_process_sha256"],
+        },
+        "estimator_contract": manifest["estimator_contract"],
+        "settings": manifest["settings"],
+    }
+
+
+def _protocol_record(max_examples_per_bucket: int) -> dict:
+    return {
+        "failure_class_predicates": [
+            {"class": "contained", "predicate": "attempt_status == converged and containment == true"},
+            {"class": "converged_outside_radius", "predicate": "attempt_status == converged and containment == false"},
+            {"class": "upstream_unavailable", "predicate": f"attempt_status == invalid and attempt_failure_reason == {_UPSTREAM_UNAVAILABLE_REASON}"},
+            {"class": "invalid_input_or_numeric", "predicate": f"attempt_status == invalid and attempt_failure_reason != {_UPSTREAM_UNAVAILABLE_REASON}"},
+            {"class": "wnls_nonconvergence", "predicate": f"attempt_status == failed and attempt_failure_reason == {_WNLS_NONCONVERGENCE_REASON}"},
+            {"class": "other_failed", "predicate": f"attempt_status == failed and attempt_failure_reason != {_WNLS_NONCONVERGENCE_REASON}"},
+        ],
+        "bin_edges": {
+            "squad_local_index": list(range(1, 8)),
+            "time_frame_indices": list(_TIME_BINS),
+            "reference_count": list(_REFERENCE_BINS),
+            "error_to_epsilon_ratio": list(_RATIO_BINS),
+            "normalized_squared_error": list(_Q_BINS),
+            "phi_condition": list(_CONDITION_BINS),
+            "phi_min_eigenvalue": list(_MIN_EIGEN_BINS),
+        },
+        "bootstrap": {"resamples": _BOOTSTRAP_RESAMPLES, "rng_seed": _BOOTSTRAP_RNG_SEED},
+        "denominators": {
+            "failure_budget": "all primary_statistics rows for the graph case",
+            "calibration": "converged primary_statistics rows for the graph case or stratum",
+            "q_tail_rates": "converged rows with finite positive-definite covariance and finite normalized squared error",
+            "d_upstream": "paired sum(dyn_invalid) - paired sum(fix_invalid); not_estimable when non-positive",
+        },
+        "example_and_reason_caps": {
+            "max_raw_reason_labels": _MAX_REASON_LABELS,
+            "max_reason_overflow_examples": min(_MAX_REASON_OVERFLOW_EXAMPLES, max_examples_per_bucket),
+            "max_examples_per_bucket": max_examples_per_bucket,
+        },
+    }
+
+
+def _persistence_aggregate(records: list[dict]) -> dict:
+    return {
+        "record_count": len(records),
+        "never_primary_converged_count": sum(
+            record["never_primary_converged"] for record in records
+        ),
+        "max_primary_frames_before_first_convergence": max(
+            (record["primary_frames_before_first_convergence"] for record in records),
+            default=0,
+        ),
+        "max_longest_upstream_unavailable_streak": max(
+            (record["longest_upstream_unavailable_streak"] for record in records),
+            default=0,
+        ),
+        "max_longest_wnls_nonconvergence_streak": max(
+            (record["longest_wnls_nonconvergence_streak"] for record in records),
+            default=0,
+        ),
+    }
 
 
 def analyze_localization_failures(
@@ -1019,7 +1158,11 @@ def analyze_localization_failures(
             case["failure_budget"]["denominator"] += 1
             case["failure_budget"]["counts"][attempt_class] += 1
             case["attempt_status_counts"][row["attempt_status"]] += 1
-            _record_reason_label(case, row.get("attempt_failure_reason"))
+            _record_reason_label(
+                case,
+                row.get("attempt_failure_reason"),
+                example_cap=min(_MAX_REASON_OVERFLOW_EXAMPLES, max_examples_per_bucket),
+            )
             propagation_depth = _record_lineage(case, row, attempt_class, predecessors)
             predecessors[row["robot_id"]] = {
                 "robot_id": row["robot_id"],
@@ -1105,8 +1248,7 @@ def analyze_localization_failures(
             if attempt_class == "wnls_nonconvergence":
                 init_item["max_iteration_failures"] += 1
             predecessors[row["robot_id"]] = {"robot_id": row["robot_id"], "attempt_class": attempt_class, "attempt_status": row["attempt_status"], "retained_status": row["status"], "attempt_failure_reason": row.get("attempt_failure_reason"), "propagation_depth": propagation_depth}
-    if verify_hashes:
-        _verify_unchanged_inputs(bundle_dir, manifest_raw, manifest)
+    _verify_unchanged_inputs(bundle_dir, manifest_raw, manifest)
     for graph_case in graph_cases:
         cases[graph_case].update(task3_cases[graph_case])
         _reconcile_task3_case(cases[graph_case], dynamic_case=graph_case == "dynamic_dag_wnls")
@@ -1125,19 +1267,28 @@ def analyze_localization_failures(
             - 100 * cases["fixed_refs_wnls"]["failure_budget"]["counts"][key] / cases["fixed_refs_wnls"]["failure_budget"]["denominator"]
         ) if cases["dynamic_dag_wnls"]["failure_budget"]["denominator"] and cases["fixed_refs_wnls"]["failure_budget"]["denominator"] else None
     } for key in _FAILURE_CLASSES}}
-    bootstrap = _paired_seed_bootstrap([
-        {"seed": seed, **counts} for seed, counts in sorted(seed_counts.items())
-    ])
+    bootstrap = _paired_seed_bootstrap(
+        [{"seed": seed, **counts} for seed, counts in sorted(seed_counts.items())],
+        resamples=_BOOTSTRAP_RESAMPLES,
+        rng_seed=_BOOTSTRAP_RNG_SEED,
+    )
     report = {
         "schema": SCHEMA_ID,
         "status": "completed",
+        "source": _source_record(bundle_dir, manifest_raw, manifest),
+        "protocol": _protocol_record(max_examples_per_bucket),
+        "limitations": list(_LIMITATIONS),
         "integrity": {
             "observed_rows": observed_rows,
             "primary_rows": primary_rows,
-            "hashes_match": verify_hashes,
+            "hashes_match": True,
+            "preflight_hashes_checked": verify_hashes,
         },
         "cases": cases,
-        "initialization": {"persistence": persistence_records},
+        "initialization": {
+            "persistence": persistence_records,
+            "aggregate": _persistence_aggregate(persistence_records),
+        },
         "comparisons": comparisons,
         "bootstrap": bootstrap,
     }
