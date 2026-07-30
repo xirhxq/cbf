@@ -1,0 +1,534 @@
+{
+  "ablation_contracts": {
+    "fresh_reference_qualification": {
+      "fresh_reference_qualification": true,
+      "initialization_policy": "deployment_restart_before_first_finite_v1",
+      "multistart": false,
+      "normalized_innovation_gate": false,
+      "numeric_solver": "legacy_solve_wnls_v3_exact",
+      "online_acceptance": "legacy_converged_plus_fim_provenance_and_reacquisition",
+      "paper_evidence_eligible": false,
+      "publication_policy": "command_prediction_age_1_2_then_unavailable",
+      "reacquisition_gate": true,
+      "reference_policy": "sensor_present_mandatory_plus_all_visible_current_fresh_lower_index",
+      "two_base_provenance_gate": true
+    },
+    "prediction_expiry": {
+      "fresh_reference_qualification": false,
+      "initialization_policy": "deployment_restart_before_first_finite_v1",
+      "multistart": false,
+      "normalized_innovation_gate": false,
+      "numeric_solver": "legacy_solve_wnls_v3_exact",
+      "online_acceptance": "legacy_converged_only",
+      "paper_evidence_eligible": false,
+      "publication_policy": "command_prediction_age_1_2_then_unavailable",
+      "reacquisition_gate": false,
+      "reference_policy": "legacy_dynamic_dag_include_all_visible_with_retained_numeric_state",
+      "two_base_provenance_gate": false
+    },
+    "predictive_multistart": {
+      "fresh_reference_qualification": true,
+      "initialization_policy": "prediction_or_private_seed_then_algebraic_and_two_circle",
+      "multistart": true,
+      "normalized_innovation_gate": true,
+      "numeric_solver": "finite_budget_scale_aware_wnls_v1",
+      "online_acceptance": "finite_solver_fim_provenance_and_innovation_or_reacquisition",
+      "paper_evidence_eligible": false,
+      "publication_policy": "command_prediction_age_1_2_then_unavailable",
+      "reacquisition_gate": true,
+      "reference_policy": "sensor_present_mandatory_plus_all_visible_current_fresh_lower_index",
+      "two_base_provenance_gate": true
+    }
+  },
+  "analysis_schema": {
+    "id": "cbf2026-predictive-wnls-development-analysis-v3",
+    "json_name": "predictive-wnls-development.json",
+    "markdown_name": "predictive-wnls-development.md"
+  },
+  "binding_design": {
+    "commit": "a2ae1f0",
+    "path": "docs/superpowers/specs/2026-07-30-cbf2026-bounded-predictive-wnls-recovery-design.md",
+    "sha256": "f3820b8c912ed1a019334f0e7e273a1bcf3d3b1f4ec32cb059f5aaef597c152d"
+  },
+  "commands": {
+    "registered_analyzer": [
+      "conda",
+      "run",
+      "-n",
+      "cbf_env",
+      "python",
+      "scripts/diagnostics/analyze_predictive_wnls_recovery.py",
+      "--baseline-process-path",
+      "/private/tmp/cbf2026-warm-start-recovery/warm-start-recovery/20260729T112153.797813Z_54338549bff348a093dd71f29366d29b/restart/localization-calibration/20260729T112437.413270Z_efb8e7137776415c833f11204cf519d5/calibration.jsonl.gz",
+      "--development-manifest-path",
+      "/private/tmp/cbf2026-predictive-wnls-development/stage1-v4/manifest.json",
+      "--protocol-json",
+      "docs/diagnostics/2026-07-30-predictive-wnls-stage1-protocol-v4.json",
+      "--expected-baseline-sha256",
+      "c964d415e68425e4b64e5acc9be925a237165a72c59a0b98342b9033734f2003",
+      "--output-root",
+      "/private/tmp/cbf2026-predictive-wnls-development-analysis/stage1-v4"
+    ],
+    "registered_replay": [
+      "conda",
+      "run",
+      "-n",
+      "cbf_env",
+      "python",
+      "scripts/diagnostics/replay_predictive_wnls_recovery.py",
+      "--data-path",
+      "/private/tmp/cbf2026-results/mc-first-mechanism-250s/R/20260728T062752.357599Z_9cb3d4b121eb438c8688f0a121f01725/2026-07-28_14-27-53_R_seed_20260727_250s/data.json",
+      "--input-manifest-path",
+      "/private/tmp/cbf2026-results/mc-first-mechanism-250s/R/20260728T062752.357599Z_9cb3d4b121eb438c8688f0a121f01725/manifest.json",
+      "--protocol-json",
+      "docs/diagnostics/2026-07-30-predictive-wnls-stage1-protocol-v4.json",
+      "--output-root",
+      "/private/tmp/cbf2026-predictive-wnls-development/stage1-v4",
+      "--run-seeds",
+      "20260727,20260728,20260729,20260730,20260731,20260732,20260733,20260734,20260735,20260736,20260737,20260738,20260739,20260740,20260741,20260742,20260743,20260744,20260745,20260746"
+    ],
+    "smoke_a": [
+      "conda",
+      "run",
+      "-n",
+      "cbf_env",
+      "python",
+      "scripts/diagnostics/replay_predictive_wnls_recovery.py",
+      "--data-path",
+      "/private/tmp/cbf2026-results/mc-first-mechanism-250s/R/20260728T062752.357599Z_9cb3d4b121eb438c8688f0a121f01725/2026-07-28_14-27-53_R_seed_20260727_250s/data.json",
+      "--input-manifest-path",
+      "/private/tmp/cbf2026-results/mc-first-mechanism-250s/R/20260728T062752.357599Z_9cb3d4b121eb438c8688f0a121f01725/manifest.json",
+      "--protocol-json",
+      "docs/diagnostics/2026-07-30-predictive-wnls-stage1-protocol-v4.json",
+      "--output-root",
+      "/private/tmp/cbf2026-predictive-wnls-smoke-v4-a",
+      "--run-seeds",
+      "20260727",
+      "--max-frames",
+      "2"
+    ],
+    "smoke_b": [
+      "conda",
+      "run",
+      "-n",
+      "cbf_env",
+      "python",
+      "scripts/diagnostics/replay_predictive_wnls_recovery.py",
+      "--data-path",
+      "/private/tmp/cbf2026-results/mc-first-mechanism-250s/R/20260728T062752.357599Z_9cb3d4b121eb438c8688f0a121f01725/2026-07-28_14-27-53_R_seed_20260727_250s/data.json",
+      "--input-manifest-path",
+      "/private/tmp/cbf2026-results/mc-first-mechanism-250s/R/20260728T062752.357599Z_9cb3d4b121eb438c8688f0a121f01725/manifest.json",
+      "--protocol-json",
+      "docs/diagnostics/2026-07-30-predictive-wnls-stage1-protocol-v4.json",
+      "--output-root",
+      "/private/tmp/cbf2026-predictive-wnls-smoke-v4-b",
+      "--run-seeds",
+      "20260727",
+      "--max-frames",
+      "2"
+    ]
+  },
+  "disk_contract": {
+    "compact_bundle_max_allocated_bytes": 10000000,
+    "launch_minimum_free_bytes": 8000000000,
+    "live_minimum_free_bytes": 6000000000,
+    "raw_bundle_max_allocated_bytes": 2000000000
+  },
+  "estimator_constants": {
+    "candidate_dedup_m": 1e-09,
+    "catastrophic_error_m": 50.0,
+    "damping_factor": 10.0,
+    "initial_damping": 0.001,
+    "innovation_q_max": 11.829007011943707,
+    "max_prediction_age_frames": 2,
+    "max_proposals_per_candidate": 50,
+    "maximum_damping": 1000000000000000.0,
+    "minimum_damping": 1e-15,
+    "motion_sigma_m_per_frame": 0.5,
+    "public_covariance_atol": 1e-12,
+    "public_covariance_rtol": 1e-12,
+    "reacquisition_reduced_cost_max": 9.0,
+    "relative_spectral_threshold": 1e-12,
+    "relative_tie_tolerance": 1e-12,
+    "representable_step_relative_threshold": 1e-12,
+    "scale_aware_stationarity": 1e-06
+  },
+  "evidence_lifecycle": {
+    "exact_output_root_required": true,
+    "nested_timestamp_directory_allowed": false,
+    "paper_gate": "CLOSED",
+    "preexisting_target_allowed": false,
+    "registered_retry_allowed": false,
+    "terminal_manifest_required_on_success_and_failure": true
+  },
+  "experiment": {
+    "baseline_graph_case": "dynamic_dag_wnls",
+    "baseline_initialization_policy": "deployment_restart_before_first_finite_v1",
+    "evidence_class": "paired_single_trajectory_development_only",
+    "execution_order": [
+      "variant",
+      "seed",
+      "frame_index",
+      "ascending_global_robot_id"
+    ],
+    "frame_dt_seconds": 0.5,
+    "max_frames": null,
+    "measurement_seed_contract": "cbf2026-range-v1",
+    "range_noise_seeds": [
+      20260727,
+      20260728,
+      20260729,
+      20260730,
+      20260731,
+      20260732,
+      20260733,
+      20260734,
+      20260735,
+      20260736,
+      20260737,
+      20260738,
+      20260739,
+      20260740,
+      20260741,
+      20260742,
+      20260743,
+      20260744,
+      20260745,
+      20260746
+    ],
+    "ranging_sigma_m": 0.5,
+    "stage": 1,
+    "variants": [
+      "prediction_expiry",
+      "fresh_reference_qualification",
+      "predictive_multistart"
+    ]
+  },
+  "gates": {
+    "ascending_dag_violations_allowed": 0,
+    "current_frame_provenance_violations_allowed": 0,
+    "fresh_availability_max_drop_fraction": 0.02,
+    "fresh_or_predicted_min_fraction": 0.95,
+    "maximum_fresh_error_m_strictly_below": 50.0,
+    "maximum_prediction_age_frames": 2,
+    "maximum_published_error_m_strictly_below": 50.0,
+    "paired_both_fresh_p95_must_not_worsen": true,
+    "qualification_anchor_violations_allowed": 0
+  },
+  "implementation_parent_commit": "68a9a0c1c85abc33ce85b9b846d43b139a1d5ebf",
+  "invocations": {
+    "registered_analyzer": {
+      "development_manifest_path": "/private/tmp/cbf2026-predictive-wnls-development/stage1-v4/manifest.json",
+      "expected_baseline_sha256": "c964d415e68425e4b64e5acc9be925a237165a72c59a0b98342b9033734f2003",
+      "kind": "registered_exactly_once",
+      "output_root": "/private/tmp/cbf2026-predictive-wnls-development-analysis/stage1-v4"
+    },
+    "registered_replay": {
+      "kind": "registered_exactly_once",
+      "max_frames": null,
+      "output_root": "/private/tmp/cbf2026-predictive-wnls-development/stage1-v4",
+      "range_noise_seeds": [
+        20260727,
+        20260728,
+        20260729,
+        20260730,
+        20260731,
+        20260732,
+        20260733,
+        20260734,
+        20260735,
+        20260736,
+        20260737,
+        20260738,
+        20260739,
+        20260740,
+        20260741,
+        20260742,
+        20260743,
+        20260744,
+        20260745,
+        20260746
+      ]
+    },
+    "smoke_a": {
+      "kind": "unregistered_smoke",
+      "max_frames": 2,
+      "output_root": "/private/tmp/cbf2026-predictive-wnls-smoke-v4-a",
+      "range_noise_seeds": [
+        20260727
+      ]
+    },
+    "smoke_b": {
+      "kind": "unregistered_smoke",
+      "max_frames": 2,
+      "output_root": "/private/tmp/cbf2026-predictive-wnls-smoke-v4-b",
+      "range_noise_seeds": [
+        20260727
+      ]
+    }
+  },
+  "protocol_id": "cbf2026-predictive-wnls-stage1-v4",
+  "raw_schema": {
+    "candidate_fields": [
+      "source",
+      "initial_estimate",
+      "status",
+      "estimate",
+      "covariance",
+      "cost",
+      "accepted",
+      "rejection_reason",
+      "q_innov",
+      "gate_diagnostics",
+      "proposal_trace"
+    ],
+    "exclusion_fields": [
+      "reference_kind",
+      "reference_id",
+      "reason"
+    ],
+    "gate_diagnostic_fields": [
+      "innovation_gate",
+      "q_innov",
+      "gate_outcome",
+      "valid",
+      "failure_reason",
+      "reduced_whitened_cost"
+    ],
+    "id": "cbf2026-predictive-wnls-development-rows-v3",
+    "legacy_candidate_record_fields": [
+      "source",
+      "initial_estimate",
+      "status",
+      "estimate",
+      "covariance",
+      "cost",
+      "accepted",
+      "rejection_reason",
+      "q_innov",
+      "gate_diagnostics",
+      "proposal_trace"
+    ],
+    "mandatory_reference_fields": [
+      "base_ids",
+      "uav_ids"
+    ],
+    "multistart_candidate_record_fields": [
+      "source",
+      "initial_estimate",
+      "result",
+      "accepted",
+      "rejection_reason",
+      "gate_diagnostics",
+      "status",
+      "estimate",
+      "covariance",
+      "cost",
+      "q_innov"
+    ],
+    "multistart_compact_candidate_fields": [
+      "source",
+      "initial_estimate",
+      "status",
+      "estimate",
+      "covariance",
+      "cost",
+      "accepted",
+      "rejection_reason",
+      "q_innov",
+      "gate_diagnostics",
+      "proposal_trace",
+      "epsilon",
+      "phi_min_eigenvalue",
+      "phi_condition",
+      "fim_valid",
+      "proposal_count",
+      "iterations",
+      "stationarity_norm",
+      "failure_reason"
+    ],
+    "private_state_fields": [
+      "estimate",
+      "modeled_covariance"
+    ],
+    "process_name": "predictive-wnls-development.jsonl.gz",
+    "proposal_trace_fields": [
+      "proposal",
+      "damping",
+      "cost",
+      "stationarity_norm",
+      "raw_step_norm",
+      "trial_cost",
+      "invalid_trial_reason",
+      "accepted"
+    ],
+    "public_covariance_contract": {
+      "applies_to": [
+        "fresh_modeled_covariance",
+        "aged_modeled_covariance"
+      ],
+      "canonicalization": "0.5*(Sigma+Sigma.T)",
+      "finite": true,
+      "positive_definite": true,
+      "published_equals_canonicalizer_output": true,
+      "published_exactly_symmetric": true,
+      "shape": [
+        2,
+        2
+      ],
+      "symmetry_acceptance": {
+        "atol": 1e-12,
+        "comparison": "numpy.allclose",
+        "rtol": 1e-12
+      }
+    },
+    "public_state_fields": [
+      "output_status",
+      "prediction_age",
+      "estimate",
+      "fresh_modeled_covariance",
+      "fresh_epsilon",
+      "aged_modeled_covariance",
+      "aged_modeled_radius",
+      "base_anchor_provenance"
+    ],
+    "reference_evidence_fields": [
+      "reference_kind",
+      "reference_id",
+      "role",
+      "measurement_present",
+      "noisy_range",
+      "noise_seed",
+      "current_freshness",
+      "eligible",
+      "used",
+      "exclusion_reason",
+      "base_anchor_provenance"
+    ],
+    "reference_freshness_fields": [
+      "reference_kind",
+      "reference_id",
+      "current_freshness"
+    ],
+    "reference_key_fields": [
+      "reference_kind",
+      "reference_id"
+    ],
+    "row_fields": [
+      "variant",
+      "seed",
+      "frame_index",
+      "robot_id",
+      "squad_local_index",
+      "applied_command_source_frame",
+      "applied_command",
+      "legacy_numeric_status",
+      "legacy_initial_estimate_source",
+      "attempt_status",
+      "attempt_failure_reason",
+      "output_status",
+      "prediction_age",
+      "estimate",
+      "fresh_modeled_covariance",
+      "fresh_epsilon",
+      "aged_modeled_covariance",
+      "aged_modeled_radius",
+      "private_reacquisition_seed",
+      "attempt_base_anchor_provenance",
+      "base_anchor_provenance",
+      "mandatory_references",
+      "optional_candidates",
+      "active_references",
+      "reference_evidence",
+      "reference_freshness",
+      "excluded_references",
+      "reference_violations",
+      "candidates",
+      "selected_candidate_source",
+      "offline_truth_position",
+      "offline_error_norm",
+      "offline_fresh_containment",
+      "offline_aged_radius_containment",
+      "offline_fresh_q_error",
+      "offline_aged_q_error"
+    ],
+    "solver_result_fields": [
+      "status",
+      "estimate",
+      "covariance",
+      "epsilon",
+      "phi_min_eigenvalue",
+      "phi_condition",
+      "fim_valid",
+      "proposal_count",
+      "iterations",
+      "cost",
+      "stationarity_norm",
+      "failure_reason",
+      "proposal_trace"
+    ],
+    "violation_fields": [
+      "reference_kind",
+      "reference_id",
+      "reason"
+    ],
+    "violation_order_contract": {
+      "allowed_reasons": [
+        "stale_or_predicted_anchor_used"
+      ],
+      "duplicates_allowed": false,
+      "outer_canonical_order": "(base<uav,id,reason)",
+      "reason_order": "lexicographic",
+      "reference_id_order": "ascending_numeric"
+    }
+  },
+  "schema_id": "cbf2026-predictive-wnls-stage1-protocol-v4",
+  "sources": {
+    "analyzer_source": {
+      "path": "/private/tmp/cbf2026-diagnostic/scripts/diagnostics/analyze_predictive_wnls_recovery.py",
+      "sha256": "bbc4e6e0940580f48222f641cba0f705c8b8f419c585a18999cb1cdc9e4146a8"
+    },
+    "baseline_process": {
+      "path": "/private/tmp/cbf2026-warm-start-recovery/warm-start-recovery/20260729T112153.797813Z_54338549bff348a093dd71f29366d29b/restart/localization-calibration/20260729T112437.413270Z_efb8e7137776415c833f11204cf519d5/calibration.jsonl.gz",
+      "sha256": "c964d415e68425e4b64e5acc9be925a237165a72c59a0b98342b9033734f2003"
+    },
+    "diagnostic_integrity_source": {
+      "path": "/private/tmp/cbf2026-diagnostic/scripts/diagnostics/run_diagnostic.py",
+      "sha256": "ccde94fa739649cb9b94a8304ef3867ae946f28b0e3a812d3feb3f30bb76fd23"
+    },
+    "estimator_source": {
+      "path": "/private/tmp/cbf2026-diagnostic/scripts/diagnostics/predictive_wnls.py",
+      "sha256": "3decd0d1eabfb0e54f56852d2e7c91726579ddfee806835502b1da6333724ea7"
+    },
+    "input_manifest": {
+      "path": "/private/tmp/cbf2026-results/mc-first-mechanism-250s/R/20260728T062752.357599Z_9cb3d4b121eb438c8688f0a121f01725/manifest.json",
+      "sha256": "6731444b7a4cdaaaba010a6297b8b258500978e8856f239c04c157bc4878d6fb"
+    },
+    "legacy_solver_source": {
+      "path": "/private/tmp/cbf2026-diagnostic/scripts/diagnostics/replay_localization_calibration.py",
+      "sha256": "0123ed283917f6f9c6a005df4b8b7928e927d3aa4e098e5740816f272e24e4b8"
+    },
+    "replay_source": {
+      "path": "/private/tmp/cbf2026-diagnostic/scripts/diagnostics/replay_predictive_wnls_recovery.py",
+      "sha256": "10922bf369822a6898053b7d326bc4937a7da3e0b44a898eaeea4d18fc752661"
+    },
+    "truth_data": {
+      "path": "/private/tmp/cbf2026-results/mc-first-mechanism-250s/R/20260728T062752.357599Z_9cb3d4b121eb438c8688f0a121f01725/2026-07-28_14-27-53_R_seed_20260727_250s/data.json",
+      "sha256": "3defc62d11bb5996301b21b95ab3902c998bb982640b0f9be7b9536005145527"
+    }
+  },
+  "status_contract": {
+    "attempt_statuses": [
+      "accepted",
+      "rejected",
+      "failed",
+      "invalid",
+      "reference_unavailable"
+    ],
+    "output_statuses": [
+      "fresh",
+      "predicted",
+      "unavailable"
+    ]
+  }
+}
