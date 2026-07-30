@@ -55,6 +55,92 @@ FIXTURE_ID = "mechanism_20260727_180_12"
 V4_PROCESS_NAME = "predictive-wnls-development.jsonl.gz"
 
 
+def _read_pinned_gzip_lines(
+    path: Path,
+    *,
+    expected_compressed_sha256: str,
+    expected_decompressed_sha256: str,
+    identity_sink: dict | None = None,
+):
+    """Yield decompressed lines from the descriptor whose bytes were hashed."""
+    process_path = Path(path)
+    if process_path.parts[:2] == ("/", "var"):
+        process_path = Path("/private").joinpath(*process_path.parts[1:])
+    _lstat_components(process_path, leaf_required=True)
+    descriptor = os.open(
+        process_path,
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("v4 process must be a regular file")
+        compressed_digest = hashlib.sha256()
+        offset = 0
+        while offset < before.st_size:
+            chunk = os.pread(
+                descriptor,
+                min(1024 * 1024, before.st_size - offset),
+                offset,
+            )
+            if not chunk:
+                raise ValueError("v4 compressed process short read")
+            compressed_digest.update(chunk)
+            offset += len(chunk)
+        compressed_sha256 = compressed_digest.hexdigest()
+        if compressed_sha256 != expected_compressed_sha256:
+            raise ValueError("v4 compressed process hash mismatch")
+        identity = {
+            "path": str(process_path),
+            "sha256": compressed_sha256,
+            "device": before.st_dev,
+            "inode": before.st_ino,
+            "size": before.st_size,
+            "mtime_ns": before.st_mtime_ns,
+        }
+        if identity_sink is not None:
+            identity_sink.clear()
+            identity_sink.update(identity)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        decompressed_digest = hashlib.sha256()
+        with os.fdopen(descriptor, "rb", closefd=False) as raw:
+            with gzip.GzipFile(fileobj=raw, mode="rb") as compressed:
+                for line in compressed:
+                    decompressed_digest.update(line)
+                    yield line
+        if decompressed_digest.hexdigest() != expected_decompressed_sha256:
+            raise ValueError("v4 decompressed process hash mismatch")
+        after = os.fstat(descriptor)
+        linked = os.stat(process_path, follow_symlinks=False)
+        expected_identity = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+        )
+        if (
+            (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+            )
+            != expected_identity
+            or (
+                linked.st_dev,
+                linked.st_ino,
+                linked.st_size,
+                linked.st_mtime_ns,
+            )
+            != expected_identity
+        ):
+            raise ValueError("v4 process identity changed during extraction")
+    finally:
+        os.close(descriptor)
+
+
 def read_v4_manifest(v4_root: Path) -> tuple[dict, dict]:
     payload, identity = _read_trusted_bytes(
         Path(v4_root) / "manifest.json",
@@ -83,51 +169,40 @@ def _public_output(row: dict) -> dict:
 
 def _stream_approved_rows(
     process_path: Path,
-) -> tuple[dict, dict[int, dict], dict, dict, int, str]:
-    _lstat_components(process_path, leaf_required=True)
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
-    descriptor = os.open(process_path, flags)
+) -> tuple[dict, dict[int, dict], dict, dict, int, str, dict]:
     digest = hashlib.sha256()
     decompressed_size = 0
     mechanism = None
     references: dict[int, dict] = {}
     last_fresh = None
     robot_rows: dict[int, dict] = {}
-    try:
-        metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode):
-            raise ValueError("v4 process must be a regular file")
-        with os.fdopen(descriptor, "rb", closefd=False) as raw:
-            with gzip.GzipFile(fileobj=raw, mode="rb") as compressed:
-                for line in compressed:
-                    digest.update(line)
-                    decompressed_size += len(line)
-                    row = json.loads(line)
-                    if (
-                        row.get("variant") != "predictive_multistart"
-                        or row.get("seed") != MECHANISM_KEY[0]
-                    ):
-                        continue
-                    frame = row.get("frame_index")
-                    robot = row.get("robot_id")
-                    if robot == MECHANISM_KEY[2] and frame <= MECHANISM_KEY[1]:
-                        if row.get("output_status") == "fresh":
-                            last_fresh = row
-                            robot_rows = {frame: row}
-                        elif last_fresh is not None:
-                            robot_rows[frame] = row
-                        if frame == MECHANISM_KEY[1]:
-                            mechanism = row
-                    if frame == MECHANISM_KEY[1] and robot in (10, 11):
-                        references[robot] = row
-    finally:
-        os.close(descriptor)
-    if digest.hexdigest() != V4_DECOMPRESSED_SHA256:
-        raise ValueError("v4 decompressed process hash mismatch")
+    process_identity: dict = {}
+    for line in _read_pinned_gzip_lines(
+        process_path,
+        expected_compressed_sha256=V4_COMPRESSED_SHA256,
+        expected_decompressed_sha256=V4_DECOMPRESSED_SHA256,
+        identity_sink=process_identity,
+    ):
+        digest.update(line)
+        decompressed_size += len(line)
+        row = json.loads(line)
+        if (
+            row.get("variant") != "predictive_multistart"
+            or row.get("seed") != MECHANISM_KEY[0]
+        ):
+            continue
+        frame = row.get("frame_index")
+        robot = row.get("robot_id")
+        if robot == MECHANISM_KEY[2] and frame <= MECHANISM_KEY[1]:
+            if row.get("output_status") == "fresh":
+                last_fresh = row
+                robot_rows = {frame: row}
+            elif last_fresh is not None:
+                robot_rows[frame] = row
+            if frame == MECHANISM_KEY[1]:
+                mechanism = row
+        if frame == MECHANISM_KEY[1] and robot in (10, 11):
+            references[robot] = row
     if mechanism is None or set(references) != {10, 11} or last_fresh is None:
         raise ValueError("approved mechanism rows are incomplete")
     return (
@@ -137,6 +212,7 @@ def _stream_approved_rows(
         robot_rows,
         decompressed_size,
         digest.hexdigest(),
+        process_identity,
     )
 
 
@@ -200,11 +276,6 @@ def extract_mechanism_fixture(*, v4_root: Path, output: Path) -> Path:
     ):
         raise ValueError("v4 manifest differs from approved source contract")
     process_path = v4_root / V4_PROCESS_NAME
-    _, process_identity = _read_trusted_bytes(
-        process_path,
-        expected_sha256=V4_COMPRESSED_SHA256,
-        capture_payload=False,
-    )
     (
         mechanism,
         reference_rows,
@@ -212,6 +283,7 @@ def extract_mechanism_fixture(*, v4_root: Path, output: Path) -> Path:
         robot_rows,
         decompressed_size,
         decompressed_sha,
+        process_identity,
     ) = _stream_approved_rows(process_path)
     if (
         mechanism["mandatory_references"]

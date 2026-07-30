@@ -1,9 +1,13 @@
+import gzip
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+import scripts.diagnostics.extract_two_range_reacquisition_fixture as extractor
 from scripts.diagnostics.extract_two_range_reacquisition_fixture import (
     FIXTURE_FIELDS,
     MECHANISM_KEY,
@@ -152,6 +156,42 @@ class FixtureIdentityTests(unittest.TestCase):
                 ),
             },
         )
+
+    def test_compressed_hash_and_decompression_share_one_pinned_descriptor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            process = root / "stream.jsonl.gz"
+            with process.open("wb") as raw:
+                with gzip.GzipFile(
+                    filename="", fileobj=raw, mode="wb", mtime=0,
+                ) as stream:
+                    stream.write(b'{"row":1}\n')
+            replacement = root / "replacement.jsonl.gz"
+            replacement.write_bytes(process.read_bytes())
+            compressed_sha = hashlib.sha256(process.read_bytes()).hexdigest()
+            decompressed_sha = hashlib.sha256(b'{"row":1}\n').hexdigest()
+            real_fdopen = os.fdopen
+
+            def replace_after_open(descriptor, *args, **kwargs):
+                os.replace(replacement, process)
+                return real_fdopen(descriptor, *args, **kwargs)
+
+            reader = getattr(
+                extractor,
+                "_read_pinned_gzip_lines",
+                lambda **kwargs: (),
+            )
+            with mock.patch.object(
+                extractor.os,
+                "fdopen",
+                side_effect=replace_after_open,
+            ):
+                with self.assertRaisesRegex(ValueError, "identity changed"):
+                    list(reader(
+                        path=process,
+                        expected_compressed_sha256=compressed_sha,
+                        expected_decompressed_sha256=decompressed_sha,
+                    ))
 
 
 if __name__ == "__main__":

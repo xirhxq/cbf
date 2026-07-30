@@ -44,6 +44,7 @@ from scripts.diagnostics.replay_predictive_wnls_recovery import (
     _offline_metrics,
     _preflight_frames,
     _public_reference_arrays,
+    _read_trusted_bytes,
     _sensor_records,
     _squad_local_index,
     _strict_load,
@@ -457,9 +458,62 @@ NEXT_PRIVATE_STATE_FIELDS = (
 RAW_MANIFEST_FIELDS = (
     "schema_id", "protocol_id", "invocation_name", "status", "method",
     "output_root", "protocol_identity", "source_identities",
-    "authorization_identity", "process_identity", "expected_rows",
+    "authorization_identity", "process_identity",
+    "synthetic_declaration_sha256", "expected_rows",
     "observed_rows", "key_contract", "disk_contract", "started_at",
     "completed_at", "error",
+)
+FIXTURE_MANIFEST_FIELDS = (
+    "schema_id", "fixture_id", "fixture_file", "fixture_size",
+    "fixture_sha256", "source_sha256", "extractor_identity",
+    "approved_design_commit",
+)
+FIXTURE_MANIFEST_SCHEMA_ID = (
+    "cbf2026-two-range-reacquisition-fixture-manifest-v1"
+)
+FIXTURE_SCHEMA_ID = "cbf2026-two-range-reacquisition-fixture-v1"
+MECHANISM_FIXTURE_ID = "mechanism_20260727_180_12"
+MECHANISM_FIXTURE_SHA256 = (
+    "9febff2393017b7b0fbd1a02dd76a13d1d70639f2b176df236931fe29a8601c7"
+)
+REGISTERED_PROTOCOL_SCHEMA_ID = (
+    "cbf2026-two-range-reacquisition-protocol-v1"
+)
+REGISTERED_AUTHORIZATION_SCHEMA_ID = (
+    "cbf2026-two-range-reacquisition-registration-v1"
+)
+REGISTERED_AUTHORIZATION_FIELDS = (
+    "schema_id", "protocol_id", "protocol_sha256", "protocol_commit",
+    "preflight_commit", "smoke_commit", "smoke_a_compressed_sha256",
+    "smoke_a_decompressed_sha256", "smoke_b_compressed_sha256",
+    "smoke_b_decompressed_sha256", "smoke_analyzer_a_json_sha256",
+    "smoke_analyzer_a_markdown_sha256", "smoke_analyzer_b_json_sha256",
+    "smoke_analyzer_b_markdown_sha256", "smoke_semantic_payload_sha256",
+    "user_authorization_date", "user_authorization_text",
+    "user_authorization_text_sha256", "registered_replay_root",
+    "registered_analyzer_root", "registered_retry_allowed",
+)
+REGISTERED_PROTOCOL_ID = "cbf2026-two-range-reacquisition-v1"
+REGISTERED_REPLAY_ROOT = (
+    "/private/tmp/cbf2026-two-range-reacquisition-development/v1"
+)
+REGISTERED_ANALYZER_ROOT = (
+    "/private/tmp/cbf2026-two-range-reacquisition-analysis/v1"
+)
+REGISTERED_PROTOCOL_RELATIVE_PATH = (
+    "docs/diagnostics/"
+    "2026-07-30-cbf2026-two-range-reacquisition-protocol-v1.json"
+)
+REGISTERED_AUTHORIZATION_RELATIVE_PATH = (
+    "docs/diagnostics/reviews/"
+    "2026-07-30-cbf2026-two-range-reacquisition-"
+    "registered-authorization.json"
+)
+REGISTERED_PROTOCOL_SOURCE_NAMES = (
+    "implementation_plan", "two_range_reacquisition_source",
+    "predictive_wnls_source", "fixture_extractor_source", "replay_source",
+    "analyzer_source", "registrar_source", "mechanism_fixture",
+    "mechanism_fixture_manifest", "truth_data", "input_manifest",
 )
 FILE_IDENTITY_FIELDS = (
     "path", "device", "inode", "size", "mtime_ns", "sha256",
@@ -973,9 +1027,347 @@ def _assemble_row(
     return row
 
 
+def _strict_int(
+    value: object,
+    *,
+    minimum: int = 0,
+    maximum: int | None = None,
+) -> bool:
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and value >= minimum
+        and (maximum is None or value <= maximum)
+    )
+
+
+def _finite_number(value: object, *, nonnegative: bool = False) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+        and (not nonnegative or float(value) >= 0.0)
+    )
+
+
+def _finite_vec2(value: object) -> bool:
+    return (
+        isinstance(value, list)
+        and len(value) == 2
+        and all(_finite_number(item) for item in value)
+    )
+
+
+def _finite_spd_2x2(value: object) -> bool:
+    if (
+        not isinstance(value, list)
+        or len(value) != 2
+        or any(not isinstance(row, list) or len(row) != 2 for row in value)
+        or any(not _finite_number(item) for row in value for item in row)
+    ):
+        return False
+    covariance = np.asarray(value, dtype=float)
+    return bool(
+        np.array_equal(covariance, covariance.T)
+        and np.all(np.linalg.eigvalsh(covariance) > 0.0)
+    )
+
+
+def _sorted_unique_nonnegative_ints(value: object) -> bool:
+    return (
+        isinstance(value, list)
+        and all(_strict_int(item) for item in value)
+        and value == sorted(set(value))
+    )
+
+
+def _lower_hex(value: object, length: int) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == length
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _canonical_iso_date(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").strftime("%Y-%m-%d") == value
+    except ValueError:
+        return False
+
+
+def _validate_solver_result(result: object) -> None:
+    if not isinstance(result, Mapping) or tuple(result) != SOLVER_RESULT_FIELDS:
+        raise ValueError("solver result differs from exact schema")
+    nullable_vec = result["estimate"]
+    nullable_cov = result["covariance"]
+    if nullable_vec is not None and not _finite_vec2(nullable_vec):
+        raise ValueError("solver estimate is invalid")
+    if nullable_cov is not None and not _finite_spd_2x2(nullable_cov):
+        raise ValueError("solver covariance is invalid")
+    for field in (
+        "epsilon", "phi_min_eigenvalue", "phi_condition", "cost",
+        "stationarity_norm",
+    ):
+        value = result[field]
+        if value is not None and not _finite_number(value, nonnegative=True):
+            raise ValueError(f"solver {field} is invalid")
+    for field in ("proposal_count", "iterations"):
+        if not _strict_int(result[field]):
+            raise ValueError(f"solver {field} is invalid")
+    if not isinstance(result["fim_valid"], bool):
+        raise ValueError("solver fim_valid is invalid")
+    if (
+        result["failure_reason"] is not None
+        and not isinstance(result["failure_reason"], str)
+    ):
+        raise ValueError("solver failure reason is invalid")
+    traces = result["proposal_trace"]
+    if not isinstance(traces, list):
+        raise ValueError("solver proposal trace is not a list")
+    for trace in traces:
+        if not isinstance(trace, Mapping) or tuple(trace) != PROPOSAL_TRACE_FIELDS:
+            raise ValueError("proposal trace differs from exact schema")
+        if not _finite_vec2(trace["proposal"]):
+            raise ValueError("proposal trace vector is invalid")
+        for field in (
+            "damping", "cost", "stationarity_norm", "raw_step_norm",
+            "trial_cost",
+        ):
+            value = trace[field]
+            if value is not None and not _finite_number(
+                value, nonnegative=True,
+            ):
+                raise ValueError("proposal trace numeric field is invalid")
+        if (
+            trace["invalid_trial_reason"] is not None
+            and not isinstance(trace["invalid_trial_reason"], str)
+        ) or not isinstance(trace["accepted"], bool):
+            raise ValueError("proposal trace discriminant is invalid")
+
+
+def _validate_reference_key(record: object) -> tuple[int, int]:
+    if (
+        not isinstance(record, Mapping)
+        or tuple(record) != REFERENCE_KEY_FIELDS
+        or record["reference_kind"] not in {"base", "uav"}
+        or not _strict_int(record["reference_id"])
+    ):
+        raise ValueError("reference key is invalid")
+    return (
+        0 if record["reference_kind"] == "base" else 1,
+        record["reference_id"],
+    )
+
+
 def _validate_row(row: Mapping) -> None:
     if tuple(row) != ROW_FIELDS:
         raise ValueError("row differs from exact field order")
+    if (
+        row["method"] != METHOD_ID
+        or row["invocation_name"] not in ROW_INVOCATION_NAMES
+        or row["attempt_path"] not in {
+            "reference_unavailable", "existing_predictive_multistart",
+            "two_range_reacquisition", "smoke_branch_gate",
+            "smoke_branch_pair_gate", "smoke_candidate_gate",
+        }
+        or not isinstance(row["selector_considered"], bool)
+        or row["selector_consideration_reason"]
+        not in {*CONSIDERATION_REASONS, "smoke_component_case"}
+        or row["attempt_status"] not in ATTEMPT_STATUSES
+        or row["output_status"] not in OUTPUT_STATUSES
+        or not isinstance(row["prior_used_for_branch_selection"], bool)
+        or row["prior_used_in_fim"] is not False
+        or row["prior_used_for_continuous_update"] is not False
+    ):
+        raise ValueError("row scalar discriminant is invalid")
+    if (
+        row["attempt_failure_reason"] is not None
+        and not isinstance(row["attempt_failure_reason"], str)
+    ):
+        raise ValueError("attempt failure reason is invalid")
+    nullable_ints = {
+        "seed": (20260727, 20260746),
+        "frame_index": (0, 499),
+        "robot_id": (1, 14),
+        "squad_local_index": (1, 7),
+        "applied_command_source_frame": (0, 498),
+        "branch_selection_prior_source_fresh_frame": (0, 499),
+        "branch_selection_prior_propagated_to_frame": (0, 499),
+        "branch_selection_prior_age_frames": (0, 499),
+        "next_private_state_source_fresh_frame": (0, 499),
+        "next_private_state_propagated_to_frame": (0, 499),
+        "next_private_state_age_frames": (0, 499),
+    }
+    for field, bounds in nullable_ints.items():
+        value = row[field]
+        if value is not None and not _strict_int(
+            value, minimum=bounds[0], maximum=bounds[1],
+        ):
+            raise ValueError(f"{field} is invalid")
+    if (
+        row["prediction_age"] is not None
+        and not _strict_int(row["prediction_age"], maximum=2)
+    ):
+        raise ValueError("prediction age is invalid")
+    for field in ("fresh_epsilon", "aged_modeled_radius"):
+        value = row[field]
+        if value is not None and not _finite_number(value, nonnegative=True):
+            raise ValueError(f"{field} is invalid")
+    for field in (
+        "applied_command", "estimate", "branch_selection_prior_estimate",
+        "next_private_state_estimate", "offline_truth_position",
+    ):
+        value = row[field]
+        if value is not None and not _finite_vec2(value):
+            raise ValueError(f"{field} is invalid")
+    for field in (
+        "fresh_modeled_covariance", "aged_modeled_covariance",
+        "branch_selection_prior_covariance",
+        "next_private_state_covariance",
+    ):
+        value = row[field]
+        if value is not None and not _finite_spd_2x2(value):
+            raise ValueError(f"{field} is invalid")
+    for field in (
+        "offline_error_norm", "offline_fresh_q_error",
+        "offline_aged_q_error",
+    ):
+        value = row[field]
+        if value is not None and not _finite_number(value, nonnegative=True):
+            raise ValueError(f"{field} is invalid")
+    for field in (
+        "offline_fresh_containment", "offline_aged_radius_containment",
+    ):
+        if row[field] is not None and not isinstance(row[field], bool):
+            raise ValueError(f"{field} is invalid")
+    for field in (
+        "attempt_base_anchor_provenance", "base_anchor_provenance",
+    ):
+        if not _sorted_unique_nonnegative_ints(row[field]):
+            raise ValueError(f"{field} is not sorted unique")
+
+    invocation = row["invocation_name"]
+    smoke_values = (
+        row["smoke_case_id"], row["smoke_case_kind"],
+        row["smoke_case_input"], row["smoke_case_expected"],
+    )
+    production_values = (
+        row["seed"], row["frame_index"], row["robot_id"],
+        row["squad_local_index"], row["offline_truth_position"],
+    )
+    if invocation == "registered_replay":
+        if any(value is not None for value in smoke_values) or any(
+            value is None for value in production_values
+        ):
+            raise ValueError("registered row null contract differs")
+        if row["frame_index"] == 0:
+            if (
+                row["applied_command_source_frame"] is not None
+                or row["applied_command"] is not None
+            ):
+                raise ValueError("frame-zero command must be null")
+        elif (
+            row["applied_command_source_frame"] != row["frame_index"] - 1
+            or row["applied_command"] is None
+        ):
+            raise ValueError("registered command contract differs")
+    else:
+        if any(value is None for value in smoke_values):
+            raise ValueError("smoke declaration is incomplete")
+        if row["smoke_case_id"] not in SMOKE_CASE_IDS:
+            raise ValueError("smoke case ID is not declared")
+        if row["smoke_case_id"] == MECHANISM_FIXTURE_ID:
+            if row["smoke_case_kind"] != "mechanism_fixture":
+                raise ValueError("mechanism smoke kind differs")
+            if row["smoke_case_input"] != {
+                "fixture_id": MECHANISM_FIXTURE_ID,
+                "fixture_sha256": MECHANISM_FIXTURE_SHA256,
+            } or row["smoke_case_expected"] != MECHANISM_SMOKE_EXPECTED:
+                raise ValueError("mechanism smoke declaration differs")
+            if any(value is None for value in production_values):
+                raise ValueError("mechanism smoke production key is incomplete")
+        else:
+            case = next(
+                item for item in SYNTHETIC_CASES
+                if item["case_id"] == row["smoke_case_id"]
+            )
+            if (
+                row["smoke_case_kind"] != case["case_kind"]
+                or row["smoke_case_input"] != case["input"]
+                or row["smoke_case_expected"] != case["expected"]
+                or any(value is not None for value in production_values)
+                or row["applied_command_source_frame"] is not None
+                or row["applied_command"] is not None
+            ):
+                raise ValueError("synthetic smoke declaration differs")
+        if invocation == "unit_fixture" and row["smoke_case_id"] != MECHANISM_FIXTURE_ID:
+            raise ValueError("unit fixture invocation carries synthetic case")
+
+    status = row["output_status"]
+    if status == "fresh":
+        if (
+            row["prediction_age"] != 0
+            or row["estimate"] is None
+            or row["fresh_modeled_covariance"] is None
+            or row["fresh_epsilon"] is None
+            or row["aged_modeled_covariance"] is not None
+            or row["aged_modeled_radius"] is not None
+        ):
+            raise ValueError("fresh output null contract differs")
+    elif status == "predicted":
+        if (
+            row["prediction_age"] not in {1, 2}
+            or row["estimate"] is None
+            or row["fresh_modeled_covariance"] is not None
+            or row["fresh_epsilon"] is not None
+            or row["aged_modeled_covariance"] is None
+            or row["aged_modeled_radius"] is None
+        ):
+            raise ValueError("predicted output null contract differs")
+    elif any(
+        row[field] is not None
+        for field in (
+            "prediction_age", "estimate", "fresh_modeled_covariance",
+            "fresh_epsilon", "aged_modeled_covariance",
+            "aged_modeled_radius",
+        )
+    ):
+        raise ValueError("unavailable output carries numeric payload")
+
+    if invocation == "smoke_validation" and row["smoke_case_id"] != MECHANISM_FIXTURE_ID:
+        if any(
+            row[field] is not None
+            for field in (
+                "offline_truth_position", "offline_error_norm",
+                "offline_fresh_containment",
+                "offline_aged_radius_containment",
+                "offline_fresh_q_error", "offline_aged_q_error",
+            )
+        ):
+            raise ValueError("synthetic row carries offline evidence")
+    elif row["offline_truth_position"] is not None:
+        required_metrics = {
+            "fresh": (
+                "offline_error_norm", "offline_fresh_containment",
+                "offline_fresh_q_error",
+            ),
+            "predicted": (
+                "offline_error_norm", "offline_aged_radius_containment",
+                "offline_aged_q_error",
+            ),
+            "unavailable": (),
+        }[status]
+        for field in (
+            "offline_error_norm", "offline_fresh_containment",
+            "offline_aged_radius_containment", "offline_fresh_q_error",
+            "offline_aged_q_error",
+        ):
+            if (field in required_metrics) != (row[field] is not None):
+                raise ValueError("offline metric null contract differs")
+
     if row["attempt_path"] == "two_range_reacquisition":
         if row["existing_candidates"] or row["existing_selected_candidate_source"] is not None:
             raise ValueError("two-range row carries existing candidates")
@@ -1013,9 +1405,34 @@ def _validate_row(row: Mapping) -> None:
     for branch in row["branches"]:
         if _branch(branch) != branch:
             raise ValueError("branch is not canonical")
+        if (
+            branch["branch_id"] not in BRANCH_IDS
+            or not _finite_vec2(branch["circle_start"])
+        ):
+            raise ValueError("branch scalar contract differs")
+        _validate_solver_result(branch["solver_result"])
+        if branch["q_branch"] is not None and not _finite_number(
+            branch["q_branch"], nonnegative=True,
+        ):
+            raise ValueError("branch score is invalid")
+        if (
+            branch["passes_branch_gate"] is not None
+            and not isinstance(branch["passes_branch_gate"], bool)
+        ):
+            raise ValueError("branch gate result is invalid")
     for candidate in row["existing_candidates"]:
         if _existing_candidate(candidate) != candidate:
             raise ValueError("existing candidate is not canonical")
+        _validate_solver_result(candidate["result"])
+        if not _finite_vec2(candidate["initial_estimate"]):
+            raise ValueError("candidate initial estimate is invalid")
+        if not isinstance(candidate["accepted"], bool):
+            raise ValueError("candidate acceptance flag is invalid")
+        if (
+            candidate["rejection_reason"] is not None
+            and not isinstance(candidate["rejection_reason"], str)
+        ):
+            raise ValueError("candidate rejection reason is invalid")
     nested_fields = (
         ("mandatory_references", MANDATORY_REFERENCE_FIELDS),
         *(
@@ -1032,22 +1449,104 @@ def _validate_row(row: Mapping) -> None:
     )
     if tuple(row["mandatory_references"]) != MANDATORY_REFERENCE_FIELDS:
         raise ValueError("mandatory references are not canonical")
+    if not all(
+        _sorted_unique_nonnegative_ints(row["mandatory_references"][field])
+        for field in MANDATORY_REFERENCE_FIELDS
+    ):
+        raise ValueError("mandatory reference IDs are not sorted unique")
     for name, fields in nested_fields[1:]:
+        if not isinstance(row[name], list):
+            raise ValueError(f"{name} must be a list")
         if any(
             not isinstance(item, Mapping) or tuple(item) != fields
             for item in row[name]
         ):
             raise ValueError(f"{name} contains a noncanonical object")
+    for name in ("optional_candidates", "active_references"):
+        keys = [_validate_reference_key(item) for item in row[name]]
+        if keys != sorted(set(keys)):
+            raise ValueError(f"{name} is not canonical sorted unique")
+    for record in row["reference_evidence"]:
+        if (
+            record["reference_kind"] not in {"base", "uav"}
+            or not _strict_int(record["reference_id"])
+            or record["role"] not in {"mandatory", "optional"}
+            or not isinstance(record["measurement_present"], bool)
+            or (
+                record["noisy_range"] is not None
+                and not _finite_number(
+                    record["noisy_range"], nonnegative=True,
+                )
+            )
+            or (
+                record["noise_seed"] is not None
+                and not _strict_int(record["noise_seed"])
+            )
+            or record["current_freshness"]
+            not in {"fresh", "predicted", "unavailable", "missing"}
+            or not isinstance(record["eligible"], bool)
+            or not isinstance(record["used"], bool)
+            or (
+                record["exclusion_reason"] is not None
+                and not isinstance(record["exclusion_reason"], str)
+            )
+            or not _sorted_unique_nonnegative_ints(
+                record["base_anchor_provenance"],
+            )
+        ):
+            raise ValueError("reference evidence is invalid")
+    for record in row["reference_freshness"]:
+        if (
+            record["reference_kind"] not in {"base", "uav"}
+            or not _strict_int(record["reference_id"])
+            or record["current_freshness"]
+            not in {"fresh", "predicted", "unavailable", "missing"}
+        ):
+            raise ValueError("reference freshness is invalid")
+    for name in ("excluded_references", "reference_violations"):
+        for record in row[name]:
+            if (
+                record["reference_kind"] not in {"base", "uav"}
+                or not _strict_int(record["reference_id"])
+                or not isinstance(record["reason"], str)
+            ):
+                raise ValueError(f"{name} is invalid")
     prior_available = row["branch_selection_prior_status"] == "available"
-    if prior_available != all(
+    if row["branch_selection_prior_status"] not in {"available", "absent"}:
+        raise ValueError("branch-selection prior status is invalid")
+    prior_fields_present = [
         row[field] is not None for field in PRIVATE_PRIOR_FIELDS[1:]
+    ]
+    if (
+        prior_available and not all(prior_fields_present)
+    ) or (
+        not prior_available and any(prior_fields_present)
     ):
         raise ValueError("branch-selection prior null semantics differ")
     next_available = row["next_private_state_status"] == "available"
-    if next_available != all(
+    if row["next_private_state_status"] not in {"available", "absent"}:
+        raise ValueError("next-private-state status is invalid")
+    next_fields_present = [
         row[field] is not None for field in NEXT_PRIVATE_STATE_FIELDS[1:]
+    ]
+    if (
+        next_available and not all(next_fields_present)
+    ) or (
+        not next_available and any(next_fields_present)
     ):
         raise ValueError("next-private-state null semantics differ")
+    if prior_available and (
+        row["branch_selection_prior_source_fresh_frame"]
+        + row["branch_selection_prior_age_frames"]
+        != row["branch_selection_prior_propagated_to_frame"]
+    ):
+        raise ValueError("branch-selection prior frame arithmetic differs")
+    if next_available and (
+        row["next_private_state_source_fresh_frame"]
+        + row["next_private_state_age_frames"]
+        != row["next_private_state_propagated_to_frame"]
+    ):
+        raise ValueError("next-private-state frame arithmetic differs")
     passing = [
         branch for branch in row["branches"]
         if branch["passes_branch_gate"] is True
@@ -1070,6 +1569,25 @@ def _validate_row(row: Mapping) -> None:
         or passing[0]["branch_id"] != row["selected_branch_id"]
     ):
         raise ValueError("selected branch is not uniquely passing")
+    if row["selected_branch_id"] is None and len(passing) == 1 and (
+        row["attempt_path"] == "two_range_reacquisition"
+        and row["attempt_status"] == "accepted"
+    ):
+        raise ValueError("accepted branch was not published")
+    selected_candidate = row["existing_selected_candidate_source"]
+    if selected_candidate is not None:
+        accepted = [
+            candidate for candidate in row["existing_candidates"]
+            if candidate["accepted"] is True
+        ]
+        if (
+            row["attempt_path"] != "existing_predictive_multistart"
+            or row["attempt_status"] != "accepted"
+            or row["output_status"] != "fresh"
+            or len(accepted) != 1
+            or accepted[0]["source"] != selected_candidate
+        ):
+            raise ValueError("candidate publication is not accepted/fresh")
     ordered_strict_json_bytes(row, ROW_FIELDS)
 
 
@@ -1129,7 +1647,11 @@ def _selector_smoke_row(case: Mapping) -> dict:
         ranging_sigma=values["ranging_sigma"],
         base_anchor_provenance=values["base_anchor_provenance"],
     )
-    prior = _private_from_selector_input(values)
+    prior = (
+        None
+        if attempt.get("failure_reason") == "two_range_private_prior_invalid"
+        else _private_from_selector_input(values)
+    )
     lifecycle = finalize_two_range_lifecycle(
         attempt,
         {
@@ -1779,11 +2301,15 @@ def _publish_manifest(transaction: Mapping, manifest: Mapping) -> None:
         0o600,
         dir_fd=transaction["root_fd"],
     )
+    staged_identity = None
     try:
         _write_all(descriptor, payload)
         os.fsync(descriptor)
+        metadata = os.fstat(descriptor)
+        staged_identity = (metadata.st_dev, metadata.st_ino)
     finally:
         os.close(descriptor)
+    renamed = False
     try:
         os.rename(
             name,
@@ -1791,11 +2317,22 @@ def _publish_manifest(transaction: Mapping, manifest: Mapping) -> None:
             src_dir_fd=transaction["root_fd"],
             dst_dir_fd=transaction["root_fd"],
         )
+        renamed = True
         os.fsync(transaction["root_fd"])
         os.fsync(transaction["parent_fd"])
     except BaseException:
+        target = "manifest.json" if renamed else name
         try:
-            os.unlink(name, dir_fd=transaction["root_fd"])
+            linked = os.stat(
+                target,
+                dir_fd=transaction["root_fd"],
+                follow_symlinks=False,
+            )
+            if (
+                not renamed
+                or staged_identity == (linked.st_dev, linked.st_ino)
+            ):
+                os.unlink(target, dir_fd=transaction["root_fd"])
         except FileNotFoundError:
             pass
         raise
@@ -1929,6 +2466,24 @@ def _process_identity(
     }
 
 
+def _allocated_bytes_live(descriptor: int) -> int:
+    return os.fstat(descriptor).st_blocks * 512
+
+
+def _check_live_resource_limits(
+    transaction: Mapping,
+    descriptor: int,
+    *,
+    hard_floor: int,
+    raw_cap: int,
+) -> None:
+    filesystem = os.fstatvfs(transaction["root_fd"])
+    if filesystem.f_bavail * filesystem.f_frsize < hard_floor:
+        raise OSError("available bytes below live floor")
+    if _allocated_bytes_live(descriptor) > raw_cap:
+        raise OSError("raw bundle exceeds allocated-byte cap")
+
+
 def _verify_process_link(
     transaction: Mapping,
     process_identity: Mapping,
@@ -1997,6 +2552,7 @@ def _manifest(
         "source_identities": sources,
         "authorization_identity": authorization_identity,
         "process_identity": process_identity,
+        "synthetic_declaration_sha256": SYNTHETIC_DECLARATION_SHA256,
         "expected_rows": expected_rows,
         "observed_rows": observed_rows,
         "key_contract": _key_contract(invocation_name),
@@ -2018,6 +2574,8 @@ def _validate_manifest(manifest: Mapping) -> None:
             "creating", "running", "completed", "failed",
         }
         or manifest["method"] != METHOD_ID
+        or manifest["synthetic_declaration_sha256"]
+        != SYNTHETIC_DECLARATION_SHA256
         or not isinstance(manifest["protocol_id"], str)
         or not isinstance(manifest["output_root"], str)
     ):
@@ -2103,13 +2661,83 @@ def _validate_manifest(manifest: Mapping) -> None:
         raise ValueError("nonterminal manifest carries an error")
 
 
-def _load_fixture() -> dict:
-    path = (
-        Path(__file__).resolve().parents[2]
-        / "tests/fixtures/cbf2026_two_range_reacquisition"
-        / "mechanism_20260727_180_12.json"
+def _load_fixture(
+    *,
+    fixture_path: Path | None = None,
+    manifest_path: Path | None = None,
+) -> dict:
+    project = Path(__file__).resolve().parents[2]
+    fixture_root = project / "tests/fixtures/cbf2026_two_range_reacquisition"
+    fixture_path = (
+        fixture_root / "mechanism_20260727_180_12.json"
+        if fixture_path is None else Path(fixture_path)
     )
-    return _strict_load(path)
+    manifest_path = (
+        fixture_root / "manifest.json"
+        if manifest_path is None else Path(manifest_path)
+    )
+    manifest = _strict_load(manifest_path)
+    if (
+        tuple(manifest) != FIXTURE_MANIFEST_FIELDS
+        or manifest["schema_id"] != FIXTURE_MANIFEST_SCHEMA_ID
+        or manifest["fixture_id"] != MECHANISM_FIXTURE_ID
+        or manifest["fixture_file"] != fixture_path.name
+        or manifest["fixture_sha256"] != MECHANISM_FIXTURE_SHA256
+        or not _strict_int(manifest["fixture_size"])
+        or not isinstance(manifest["approved_design_commit"], str)
+        or len(manifest["approved_design_commit"]) != 40
+    ):
+        raise ValueError("fixture manifest differs from frozen contract")
+    source_hashes = manifest["source_sha256"]
+    expected_source_hashes = {
+        "v4_manifest": (
+            "123b365662273cf768fc9f35530013b2af8fddb6d5ead7d7c1bc9436a2bb8223"
+        ),
+        "v4_compressed_process": (
+            "9710d1a5792e682bb272d0bb3305162180d1e0b9a0636647d6e071d1782a699b"
+        ),
+        "v4_decompressed_process": (
+            "7047989804fd03bd4cadffac8212349b7183857623ac201d14ef2fc3e30ee2e1"
+        ),
+        "truth_data": (
+            "3defc62d11bb5996301b21b95ab3902c998bb982640b0f9be7b9536005145527"
+        ),
+    }
+    if source_hashes != expected_source_hashes:
+        raise ValueError("fixture manifest source hashes differ")
+    extractor = manifest["extractor_identity"]
+    extractor_path = project / "scripts/diagnostics/extract_two_range_reacquisition_fixture.py"
+    if (
+        not isinstance(extractor, Mapping)
+        or tuple(extractor) != ("path", "sha256")
+        or extractor["path"]
+        != "scripts/diagnostics/extract_two_range_reacquisition_fixture.py"
+        or extractor["sha256"] != _file_identity(extractor_path)["sha256"]
+    ):
+        raise ValueError("fixture manifest extractor identity differs")
+    payload, identity = _read_trusted_bytes(
+        fixture_path,
+        expected_sha256=manifest["fixture_sha256"],
+    )
+    if payload is None:
+        raise RuntimeError("fixture payload was not captured")
+    if identity["size"] != manifest["fixture_size"]:
+        raise ValueError("fixture size differs from committed manifest")
+    fixture = _strict_load(fixture_path)
+    if (
+        tuple(fixture)
+        != (
+            "schema_id", "fixture_id", "source_identities", "key",
+            "mandatory_references", "optional_references",
+            "current_reference_outputs", "measurements",
+            "preceding_public_output", "preceding_private_state",
+            "held_command", "expected_mechanism",
+        )
+        or fixture["schema_id"] != FIXTURE_SCHEMA_ID
+        or fixture["fixture_id"] != MECHANISM_FIXTURE_ID
+    ):
+        raise ValueError("fixture differs from exact schema")
+    return fixture
 
 
 def _registered_rows(
@@ -2194,6 +2822,16 @@ def replay_two_range_reacquisition(
             raise ValueError("registered replay requires the exact 140000-key grid")
         if authorization_json is None:
             raise ValueError("registered replay requires authorization")
+        project = Path(__file__).resolve().parents[2]
+        if (
+            protocol_path != project / REGISTERED_PROTOCOL_RELATIVE_PATH
+            or authorization_json
+            != project / REGISTERED_AUTHORIZATION_RELATIVE_PATH
+            or str(output_root) != REGISTERED_REPLAY_ROOT
+        ):
+            raise ValueError(
+                "registered replay requires exact committed paths and root",
+            )
     elif run_seeds or max_frames not in (0, 1):
         raise ValueError("non-production invocation rejects trajectory grids")
     protocol = _strict_load(protocol_path)
@@ -2207,33 +2845,119 @@ def replay_two_range_reacquisition(
         None if invocation_name == "unit_fixture"
         else _canonical_file_identity(_file_identity(protocol_path))
     )
-    authorization_identity = (
-        _canonical_file_identity(_file_identity(authorization_json))
-        if authorization_json is not None else None
-    )
     sources = _source_identities(
         invocation_name=invocation_name,
         data_path=data_path,
         input_manifest_path=input_manifest_path,
     )
     declared_sources = protocol.get("sources")
+    method_contract = protocol.get("method_contract")
+    if invocation_name == "registered_replay" and (
+        protocol.get("schema_id") != REGISTERED_PROTOCOL_SCHEMA_ID
+        or protocol_id != REGISTERED_PROTOCOL_ID
+        or declared_sources is None
+        or not isinstance(method_contract, Mapping)
+        or method_contract.get("synthetic_declaration_sha256")
+        != SYNTHETIC_DECLARATION_SHA256
+    ):
+        raise ValueError(
+            "registered protocol lacks frozen schema, sources, or declaration",
+        )
     if declared_sources is not None:
+        expected_declared_names = (
+            REGISTERED_PROTOCOL_SOURCE_NAMES
+            if invocation_name == "registered_replay"
+            else tuple(sources)
+        )
         if (
             not isinstance(declared_sources, Mapping)
-            or tuple(declared_sources) != tuple(sources)
+            or tuple(declared_sources) != expected_declared_names
         ):
-            raise ValueError("protocol source members differ from invocation")
+            raise ValueError("protocol source members differ from contract")
+        if invocation_name == "registered_replay":
+            for name, declaration in declared_sources.items():
+                if (
+                    not isinstance(declaration, Mapping)
+                    or tuple(declaration) != FILE_IDENTITY_FIELDS
+                    or declaration != _canonical_file_identity(
+                        _file_identity(Path(declaration["path"])),
+                    )
+                ):
+                    raise ValueError(
+                        f"protocol source identity differs: {name}",
+                    )
         for name, identity in sources.items():
             declaration = declared_sources[name]
-            if (
-                not isinstance(declaration, Mapping)
-                or tuple(declaration) != ("path", "sha256")
-                or declaration["path"] != identity["path"]
-                or declaration["sha256"] != identity["sha256"]
-            ):
+            if not isinstance(declaration, Mapping):
+                raise ValueError(f"protocol source is not an object: {name}")
+            if invocation_name == "registered_replay":
+                matches = (
+                    tuple(declaration) == FILE_IDENTITY_FIELDS
+                    and declaration == identity
+                )
+            else:
+                matches = (
+                    tuple(declaration) == ("path", "sha256")
+                    and declaration["path"] == identity["path"]
+                    and declaration["sha256"] == identity["sha256"]
+                )
+            if not matches:
                 raise ValueError(
                     f"protocol source identity differs: {name}"
                 )
+    authorization_identity = None
+    if authorization_json is not None:
+        authorization = _strict_load(authorization_json)
+        authorization_identity = _canonical_file_identity(
+            _file_identity(authorization_json),
+        )
+        authorization_text = authorization.get("user_authorization_text")
+        sha_fields = (
+            "protocol_sha256", "smoke_a_compressed_sha256",
+            "smoke_a_decompressed_sha256", "smoke_b_compressed_sha256",
+            "smoke_b_decompressed_sha256",
+            "smoke_analyzer_a_json_sha256",
+            "smoke_analyzer_a_markdown_sha256",
+            "smoke_analyzer_b_json_sha256",
+            "smoke_analyzer_b_markdown_sha256",
+            "smoke_semantic_payload_sha256",
+            "user_authorization_text_sha256",
+        )
+        commit_fields = (
+            "protocol_commit", "preflight_commit", "smoke_commit",
+        )
+        if invocation_name == "registered_replay" and (
+            tuple(authorization) != REGISTERED_AUTHORIZATION_FIELDS
+            or authorization["schema_id"]
+            != REGISTERED_AUTHORIZATION_SCHEMA_ID
+            or authorization["protocol_id"] != protocol_id
+            or authorization["protocol_sha256"]
+            != protocol_identity["sha256"]
+            or any(
+                not _lower_hex(authorization[field], 64)
+                for field in sha_fields
+            )
+            or any(
+                not _lower_hex(authorization[field], 40)
+                for field in commit_fields
+            )
+            or not isinstance(authorization_text, str)
+            or not authorization_text
+            or hashlib.sha256(
+                authorization_text.encode("utf-8"),
+            ).hexdigest()
+            != authorization["user_authorization_text_sha256"]
+            or not _canonical_iso_date(
+                authorization["user_authorization_date"],
+            )
+            or authorization["registered_replay_root"] != str(output_root)
+            or authorization["registered_analyzer_root"]
+            != REGISTERED_ANALYZER_ROOT
+            or authorization["registered_retry_allowed"] is not False
+        ):
+            raise ValueError(
+                "registered authorization differs from exact binding",
+            )
     expected_rows = (
         140000 if invocation_name == "registered_replay"
         else 1 if invocation_name == "unit_fixture" else 18
@@ -2370,7 +3094,14 @@ def replay_two_range_reacquisition(
                     line = ordered_strict_json_bytes(row, ROW_FIELDS) + b"\n"
                     decompressed_digest.update(line)
                     compressed.write(line)
+                    compressed.flush()
                     observed += 1
+                    _check_live_resource_limits(
+                        transaction,
+                        raw_descriptor,
+                        hard_floor=hard_floor,
+                        raw_cap=raw_cap,
+                    )
         if expected_keys is not None:
             try:
                 next(expected_keys)

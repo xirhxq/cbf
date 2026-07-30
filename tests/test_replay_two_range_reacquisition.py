@@ -570,6 +570,58 @@ class RowAndKeyMutationTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     replay._gate_diagnostics(source)
 
+    def test_declared_row_contract_rejects_wrong_method_registered_smoke_and_unavailable_payload(self):
+        wrong_method = copy.deepcopy(self.accepted)
+        wrong_method["method"] = "wrong_method"
+        registered_smoke = copy.deepcopy(self.accepted)
+        registered_smoke["invocation_name"] = "registered_replay"
+        unavailable_payload = replay.produce_smoke_row(
+            case_id="q_equal_threshold",
+            mechanism_fixture=json.loads(
+                (FIXTURE_ROOT / "mechanism_20260727_180_12.json").read_bytes()
+            ),
+        )
+        unavailable_payload["fresh_modeled_covariance"] = [
+            [1.0, 0.0],
+            [0.0, 1.0],
+        ]
+        unavailable_payload["fresh_epsilon"] = 3.0
+        for name, row in (
+            ("wrong_method", wrong_method),
+            ("registered_smoke", registered_smoke),
+            ("unavailable_payload", unavailable_payload),
+        ):
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    replay._validate_row(row)
+
+    def test_every_declared_smoke_row_form_validates_then_null_mutations_reject(self):
+        fixture = json.loads(
+            (FIXTURE_ROOT / "mechanism_20260727_180_12.json").read_bytes()
+        )
+        rows = [
+            replay.produce_smoke_row(
+                case_id=case_id,
+                mechanism_fixture=fixture,
+            )
+            for case_id in replay.SMOKE_CASE_IDS
+        ]
+        for row in rows:
+            replay._validate_row(row)
+        fresh = next(row for row in rows if row["output_status"] == "fresh")
+        fresh_with_aged = copy.deepcopy(fresh)
+        fresh_with_aged["aged_modeled_covariance"] = [[1.0, 0.0], [0.0, 1.0]]
+        fresh_with_aged["aged_modeled_radius"] = 3.0
+        absent_prior = next(
+            row for row in rows
+            if row["branch_selection_prior_status"] == "absent"
+        )
+        absent_prior_payload = copy.deepcopy(absent_prior)
+        absent_prior_payload["branch_selection_prior_estimate"] = [0.0, 0.0]
+        for row in (fresh_with_aged, absent_prior_payload):
+            with self.assertRaises(ValueError):
+                replay._validate_row(row)
+
 
 class ProducerLifecycleTests(unittest.TestCase):
     def _protocol(self, root, *, hard_floor=0, raw_cap=100_000_000):
@@ -653,6 +705,135 @@ class ProducerLifecycleTests(unittest.TestCase):
                 [row["smoke_case_id"] for row in rows],
                 list(replay.SMOKE_CASE_IDS),
             )
+            self.assertEqual(
+                manifests[0]["synthetic_declaration_sha256"],
+                replay.SYNTHETIC_DECLARATION_SHA256,
+            )
+
+    def test_registered_source_less_protocol_and_arbitrary_authorization_fail_before_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            protocol = root / "protocol.json"
+            protocol.write_text(
+                json.dumps({
+                    "schema_id": "cbf2026-two-range-reacquisition-protocol-v1",
+                    "protocol_id": "arbitrary",
+                    "disk_contract": {
+                        "raw_bundle_max_allocated_bytes": 100_000_000,
+                        "hard_floor_bytes": 0,
+                    },
+                }),
+                encoding="utf-8",
+            )
+            authorization = root / "authorization.json"
+            authorization.write_text("{}", encoding="utf-8")
+            output = root / "registered"
+            with self.assertRaises(ValueError):
+                replay.replay_two_range_reacquisition(
+                    protocol_path=protocol,
+                    data_path=FIXTURE_ROOT
+                    / "mechanism_20260727_180_12.json",
+                    input_manifest_path=FIXTURE_ROOT / "manifest.json",
+                    output_root=output,
+                    run_seeds=tuple(range(20260727, 20260747)),
+                    max_frames=500,
+                    invocation_name="registered_replay",
+                    authorization_json=authorization,
+                )
+            self.assertFalse(output.exists())
+
+    def test_fixture_bytes_must_match_committed_fixture_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = json.loads(
+                (FIXTURE_ROOT / "mechanism_20260727_180_12.json").read_bytes()
+            )
+            fixture["expected_mechanism"]["old_candidate_count"] = 2
+            altered = root / "mechanism_20260727_180_12.json"
+            altered.write_text(
+                json.dumps(fixture, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            manifest = root / "manifest.json"
+            manifest.write_bytes((FIXTURE_ROOT / "manifest.json").read_bytes())
+            with self.assertRaises(ValueError):
+                replay._load_fixture(
+                    fixture_path=altered,
+                    manifest_path=manifest,
+                )
+
+    def test_live_floor_is_rechecked_inside_row_loop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            protocol = self._protocol(root, hard_floor=1)
+            output = root / "live-loop"
+            high = types.SimpleNamespace(f_bavail=1000, f_frsize=4096)
+            low = types.SimpleNamespace(f_bavail=0, f_frsize=4096)
+            with mock.patch.object(
+                replay.os,
+                "fstatvfs",
+                side_effect=[high, low],
+            ):
+                with self.assertRaisesRegex(OSError, "live floor"):
+                    self._run(protocol, output)
+            self._assert_forensic_not_completed(output)
+
+    def test_raw_cap_is_rechecked_inside_row_loop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw_cap = 100_000_000
+            protocol = self._protocol(root, raw_cap=raw_cap)
+            output = root / "cap-loop"
+            with mock.patch.object(
+                replay,
+                "_allocated_bytes_live",
+                create=True,
+                return_value=raw_cap + 1,
+            ):
+                with self.assertRaisesRegex(OSError, "allocated-byte cap"):
+                    self._run(protocol, output)
+            self._assert_forensic_not_completed(output)
+
+    def test_post_completed_rename_failure_retracts_visible_completed_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            protocol = self._protocol(root)
+            output = root / "post-rename"
+            real_publish = replay._publish_manifest
+
+            def publish(transaction, manifest):
+                if manifest["status"] == "completed":
+                    real_fsync = replay.os.fsync
+
+                    def fail_root_fsync(descriptor):
+                        if descriptor == transaction["root_fd"]:
+                            raise OSError("injected post-rename fsync failure")
+                        return real_fsync(descriptor)
+
+                    with mock.patch.object(
+                        replay.os,
+                        "fsync",
+                        side_effect=fail_root_fsync,
+                    ):
+                        return real_publish(transaction, manifest)
+                if manifest["status"] == "failed":
+                    raise OSError("injected failed replacement failure")
+                return real_publish(transaction, manifest)
+
+            with mock.patch.object(
+                replay,
+                "_publish_manifest",
+                side_effect=publish,
+            ):
+                with self.assertRaisesRegex(OSError, "post-rename"):
+                    self._run(protocol, output)
+            visible = output / "manifest.json"
+            if visible.exists():
+                self.assertNotEqual(
+                    json.loads(visible.read_bytes())["status"],
+                    "completed",
+                )
+            self._assert_forensic_not_completed(output)
 
     def test_start_space_failure_retains_failed_forensic_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
