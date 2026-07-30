@@ -2,6 +2,7 @@
 
 import math
 from collections.abc import Mapping
+from numbers import Integral
 
 import numpy as np
 
@@ -58,6 +59,67 @@ def _finite_estimate_and_covariance(source: object) -> tuple[np.ndarray, np.ndar
     return estimate, covariance
 
 
+def _canonical_base_provenance(value: object) -> list[int] | None:
+    if not isinstance(value, (list, tuple)):
+        return None
+    roots = []
+    for root in value:
+        if isinstance(root, bool) or not isinstance(root, Integral) or root < 0:
+            return None
+        roots.append(int(root))
+    distinct_roots = sorted(set(roots))
+    if len(distinct_roots) < 2:
+        return None
+    return distinct_roots
+
+
+def _canonical_prediction(output: object) -> dict | None:
+    if not isinstance(output, Mapping) or output.get("output_status") != "predicted":
+        return None
+    age = output.get("prediction_age")
+    if (
+        isinstance(age, bool)
+        or not isinstance(age, Integral)
+        or age not in (1, 2)
+    ):
+        return None
+    state = _finite_estimate_and_covariance(output)
+    if state is None:
+        return None
+    estimate, covariance = state
+    radius = 3.0 * math.sqrt(float(np.max(np.linalg.eigvalsh(covariance))))
+    return {
+        "output_status": "predicted",
+        "estimate": estimate.tolist(),
+        "modeled_covariance": covariance.tolist(),
+        "epsilon": None,
+        "prediction_age": int(age),
+        "aged_modeled_radius": radius,
+        "base_anchor_provenance": [],
+    }
+
+
+def _prediction_is_canonical(output: object) -> bool:
+    canonical = _canonical_prediction(output)
+    if canonical is None or not isinstance(output, Mapping):
+        return False
+    try:
+        supplied_radius = float(output.get("aged_modeled_radius"))
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return (
+        output.get("epsilon") is None
+        and output.get("base_anchor_provenance") == []
+        and math.isfinite(supplied_radius)
+        and math.isclose(
+            supplied_radius,
+            canonical["aged_modeled_radius"],
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        )
+    )
+
+
 def make_unavailable_output(reason: str) -> dict:
     """Return a public unavailable output with no finite localization fields."""
     return {
@@ -76,7 +138,12 @@ def output_is_fresh(output: dict | None) -> bool:
     """Validate a current-frame fresh public output."""
     if not isinstance(output, Mapping) or output.get("output_status") != "fresh":
         return False
-    if output.get("prediction_age") != 0:
+    prediction_age = output.get("prediction_age")
+    if (
+        isinstance(prediction_age, bool)
+        or not isinstance(prediction_age, Integral)
+        or prediction_age != 0
+    ):
         return False
     state = _finite_estimate_and_covariance(output)
     if state is None:
@@ -85,20 +152,19 @@ def output_is_fresh(output: dict | None) -> bool:
         epsilon = float(output.get("epsilon"))
     except (TypeError, ValueError, OverflowError):
         return False
-    return math.isfinite(epsilon) and epsilon >= 0.0
+    return (
+        math.isfinite(epsilon)
+        and epsilon >= 0.0
+        and _canonical_base_provenance(
+            output.get("base_anchor_provenance")
+        )
+        is not None
+    )
 
 
 def reference_is_eligible(output: dict | None) -> bool:
     """Accept only finite fresh outputs with at least two base roots."""
-    if not output_is_fresh(output):
-        return False
-    provenance = output.get("base_anchor_provenance")
-    if not isinstance(provenance, (list, tuple)):
-        return False
-    try:
-        return len(set(provenance)) >= 2
-    except TypeError:
-        return False
+    return output_is_fresh(output)
 
 
 def _private_seed(estimate: np.ndarray, covariance: np.ndarray) -> dict:
@@ -128,6 +194,18 @@ def propagate_estimator_prior(
         isinstance(previous_output, Mapping)
         and previous_output.get("output_status") == "unavailable"
     )
+    previous_is_fresh = output_is_fresh(previous_output)
+    previous_is_prediction = _prediction_is_canonical(previous_output)
+    if not (
+        previous_is_unavailable
+        or previous_is_fresh
+        or previous_is_prediction
+    ):
+        return {
+            "public_prediction": make_unavailable_output("invalid_prior"),
+            "private_reacquisition_seed": None,
+        }
+
     source = previous_private_seed if previous_is_unavailable else previous_output
     state = _finite_estimate_and_covariance(source)
     if state is None:
@@ -147,10 +225,10 @@ def propagate_estimator_prior(
             "private_reacquisition_seed": private_seed,
         }
 
-    prior_age = previous_output.get("prediction_age") if isinstance(previous_output, Mapping) else None
-    if previous_output.get("output_status") == "fresh" and prior_age == 0:
+    prior_age = previous_output.get("prediction_age")
+    if previous_is_fresh:
         next_age = 1
-    elif previous_output.get("output_status") == "predicted" and prior_age in (1, 2):
+    elif previous_is_prediction:
         next_age = prior_age + 1
     else:
         return {
@@ -191,40 +269,49 @@ def finalize_attempt(
     if not isinstance(frame_index, int) or isinstance(frame_index, bool) or frame_index < 0:
         raise ValueError("frame_index must be a non-negative integer")
 
-    status = attempt.get("attempt_status", attempt.get("status"))
+    raw_status = attempt.get("attempt_status", attempt.get("status"))
+    status = (
+        raw_status
+        if isinstance(raw_status, str) and raw_status in ATTEMPT_STATUSES
+        else "invalid"
+    )
     if status == "accepted":
         candidate = attempt.get("candidate", attempt.get("output"))
-        if not isinstance(candidate, Mapping):
-            raise ValueError("accepted attempt requires a candidate")
         state = _finite_estimate_and_covariance(candidate)
-        if state is None:
-            raise ValueError("accepted candidate must be finite with SPD covariance")
-        estimate, covariance = state
+        provenance = (
+            None
+            if not isinstance(candidate, Mapping)
+            else _canonical_base_provenance(
+                candidate.get("base_anchor_provenance")
+            )
+        )
         try:
             epsilon = float(candidate.get("epsilon"))
-        except (TypeError, ValueError, OverflowError) as error:
-            raise ValueError("accepted candidate requires finite epsilon") from error
-        if not math.isfinite(epsilon) or epsilon < 0.0:
-            raise ValueError("accepted candidate requires finite epsilon")
-        provenance = candidate.get("base_anchor_provenance", [])
-        if not isinstance(provenance, (list, tuple)):
-            raise ValueError("candidate provenance must be a sequence")
-        return {
-            "output_status": "fresh",
-            "estimate": estimate.tolist(),
-            "modeled_covariance": covariance.tolist(),
-            "epsilon": epsilon,
-            "prediction_age": 0,
-            "aged_modeled_radius": None,
-            "base_anchor_provenance": list(provenance),
-        }
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            epsilon = math.nan
+        if (
+            state is not None
+            and provenance is not None
+            and math.isfinite(epsilon)
+            and epsilon >= 0.0
+        ):
+            estimate, covariance = state
+            return {
+                "attempt_status": "accepted",
+                "output_status": "fresh",
+                "estimate": estimate.tolist(),
+                "modeled_covariance": covariance.tolist(),
+                "epsilon": epsilon,
+                "prediction_age": 0,
+                "aged_modeled_radius": None,
+                "base_anchor_provenance": provenance,
+            }
+        status = "invalid"
 
-    prediction = prior_bundle.get("public_prediction")
-    if (
-        isinstance(prediction, Mapping)
-        and prediction.get("output_status") == "predicted"
-        and prediction.get("prediction_age") in (1, 2)
-        and _finite_estimate_and_covariance(prediction) is not None
-    ):
-        return dict(prediction)
-    return make_unavailable_output("attempt_not_accepted")
+    prediction = _canonical_prediction(prior_bundle.get("public_prediction"))
+    if prediction is not None:
+        prediction["attempt_status"] = status
+        return prediction
+    unavailable = make_unavailable_output("attempt_not_accepted")
+    unavailable["attempt_status"] = status
+    return unavailable
