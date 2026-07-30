@@ -809,7 +809,15 @@ def _solver_result(
             "phi_min_eigenvalue",
             "phi_condition",
         ):
-            result[key] = fim.get(key)
+            value = fim.get(key)
+            if key == "covariance":
+                try:
+                    covariance = np.asarray(value, dtype=float)
+                except (TypeError, ValueError, OverflowError):
+                    covariance = np.asarray([], dtype=float)
+                if covariance.shape == (2, 2) and np.isfinite(covariance).all():
+                    value = (0.5 * (covariance + covariance.T)).tolist()
+            result[key] = value
         result["fim_valid"] = fim.get("status") == "converged"
     return result
 
@@ -1079,6 +1087,11 @@ def _finite_nonnegative_scalar(value: object) -> float | None:
     return scalar
 
 
+def _same_recomputed_cost(first: float, second: float) -> bool:
+    tolerance = RELATIVE_TIE_TOLERANCE * max(1.0, abs(first), abs(second))
+    return abs(first - second) <= tolerance
+
+
 def _complete_converged_solver_result(result: object) -> bool:
     """Validate the complete, internally consistent converged-result schema."""
     if not isinstance(result, Mapping):
@@ -1107,7 +1120,7 @@ def _complete_converged_solver_result(result: object) -> bool:
     ):
         return False
     estimate = _finite_vector(result.get("estimate"))
-    covariance = _finite_relative_spd(result.get("covariance"))
+    covariance = _finite_spd_covariance(result.get("covariance"))
     epsilon = _finite_nonnegative_scalar(result.get("epsilon"))
     phi_minimum = _finite_nonnegative_scalar(result.get("phi_min_eigenvalue"))
     phi_condition = _finite_nonnegative_scalar(result.get("phi_condition"))
@@ -1163,6 +1176,10 @@ def _complete_converged_solver_result(result: object) -> bool:
         or proposal_count > MAX_WNLS_PROPOSALS
     ):
         return False
+    previous_damping: float | None = None
+    previous_cost: float | None = None
+    previous_trial_cost: float | None = None
+    previous_accepted: bool | None = None
     for index, row in enumerate(trace):
         if not isinstance(row, Mapping) or set(row) != _PROPOSAL_TRACE_FIELDS:
             return False
@@ -1187,6 +1204,33 @@ def _complete_converged_solver_result(result: object) -> bool:
             or not isinstance(row.get("accepted"), bool)
         ):
             return False
+        if index == 0:
+            if damping != INITIAL_WNLS_DAMPING:
+                return False
+        else:
+            if (
+                previous_damping is None
+                or previous_cost is None
+                or previous_accepted is None
+            ):
+                return False
+            expected_damping = (
+                max(
+                    MIN_WNLS_DAMPING,
+                    previous_damping / WNLS_DAMPING_FACTOR,
+                )
+                if previous_accepted
+                else previous_damping * WNLS_DAMPING_FACTOR
+            )
+            expected_cost = (
+                previous_trial_cost if previous_accepted else previous_cost
+            )
+            if (
+                damping != expected_damping
+                or expected_cost is None
+                or not _same_recomputed_cost(row_cost, expected_cost)
+            ):
+                return False
         trial_cost_value = row.get("trial_cost")
         trial_cost = (
             None
@@ -1204,6 +1248,16 @@ def _complete_converged_solver_result(result: object) -> bool:
         elif trial_cost is None and invalid_reason is None:
             return False
         elif trial_cost is not None and invalid_reason is not None:
+            return False
+        elif trial_cost is not None and trial_cost < row_cost:
+            return False
+        previous_damping = damping
+        previous_cost = row_cost
+        previous_trial_cost = trial_cost
+        previous_accepted = row["accepted"]
+    if trace:
+        terminal = trace[-1]
+        if terminal["accepted"] is not True or terminal["trial_cost"] != cost:
             return False
     return True
 
@@ -1228,7 +1282,7 @@ def candidate_acceptance(
     if not _complete_converged_solver_result(candidate_result):
         return False, "invalid_candidate_output", diagnostics
     estimate = _finite_vector(candidate_result.get("estimate"))
-    covariance = _finite_relative_spd(candidate_result.get("covariance"))
+    covariance = _finite_spd_covariance(candidate_result.get("covariance"))
     try:
         cost = float(candidate_result.get("cost"))
     except (TypeError, ValueError, OverflowError):

@@ -69,6 +69,27 @@ def make_converged_candidate_result(
     }
 
 
+def make_proposal_row(
+    *,
+    proposal,
+    damping,
+    cost,
+    trial_cost,
+    accepted,
+    invalid_trial_reason=None,
+):
+    return {
+        "proposal": proposal,
+        "damping": damping,
+        "cost": cost,
+        "stationarity_norm": 1.0,
+        "raw_step_norm": 1.0,
+        "trial_cost": trial_cost,
+        "invalid_trial_reason": invalid_trial_reason,
+        "accepted": accepted,
+    }
+
+
 class PredictiveLifecycleTests(unittest.TestCase):
     def test_command_prediction_ages_covariance_and_public_status(self):
         bundle = propagate_estimator_prior(
@@ -914,6 +935,152 @@ class CandidateAcceptanceTests(unittest.TestCase):
         self.assertEqual(reason, "invalid_candidate_output")
         self.assertEqual(diagnostics["gate_outcome"], "invalid")
 
+    def test_rejected_lower_cost_trial_is_invalid(self):
+        trace = (
+            make_proposal_row(
+                proposal=0,
+                damping=1e-3,
+                cost=2.0,
+                trial_cost=1.0,
+                accepted=False,
+            ),
+            make_proposal_row(
+                proposal=1,
+                damping=1e-2,
+                cost=2.0,
+                trial_cost=1.5,
+                accepted=True,
+            ),
+        )
+        candidate = make_converged_candidate_result(
+            cost=1.5,
+            proposal_trace=trace,
+        )
+        self.assertFalse(
+            candidate_acceptance(
+                candidate,
+                live_prediction=None,
+                active_reference_count=3,
+                base_anchor_provenance=[0, 1],
+            )[0]
+        )
+
+    def test_trace_requires_exact_initial_damping(self):
+        candidate = make_converged_candidate_result(
+            cost=1.0,
+            proposal_trace=(
+                make_proposal_row(
+                    proposal=0,
+                    damping=1e-2,
+                    cost=2.0,
+                    trial_cost=1.0,
+                    accepted=True,
+                ),
+            ),
+        )
+        self.assertFalse(
+            candidate_acceptance(
+                candidate,
+                live_prediction=None,
+                active_reference_count=3,
+                base_anchor_provenance=[0, 1],
+            )[0]
+        )
+
+    def test_trace_requires_transition_damping_and_carried_cost(self):
+        bad_damping = make_converged_candidate_result(
+            cost=2.0,
+            proposal_trace=(
+                make_proposal_row(
+                    proposal=0,
+                    damping=1e-3,
+                    cost=3.0,
+                    trial_cost=4.0,
+                    accepted=False,
+                ),
+                make_proposal_row(
+                    proposal=1,
+                    damping=1e-3,
+                    cost=3.0,
+                    trial_cost=2.0,
+                    accepted=True,
+                ),
+            ),
+        )
+        bad_carried_cost = make_converged_candidate_result(
+            cost=1.0,
+            proposal_trace=(
+                make_proposal_row(
+                    proposal=0,
+                    damping=1e-3,
+                    cost=3.0,
+                    trial_cost=2.0,
+                    accepted=True,
+                ),
+                make_proposal_row(
+                    proposal=1,
+                    damping=1e-4,
+                    cost=2.5,
+                    trial_cost=1.0,
+                    accepted=True,
+                ),
+            ),
+        )
+        for candidate in (bad_damping, bad_carried_cost):
+            with self.subTest(candidate=candidate):
+                self.assertFalse(
+                    candidate_acceptance(
+                        candidate,
+                        live_prediction=None,
+                        active_reference_count=3,
+                        base_anchor_provenance=[0, 1],
+                    )[0]
+                )
+
+    def test_nonempty_converged_trace_must_end_accepted(self):
+        candidate = make_converged_candidate_result(
+            cost=2.0,
+            proposal_trace=(
+                make_proposal_row(
+                    proposal=0,
+                    damping=1e-3,
+                    cost=2.0,
+                    trial_cost=3.0,
+                    accepted=False,
+                ),
+            ),
+        )
+        self.assertFalse(
+            candidate_acceptance(
+                candidate,
+                live_prediction=None,
+                active_reference_count=3,
+                base_anchor_provenance=[0, 1],
+            )[0]
+        )
+
+    def test_final_cost_must_match_terminal_accepted_trial(self):
+        candidate = make_converged_candidate_result(
+            cost=1.5,
+            proposal_trace=(
+                make_proposal_row(
+                    proposal=0,
+                    damping=1e-3,
+                    cost=2.0,
+                    trial_cost=1.0,
+                    accepted=True,
+                ),
+            ),
+        )
+        self.assertFalse(
+            candidate_acceptance(
+                candidate,
+                live_prediction=None,
+                active_reference_count=3,
+                base_anchor_provenance=[0, 1],
+            )[0]
+        )
+
     def test_reacquisition_cost_tie_uses_fixed_source_order(self):
         selected = select_candidate_result(
             [
@@ -1079,3 +1246,30 @@ class PredictiveMultistartBoundaryTests(unittest.TestCase):
                 **self.multistart_kwargs(live_prediction)
             )
         self.assertEqual(result["attempt_status"], "invalid")
+
+    def test_injected_nonsymmetric_covariance_cannot_accept_then_downgrade(self):
+        live_prediction = make_test_output(
+            status="predicted",
+            estimate=(3.0, 4.0),
+            prediction_age=1,
+            provenance=(),
+        )
+        nonsymmetric = make_converged_candidate_result(
+            estimate=(3.0, 4.0),
+            covariance=((1.0, 1e-6), (-1e-6, 1.0)),
+        )
+        with mock.patch(
+            "scripts.diagnostics.predictive_wnls.solve_finite_budget_wnls",
+            return_value=nonsymmetric,
+        ):
+            attempt = solve_predictive_multistart(
+                **self.multistart_kwargs(live_prediction)
+            )
+        output = finalize_attempt(
+            attempt,
+            {"public_prediction": live_prediction},
+            frame_index=4,
+        )
+        self.assertEqual(attempt["attempt_status"], "invalid")
+        self.assertEqual(output["attempt_status"], "invalid")
+        self.assertEqual(output["output_status"], "predicted")
