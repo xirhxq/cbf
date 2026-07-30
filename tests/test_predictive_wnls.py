@@ -21,6 +21,7 @@ from scripts.diagnostics.predictive_wnls import (
     scale_aware_stationary,
     select_candidate_result,
     solve_finite_budget_wnls,
+    solve_predictive_multistart,
     two_circle_candidates,
 )
 
@@ -40,6 +41,31 @@ def make_test_output(
         "prediction_age": prediction_age,
         "aged_modeled_radius": None if status == "fresh" else 6.0,
         "base_anchor_provenance": list(provenance),
+    }
+
+
+def make_converged_candidate_result(
+    *,
+    estimate=(1.0, 1.0),
+    covariance=((1.0, 0.0), (0.0, 1.0)),
+    cost=0.0,
+    proposal_trace=(),
+):
+    trace = [dict(row) for row in proposal_trace]
+    return {
+        "status": "converged",
+        "estimate": list(estimate),
+        "covariance": [list(row) for row in covariance],
+        "epsilon": 3.0,
+        "phi_min_eigenvalue": 1.0,
+        "phi_condition": 1.0,
+        "fim_valid": True,
+        "proposal_count": len(trace),
+        "iterations": len(trace),
+        "cost": cost,
+        "stationarity_norm": 0.0,
+        "failure_reason": None,
+        "proposal_trace": trace,
     }
 
 
@@ -593,6 +619,51 @@ class FiniteBudgetWnlsTests(unittest.TestCase):
             )
         )
 
+    def test_scale_aware_stationarity_rejects_malformed_or_empty_vectors(self):
+        malformed = (
+            ([], [1.0]),
+            ([0.0], [1.0]),
+            ([0.0, 0.0, 0.0], [1.0]),
+            ([[0.0, 0.0]], [1.0]),
+            ([0.0, 0.0], []),
+            ([0.0, 0.0], [[1.0]]),
+            ([math.nan, 0.0], [1.0]),
+            ([0.0, 0.0], [math.inf]),
+        )
+        for gradient, residual in malformed:
+            with self.subTest(gradient=gradient, residual=residual):
+                try:
+                    stationary = scale_aware_stationary(gradient, residual)
+                except Exception as error:  # pragma: no cover - should fail closed
+                    self.fail(f"stationarity helper raised {error!r}")
+                self.assertFalse(stationary)
+
+    def test_stationarity_is_checked_before_first_damped_solve(self):
+        stationary_terms = (
+            np.eye(2),
+            np.ones(3),
+            np.zeros(3),
+            np.eye(2),
+            np.zeros(2),
+            0.0,
+        )
+        with mock.patch(
+            "scripts.diagnostics.predictive_wnls._linearized_terms",
+            return_value=stationary_terms,
+        ), mock.patch(
+            "scripts.diagnostics.predictive_wnls.np.linalg.solve",
+            side_effect=AssertionError("stationary candidate must not solve"),
+        ):
+            result = solve_finite_budget_wnls(
+                [[0.0, 0.0], [6.0, 0.0], [0.0, 8.0]],
+                [np.eye(2), np.eye(2), np.eye(2)],
+                [5.0, 5.0, 5.0],
+                [3.0, 4.0],
+                0.5,
+            )
+        self.assertEqual(result["status"], "converged")
+        self.assertEqual(result["proposal_trace"], [])
+
     def test_rejected_proposals_increase_damping_without_overflow(self):
         with mock.patch(
             "scripts.diagnostics.predictive_wnls._linearized_terms",
@@ -614,8 +685,71 @@ class FiniteBudgetWnlsTests(unittest.TestCase):
             )
         damping = [row["damping"] for row in result["proposal_trace"]]
         self.assertEqual(damping[:2], [1e-3, 1e-2])
+        self.assertEqual(damping[-1], 1e15)
         self.assertLessEqual(damping[-1], 1e15)
         self.assertEqual(result["failure_reason"], "maximum_damping_exceeded")
+
+    def test_accepted_proposals_reach_and_hold_minimum_damping(self):
+        def decreasing_terms(estimate, *_args):
+            x_value = float(estimate[0])
+            gradient = np.array([-1.0, 0.0]) if x_value < 13.5 else np.zeros(2)
+            return (
+                np.eye(2),
+                np.ones(3),
+                np.ones(3),
+                np.eye(2),
+                gradient,
+                100.0 - x_value,
+            )
+
+        with mock.patch(
+            "scripts.diagnostics.predictive_wnls._linearized_terms",
+            side_effect=decreasing_terms,
+        ), mock.patch(
+            "scripts.diagnostics.predictive_wnls.fim_radius",
+            return_value=make_converged_candidate_result(),
+        ):
+            result = solve_finite_budget_wnls(
+                [[0.0, 0.0], [6.0, 0.0], [0.0, 8.0]],
+                [np.eye(2), np.eye(2), np.eye(2)],
+                [5.0, 5.0, 5.0],
+                [0.0, 1.0],
+                0.5,
+            )
+        damping = [row["damping"] for row in result["proposal_trace"]]
+        self.assertEqual(result["status"], "converged")
+        self.assertEqual(damping[-2:], [1e-15, 1e-15])
+
+    def test_accepted_fiftieth_proposal_can_converge_immediately(self):
+        def decreasing_terms(estimate, *_args):
+            x_value = float(estimate[0])
+            gradient = np.array([-1.0, 0.0]) if x_value < 49.5 else np.zeros(2)
+            return (
+                np.eye(2),
+                np.ones(3),
+                np.ones(3),
+                np.eye(2),
+                gradient,
+                100.0 - x_value,
+            )
+
+        with mock.patch(
+            "scripts.diagnostics.predictive_wnls._linearized_terms",
+            side_effect=decreasing_terms,
+        ), mock.patch(
+            "scripts.diagnostics.predictive_wnls.fim_radius",
+            return_value=make_converged_candidate_result(),
+        ):
+            result = solve_finite_budget_wnls(
+                [[0.0, 0.0], [6.0, 0.0], [0.0, 8.0]],
+                [np.eye(2), np.eye(2), np.eye(2)],
+                [5.0, 5.0, 5.0],
+                [0.0, 1.0],
+                0.5,
+            )
+        self.assertEqual(result["status"], "converged")
+        self.assertEqual(len(result["proposal_trace"]), 50)
+        self.assertTrue(result["proposal_trace"][-1]["accepted"])
 
     def test_tiny_nonstationary_step_fails_with_explicit_reason(self):
         tiny_terms = (
@@ -680,13 +814,7 @@ class CandidateAcceptanceTests(unittest.TestCase):
         self.assertTrue(result["valid"])
 
     def test_candidate_above_11_829007011943707_is_rejected(self):
-        candidate = {
-            "status": "converged",
-            "estimate": [5.0, 0.0],
-            "covariance": [[1.0, 0.0], [0.0, 1.0]],
-            "cost": 0.0,
-            "fim_valid": True,
-        }
+        candidate = make_converged_candidate_result(estimate=(5.0, 0.0))
         accepted, reason, diagnostics = candidate_acceptance(
             candidate,
             live_prediction={
@@ -701,13 +829,7 @@ class CandidateAcceptanceTests(unittest.TestCase):
         self.assertAlmostEqual(diagnostics["q_innov"], 12.5)
 
     def test_reacquisition_requires_three_refs_and_reduced_cost_at_most_nine(self):
-        candidate = {
-            "status": "converged",
-            "estimate": [1.0, 1.0],
-            "covariance": [[1.0, 0.0], [0.0, 1.0]],
-            "cost": 9.0,
-            "fim_valid": True,
-        }
+        candidate = make_converged_candidate_result(cost=9.0)
         accepted, _, _ = candidate_acceptance(
             candidate,
             live_prediction=None,
@@ -752,3 +874,208 @@ class CandidateAcceptanceTests(unittest.TestCase):
             has_live_prediction=True,
         )
         self.assertEqual(selected["source"], "circle_negative")
+
+    def test_fabricated_bare_fim_valid_flag_is_invalid(self):
+        accepted, reason, diagnostics = candidate_acceptance(
+            {
+                "status": "converged",
+                "estimate": [1.0, 1.0],
+                "covariance": [[1.0, 0.0], [0.0, 1.0]],
+                "cost": 0.0,
+                "fim_valid": True,
+            },
+            live_prediction=None,
+            active_reference_count=3,
+            base_anchor_provenance=[0, 1],
+        )
+        self.assertFalse(accepted)
+        self.assertEqual(reason, "invalid_candidate_output")
+        self.assertEqual(diagnostics["gate_outcome"], "invalid")
+
+    def test_nonfinite_proposal_trace_field_is_invalid(self):
+        trace = ({
+            "proposal": 0,
+            "damping": 1e-3,
+            "cost": math.nan,
+            "stationarity_norm": 1.0,
+            "raw_step_norm": 1.0,
+            "trial_cost": 0.5,
+            "invalid_trial_reason": None,
+            "accepted": True,
+        },)
+        candidate = make_converged_candidate_result(proposal_trace=trace)
+        accepted, reason, diagnostics = candidate_acceptance(
+            candidate,
+            live_prediction=None,
+            active_reference_count=3,
+            base_anchor_provenance=[0, 1],
+        )
+        self.assertFalse(accepted)
+        self.assertEqual(reason, "invalid_candidate_output")
+        self.assertEqual(diagnostics["gate_outcome"], "invalid")
+
+    def test_reacquisition_cost_tie_uses_fixed_source_order(self):
+        selected = select_candidate_result(
+            [
+                {
+                    "source": "circle_positive",
+                    "accepted": True,
+                    "cost": 1.0,
+                    "q_innov": None,
+                },
+                {
+                    "source": "private_reacquisition_seed",
+                    "accepted": True,
+                    "cost": 1.0 + 5e-13,
+                    "q_innov": None,
+                },
+            ],
+            has_live_prediction=False,
+        )
+        self.assertEqual(selected["source"], "private_reacquisition_seed")
+
+
+class PredictiveMultistartBoundaryTests(unittest.TestCase):
+    def multistart_kwargs(self, live_prediction):
+        return {
+            "reference_positions": [
+                [0.0, 0.0],
+                [6.0, 0.0],
+                [0.0, 8.0],
+            ],
+            "reference_covariances": [
+                np.eye(2),
+                np.eye(2),
+                np.eye(2),
+            ],
+            "measurements": [5.0, 5.0, 5.0],
+            "reference_keys": [
+                ("base", 0),
+                ("base", 1),
+                ("base", 2),
+            ],
+            "live_prediction": live_prediction,
+            "private_seed": None,
+            "ranging_sigma": 0.5,
+            "base_anchor_provenance": [0, 1],
+        }
+
+    def test_noncanonical_live_public_predictions_fail_before_candidates(self):
+        valid = make_test_output(
+            status="predicted",
+            estimate=(3.0, 4.0),
+            prediction_age=1,
+            provenance=(),
+        )
+        missing_status = dict(valid)
+        missing_status.pop("output_status")
+        wrong_status = dict(valid, output_status="fresh")
+        age_zero = dict(valid, prediction_age=0)
+        age_three = dict(valid, prediction_age=3)
+        nonnull_epsilon = dict(valid, epsilon=3.0)
+        nonempty_provenance = dict(valid, base_anchor_provenance=[0, 1])
+        bad_radius = dict(valid, aged_modeled_radius=6.5)
+        bad_covariance = dict(
+            valid,
+            modeled_covariance=[[1.0, 2.0], [0.0, 1.0]],
+        )
+        for malformed in (
+            missing_status,
+            wrong_status,
+            age_zero,
+            age_three,
+            nonnull_epsilon,
+            nonempty_provenance,
+            bad_radius,
+            bad_covariance,
+        ):
+            with self.subTest(malformed=malformed):
+                result = solve_predictive_multistart(
+                    **self.multistart_kwargs(malformed)
+                )
+                self.assertEqual(result["attempt_status"], "invalid")
+                self.assertEqual(result["candidates"], [])
+                self.assertEqual(result["failure_reason"], "invalid_live_prediction")
+
+    def test_successful_multistart_candidate_publishes_fresh_without_downgrade(self):
+        live_prediction = make_test_output(
+            status="predicted",
+            estimate=(3.0, 4.0),
+            prediction_age=1,
+            provenance=(),
+        )
+        attempt = solve_predictive_multistart(
+            **self.multistart_kwargs(live_prediction)
+        )
+        output = finalize_attempt(
+            attempt,
+            {"public_prediction": live_prediction},
+            frame_index=4,
+        )
+        self.assertEqual(attempt["attempt_status"], "accepted")
+        self.assertEqual(output["attempt_status"], "accepted")
+        self.assertEqual(output["output_status"], "fresh")
+        self.assertTrue(output_is_fresh(output))
+
+    def test_malformed_fim_diagnostics_aggregate_as_invalid(self):
+        live_prediction = make_test_output(
+            status="predicted",
+            estimate=(3.0, 4.0),
+            prediction_age=1,
+            provenance=(),
+        )
+        malformed = make_converged_candidate_result(estimate=(3.0, 4.0))
+        malformed["phi_min_eigenvalue"] = math.nan
+        with mock.patch(
+            "scripts.diagnostics.predictive_wnls.solve_finite_budget_wnls",
+            return_value=malformed,
+        ):
+            result = solve_predictive_multistart(
+                **self.multistart_kwargs(live_prediction)
+            )
+        self.assertEqual(result["attempt_status"], "invalid")
+        self.assertTrue(result["candidates"])
+        self.assertTrue(
+            all(not row["accepted"] for row in result["candidates"])
+        )
+
+    def test_complete_candidates_above_innovation_gate_aggregate_as_rejected(self):
+        live_prediction = make_test_output(
+            status="predicted",
+            estimate=(3.0, 4.0),
+            prediction_age=1,
+            provenance=(),
+        )
+        rejected = make_converged_candidate_result(estimate=(30.0, 40.0))
+        with mock.patch(
+            "scripts.diagnostics.predictive_wnls.solve_finite_budget_wnls",
+            return_value=rejected,
+        ):
+            result = solve_predictive_multistart(
+                **self.multistart_kwargs(live_prediction)
+            )
+        self.assertEqual(result["attempt_status"], "rejected")
+
+    def test_invalid_innovation_covariance_aggregates_as_invalid(self):
+        live_prediction = make_test_output(
+            status="predicted",
+            estimate=(3.0, 4.0),
+            prediction_age=1,
+            provenance=(),
+        )
+        converged = make_converged_candidate_result(estimate=(3.0, 4.0))
+        with mock.patch(
+            "scripts.diagnostics.predictive_wnls.solve_finite_budget_wnls",
+            return_value=converged,
+        ), mock.patch(
+            "scripts.diagnostics.predictive_wnls.normalized_innovation",
+            return_value={
+                "valid": False,
+                "q_innov": None,
+                "failure_reason": "innovation_covariance_not_positive_definite",
+            },
+        ):
+            result = solve_predictive_multistart(
+                **self.multistart_kwargs(live_prediction)
+            )
+        self.assertEqual(result["attempt_status"], "invalid")

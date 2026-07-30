@@ -46,6 +46,20 @@ _CANDIDATE_SOURCE_ORDER = {
     "circle_negative": 2,
     "circle_positive": 3,
 }
+_PROPOSAL_TRACE_FIELDS = {
+    "proposal",
+    "damping",
+    "cost",
+    "stationarity_norm",
+    "raw_step_norm",
+    "trial_cost",
+    "invalid_trial_reason",
+    "accepted",
+}
+_CONVERGED_TRACE_INVALID_REASONS = {
+    "invalid_trial_terms",
+    "non-finite_trial_cost",
+}
 
 
 def _finite_vector(value: object) -> np.ndarray | None:
@@ -727,8 +741,9 @@ def scale_aware_stationary(gradient: object, residual: object) -> bool:
     except (TypeError, ValueError, OverflowError):
         return False
     if (
-        gradient_array.ndim != 1
+        gradient_array.shape != (2,)
         or residual_array.ndim != 1
+        or residual_array.size == 0
         or not np.isfinite(gradient_array).all()
         or not np.isfinite(residual_array).all()
     ):
@@ -780,6 +795,7 @@ def _solver_result(
         "phi_min_eigenvalue": None,
         "phi_condition": None,
         "fim_valid": False,
+        "proposal_count": len(proposal_trace),
         "iterations": len(proposal_trace),
         "cost": cost,
         "stationarity_norm": stationarity_norm,
@@ -1054,6 +1070,144 @@ def normalized_innovation(
     }
 
 
+def _finite_nonnegative_scalar(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        return None
+    scalar = float(value)
+    if not math.isfinite(scalar) or scalar < 0.0:
+        return None
+    return scalar
+
+
+def _complete_converged_solver_result(result: object) -> bool:
+    """Validate the complete, internally consistent converged-result schema."""
+    if not isinstance(result, Mapping):
+        return False
+    required = {
+        "status",
+        "estimate",
+        "covariance",
+        "epsilon",
+        "phi_min_eigenvalue",
+        "phi_condition",
+        "fim_valid",
+        "proposal_count",
+        "iterations",
+        "cost",
+        "stationarity_norm",
+        "failure_reason",
+        "proposal_trace",
+    }
+    if not required.issubset(result):
+        return False
+    if (
+        result.get("status") != "converged"
+        or result.get("failure_reason") is not None
+        or result.get("fim_valid") is not True
+    ):
+        return False
+    estimate = _finite_vector(result.get("estimate"))
+    covariance = _finite_relative_spd(result.get("covariance"))
+    epsilon = _finite_nonnegative_scalar(result.get("epsilon"))
+    phi_minimum = _finite_nonnegative_scalar(result.get("phi_min_eigenvalue"))
+    phi_condition = _finite_nonnegative_scalar(result.get("phi_condition"))
+    cost = _finite_nonnegative_scalar(result.get("cost"))
+    stationarity_norm = _finite_nonnegative_scalar(result.get("stationarity_norm"))
+    if (
+        estimate is None
+        or covariance is None
+        or epsilon is None
+        or epsilon <= 0.0
+        or phi_minimum is None
+        or phi_minimum <= 0.0
+        or phi_condition is None
+        or phi_condition < 1.0
+        or cost is None
+        or stationarity_norm is None
+    ):
+        return False
+    covariance_eigenvalues = np.linalg.eigvalsh(covariance)
+    expected_epsilon = 3.0 * math.sqrt(float(covariance_eigenvalues[-1]))
+    expected_phi_minimum = 1.0 / float(covariance_eigenvalues[-1])
+    expected_phi_condition = float(
+        covariance_eigenvalues[-1] / covariance_eigenvalues[0]
+    )
+    if not (
+        math.isclose(epsilon, expected_epsilon, rel_tol=1e-9, abs_tol=1e-12)
+        and math.isclose(
+            phi_minimum,
+            expected_phi_minimum,
+            rel_tol=1e-9,
+            abs_tol=1e-12,
+        )
+        and math.isclose(
+            phi_condition,
+            expected_phi_condition,
+            rel_tol=1e-9,
+            abs_tol=1e-12,
+        )
+    ):
+        return False
+    proposal_count = result.get("proposal_count")
+    iterations = result.get("iterations")
+    trace = result.get("proposal_trace")
+    if (
+        isinstance(proposal_count, bool)
+        or not isinstance(proposal_count, Integral)
+        or isinstance(iterations, bool)
+        or not isinstance(iterations, Integral)
+        or not isinstance(trace, list)
+        or proposal_count != iterations
+        or proposal_count != len(trace)
+        or proposal_count < 0
+        or proposal_count > MAX_WNLS_PROPOSALS
+    ):
+        return False
+    for index, row in enumerate(trace):
+        if not isinstance(row, Mapping) or set(row) != _PROPOSAL_TRACE_FIELDS:
+            return False
+        proposal = row.get("proposal")
+        if (
+            isinstance(proposal, bool)
+            or not isinstance(proposal, Integral)
+            or proposal != index
+        ):
+            return False
+        damping = _finite_nonnegative_scalar(row.get("damping"))
+        row_cost = _finite_nonnegative_scalar(row.get("cost"))
+        row_stationarity = _finite_nonnegative_scalar(row.get("stationarity_norm"))
+        raw_step_norm = _finite_nonnegative_scalar(row.get("raw_step_norm"))
+        if (
+            damping is None
+            or damping < MIN_WNLS_DAMPING
+            or damping > MAX_WNLS_DAMPING
+            or row_cost is None
+            or row_stationarity is None
+            or raw_step_norm is None
+            or not isinstance(row.get("accepted"), bool)
+        ):
+            return False
+        trial_cost_value = row.get("trial_cost")
+        trial_cost = (
+            None
+            if trial_cost_value is None
+            else _finite_nonnegative_scalar(trial_cost_value)
+        )
+        invalid_reason = row.get("invalid_trial_reason")
+        if trial_cost_value is not None and trial_cost is None:
+            return False
+        if invalid_reason is not None and invalid_reason not in _CONVERGED_TRACE_INVALID_REASONS:
+            return False
+        if row["accepted"]:
+            if invalid_reason is not None or trial_cost is None or not trial_cost < row_cost:
+                return False
+        elif trial_cost is None and invalid_reason is None:
+            return False
+        elif trial_cost is not None and invalid_reason is not None:
+            return False
+    return True
+
+
 def candidate_acceptance(
     candidate_result: dict,
     *,
@@ -1071,6 +1225,8 @@ def candidate_acceptance(
         return False, "invalid_candidate_result", diagnostics
     if candidate_result.get("status") != "converged":
         return False, "candidate_not_numerically_converged", diagnostics
+    if not _complete_converged_solver_result(candidate_result):
+        return False, "invalid_candidate_output", diagnostics
     estimate = _finite_vector(candidate_result.get("estimate"))
     covariance = _finite_relative_spd(candidate_result.get("covariance"))
     try:
@@ -1175,22 +1331,29 @@ def solve_predictive_multistart(
     base_anchor_provenance: object,
 ) -> dict:
     """Solve and retain deterministic starts, candidate traces, and gate outcomes."""
-    live_state = (
-        None
-        if live_prediction is None
-        else _finite_estimate_and_covariance(live_prediction)
-    )
-    if live_prediction is not None and live_state is None:
-        return {
-            "attempt_status": "invalid",
-            "status": "invalid",
-            "candidates": [],
-            "selected_candidate": None,
-            "candidate": None,
-            "failure_reason": "invalid_live_prediction",
-        }
+    canonical_live_prediction = None
+    if live_prediction is not None:
+        if not _prediction_is_canonical(live_prediction):
+            return {
+                "attempt_status": "invalid",
+                "status": "invalid",
+                "candidates": [],
+                "selected_candidate": None,
+                "candidate": None,
+                "failure_reason": "invalid_live_prediction",
+            }
+        canonical_live_prediction = _canonical_prediction(live_prediction)
+        if canonical_live_prediction is None:
+            return {
+                "attempt_status": "invalid",
+                "status": "invalid",
+                "candidates": [],
+                "selected_candidate": None,
+                "candidate": None,
+                "failure_reason": "invalid_live_prediction",
+            }
     candidates = initial_candidates(
-        live_prediction=live_prediction,
+        live_prediction=canonical_live_prediction,
         private_seed=private_seed,
         reference_positions=reference_positions,
         measured_ranges=measurements,
@@ -1207,7 +1370,7 @@ def solve_predictive_multistart(
         )
         accepted, reason, diagnostics = candidate_acceptance(
             final,
-            live_prediction=live_prediction,
+            live_prediction=canonical_live_prediction,
             active_reference_count=len(reference_positions) if hasattr(reference_positions, "__len__") else -1,
             base_anchor_provenance=base_anchor_provenance,
         )
@@ -1227,7 +1390,7 @@ def solve_predictive_multistart(
         records.append(record)
     selected = select_candidate_result(
         records,
-        has_live_prediction=live_prediction is not None,
+        has_live_prediction=canonical_live_prediction is not None,
     )
     if selected is not None:
         final = selected["result"]
