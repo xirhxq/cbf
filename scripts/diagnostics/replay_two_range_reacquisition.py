@@ -863,6 +863,19 @@ def _gate_diagnostics(source: object) -> dict:
         field: _builder_json_value(source.get(field))
         for field in GATE_DIAGNOSTIC_FIELDS
     }
+    innovation_gate = result["innovation_gate"]
+    gate_outcome = result["gate_outcome"]
+    if innovation_gate not in {
+        None, "applied", "not_applicable_reacquisition",
+    } or gate_outcome not in {"invalid", "rejected", "accepted"}:
+        raise ValueError("gate diagnostics contain an unfrozen enum")
+    for field in ("q_innov", "reduced_whitened_cost"):
+        value = result[field]
+        if value is not None and not _finite_number(
+            value,
+            nonnegative=True,
+        ):
+            raise ValueError("gate diagnostic numeric field is invalid")
     if result["q_innov"] is not None and result["innovation_gate"] != "applied":
         raise ValueError("innovation score appears without innovation gate")
     if (
@@ -875,6 +888,48 @@ def _gate_diagnostics(source: object) -> dict:
         and result["innovation_gate"] != "not_applicable_reacquisition"
     ):
         raise ValueError("reacquisition cost appears outside reacquisition")
+    if innovation_gate is None and (
+        gate_outcome != "invalid"
+        or any(
+            result[field] is not None
+            for field in (
+                "q_innov", "valid", "failure_reason",
+                "reduced_whitened_cost",
+            )
+        )
+    ):
+        raise ValueError("unevaluated gate diagnostics differ")
+    if innovation_gate == "applied":
+        if "valid" not in source or result["reduced_whitened_cost"] is not None:
+            raise ValueError("innovation evaluation is incomplete")
+        valid = result["valid"]
+        if not isinstance(valid, bool):
+            raise ValueError("innovation validity is not Boolean")
+        if valid:
+            if (
+                result["q_innov"] is None
+                or result["failure_reason"] is not None
+                or gate_outcome not in {"accepted", "rejected"}
+            ):
+                raise ValueError("valid innovation gate null semantics differ")
+        elif (
+            result["q_innov"] is not None
+            or not isinstance(result["failure_reason"], str)
+            or not result["failure_reason"]
+            or gate_outcome != "invalid"
+        ):
+            raise ValueError("invalid innovation gate null semantics differ")
+    elif innovation_gate == "not_applicable_reacquisition" and (
+        result["q_innov"] is not None
+        or result["valid"] is not None
+        or result["failure_reason"] is not None
+        or gate_outcome not in {"accepted", "rejected"}
+        or (
+            gate_outcome == "accepted"
+            and result["reduced_whitened_cost"] is None
+        )
+    ):
+        raise ValueError("reacquisition gate null semantics differ")
     return result
 
 
@@ -1162,7 +1217,7 @@ def _validate_solver_result(result: object) -> None:
         if value is not None and not _finite_number(value, nonnegative=True):
             raise ValueError(f"solver {field} is invalid")
     for field in ("proposal_count", "iterations"):
-        if not _strict_int(result[field]):
+        if not _strict_int(result[field], maximum=50):
             raise ValueError(f"solver {field} is invalid")
     if not isinstance(result["fim_valid"], bool):
         raise ValueError("solver fim_valid is invalid")
@@ -1172,13 +1227,17 @@ def _validate_solver_result(result: object) -> None:
     ):
         raise ValueError("solver failure reason is invalid")
     traces = result["proposal_trace"]
-    if not isinstance(traces, list):
+    if (
+        not isinstance(traces, list)
+        or result["proposal_count"] != result["iterations"]
+        or result["proposal_count"] != len(traces)
+    ):
         raise ValueError("solver proposal trace is not a list")
-    for trace in traces:
+    for index, trace in enumerate(traces):
         if not isinstance(trace, Mapping) or tuple(trace) != PROPOSAL_TRACE_FIELDS:
             raise ValueError("proposal trace differs from exact schema")
-        if not _finite_vec2(trace["proposal"]):
-            raise ValueError("proposal trace vector is invalid")
+        if not _strict_int(trace["proposal"]) or trace["proposal"] != index:
+            raise ValueError("proposal trace index is invalid")
         for field in (
             "damping", "cost", "stationarity_norm", "raw_step_norm",
             "trial_cost",
@@ -1190,9 +1249,68 @@ def _validate_solver_result(result: object) -> None:
                 raise ValueError("proposal trace numeric field is invalid")
         if (
             trace["invalid_trial_reason"] is not None
-            and not isinstance(trace["invalid_trial_reason"], str)
+            and (
+                not isinstance(trace["invalid_trial_reason"], str)
+                or not trace["invalid_trial_reason"]
+            )
         ) or not isinstance(trace["accepted"], bool):
             raise ValueError("proposal trace discriminant is invalid")
+        if (
+            trace["damping"] is None
+            or trace["cost"] is None
+            or trace["stationarity_norm"] is None
+        ):
+            raise ValueError("proposal trace is incomplete")
+        if trace["accepted"]:
+            if (
+                trace["raw_step_norm"] is None
+                or trace["trial_cost"] is None
+                or trace["invalid_trial_reason"] is not None
+                or trace["trial_cost"] >= trace["cost"]
+            ):
+                raise ValueError("accepted proposal trace is inconsistent")
+        elif (
+            trace["trial_cost"] is None
+            and trace["invalid_trial_reason"] is None
+        ) or (
+            trace["trial_cost"] is not None
+            and trace["invalid_trial_reason"] is not None
+        ) or (
+            trace["trial_cost"] is not None
+            and trace["trial_cost"] < trace["cost"]
+        ):
+            raise ValueError("rejected proposal trace is inconsistent")
+    if result["status"] == "converged":
+        if (
+            result["estimate"] is None
+            or result["covariance"] is None
+            or result["epsilon"] is None
+            or result["epsilon"] <= 0.0
+            or result["phi_min_eigenvalue"] is None
+            or result["phi_min_eigenvalue"] <= 0.0
+            or result["phi_condition"] is None
+            or result["phi_condition"] < 1.0
+            or result["cost"] is None
+            or result["stationarity_norm"] is None
+            or result["fim_valid"] is not True
+            or result["failure_reason"] is not None
+            or (
+                traces
+                and (
+                    traces[-1]["accepted"] is not True
+                    or traces[-1]["trial_cost"] != result["cost"]
+                )
+            )
+        ):
+            raise ValueError("converged solver result is incomplete")
+    elif (
+        not isinstance(result["failure_reason"], str)
+        or not result["failure_reason"]
+        or result["fim_valid"] is not False
+        or result["covariance"] is not None
+        or result["epsilon"] is not None
+    ):
+        raise ValueError("nonconverged solver result null semantics differ")
 
 
 def _validate_reference_key(record: object) -> tuple[int, int]:
@@ -1538,6 +1656,12 @@ def _validate_row(row: Mapping) -> None:
         ):
             raise ValueError("branch scalar contract differs")
         _validate_solver_result(branch["solver_result"])
+        if (
+            row["attempt_status"] == "accepted"
+            or branch["q_branch"] is not None
+            or branch["passes_branch_gate"] is not None
+        ) and branch["solver_result"]["status"] != "converged":
+            raise ValueError("scored or accepted branch did not converge")
         if branch["q_branch"] is not None and not _finite_number(
             branch["q_branch"], nonnegative=True,
         ):
@@ -1551,7 +1675,13 @@ def _validate_row(row: Mapping) -> None:
         if _existing_candidate(candidate) != candidate:
             raise ValueError("existing candidate is not canonical")
         _validate_solver_result(candidate["result"])
-        if not _finite_vec2(candidate["initial_estimate"]):
+        if (
+            candidate["source"] not in {
+                "prediction", "private_reacquisition_seed", "algebraic",
+                "circle_negative", "circle_positive",
+            }
+            or not _finite_vec2(candidate["initial_estimate"])
+        ):
             raise ValueError("candidate initial estimate is invalid")
         if not isinstance(candidate["accepted"], bool):
             raise ValueError("candidate acceptance flag is invalid")
@@ -1560,6 +1690,29 @@ def _validate_row(row: Mapping) -> None:
             and not isinstance(candidate["rejection_reason"], str)
         ):
             raise ValueError("candidate rejection reason is invalid")
+        diagnostics = candidate["gate_diagnostics"]
+        if (
+            candidate["q_innov"] != diagnostics["q_innov"]
+            or (
+                candidate["accepted"]
+                != (diagnostics["gate_outcome"] == "accepted")
+            )
+            or (
+                candidate["accepted"]
+                and (
+                    candidate["rejection_reason"] is not None
+                    or candidate["result"]["status"] != "converged"
+                )
+            )
+            or (
+                not candidate["accepted"]
+                and (
+                    not isinstance(candidate["rejection_reason"], str)
+                    or not candidate["rejection_reason"]
+                )
+            )
+        ):
+            raise ValueError("candidate gate summary is inconsistent")
     nested_fields = (
         ("mandatory_references", MANDATORY_REFERENCE_FIELDS),
         *(
@@ -3516,7 +3669,10 @@ def replay_two_range_reacquisition(
         error=None,
     )
     transaction = None
+    fixture = None
     try:
+        if invocation_name != "registered_replay":
+            fixture = _load_fixture()
         ancestor = output_root.parent
         while not ancestor.exists():
             ancestor = ancestor.parent
@@ -3543,7 +3699,6 @@ def replay_two_range_reacquisition(
         if current_free.f_bavail * current_free.f_frsize < live_floor:
             raise OSError("available bytes below live floor")
         raw_descriptor = _open_process(transaction)
-        fixture = _load_fixture()
         if invocation_name == "unit_fixture":
             unit_row = produce_smoke_row(
                 case_id=SMOKE_CASE_IDS[0],

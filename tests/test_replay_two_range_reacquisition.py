@@ -460,6 +460,58 @@ class RowAndKeyMutationTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     replay._validate_row(row)
 
+    def test_nested_solver_and_gate_discriminant_bypasses_reject(self):
+        failed_accepted_branch = copy.deepcopy(self.accepted)
+        failed_accepted_branch["branches"][0]["solver_result"][
+            "status"
+        ] = "failed"
+
+        incomplete_converged_branch = copy.deepcopy(self.accepted)
+        incomplete_converged_branch["branches"][0]["solver_result"][
+            "covariance"
+        ] = None
+
+        mismatched_trace_count = copy.deepcopy(self.accepted)
+        mismatched_trace_count["branches"][0]["solver_result"][
+            "proposal_count"
+        ] = 1
+
+        arbitrary_gate_outcome = replay.produce_smoke_row(
+            case_id="cost_equal_nine",
+            mechanism_fixture=self.fixture,
+        )
+        arbitrary_gate_outcome["existing_candidates"][0][
+            "gate_diagnostics"
+        ]["gate_outcome"] = "arbitrary"
+
+        arbitrary_candidate_source = replay.produce_smoke_row(
+            case_id="cost_equal_nine",
+            mechanism_fixture=self.fixture,
+        )
+        arbitrary_candidate_source["existing_candidates"][0][
+            "source"
+        ] = "arbitrary"
+
+        accepted_rejected_gate = replay.produce_smoke_row(
+            case_id="cost_equal_nine",
+            mechanism_fixture=self.fixture,
+        )
+        accepted_rejected_gate["existing_candidates"][0][
+            "gate_diagnostics"
+        ]["gate_outcome"] = "rejected"
+
+        for name, row in (
+            ("failed_accepted_branch", failed_accepted_branch),
+            ("incomplete_converged_branch", incomplete_converged_branch),
+            ("mismatched_trace_count", mismatched_trace_count),
+            ("arbitrary_gate_outcome", arbitrary_gate_outcome),
+            ("arbitrary_candidate_source", arbitrary_candidate_source),
+            ("accepted_rejected_gate", accepted_rejected_gate),
+        ):
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    replay._validate_row(row)
+
     def test_cross_path_candidate_branch_and_cardinality_substitutions_reject(self):
         mutations = []
         with_existing = copy.deepcopy(self.accepted)
@@ -677,6 +729,9 @@ class RowAndKeyMutationTests(unittest.TestCase):
 
 
 class ProducerLifecycleTests(unittest.TestCase):
+    class RegisteredStop(RuntimeError):
+        pass
+
     def _protocol(
         self,
         root,
@@ -709,6 +764,95 @@ class ProducerLifecycleTests(unittest.TestCase):
             max_frames=0,
             invocation_name="smoke_a",
         )
+
+    def _registered_records(self, root):
+        protocol_path = root / "protocol.json"
+        authorization_path = root / "authorization.json"
+        output_root = root / "registered-root"
+
+        def identity(path, inode):
+            return {
+                "path": str(path),
+                "device": 1,
+                "inode": inode,
+                "size": 1,
+                "mtime_ns": 1,
+                "sha256": f"{inode:064x}",
+            }
+
+        declared_sources = {
+            name: identity(root / f"{name}.source", index + 10)
+            for index, name in enumerate(
+                replay.REGISTERED_PROTOCOL_SOURCE_NAMES,
+            )
+        }
+        raw_sources = {
+            name: declared_sources[name]
+            for name in replay.RAW_SOURCE_MEMBER_NAMES["registered_replay"]
+        }
+        protocol_payload = b'{"registered":"protocol"}\n'
+        protocol_identity = identity(protocol_path, 2)
+        protocol_identity["size"] = len(protocol_payload)
+        protocol_identity["sha256"] = hashlib.sha256(
+            protocol_payload,
+        ).hexdigest()
+        protocol = {
+            "schema_id": replay.REGISTERED_PROTOCOL_SCHEMA_ID,
+            "protocol_id": replay.REGISTERED_PROTOCOL_ID,
+            "implementation_parent_commit": "a" * 40,
+            "sources": declared_sources,
+            "method_contract": {
+                "synthetic_declaration_sha256": (
+                    replay.SYNTHETIC_DECLARATION_SHA256
+                ),
+            },
+            "disk_contract": copy.deepcopy(
+                replay.REGISTERED_DISK_CONTRACT,
+            ),
+            "ranging_sigma": 0.5,
+        }
+        authorization_payload = b'{"registered":"authorization"}\n'
+        authorization_identity = identity(authorization_path, 3)
+        authorization_identity["size"] = len(authorization_payload)
+        authorization_identity["sha256"] = hashlib.sha256(
+            authorization_payload,
+        ).hexdigest()
+        authorization = {
+            field: None
+            for field in replay.REGISTERED_AUTHORIZATION_FIELDS
+        }
+        authorization.update({
+            "schema_id": replay.REGISTERED_AUTHORIZATION_SCHEMA_ID,
+            "protocol_id": replay.REGISTERED_PROTOCOL_ID,
+            "protocol_sha256": protocol_identity["sha256"],
+            "protocol_commit": "a" * 40,
+            "preflight_commit": "b" * 40,
+            "smoke_commit": "c" * 40,
+            "user_authorization_date": "2026-07-31",
+            "user_authorization_text": "authorized test record",
+            "registered_replay_root": str(output_root),
+            "registered_analyzer_root": replay.REGISTERED_ANALYZER_ROOT,
+            "registered_retry_allowed": False,
+        })
+        for field in replay.REGISTERED_AUTHORIZATION_FIELDS:
+            if field.endswith("_sha256") and authorization[field] is None:
+                authorization[field] = "0" * 64
+        authorization["user_authorization_text_sha256"] = hashlib.sha256(
+            authorization["user_authorization_text"].encode(),
+        ).hexdigest()
+        return {
+            "protocol_path": protocol_path,
+            "authorization_path": authorization_path,
+            "output_root": output_root,
+            "protocol": protocol,
+            "protocol_payload": protocol_payload,
+            "protocol_identity": protocol_identity,
+            "authorization": authorization,
+            "authorization_payload": authorization_payload,
+            "authorization_identity": authorization_identity,
+            "declared_sources": declared_sources,
+            "raw_sources": raw_sources,
+        }
 
     def _assert_forensic_not_completed(self, output):
         normalized = Path(str(output).replace("/var/", "/private/var/", 1))
@@ -1033,6 +1177,300 @@ class ProducerLifecycleTests(unittest.TestCase):
                         "blob|committed|source",
                     ):
                         verifier(**arguments)
+
+    def test_dirty_authorization_related_path_rejects_before_allocation(self):
+        protocol_payload = b'{"protocol":"committed"}\n'
+        authorization_payload = b'{"authorization":"committed"}\n'
+        source_payload = b"print('committed source')\n"
+        protocol_identity = {
+            "path": "/repo/protocol.json",
+            "device": 1,
+            "inode": 2,
+            "size": len(protocol_payload),
+            "mtime_ns": 3,
+            "sha256": hashlib.sha256(protocol_payload).hexdigest(),
+        }
+        authorization_identity = {
+            "path": "/repo/authorization.json",
+            "device": 1,
+            "inode": 4,
+            "size": len(authorization_payload),
+            "mtime_ns": 5,
+            "sha256": hashlib.sha256(authorization_payload).hexdigest(),
+        }
+        source_identity = {
+            "path": "/repo/source.py",
+            "device": 1,
+            "inode": 6,
+            "size": len(source_payload),
+            "mtime_ns": 7,
+            "sha256": hashlib.sha256(source_payload).hexdigest(),
+        }
+        arguments = {
+            "project_root": Path("/repo"),
+            "protocol_path": Path(protocol_identity["path"]),
+            "protocol_payload": protocol_payload,
+            "protocol": {"implementation_parent_commit": "a" * 40},
+            "protocol_identity": protocol_identity,
+            "authorization_path": Path(authorization_identity["path"]),
+            "authorization_payload": authorization_payload,
+            "authorization": {
+                "protocol_commit": "b" * 40,
+                "preflight_commit": "c" * 40,
+                "smoke_commit": "d" * 40,
+            },
+            "authorization_identity": authorization_identity,
+            "sources": {"replay_source": source_identity},
+        }
+
+        def git_run(command, **kwargs):
+            if "rev-parse" in command:
+                return types.SimpleNamespace(
+                    returncode=0,
+                    stdout=("e" * 40 + "\n").encode(),
+                )
+            if "status" in command:
+                return types.SimpleNamespace(
+                    returncode=0,
+                    stdout=b" M docs/diagnostics/reviews/authorization.json\n",
+                )
+            raise AssertionError(command)
+
+        def git_blob(project, commit, path):
+            return {
+                Path(protocol_identity["path"]): protocol_payload,
+                Path(authorization_identity["path"]): authorization_payload,
+                Path(source_identity["path"]): source_payload,
+            }[Path(path)]
+
+        allocation = mock.Mock(side_effect=AssertionError("allocated root"))
+        with mock.patch.object(
+            replay,
+            "_git_resolve_commit",
+            side_effect=lambda project, commit: commit,
+        ), mock.patch.object(
+            replay,
+            "_git_blob_at",
+            side_effect=git_blob,
+        ), mock.patch.object(
+            replay.subprocess,
+            "run",
+            side_effect=git_run,
+        ), mock.patch.object(
+            replay,
+            "_create_exact_root",
+            allocation,
+        ):
+            with self.assertRaisesRegex(ValueError, "dirty"):
+                replay._validate_committed_registered_state(**arguments)
+        allocation.assert_not_called()
+
+    def test_protocol_and_authorization_parse_their_single_pinned_read(self):
+        identity = {
+            "path": "/repo/pinned.json",
+            "device": 1,
+            "inode": 2,
+            "size": 17,
+            "mtime_ns": 3,
+            "sha256": "4" * 64,
+        }
+        for label in ("protocol", "authorization"):
+            path = Path(f"/repo/{label}.json")
+            payload = json.dumps({label: "pinned"}).encode()
+            observed = {**identity, "path": str(path), "size": len(payload)}
+            observed["sha256"] = hashlib.sha256(payload).hexdigest()
+            allocation = mock.Mock(side_effect=AssertionError("allocated root"))
+            with self.subTest(label=f"{label}_single_read"), mock.patch.object(
+                replay,
+                "_read_trusted_bytes",
+                return_value=(payload, observed),
+            ) as pinned_read, mock.patch.object(
+                replay,
+                "_parse_json_object",
+                wraps=replay._parse_json_object,
+            ) as parser, mock.patch.object(
+                replay,
+                "_create_exact_root",
+                allocation,
+            ):
+                record, returned_payload, returned_identity = (
+                    replay._read_pinned_json(path)
+                )
+                self.assertEqual(record, {label: "pinned"})
+                self.assertEqual(returned_payload, payload)
+                self.assertEqual(returned_identity, observed)
+                pinned_read.assert_called_once_with(path)
+                parser.assert_called_once_with(payload, path)
+                allocation.assert_not_called()
+
+            drift_allocation = mock.Mock(
+                side_effect=AssertionError("allocated root"),
+            )
+            with self.subTest(label=f"{label}_replacement"), mock.patch.object(
+                replay,
+                "_read_trusted_bytes",
+                side_effect=ValueError(f"{label} identity changed during read"),
+            ) as pinned_read, mock.patch.object(
+                replay,
+                "_parse_json_object",
+                wraps=replay._parse_json_object,
+            ) as parser, mock.patch.object(
+                replay,
+                "_create_exact_root",
+                drift_allocation,
+            ):
+                with self.assertRaisesRegex(ValueError, "identity changed"):
+                    replay._read_pinned_json(path)
+                pinned_read.assert_called_once_with(path)
+                parser.assert_not_called()
+                drift_allocation.assert_not_called()
+
+    def test_registered_replay_never_loads_mechanism_fixture(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(str(directory).replace("/var/", "/private/var/", 1))
+            records = self._registered_records(root)
+            self.assertNotIn(
+                "mechanism_fixture",
+                replay.RAW_SOURCE_MEMBER_NAMES["registered_replay"],
+            )
+            self.assertNotIn(
+                "mechanism_fixture_manifest",
+                replay.RAW_SOURCE_MEMBER_NAMES["registered_replay"],
+            )
+            events = []
+            transaction = {
+                "root_fd": 10,
+                "parent_fd": 11,
+                "resource_fds": set(),
+            }
+            pinned_records = {
+                records["protocol_path"]: (
+                    records["protocol"],
+                    records["protocol_payload"],
+                    records["protocol_identity"],
+                ),
+                records["authorization_path"]: (
+                    records["authorization"],
+                    records["authorization_payload"],
+                    records["authorization_identity"],
+                ),
+            }
+            identity_by_path = {
+                Path(identity["path"]): identity
+                for identity in records["declared_sources"].values()
+            }
+
+            def trusted_read(path, *, capture_payload=True):
+                self.assertFalse(capture_payload)
+                return None, identity_by_path[Path(path)]
+
+            def allocate(path):
+                events.append("allocate")
+                return transaction
+
+            def stop_registered_rows(**kwargs):
+                events.append("registered_rows")
+                raise self.RegisteredStop("controlled registered stop")
+
+            filesystem = types.SimpleNamespace(
+                f_bavail=100_000_000,
+                f_frsize=4096,
+            )
+            with mock.patch.object(
+                replay,
+                "REGISTERED_PROTOCOL_RELATIVE_PATH",
+                str(records["protocol_path"]),
+            ), mock.patch.object(
+                replay,
+                "REGISTERED_AUTHORIZATION_RELATIVE_PATH",
+                str(records["authorization_path"]),
+            ), mock.patch.object(
+                replay,
+                "REGISTERED_REPLAY_ROOT",
+                str(records["output_root"]),
+            ), mock.patch.object(
+                replay,
+                "_read_pinned_json",
+                side_effect=lambda path: pinned_records[Path(path)],
+            ), mock.patch.object(
+                replay,
+                "_source_snapshots",
+                return_value=(
+                    records["raw_sources"],
+                    {"truth_data": {}},
+                ),
+            ), mock.patch.object(
+                replay,
+                "_read_trusted_bytes",
+                side_effect=trusted_read,
+            ), mock.patch.object(
+                replay,
+                "_validate_committed_registered_state",
+            ), mock.patch.object(
+                replay.os,
+                "statvfs",
+                return_value=filesystem,
+            ), mock.patch.object(
+                replay.os,
+                "fstatvfs",
+                return_value=filesystem,
+            ), mock.patch.object(
+                replay,
+                "_create_exact_root",
+                side_effect=allocate,
+            ), mock.patch.object(
+                replay,
+                "_publish_manifest",
+            ), mock.patch.object(
+                replay,
+                "_open_process",
+                return_value=12,
+            ), mock.patch.object(
+                replay,
+                "_load_fixture",
+                side_effect=AssertionError(
+                    "registered replay loaded mechanism fixture",
+                ),
+            ) as fixture_loader, mock.patch.object(
+                replay,
+                "_registered_rows",
+                side_effect=stop_registered_rows,
+            ), mock.patch.object(
+                replay,
+                "_close_output_transaction",
+            ):
+                with self.assertRaises(self.RegisteredStop):
+                    replay.replay_two_range_reacquisition(
+                        protocol_path=records["protocol_path"],
+                        data_path=root / "truth.json",
+                        input_manifest_path=root / "manifest.json",
+                        output_root=records["output_root"],
+                        run_seeds=tuple(range(20260727, 20260747)),
+                        max_frames=500,
+                        invocation_name="registered_replay",
+                        authorization_json=records["authorization_path"],
+                    )
+            fixture_loader.assert_not_called()
+            self.assertEqual(events, ["allocate", "registered_rows"])
+
+    def test_smoke_fixture_validation_precedes_root_allocation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(str(directory).replace("/var/", "/private/var/", 1))
+            protocol = self._protocol(root)
+            allocation = mock.Mock(side_effect=AssertionError("allocated root"))
+            with mock.patch.object(
+                replay,
+                "_load_fixture",
+                side_effect=ValueError("fixture binding drift"),
+            ) as fixture_loader, mock.patch.object(
+                replay,
+                "_create_exact_root",
+                allocation,
+            ):
+                with self.assertRaisesRegex(ValueError, "fixture binding drift"):
+                    self._run(protocol, root / "smoke-root")
+            fixture_loader.assert_called_once_with()
+            allocation.assert_not_called()
 
     def test_authorized_smoke_hashes_require_existing_pinned_evidence(self):
         verifier = replay._validate_smoke_evidence_binding
