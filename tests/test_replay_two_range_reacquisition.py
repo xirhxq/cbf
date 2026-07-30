@@ -1,5 +1,6 @@
 import copy
 import gzip
+import hashlib
 import json
 import math
 import tempfile
@@ -398,14 +399,66 @@ class RowAndKeyMutationTests(unittest.TestCase):
         fixture = json.loads(
             (FIXTURE_ROOT / "mechanism_20260727_180_12.json").read_bytes()
         )
+        self.fixture = fixture
+        self.mechanism = replay.produce_smoke_row(
+            case_id="mechanism_20260727_180_12",
+            mechanism_fixture=fixture,
+        )
         self.accepted = replay.produce_smoke_row(
             case_id="select_positive",
+            mechanism_fixture=fixture,
+        )
+        self.component = replay.produce_smoke_row(
+            case_id="q_equal_threshold",
+            mechanism_fixture=fixture,
+        )
+        self.rejected = replay.produce_smoke_row(
+            case_id="none_pass",
             mechanism_fixture=fixture,
         )
         self.candidate = replay.produce_smoke_row(
             case_id="cost_equal_nine",
             mechanism_fixture=fixture,
         )["existing_candidates"][0]
+
+    def test_six_reviewed_strict_row_bypasses_reject(self):
+        wrong_mechanism_seed = copy.deepcopy(self.mechanism)
+        wrong_mechanism_seed["seed"] += 1
+
+        accepted_component = copy.deepcopy(self.component)
+        accepted_component["attempt_status"] = "accepted"
+
+        accepted_unavailable = copy.deepcopy(self.accepted)
+        accepted_unavailable.update({
+            "output_status": "unavailable",
+            "prediction_age": None,
+            "estimate": None,
+            "fresh_modeled_covariance": None,
+            "fresh_epsilon": None,
+        })
+
+        rejected_private_mutation = copy.deepcopy(self.rejected)
+        rejected_private_mutation["next_private_state_estimate"][0] += 1.0
+
+        illegal_solver_status = copy.deepcopy(self.accepted)
+        illegal_solver_status["branches"][0]["solver_result"][
+            "status"
+        ] = "arbitrary"
+
+        reversed_reference_evidence = copy.deepcopy(self.mechanism)
+        reversed_reference_evidence["reference_evidence"].reverse()
+
+        for name, row in (
+            ("wrong_mechanism_seed", wrong_mechanism_seed),
+            ("accepted_component", accepted_component),
+            ("accepted_unavailable", accepted_unavailable),
+            ("rejected_private_mutation", rejected_private_mutation),
+            ("illegal_solver_status", illegal_solver_status),
+            ("reversed_reference_evidence", reversed_reference_evidence),
+        ):
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    replay._validate_row(row)
 
     def test_cross_path_candidate_branch_and_cardinality_substitutions_reject(self):
         mutations = []
@@ -624,14 +677,22 @@ class RowAndKeyMutationTests(unittest.TestCase):
 
 
 class ProducerLifecycleTests(unittest.TestCase):
-    def _protocol(self, root, *, hard_floor=0, raw_cap=100_000_000):
+    def _protocol(
+        self,
+        root,
+        *,
+        launch_floor=0,
+        live_floor=0,
+        raw_cap=100_000_000,
+    ):
         protocol = root / "protocol.json"
         protocol.write_text(
             json.dumps({
                 "protocol_id": "hermetic-two-range-smoke-v1",
                 "disk_contract": {
+                    "launch_minimum_free_bytes": launch_floor,
+                    "live_minimum_free_bytes": live_floor,
                     "raw_bundle_max_allocated_bytes": raw_cap,
-                    "hard_floor_bytes": hard_floor,
                 },
             }),
             encoding="utf-8",
@@ -670,7 +731,7 @@ class ProducerLifecycleTests(unittest.TestCase):
 
     def test_two_smoke_roots_have_identical_process_hashes(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(str(directory).replace("/var/", "/private/var/", 1))
             protocol = self._protocol(root)
             outputs = []
             for invocation in ("smoke_a", "smoke_b"):
@@ -762,10 +823,251 @@ class ProducerLifecycleTests(unittest.TestCase):
                     manifest_path=manifest,
                 )
 
+    def test_fixture_parse_uses_pinned_bytes_without_second_path_open(self):
+        fixture_path = (
+            FIXTURE_ROOT / "mechanism_20260727_180_12.json"
+        ).resolve()
+        manifest_path = (FIXTURE_ROOT / "manifest.json").resolve()
+        real_strict_load = replay._strict_load
+
+        def reject_fixture_reopen(path):
+            if Path(path) == fixture_path:
+                raise AssertionError("fixture path was reopened for parse")
+            return real_strict_load(path)
+
+        with mock.patch.object(
+            replay,
+            "_strict_load",
+            side_effect=reject_fixture_reopen,
+        ):
+            fixture = replay._load_fixture(
+                fixture_path=fixture_path,
+                manifest_path=manifest_path,
+            )
+        self.assertEqual(fixture["fixture_id"], replay.MECHANISM_FIXTURE_ID)
+
+    def test_fixture_manifest_rejects_arbitrary_design_commit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(str(directory).replace("/var/", "/private/var/", 1))
+            fixture = root / "mechanism_20260727_180_12.json"
+            fixture.write_bytes(
+                (FIXTURE_ROOT / fixture.name).read_bytes(),
+            )
+            manifest_record = json.loads(
+                (FIXTURE_ROOT / "manifest.json").read_bytes(),
+            )
+            manifest_record["approved_design_commit"] = "f" * 40
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps(manifest_record, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "design commit|frozen"):
+                replay._load_fixture(
+                    fixture_path=fixture,
+                    manifest_path=manifest,
+                )
+
+    def test_registered_disk_contract_is_exact_and_uses_two_floors(self):
+        exact = {
+            "launch_minimum_free_bytes": 8_000_000_000,
+            "live_minimum_free_bytes": 6_000_000_000,
+            "raw_bundle_max_allocated_bytes": 2_000_000_000,
+            "compact_bundle_max_allocated_bytes": 10_000_000,
+        }
+        limits = getattr(
+            replay,
+            "_disk_limits",
+            lambda contract, registered: (
+                contract.get("hard_floor_bytes"),
+                contract.get("hard_floor_bytes"),
+                contract.get("raw_bundle_max_allocated_bytes"),
+            ),
+        )
+        self.assertEqual(
+            limits(exact, registered=True),
+            (8_000_000_000, 6_000_000_000, 2_000_000_000),
+        )
+        mutations = (
+            {**exact, "launch_minimum_free_bytes": 7_999_999_999},
+            {**exact, "live_minimum_free_bytes": 5_999_999_999},
+            {
+                "hard_floor_bytes": 0,
+                "raw_bundle_max_allocated_bytes": 2_000_000_000,
+            },
+        )
+        for contract in mutations:
+            with self.subTest(contract=contract):
+                with self.assertRaises(ValueError):
+                    limits(contract, registered=True)
+
+    def test_launch_and_live_floors_reach_separate_boundaries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(str(directory).replace("/var/", "/private/var/", 1))
+            protocol = self._protocol(
+                root,
+                launch_floor=100,
+                live_floor=300,
+            )
+            output = root / "two-stage-floors"
+            launch_space = types.SimpleNamespace(
+                f_bavail=2,
+                f_frsize=100,
+            )
+            live_space = types.SimpleNamespace(
+                f_bavail=10,
+                f_frsize=100,
+            )
+            real_check = replay._check_live_resource_limits
+            with mock.patch.object(
+                replay.os,
+                "statvfs",
+                return_value=launch_space,
+            ), mock.patch.object(
+                replay.os,
+                "fstatvfs",
+                return_value=live_space,
+            ), mock.patch.object(
+                replay,
+                "_check_live_resource_limits",
+                wraps=real_check,
+            ) as live_check:
+                self._run(protocol, output)
+            self.assertTrue(live_check.called)
+            self.assertTrue(
+                all(
+                    call.kwargs["live_floor"] == 300
+                    for call in live_check.call_args_list
+                ),
+            )
+
+    def test_structurally_self_consistent_uncommitted_authorization_rejects(self):
+        verifier = getattr(
+            replay,
+            "_validate_committed_registered_state",
+            lambda **kwargs: None,
+        )
+        protocol_payload = b'{"protocol":"self-consistent"}\n'
+        authorization_payload = b'{"authorization":"self-consistent"}\n'
+        protocol_identity = {
+            "path": "/repo/protocol.json",
+            "device": 1,
+            "inode": 2,
+            "size": len(protocol_payload),
+            "mtime_ns": 3,
+            "sha256": hashlib.sha256(protocol_payload).hexdigest(),
+        }
+        authorization_identity = {
+            "path": "/repo/authorization.json",
+            "device": 1,
+            "inode": 4,
+            "size": len(authorization_payload),
+            "mtime_ns": 5,
+            "sha256": hashlib.sha256(authorization_payload).hexdigest(),
+        }
+        source_payload = b"print('pinned source')\n"
+        source_identity = {
+            "path": "/repo/source.py",
+            "device": 1,
+            "inode": 6,
+            "size": len(source_payload),
+            "mtime_ns": 7,
+            "sha256": hashlib.sha256(source_payload).hexdigest(),
+        }
+        protocol = {"implementation_parent_commit": "a" * 40}
+        authorization = {
+            "protocol_commit": "b" * 40,
+            "preflight_commit": "c" * 40,
+            "smoke_commit": "d" * 40,
+        }
+        arguments = {
+            "project_root": Path("/repo"),
+            "protocol_path": Path(protocol_identity["path"]),
+            "protocol_payload": protocol_payload,
+            "protocol": protocol,
+            "protocol_identity": protocol_identity,
+            "authorization_path": Path(authorization_identity["path"]),
+            "authorization_payload": authorization_payload,
+            "authorization": authorization,
+            "authorization_identity": authorization_identity,
+            "sources": {"replay_source": source_identity},
+        }
+
+        def git_run(command, **kwargs):
+            if "rev-parse" in command and command[-1] == "HEAD":
+                return types.SimpleNamespace(
+                    returncode=0,
+                    stdout=("e" * 40 + "\n").encode(),
+                )
+            if "status" in command:
+                return types.SimpleNamespace(returncode=0, stdout=b"")
+            raise AssertionError(command)
+
+        with mock.patch.object(
+            replay,
+            "_git_resolve_commit",
+            create=True,
+            side_effect=lambda project, commit: commit,
+        ), mock.patch.object(replay.subprocess, "run", side_effect=git_run):
+            cases = {
+                "protocol": lambda project, commit, path: b"forged protocol",
+                "authorization": lambda project, commit, path: (
+                    protocol_payload
+                    if Path(path) == Path(protocol_identity["path"])
+                    else b"forged authorization"
+                ),
+                "source": lambda project, commit, path: {
+                    Path(protocol_identity["path"]): protocol_payload,
+                    Path(authorization_identity["path"]): authorization_payload,
+                    Path(source_identity["path"]): b"forged source",
+                }[Path(path)],
+            }
+            for name, blob_side_effect in cases.items():
+                with self.subTest(name=name), mock.patch.object(
+                    replay,
+                    "_git_blob_at",
+                    side_effect=blob_side_effect,
+                ):
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "blob|committed|source",
+                    ):
+                        verifier(**arguments)
+
+    def test_authorized_smoke_hashes_require_existing_pinned_evidence(self):
+        verifier = replay._validate_smoke_evidence_binding
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(str(directory).replace("/var/", "/private/var/", 1))
+            protocol = {
+                "invocations": {
+                    name: {"output_root": str(root / name)}
+                    for name in (
+                        "smoke_a", "smoke_b",
+                        "smoke_analyzer_a", "smoke_analyzer_b",
+                    )
+                },
+            }
+            authorization = {
+                field: "0" * 64
+                for field in (
+                    "smoke_a_compressed_sha256",
+                    "smoke_a_decompressed_sha256",
+                    "smoke_b_compressed_sha256",
+                    "smoke_b_decompressed_sha256",
+                    "smoke_analyzer_a_json_sha256",
+                    "smoke_analyzer_a_markdown_sha256",
+                    "smoke_analyzer_b_json_sha256",
+                    "smoke_analyzer_b_markdown_sha256",
+                    "smoke_semantic_payload_sha256",
+                )
+            }
+            with self.assertRaises((FileNotFoundError, ValueError)):
+                verifier(protocol, authorization)
+
     def test_live_floor_is_rechecked_inside_row_loop(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            protocol = self._protocol(root, hard_floor=1)
+            protocol = self._protocol(root, live_floor=1)
             output = root / "live-loop"
             high = types.SimpleNamespace(f_bavail=1000, f_frsize=4096)
             low = types.SimpleNamespace(f_bavail=0, f_frsize=4096)
@@ -838,7 +1140,7 @@ class ProducerLifecycleTests(unittest.TestCase):
     def test_start_space_failure_retains_failed_forensic_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            protocol = self._protocol(root, hard_floor=1)
+            protocol = self._protocol(root, launch_floor=1)
             output = root / "start-space"
             zero = types.SimpleNamespace(f_bavail=0, f_frsize=4096)
             with mock.patch.object(replay.os, "statvfs", return_value=zero):
@@ -849,7 +1151,7 @@ class ProducerLifecycleTests(unittest.TestCase):
     def test_live_floor_failure_retains_failed_forensic_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            protocol = self._protocol(root, hard_floor=1)
+            protocol = self._protocol(root, live_floor=1)
             output = root / "live-floor"
             zero = types.SimpleNamespace(f_bavail=0, f_frsize=4096)
             with mock.patch.object(replay.os, "fstatvfs", return_value=zero):

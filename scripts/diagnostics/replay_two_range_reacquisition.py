@@ -10,6 +10,7 @@ import json
 import math
 import os
 import secrets
+import subprocess
 import sys
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -35,14 +36,14 @@ from scripts.diagnostics.replay_localization_calibration import (
     fixed_references,
 )
 from scripts.diagnostics.replay_predictive_wnls_recovery import (
-    HARD_FLOOR_BYTES,
-    RAW_BUNDLE_CAP_BYTES,
     _canonical_active_records,
     _close_output_transaction,
     _create_exact_root,
     _file_identity,
+    _lstat_components,
     _offline_metrics,
     _preflight_frames,
+    _parse_json_object,
     _public_reference_arrays,
     _read_trusted_bytes,
     _sensor_records,
@@ -473,9 +474,12 @@ FIXTURE_MANIFEST_SCHEMA_ID = (
 )
 FIXTURE_SCHEMA_ID = "cbf2026-two-range-reacquisition-fixture-v1"
 MECHANISM_FIXTURE_ID = "mechanism_20260727_180_12"
+MECHANISM_FIXTURE_KEY = (20260727, 180, 12)
+MECHANISM_FIXTURE_SQUAD_LOCAL_INDEX = 5
 MECHANISM_FIXTURE_SHA256 = (
     "9febff2393017b7b0fbd1a02dd76a13d1d70639f2b176df236931fe29a8601c7"
 )
+APPROVED_DESIGN_COMMIT = "20a61aad96af35ee7e16434fab0a5edaaea38ef0"
 REGISTERED_PROTOCOL_SCHEMA_ID = (
     "cbf2026-two-range-reacquisition-protocol-v1"
 )
@@ -509,12 +513,27 @@ REGISTERED_AUTHORIZATION_RELATIVE_PATH = (
     "2026-07-30-cbf2026-two-range-reacquisition-"
     "registered-authorization.json"
 )
+REGISTERED_PREFLIGHT_REVIEW_RELATIVE_PATH = (
+    "docs/diagnostics/reviews/"
+    "2026-07-30-cbf2026-two-range-reacquisition-protocol-v1-review.md"
+)
+REGISTERED_SMOKE_REPORT_RELATIVE_PATH = (
+    "docs/diagnostics/"
+    "2026-07-30-cbf2026-two-range-reacquisition-smoke.md"
+)
 REGISTERED_PROTOCOL_SOURCE_NAMES = (
     "implementation_plan", "two_range_reacquisition_source",
     "predictive_wnls_source", "fixture_extractor_source", "replay_source",
     "analyzer_source", "registrar_source", "mechanism_fixture",
     "mechanism_fixture_manifest", "truth_data", "input_manifest",
 )
+SOLVER_STATUSES = ("converged", "invalid", "failed")
+REGISTERED_DISK_CONTRACT = {
+    "launch_minimum_free_bytes": 8_000_000_000,
+    "live_minimum_free_bytes": 6_000_000_000,
+    "raw_bundle_max_allocated_bytes": 2_000_000_000,
+    "compact_bundle_max_allocated_bytes": 10_000_000,
+}
 FILE_IDENTITY_FIELDS = (
     "path", "device", "inode", "size", "mtime_ns", "sha256",
 )
@@ -1098,9 +1117,37 @@ def _canonical_iso_date(value: object) -> bool:
         return False
 
 
+def _disk_limits(
+    disk_contract: Mapping,
+    registered: bool,
+) -> tuple[int, int, int]:
+    if not isinstance(disk_contract, Mapping):
+        raise ValueError("disk contract must be an object")
+    if "hard_floor_bytes" in disk_contract:
+        raise ValueError("test-only hard_floor_bytes is forbidden")
+    required = (
+        "launch_minimum_free_bytes",
+        "live_minimum_free_bytes",
+        "raw_bundle_max_allocated_bytes",
+    )
+    allowed = (*required, "compact_bundle_max_allocated_bytes")
+    if tuple(disk_contract) not in {required, allowed}:
+        raise ValueError("disk contract keys differ from frozen order")
+    if any(
+        not _strict_int(disk_contract[field])
+        for field in tuple(disk_contract)
+    ):
+        raise ValueError("disk contract values must be nonnegative integers")
+    if registered and disk_contract != REGISTERED_DISK_CONTRACT:
+        raise ValueError("registered disk contract differs from frozen values")
+    return tuple(disk_contract[field] for field in required)
+
+
 def _validate_solver_result(result: object) -> None:
     if not isinstance(result, Mapping) or tuple(result) != SOLVER_RESULT_FIELDS:
         raise ValueError("solver result differs from exact schema")
+    if result["status"] not in SOLVER_STATUSES:
+        raise ValueError("solver status is not frozen")
     nullable_vec = result["estimate"]
     nullable_cov = result["covariance"]
     if nullable_vec is not None and not _finite_vec2(nullable_vec):
@@ -1289,6 +1336,13 @@ def _validate_row(row: Mapping) -> None:
                 raise ValueError("mechanism smoke declaration differs")
             if any(value is None for value in production_values):
                 raise ValueError("mechanism smoke production key is incomplete")
+            if (
+                (row["seed"], row["frame_index"], row["robot_id"])
+                != MECHANISM_FIXTURE_KEY
+                or row["squad_local_index"]
+                != MECHANISM_FIXTURE_SQUAD_LOCAL_INDEX
+            ):
+                raise ValueError("mechanism smoke key differs from fixture")
         else:
             case = next(
                 item for item in SYNTHETIC_CASES
@@ -1307,6 +1361,8 @@ def _validate_row(row: Mapping) -> None:
             raise ValueError("unit fixture invocation carries synthetic case")
 
     status = row["output_status"]
+    if (row["attempt_status"] == "accepted") != (status == "fresh"):
+        raise ValueError("accepted attempt and fresh publication differ")
     if status == "fresh":
         if (
             row["prediction_age"] != 0
@@ -1369,7 +1425,11 @@ def _validate_row(row: Mapping) -> None:
                 raise ValueError("offline metric null contract differs")
 
     if row["attempt_path"] == "two_range_reacquisition":
-        if row["existing_candidates"] or row["existing_selected_candidate_source"] is not None:
+        if (
+            row["selector_considered"] is not True
+            or row["existing_candidates"]
+            or row["existing_selected_candidate_source"] is not None
+        ):
             raise ValueError("two-range row carries existing candidates")
         branches = row["branches"]
         if len(branches) not in (0, 2):
@@ -1397,11 +1457,78 @@ def _validate_row(row: Mapping) -> None:
         ):
             raise ValueError("post-solver rejection lacks branch evidence")
     elif row["attempt_path"] == "existing_predictive_multistart":
-        if row["branches"] or row["selected_branch_id"] is not None:
+        if (
+            row["selector_considered"] is not False
+            or row["branches"]
+            or row["selected_branch_id"] is not None
+            or row["prior_used_for_branch_selection"] is not False
+        ):
             raise ValueError("existing row carries two-range branches")
     elif row["attempt_path"] == "reference_unavailable":
-        if row["branches"] or row["existing_candidates"] or row["selected_branch_id"]:
+        if (
+            row["attempt_status"] != "reference_unavailable"
+            or row["branches"]
+            or row["existing_candidates"]
+            or row["selected_branch_id"]
+            or row["existing_selected_candidate_source"] is not None
+            or row["prior_used_for_branch_selection"] is not False
+        ):
             raise ValueError("unavailable row carries candidate evidence")
+    component_paths = {
+        "branch_gate": "smoke_branch_gate",
+        "branch_pair_gate": "smoke_branch_pair_gate",
+        "candidate_gate": "smoke_candidate_gate",
+    }
+    if row["smoke_case_kind"] in component_paths:
+        expected_path = component_paths[row["smoke_case_kind"]]
+        empty_fields = (
+            "attempt_base_anchor_provenance", "base_anchor_provenance",
+            "optional_candidates", "active_references",
+            "reference_evidence", "reference_freshness",
+            "excluded_references", "reference_violations",
+        )
+        component_shape_valid = (
+            row["invocation_name"] == "smoke_validation"
+            and row["attempt_path"] == expected_path
+            and row["selector_considered"] is False
+            and row["selector_consideration_reason"] == "smoke_component_case"
+            and row["attempt_status"] == "invalid"
+            and row["attempt_failure_reason"] is None
+            and row["output_status"] == "unavailable"
+            and row["branch_selection_prior_status"] == "absent"
+            and row["next_private_state_status"] == "absent"
+            and row["prior_used_for_branch_selection"] is False
+            and row["selected_branch_id"] is None
+            and row["existing_selected_candidate_source"] is None
+            and row["mandatory_references"] == {
+                "base_ids": [], "uav_ids": [],
+            }
+            and all(row[field] == [] for field in empty_fields)
+        )
+        cardinality_valid = {
+            "branch_gate": (
+                len(row["branches"]) == 0
+                and len(row["existing_candidates"]) == 0
+            ),
+            "branch_pair_gate": (
+                len(row["branches"]) == 2
+                and len(row["existing_candidates"]) == 0
+            ),
+            "candidate_gate": (
+                len(row["branches"]) == 0
+                and len(row["existing_candidates"]) == 1
+            ),
+        }[row["smoke_case_kind"]]
+        if not component_shape_valid or not cardinality_valid:
+            raise ValueError("component smoke encoding differs from frozen form")
+    elif row["attempt_path"].startswith("smoke_"):
+        raise ValueError("component attempt path differs from smoke kind")
+    if row["branches"] and [
+        branch.get("branch_id")
+        for branch in row["branches"]
+        if isinstance(branch, Mapping)
+    ] != list(BRANCH_IDS):
+        raise ValueError("branches differ from frozen order")
     for branch in row["branches"]:
         if _branch(branch) != branch:
             raise ValueError("branch is not canonical")
@@ -1466,6 +1593,33 @@ def _validate_row(row: Mapping) -> None:
         keys = [_validate_reference_key(item) for item in row[name]]
         if keys != sorted(set(keys)):
             raise ValueError(f"{name} is not canonical sorted unique")
+    ordered_reference_fields = (
+        "reference_evidence", "reference_freshness",
+        "excluded_references", "reference_violations",
+    )
+    for name in ordered_reference_fields:
+        keys = [
+            (
+                0 if item["reference_kind"] == "base" else 1,
+                item["reference_id"],
+            )
+            for item in row[name]
+        ]
+        if keys != sorted(keys) or len(keys) != len(set(keys)):
+            raise ValueError(f"{name} differs from canonical reference order")
+    if (
+        row["reference_evidence"]
+        and row["reference_freshness"]
+        and [
+            (item["reference_kind"], item["reference_id"])
+            for item in row["reference_evidence"]
+        ]
+        != [
+            (item["reference_kind"], item["reference_id"])
+            for item in row["reference_freshness"]
+        ]
+    ):
+        raise ValueError("reference evidence and freshness order differ")
     for record in row["reference_evidence"]:
         if (
             record["reference_kind"] not in {"base", "uav"}
@@ -1547,6 +1701,29 @@ def _validate_row(row: Mapping) -> None:
         != row["next_private_state_propagated_to_frame"]
     ):
         raise ValueError("next-private-state frame arithmetic differs")
+    if row["attempt_status"] == "rejected":
+        prior_projection = (
+            row["branch_selection_prior_estimate"],
+            row["branch_selection_prior_covariance"],
+            row["branch_selection_prior_source_fresh_frame"],
+            row["branch_selection_prior_propagated_to_frame"],
+            row["branch_selection_prior_age_frames"],
+        )
+        next_projection = (
+            row["next_private_state_estimate"],
+            row["next_private_state_covariance"],
+            row["next_private_state_source_fresh_frame"],
+            row["next_private_state_propagated_to_frame"],
+            row["next_private_state_age_frames"],
+        )
+        if (
+            row["branch_selection_prior_status"]
+            != row["next_private_state_status"]
+            or prior_projection != next_projection
+        ):
+            raise ValueError(
+                "rejected attempt changed outgoing private state",
+            )
     passing = [
         branch for branch in row["branches"]
         if branch["passes_branch_gate"] is True
@@ -2245,12 +2422,23 @@ def _canonical_file_identity(identity: Mapping) -> dict:
     }
 
 
-def _source_identities(
+def _read_pinned_json(path: Path) -> tuple[dict, bytes, dict]:
+    payload, identity = _read_trusted_bytes(Path(path))
+    if payload is None:
+        raise RuntimeError("trusted JSON payload was not captured")
+    return (
+        _parse_json_object(payload, Path(path)),
+        payload,
+        _canonical_file_identity(identity),
+    )
+
+
+def _source_snapshots(
     *,
     invocation_name: str,
     data_path: Path,
     input_manifest_path: Path,
-) -> dict:
+) -> tuple[dict, dict[str, dict]]:
     project = Path(__file__).resolve().parents[2]
     fixture_root = project / "tests/fixtures/cbf2026_two_range_reacquisition"
     paths = {
@@ -2268,10 +2456,326 @@ def _source_identities(
         "truth_data": Path(data_path),
         "input_manifest": Path(input_manifest_path),
     }
-    return {
-        name: _canonical_file_identity(_file_identity(paths[name]))
-        for name in RAW_SOURCE_MEMBER_NAMES[invocation_name]
+    identities = {}
+    json_payloads = {}
+    for name in RAW_SOURCE_MEMBER_NAMES[invocation_name]:
+        capture = name in {"truth_data", "input_manifest"}
+        payload, identity = _read_trusted_bytes(
+            paths[name],
+            capture_payload=capture,
+        )
+        identities[name] = _canonical_file_identity(identity)
+        if capture:
+            if payload is None:
+                raise RuntimeError("source JSON payload was not captured")
+            json_payloads[name] = _parse_json_object(payload, paths[name])
+    return identities, json_payloads
+
+
+def _git_resolve_commit(project_root: Path, commit: str) -> str:
+    if not _lower_hex(commit, 40):
+        raise ValueError("declared Git commit is not a full lowercase OID")
+    result = subprocess.run(
+        [
+            "git", "-C", str(project_root), "rev-parse", "--verify",
+            f"{commit}^{{commit}}",
+        ],
+        capture_output=True,
+        check=False,
+    )
+    resolved = result.stdout.decode("ascii", errors="replace").strip()
+    if result.returncode != 0 or resolved != commit:
+        raise ValueError("declared Git commit does not resolve exactly")
+    return resolved
+
+
+def _git_blob_at(
+    project_root: Path,
+    commit: str,
+    path: Path,
+) -> bytes:
+    try:
+        relative = Path(path).resolve().relative_to(Path(project_root).resolve())
+    except ValueError:
+        raise ValueError("Git-bound path is outside the repository") from None
+    result = subprocess.run(
+        [
+            "git", "-C", str(project_root), "show",
+            f"{commit}:{relative.as_posix()}",
+        ],
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError(f"Git blob is absent: {relative.as_posix()}")
+    return result.stdout
+
+
+def _pinned_gzip_hashes(path: Path) -> tuple[str, str]:
+    path = Path(path)
+    _lstat_components(path, leaf_required=True)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(path, flags)
+    try:
+        before = os.fstat(descriptor)
+        compressed_digest = hashlib.sha256()
+        offset = 0
+        while offset < before.st_size:
+            chunk = os.pread(
+                descriptor,
+                min(1024 * 1024, before.st_size - offset),
+                offset,
+            )
+            if not chunk:
+                raise ValueError("smoke process short read")
+            compressed_digest.update(chunk)
+            offset += len(chunk)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        decompressed_digest = hashlib.sha256()
+        with os.fdopen(descriptor, "rb", closefd=False) as raw:
+            with gzip.GzipFile(fileobj=raw, mode="rb") as stream:
+                for line in stream:
+                    decompressed_digest.update(line)
+        after = os.fstat(descriptor)
+        linked = os.stat(path, follow_symlinks=False)
+        expected = (
+            before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns,
+        )
+        if (
+            (
+                after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns,
+            )
+            != expected
+            or (
+                linked.st_dev, linked.st_ino, linked.st_size,
+                linked.st_mtime_ns,
+            )
+            != expected
+        ):
+            raise ValueError("smoke process identity changed while hashing")
+        return compressed_digest.hexdigest(), decompressed_digest.hexdigest()
+    finally:
+        os.close(descriptor)
+
+
+def _validate_smoke_evidence_binding(
+    protocol: Mapping,
+    authorization: Mapping,
+) -> None:
+    invocations = protocol.get("invocations")
+    if not isinstance(invocations, Mapping):
+        raise ValueError("protocol lacks smoke invocation bindings")
+    raw_fields = {
+        "smoke_a": (
+            "smoke_a_compressed_sha256",
+            "smoke_a_decompressed_sha256",
+        ),
+        "smoke_b": (
+            "smoke_b_compressed_sha256",
+            "smoke_b_decompressed_sha256",
+        ),
     }
+    for invocation, fields in raw_fields.items():
+        declaration = invocations.get(invocation)
+        if not isinstance(declaration, Mapping):
+            raise ValueError(f"protocol lacks {invocation}")
+        manifest, _, _ = _read_pinned_json(
+            Path(declaration["output_root"]) / "manifest.json",
+        )
+        process = manifest.get("process_identity")
+        if not isinstance(process, Mapping):
+            raise ValueError(f"{invocation} process identity is absent")
+        observed_hashes = _pinned_gzip_hashes(Path(process["path"]))
+        if (
+            manifest.get("status") != "completed"
+            or manifest.get("invocation_name") != invocation
+            or manifest.get("observed_rows") != 18
+            or process.get("compressed_sha256") != authorization[fields[0]]
+            or process.get("decompressed_sha256") != authorization[fields[1]]
+            or observed_hashes
+            != (
+                authorization[fields[0]],
+                authorization[fields[1]],
+            )
+        ):
+            raise ValueError(f"{invocation} evidence differs from authorization")
+    analyzer_fields = {
+        "smoke_analyzer_a": (
+            "smoke_analyzer_a_json_sha256",
+            "smoke_analyzer_a_markdown_sha256",
+        ),
+        "smoke_analyzer_b": (
+            "smoke_analyzer_b_json_sha256",
+            "smoke_analyzer_b_markdown_sha256",
+        ),
+    }
+    semantic_hashes = []
+    for invocation, fields in analyzer_fields.items():
+        declaration = invocations.get(invocation)
+        if not isinstance(declaration, Mapping):
+            raise ValueError(f"protocol lacks {invocation}")
+        root = Path(declaration["output_root"])
+        manifest, _, _ = _read_pinned_json(root / "manifest.json")
+        identities = manifest.get("output_identities")
+        if manifest.get("status") != "completed" or not isinstance(
+            identities, Mapping,
+        ):
+            raise ValueError(f"{invocation} manifest is not completed")
+        artifacts = list(identities.values())
+        json_identity = next(
+            (
+                item for item in artifacts
+                if isinstance(item, Mapping)
+                and str(item.get("path", "")).endswith(".json")
+                and not str(item.get("path", "")).endswith("manifest.json")
+            ),
+            None,
+        )
+        markdown_identity = next(
+            (
+                item for item in artifacts
+                if isinstance(item, Mapping)
+                and str(item.get("path", "")).endswith(".md")
+            ),
+            None,
+        )
+        if (
+            json_identity is None
+            or markdown_identity is None
+            or json_identity.get("sha256") != authorization[fields[0]]
+            or markdown_identity.get("sha256") != authorization[fields[1]]
+        ):
+            raise ValueError(f"{invocation} artifacts differ from authorization")
+        result, _, observed = _read_pinned_json(Path(json_identity["path"]))
+        if observed["sha256"] != json_identity["sha256"]:
+            raise ValueError(f"{invocation} JSON identity changed")
+        _, markdown_observed = _read_trusted_bytes(
+            Path(markdown_identity["path"]),
+            expected_sha256=markdown_identity["sha256"],
+            capture_payload=False,
+        )
+        if markdown_observed["sha256"] != authorization[fields[1]]:
+            raise ValueError(f"{invocation} Markdown identity changed")
+        semantic_hashes.append(result.get("semantic_payload_sha256"))
+    if (
+        semantic_hashes
+        != [authorization["smoke_semantic_payload_sha256"]] * 2
+    ):
+        raise ValueError("smoke semantic payload differs from authorization")
+
+
+def _validate_committed_registered_state(
+    *,
+    project_root: Path,
+    protocol_path: Path,
+    protocol_payload: bytes,
+    protocol: Mapping,
+    protocol_identity: Mapping,
+    authorization_path: Path,
+    authorization_payload: bytes,
+    authorization: Mapping,
+    authorization_identity: Mapping,
+    sources: Mapping,
+) -> None:
+    commits = {
+        name: _git_resolve_commit(project_root, authorization[name])
+        for name in ("protocol_commit", "preflight_commit", "smoke_commit")
+    }
+    implementation_commit = _git_resolve_commit(
+        project_root,
+        protocol.get("implementation_parent_commit"),
+    )
+    if _git_blob_at(
+        project_root, commits["protocol_commit"], protocol_path,
+    ) != protocol_payload:
+        raise ValueError("protocol pinned bytes are not the declared Git blob")
+    head = subprocess.run(
+        ["git", "-C", str(project_root), "rev-parse", "--verify", "HEAD"],
+        capture_output=True,
+        check=False,
+    )
+    if head.returncode != 0:
+        raise ValueError("repository HEAD cannot be resolved")
+    head_commit = head.stdout.decode("ascii", errors="replace").strip()
+    if _git_blob_at(
+        project_root, head_commit, authorization_path,
+    ) != authorization_payload:
+        raise ValueError("authorization pinned bytes are not committed at HEAD")
+    tracked_paths = [
+        protocol_path,
+        authorization_path,
+        Path(project_root) / REGISTERED_PREFLIGHT_REVIEW_RELATIVE_PATH,
+        Path(project_root) / REGISTERED_SMOKE_REPORT_RELATIVE_PATH,
+        *(
+            Path(identity["path"])
+            for identity in sources.values()
+        ),
+    ]
+    relative_paths = []
+    for path in tracked_paths:
+        try:
+            relative_paths.append(
+                str(Path(path).resolve().relative_to(Path(project_root).resolve())),
+            )
+        except ValueError:
+            continue
+    dirty = subprocess.run(
+        [
+            "git", "-C", str(project_root), "status", "--porcelain",
+            "--untracked-files=no", "--", *relative_paths,
+        ],
+        capture_output=True,
+        check=False,
+    )
+    if dirty.returncode != 0 or dirty.stdout:
+        raise ValueError("authorization-related tracked paths are dirty")
+    for name, identity in sources.items():
+        path = Path(identity["path"])
+        try:
+            path.resolve().relative_to(Path(project_root).resolve())
+        except ValueError:
+            continue
+        blob = _git_blob_at(project_root, implementation_commit, path)
+        if hashlib.sha256(blob).hexdigest() != identity["sha256"]:
+            raise ValueError(f"source Git blob differs: {name}")
+    preflight_path = (
+        Path(project_root) / REGISTERED_PREFLIGHT_REVIEW_RELATIVE_PATH
+    )
+    smoke_path = Path(project_root) / REGISTERED_SMOKE_REPORT_RELATIVE_PATH
+    preflight_payload, _ = _read_trusted_bytes(preflight_path)
+    smoke_payload, _ = _read_trusted_bytes(smoke_path)
+    if (
+        preflight_payload is None
+        or _git_blob_at(
+            project_root, commits["preflight_commit"], preflight_path,
+        )
+        != preflight_payload
+    ):
+        raise ValueError("preflight approval is not the declared Git blob")
+    if (
+        smoke_payload is None
+        or _git_blob_at(
+            project_root, commits["smoke_commit"], smoke_path,
+        )
+        != smoke_payload
+    ):
+        raise ValueError("smoke report is not the declared Git blob")
+    for field in (
+        "smoke_a_compressed_sha256", "smoke_a_decompressed_sha256",
+        "smoke_b_compressed_sha256", "smoke_b_decompressed_sha256",
+        "smoke_analyzer_a_json_sha256",
+        "smoke_analyzer_a_markdown_sha256",
+        "smoke_analyzer_b_json_sha256",
+        "smoke_analyzer_b_markdown_sha256",
+        "smoke_semantic_payload_sha256",
+    ):
+        if authorization[field].encode("ascii") not in smoke_payload:
+            raise ValueError(f"smoke report does not bind {field}")
+    _validate_smoke_evidence_binding(protocol, authorization)
 
 
 def _utc_now() -> str:
@@ -2474,11 +2978,11 @@ def _check_live_resource_limits(
     transaction: Mapping,
     descriptor: int,
     *,
-    hard_floor: int,
+    live_floor: int,
     raw_cap: int,
 ) -> None:
     filesystem = os.fstatvfs(transaction["root_fd"])
-    if filesystem.f_bavail * filesystem.f_frsize < hard_floor:
+    if filesystem.f_bavail * filesystem.f_frsize < live_floor:
         raise OSError("available bytes below live floor")
     if _allocated_bytes_live(descriptor) > raw_cap:
         raise OSError("raw bundle exceeds allocated-byte cap")
@@ -2684,8 +3188,7 @@ def _load_fixture(
         or manifest["fixture_file"] != fixture_path.name
         or manifest["fixture_sha256"] != MECHANISM_FIXTURE_SHA256
         or not _strict_int(manifest["fixture_size"])
-        or not isinstance(manifest["approved_design_commit"], str)
-        or len(manifest["approved_design_commit"]) != 40
+        or manifest["approved_design_commit"] != APPROVED_DESIGN_COMMIT
     ):
         raise ValueError("fixture manifest differs from frozen contract")
     source_hashes = manifest["source_sha256"]
@@ -2723,7 +3226,7 @@ def _load_fixture(
         raise RuntimeError("fixture payload was not captured")
     if identity["size"] != manifest["fixture_size"]:
         raise ValueError("fixture size differs from committed manifest")
-    fixture = _strict_load(fixture_path)
+    fixture = _parse_json_object(payload, fixture_path)
     if (
         tuple(fixture)
         != (
@@ -2742,12 +3245,11 @@ def _load_fixture(
 
 def _registered_rows(
     *,
-    data_path: Path,
+    data: Mapping,
     run_seeds: tuple[int, ...],
     max_frames: int,
     ranging_sigma: float,
 ):
-    data = _strict_load(data_path)
     frames, commands = _preflight_frames(data)
     if len(frames) < max_frames:
         raise ValueError("truth data has fewer than 500 frames")
@@ -2834,7 +3336,9 @@ def replay_two_range_reacquisition(
             )
     elif run_seeds or max_frames not in (0, 1):
         raise ValueError("non-production invocation rejects trajectory grids")
-    protocol = _strict_load(protocol_path)
+    protocol, protocol_payload, observed_protocol_identity = (
+        _read_pinned_json(protocol_path)
+    )
     protocol_id = protocol.get("protocol_id")
     if not isinstance(protocol_id, str):
         raise ValueError("protocol must declare protocol_id")
@@ -2843,9 +3347,9 @@ def replay_two_range_reacquisition(
         raise ValueError("protocol must declare disk_contract")
     protocol_identity = (
         None if invocation_name == "unit_fixture"
-        else _canonical_file_identity(_file_identity(protocol_path))
+        else observed_protocol_identity
     )
-    sources = _source_identities(
+    sources, source_payloads = _source_snapshots(
         invocation_name=invocation_name,
         data_path=data_path,
         input_manifest_path=input_manifest_path,
@@ -2879,10 +3383,18 @@ def replay_two_range_reacquisition(
                 if (
                     not isinstance(declaration, Mapping)
                     or tuple(declaration) != FILE_IDENTITY_FIELDS
-                    or declaration != _canonical_file_identity(
-                        _file_identity(Path(declaration["path"])),
-                    )
                 ):
+                    raise ValueError(
+                        f"protocol source identity differs: {name}",
+                    )
+                observed_identity = sources.get(name)
+                if observed_identity is None:
+                    _, observed = _read_trusted_bytes(
+                        Path(declaration["path"]),
+                        capture_payload=False,
+                    )
+                    observed_identity = _canonical_file_identity(observed)
+                if declaration != observed_identity:
                     raise ValueError(
                         f"protocol source identity differs: {name}",
                     )
@@ -2906,10 +3418,15 @@ def replay_two_range_reacquisition(
                     f"protocol source identity differs: {name}"
                 )
     authorization_identity = None
+    authorization_payload = None
+    authorization = None
     if authorization_json is not None:
-        authorization = _strict_load(authorization_json)
-        authorization_identity = _canonical_file_identity(
-            _file_identity(authorization_json),
+        (
+            authorization,
+            authorization_payload,
+            authorization_identity,
+        ) = _read_pinned_json(
+            authorization_json,
         )
         authorization_text = authorization.get("user_authorization_text")
         sha_fields = (
@@ -2958,15 +3475,26 @@ def replay_two_range_reacquisition(
             raise ValueError(
                 "registered authorization differs from exact binding",
             )
+        if invocation_name == "registered_replay":
+            _validate_committed_registered_state(
+                project_root=Path(__file__).resolve().parents[2],
+                protocol_path=protocol_path,
+                protocol_payload=protocol_payload,
+                protocol=protocol,
+                protocol_identity=protocol_identity,
+                authorization_path=authorization_json,
+                authorization_payload=authorization_payload,
+                authorization=authorization,
+                authorization_identity=authorization_identity,
+                sources=declared_sources,
+            )
     expected_rows = (
         140000 if invocation_name == "registered_replay"
         else 1 if invocation_name == "unit_fixture" else 18
     )
-    hard_floor = int(disk_contract.get("hard_floor_bytes", HARD_FLOOR_BYTES))
-    raw_cap = int(
-        disk_contract.get(
-            "raw_bundle_max_allocated_bytes", RAW_BUNDLE_CAP_BYTES,
-        ),
+    launch_floor, live_floor, raw_cap = _disk_limits(
+        disk_contract,
+        registered=invocation_name == "registered_replay",
     )
     started_at = _utc_now()
     raw_descriptor = None
@@ -2994,7 +3522,7 @@ def replay_two_range_reacquisition(
             ancestor = ancestor.parent
         filesystem = os.statvfs(ancestor)
         free_at_start = filesystem.f_bavail * filesystem.f_frsize
-        if free_at_start < hard_floor:
+        if free_at_start < launch_floor:
             raise OSError("available bytes below start floor")
         transaction = _create_exact_root(output_root)
     except BaseException as error:
@@ -3012,7 +3540,7 @@ def replay_two_range_reacquisition(
     try:
         _publish_manifest(transaction, manifest)
         current_free = os.fstatvfs(transaction["root_fd"])
-        if current_free.f_bavail * current_free.f_frsize < hard_floor:
+        if current_free.f_bavail * current_free.f_frsize < live_floor:
             raise OSError("available bytes below live floor")
         raw_descriptor = _open_process(transaction)
         fixture = _load_fixture()
@@ -3035,7 +3563,7 @@ def replay_two_range_reacquisition(
             )
         else:
             rows = _registered_rows(
-                data_path=data_path,
+                data=source_payloads["truth_data"],
                 run_seeds=run_seeds,
                 max_frames=max_frames,
                 ranging_sigma=float(
@@ -3099,7 +3627,7 @@ def replay_two_range_reacquisition(
                     _check_live_resource_limits(
                         transaction,
                         raw_descriptor,
-                        hard_floor=hard_floor,
+                        live_floor=live_floor,
                         raw_cap=raw_cap,
                     )
         if expected_keys is not None:
