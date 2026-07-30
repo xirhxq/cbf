@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import secrets
+import stat
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,8 +23,14 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from scripts.diagnostics import replay_two_range_reacquisition as replay
+from scripts.diagnostics.replay_localization_calibration import (
+    fixed_references,
+    stable_measurement_seed,
+)
 from scripts.diagnostics.run_diagnostic import DiskSpaceError
 from scripts.diagnostics.two_range_reacquisition import (
+    BRANCH_IDS,
+    branch_gate_passes,
     canonical_private_state,
     propagate_private_state,
     reset_private_state,
@@ -85,6 +92,40 @@ ANALYSIS_IDENTITY_RECORD_FIELDS = (
     "sha256",
     "hash_domain",
 )
+IDENTITY_PATH_SUFFIXES = {
+    "protocol": tuple(
+        Path(replay.REGISTERED_PROTOCOL_RELATIVE_PATH).parts
+    ),
+    "authorization": tuple(
+        Path(replay.REGISTERED_AUTHORIZATION_RELATIVE_PATH).parts
+    ),
+    "raw_manifest": (ANALYZER_MANIFEST_NAME,),
+    "raw_compressed_process": (replay.RAW_PROCESS_NAME,),
+    "raw_decompressed_process": (replay.RAW_PROCESS_NAME,),
+    "mechanism_fixture": ("mechanism_20260727_180_12.json",),
+    "synthetic_case_source": (
+        "scripts",
+        "diagnostics",
+        "replay_two_range_reacquisition.py",
+    ),
+    "v4_manifest": (ANALYZER_MANIFEST_NAME,),
+    "v4_compressed_process": (
+        "predictive-wnls-development.jsonl.gz",
+    ),
+    "v4_decompressed_process": (
+        "predictive-wnls-development.jsonl.gz",
+    ),
+    "v4_analysis_manifest": (ANALYZER_MANIFEST_NAME,),
+    "v4_analysis_json": ("predictive-wnls-development.json",),
+    "v4_analysis_markdown": ("predictive-wnls-development.md",),
+    "legacy_baseline_process": ("calibration.jsonl.gz",),
+    "legacy_baseline_protocol_json": (
+        "docs",
+        "diagnostics",
+        "2026-07-30-predictive-wnls-stage1-protocol-v4.json",
+    ),
+    "truth_data": ("data.json",),
+}
 BUDGET_FIELDS = (
     "expected_rows",
     "observed_rows",
@@ -549,6 +590,7 @@ def _scientific_gate_records(
     new_rows: list[Mapping],
     paired: Mapping,
     baseline_fresh_total: int,
+    baseline_fresh_new_fresh: int,
     expected_rows: int,
 ) -> list[dict]:
     published_errors = [
@@ -597,7 +639,13 @@ def _scientific_gate_records(
     drop_fraction = (
         None
         if baseline_fresh_total == 0
-        else max(0.0, (baseline_fresh_total - fresh) / baseline_fresh_total)
+        else max(
+            0.0,
+            (
+                baseline_fresh_total - baseline_fresh_new_fresh
+            )
+            / baseline_fresh_total,
+        )
     )
     availability_fraction = (
         None if expected_rows == 0 else available / expected_rows
@@ -636,10 +684,10 @@ def _scientific_gate_records(
             "fresh_availability_max_drop_fraction",
             "less_than_or_equal",
             0.02,
-            fresh,
+            baseline_fresh_new_fresh,
             baseline_fresh_total,
             drop_fraction,
-            fresh >= 124647,
+            baseline_fresh_new_fresh >= 124647,
         ),
         _gate_record(
             "fresh_or_predicted_min_fraction",
@@ -706,6 +754,226 @@ def _integrity_gate_records(
         )
         for gate_id in INTEGRITY_GATE_IDS
     ]
+
+
+def _integrity_counts_from_rows(
+    rows: list[Mapping],
+    *,
+    truth_data: Mapping,
+    expected_rows: int,
+) -> dict[str, int]:
+    counts = {gate_id: 0 for gate_id in INTEGRITY_GATE_IDS}
+    config = (
+        truth_data.get("config")
+        if isinstance(truth_data, Mapping)
+        else None
+    )
+    for row in rows:
+        considered = row["selector_considered"] is True
+        evidence_records = row["reference_evidence"]
+        if any(
+            record["used"] is True
+            and record["current_freshness"] != "fresh"
+            for record in evidence_records
+        ):
+            counts["nonfresh_anchor_use"] += 1
+        freshness_projection = [
+            {
+                "reference_kind": record["reference_kind"],
+                "reference_id": record["reference_id"],
+                "current_freshness": record["current_freshness"],
+            }
+            for record in row["reference_evidence"]
+        ]
+        if row["reference_freshness"] != freshness_projection:
+            counts["preserved_contract_violation"] += 1
+        elif row["frame_index"] is not None and any(
+            record["noise_seed"]
+            != stable_measurement_seed(
+                row["seed"],
+                row["frame_index"],
+                row["robot_id"],
+                record["reference_kind"],
+                record["reference_id"],
+            )
+            for record in row["reference_evidence"]
+        ):
+            counts["preserved_contract_violation"] += 1
+        if (
+            row["prior_used_in_fim"] is True
+            or row["prior_used_for_continuous_update"] is True
+            or any(
+                record["reference_kind"] == "private_prior"
+                for record in row["active_references"]
+            )
+        ):
+            counts["private_prior_role_violation"] += 1
+        branches = row["branches"]
+        if considered and (
+            tuple(branch["branch_id"] for branch in branches)
+            != BRANCH_IDS
+            or (
+                len(branches) == 2
+                and branches[0]["circle_start"]
+                == branches[1]["circle_start"]
+            )
+        ):
+            counts["noncircle_continuous_start"] += 1
+        scored = [
+            branch
+            for branch in branches
+            if branch["q_branch"] is not None
+        ]
+        if any(
+            branch["passes_branch_gate"]
+            is not branch_gate_passes(branch["q_branch"])
+            for branch in scored
+        ):
+            counts["nonruntime_branch_score"] += 1
+        passing = [
+            branch
+            for branch in scored
+            if branch["passes_branch_gate"] is True
+        ]
+        selected = next(
+            (
+                branch
+                for branch in branches
+                if branch["branch_id"] == row["selected_branch_id"]
+            ),
+            None,
+        )
+        if considered and (
+            (
+                len(passing) == 1
+                and row["selected_branch_id"]
+                != passing[0]["branch_id"]
+            )
+            or (
+                len(passing) != 1
+                and row["selected_branch_id"] is not None
+            )
+        ):
+            counts[
+                "branch_selection_reconstruction_mismatch"
+            ] += 1
+        if (
+            considered
+            and row["output_status"] == "fresh"
+            and len(passing) != 1
+        ):
+            counts["nonunique_passing_branch_publication"] += 1
+        selected_binding_mismatch = False
+        if considered and row["attempt_status"] == "accepted":
+            if selected is None:
+                selected_binding_mismatch = True
+            else:
+                result = selected["solver_result"]
+                selected_binding_mismatch = (
+                    row["output_status"] != "fresh"
+                    or row["estimate"] != result["estimate"]
+                    or row["fresh_modeled_covariance"]
+                    != result["covariance"]
+                    or row["fresh_epsilon"] != result["epsilon"]
+                )
+        if selected_binding_mismatch:
+            counts["selected_result_binding_mismatch"] += 1
+            counts["noncircle_publication_representative"] += 1
+        if considered and row["output_status"] == "predicted":
+            counts["predicted_selector_output"] += 1
+        prior = _private_state_from_row(row, "branch_selection_prior")
+        outgoing = _private_state_from_row(row, "next_private_state")
+        recursion_mismatch = False
+        if row["attempt_status"] == "accepted":
+            recursion_mismatch = (
+                outgoing is None
+                or outgoing["source_fresh_frame"] != row["frame_index"]
+                or outgoing["propagated_to_frame"] != row["frame_index"]
+                or outgoing["age_frames"] != 0
+                or outgoing["estimate"] != row["estimate"]
+                or outgoing["modeled_covariance"]
+                != row["fresh_modeled_covariance"]
+            )
+        elif outgoing != prior:
+            recursion_mismatch = True
+        if recursion_mismatch:
+            counts["private_state_recursion_mismatch"] += 1
+        if isinstance(config, Mapping):
+            expected_mandatory = fixed_references(
+                dict(config), row["robot_id"]
+            )
+            formation = config.get("formation")
+            parts = (
+                formation.get("parts")
+                if isinstance(formation, Mapping)
+                else None
+            )
+            number = config.get("num")
+            if (
+                isinstance(parts, int)
+                and not isinstance(parts, bool)
+                and parts > 0
+                and isinstance(number, int)
+                and not isinstance(number, bool)
+                and number > 0
+            ):
+                squad_size = math.ceil(number / parts)
+                expected_local_index = (
+                    (row["robot_id"] - 1) % squad_size + 1
+                )
+                if row["squad_local_index"] != expected_local_index:
+                    counts["preserved_contract_violation"] += 1
+            if considered:
+                expected_keys = [
+                    *(
+                        ("base", identifier)
+                        for identifier in expected_mandatory["base_ids"]
+                    ),
+                    *(
+                        ("uav", identifier)
+                        for identifier in expected_mandatory["uav_ids"]
+                    ),
+                ]
+                active_keys = [
+                    (
+                        record["reference_kind"],
+                        record["reference_id"],
+                    )
+                    for record in row["active_references"]
+                ]
+                if (
+                    row["mandatory_references"] != expected_mandatory
+                    or
+                    active_keys != expected_keys
+                    or row["optional_candidates"] != []
+                ):
+                    counts[
+                        "selector_reference_set_violation"
+                    ] += 1
+                evidence = {
+                    (
+                        record["reference_kind"],
+                        record["reference_id"],
+                    ): record
+                    for record in row["reference_evidence"]
+                }
+                if any(
+                    key not in evidence
+                    or evidence[key]["used"] is not True
+                    or evidence[key]["current_freshness"] != "fresh"
+                    for key in expected_keys
+                ):
+                    counts[
+                        "missing_fixed_reference_publication"
+                    ] += 1
+    if len(rows) != expected_rows or len(
+        {
+            (row["seed"], row["frame_index"], row["robot_id"])
+            for row in rows
+        }
+    ) != expected_rows:
+        counts["exact_denominator_violation"] += 1
+    return counts
 
 
 def _selector_accounting(rows: list[Mapping]) -> dict:
@@ -784,11 +1052,11 @@ def _selector_accounting(rows: list[Mapping]) -> dict:
         "score_multiple": score_counts["multiple"],
         "score_not_evaluated": score_counts["not_evaluated"],
         "root_rejections": sum(
-            row["attempt_failure_reason"] in pre_solver_reasons
+            row["attempt_status"] != "accepted"
             for row in considered
         ),
         "downstream_unavailable": sum(
-            row["selector_considered"] is True
+            row["selector_considered"] is False
             and row["output_status"] == "unavailable"
             for row in rows
         ),
@@ -819,7 +1087,6 @@ def aggregate_two_range_reacquisition(
     protocol: Mapping,
 ) -> dict:
     """Join exact baseline/v4/new keys and compute frozen compact metrics."""
-    del truth_data
     baseline_rows = [
         row
         for row in baseline_rows
@@ -903,9 +1170,14 @@ def aggregate_two_range_reacquisition(
         baseline_fresh_total=baseline_transitions[
             "baseline_fresh_total"
         ],
+        baseline_fresh_new_fresh=baseline_transitions["new_fresh"],
         expected_rows=expected_rows,
     )
-    integrity_counts = {gate_id: 0 for gate_id in INTEGRITY_GATE_IDS}
+    integrity_counts = _integrity_counts_from_rows(
+        new_rows,
+        truth_data=truth_data,
+        expected_rows=expected_rows,
+    )
     integrity = _integrity_gate_records(
         integrity_counts, denominator=expected_rows
     )
@@ -1162,6 +1434,129 @@ def _reference_public_state(
     return estimate, covariance, provenance
 
 
+def _expected_topology(row: Mapping, protocol: Mapping) -> dict | None:
+    if row["frame_index"] is None:
+        return None
+    config = protocol.get("truth_config")
+    if not isinstance(config, Mapping):
+        config = protocol.get("_truth_config")
+    if isinstance(config, Mapping):
+        expected_mandatory = fixed_references(
+            dict(config), row["robot_id"]
+        )
+        number = config.get("num")
+        formation = config.get("formation")
+        parts = (
+            formation.get("parts")
+            if isinstance(formation, Mapping)
+            else None
+        )
+        if (
+            isinstance(number, bool)
+            or not isinstance(number, int)
+            or isinstance(parts, bool)
+            or not isinstance(parts, int)
+            or number <= 0
+            or parts <= 0
+        ):
+            raise ValueError("truth config squad topology is invalid")
+        squad_size = math.ceil(number / parts)
+        expected_local_index = (
+            (row["robot_id"] - 1) % squad_size + 1
+        )
+    else:
+        expected_mandatory = protocol.get(
+            "_expected_mandatory_references"
+        )
+        expected_local_index = protocol.get(
+            "_expected_squad_local_index"
+        )
+        if row["invocation_name"] == "registered_replay":
+            raise ValueError("registered truth topology is absent")
+    if (
+        not isinstance(expected_mandatory, Mapping)
+        or tuple(expected_mandatory)
+        != replay.MANDATORY_REFERENCE_FIELDS
+        or not isinstance(expected_local_index, int)
+        or isinstance(expected_local_index, bool)
+    ):
+        raise ValueError("independent reference topology is absent")
+    return {
+        "mandatory_references": {
+            field: list(expected_mandatory[field])
+            for field in replay.MANDATORY_REFERENCE_FIELDS
+        },
+        "squad_local_index": expected_local_index,
+    }
+
+
+def _validate_topology_fields(row: Mapping, protocol: Mapping) -> dict | None:
+    expected = _expected_topology(row, protocol)
+    if expected is None:
+        return None
+    if row["squad_local_index"] != expected["squad_local_index"]:
+        raise ValueError("squad local index differs from truth config")
+    if row["mandatory_references"] != expected["mandatory_references"]:
+        raise ValueError(
+            "considered selector reference set differs from fixed topology"
+        )
+    return expected
+
+
+def _validate_reference_runtime_contract(
+    row: Mapping,
+    *,
+    current_public: Mapping,
+) -> None:
+    expected_freshness = []
+    for record in row["reference_evidence"]:
+        kind = record["reference_kind"]
+        identifier = record["reference_id"]
+        if row["frame_index"] is None:
+            current_freshness = record["current_freshness"]
+        elif kind == "base":
+            current_freshness = "fresh"
+        else:
+            output = current_public.get(identifier)
+            status = (
+                output.get("output_status")
+                if isinstance(output, Mapping)
+                else None
+            )
+            current_freshness = (
+                status
+                if status in {"fresh", "predicted", "unavailable"}
+                else "missing"
+            )
+        if record["current_freshness"] != current_freshness:
+            raise ValueError(
+                "reference freshness differs from current public state"
+            )
+        expected_freshness.append(
+            {
+                "reference_kind": kind,
+                "reference_id": identifier,
+                "current_freshness": current_freshness,
+            }
+        )
+        if row["frame_index"] is not None:
+            expected_seed = stable_measurement_seed(
+                row["seed"],
+                row["frame_index"],
+                row["robot_id"],
+                kind,
+                identifier,
+            )
+            if record["noise_seed"] != expected_seed:
+                raise ValueError(
+                    "measurement noise seed differs from frozen derivation"
+                )
+    if row["reference_freshness"] != expected_freshness:
+        raise ValueError(
+            "reference freshness projection differs from evidence"
+        )
+
+
 def _branch_runtime_inputs(
     row: Mapping,
     *,
@@ -1191,7 +1586,8 @@ def _branch_runtime_inputs(
         (record["reference_kind"], record["reference_id"])
         for record in row["active_references"]
     )
-    mandatory = row["mandatory_references"]
+    topology = _validate_topology_fields(row, protocol)
+    mandatory = topology["mandatory_references"]
     fixed_keys = tuple(
         ("uav", identifier) for identifier in mandatory["uav_ids"]
     )
@@ -1391,6 +1787,10 @@ def validate_and_reconstruct_row(
     )
     if observed_key != expected_key:
         raise ValueError("row key differs from expected stream key")
+    _validate_topology_fields(row, protocol)
+    _validate_reference_runtime_contract(
+        row, current_public=current_public
+    )
     next_private = _reconstruct_private_state(
         row,
         previous_private=previous_private,
@@ -1419,9 +1819,23 @@ def _strict_json_object(payload: bytes, path: Path) -> dict:
             result[key] = value
         return result
 
+    def reject_constant(value):
+        raise ValueError(f"non-finite JSON constant: {value}")
+
+    def finite_float(value):
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            raise ValueError(f"non-finite JSON float: {value}")
+        return parsed
+
     try:
-        value = json.loads(payload, object_pairs_hook=object_pairs)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        value = json.loads(
+            payload,
+            object_pairs_hook=object_pairs,
+            parse_constant=reject_constant,
+            parse_float=finite_float,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         raise ValueError(f"invalid strict JSON: {path}") from error
     if not isinstance(value, dict):
         raise ValueError(f"JSON artifact is not an object: {path}")
@@ -1571,6 +1985,98 @@ def _pinned_raw_rows(
         os.close(descriptor)
 
 
+def _observed_raw_failure_identities(
+    path: Path,
+) -> tuple[dict, dict, BaseException | None]:
+    """Capture the exact file and the actually readable gzip prefix."""
+    path = Path(path)
+    replay._lstat_components(path, leaf_required=True)
+    descriptor = os.open(
+        path,
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        before = os.fstat(descriptor)
+        compressed_digest = hashlib.sha256()
+        offset = 0
+        while offset < before.st_size:
+            chunk = os.pread(
+                descriptor,
+                min(1024 * 1024, before.st_size - offset),
+                offset,
+            )
+            if not chunk:
+                raise ValueError("raw process short read during observation")
+            compressed_digest.update(chunk)
+            offset += len(chunk)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        decompressed_digest = hashlib.sha256()
+        decompression_error = None
+        with os.fdopen(os.dup(descriptor), "rb") as raw:
+            with gzip.GzipFile(fileobj=raw, mode="rb") as stream:
+                while True:
+                    try:
+                        chunk = stream.read(1024 * 1024)
+                    except BaseException as error:
+                        decompression_error = error
+                        break
+                    if not chunk:
+                        break
+                    decompressed_digest.update(chunk)
+        after = os.fstat(descriptor)
+        linked = os.stat(path, follow_symlinks=False)
+        expected = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+        )
+        if (
+            (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+            )
+            != expected
+            or (
+                linked.st_dev,
+                linked.st_ino,
+                linked.st_size,
+                linked.st_mtime_ns,
+            )
+            != expected
+        ):
+            raise ValueError(
+                "raw process identity changed during failure observation"
+            )
+        base = {
+            "path": str(path),
+            "device": before.st_dev,
+            "inode": before.st_ino,
+            "size": before.st_size,
+            "allocated_bytes": before.st_blocks * 512,
+            "mtime_ns": before.st_mtime_ns,
+        }
+        return (
+            _manifest_identity(
+                base,
+                digest=compressed_digest.hexdigest(),
+                domain="file_bytes",
+            ),
+            _manifest_identity(
+                base,
+                digest=decompressed_digest.hexdigest(),
+                domain="decompressed_jsonl_bytes",
+            ),
+            decompression_error,
+        )
+    finally:
+        os.close(descriptor)
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -1664,6 +2170,12 @@ def _validate_manifest_identity(
         raise ValueError("analysis identity differs from exact contract")
 
 
+def _identity_path_has_role(identity: Mapping, name: str) -> bool:
+    suffix = IDENTITY_PATH_SUFFIXES[name]
+    parts = Path(identity["path"]).parts
+    return len(parts) >= len(suffix) and tuple(parts[-len(suffix):]) == suffix
+
+
 def _validate_analysis_manifest(
     manifest: Mapping,
     *,
@@ -1685,6 +2197,7 @@ def _validate_analysis_manifest(
         or not isinstance(manifest["protocol_id"], str)
         or not manifest["protocol_id"]
         or not isinstance(manifest["output_root"], str)
+        or not Path(manifest["output_root"]).is_absolute()
     ):
         raise ValueError("analysis manifest scalar discriminant differs")
     if (
@@ -1698,6 +2211,15 @@ def _validate_analysis_manifest(
     authorization = manifest["authorization_identity"]
     if invocation == "registered_analyzer":
         _validate_manifest_identity(authorization, domain="file_bytes")
+        if (
+            not _identity_path_has_role(
+                manifest["protocol_identity"], "protocol"
+            )
+            or not _identity_path_has_role(
+                authorization, "authorization"
+            )
+        ):
+            raise ValueError("analysis registered identity is substituted")
     elif authorization is not None:
         raise ValueError("smoke analysis carries authorization identity")
     sources = manifest["source_identities"]
@@ -1713,23 +2235,30 @@ def _validate_analysis_manifest(
             else "file_bytes"
         )
         _validate_manifest_identity(identity, domain=expected_domain)
-    source_suffixes = {
-        "raw_manifest": "manifest.json",
-        "raw_compressed_process": replay.RAW_PROCESS_NAME,
-        "raw_decompressed_process": replay.RAW_PROCESS_NAME,
-        "mechanism_fixture": "mechanism_20260727_180_12.json",
-        "synthetic_case_source": (
-            "scripts/diagnostics/replay_two_range_reacquisition.py"
+    for name, identity in sources.items():
+        if not _identity_path_has_role(identity, name):
+            raise ValueError("analysis source member is substituted")
+    for manifest_name, sibling_names in (
+        (
+            "raw_manifest",
+            ("raw_compressed_process", "raw_decompressed_process"),
         ),
-        "v4_manifest": "manifest.json",
-        "v4_compressed_process": "predictive-wnls-development.jsonl.gz",
-        "v4_decompressed_process": "predictive-wnls-development.jsonl.gz",
-        "v4_analysis_manifest": "manifest.json",
-        "v4_analysis_json": "predictive-wnls-development.json",
-        "v4_analysis_markdown": "predictive-wnls-development.md",
-    }
-    for name, suffix in source_suffixes.items():
-        if name in sources and not sources[name]["path"].endswith(suffix):
+        (
+            "v4_manifest",
+            ("v4_compressed_process", "v4_decompressed_process"),
+        ),
+        (
+            "v4_analysis_manifest",
+            ("v4_analysis_json", "v4_analysis_markdown"),
+        ),
+    ):
+        if manifest_name not in sources:
+            continue
+        parent = Path(sources[manifest_name]["path"]).parent
+        if any(
+            Path(sources[name]["path"]).parent != parent
+            for name in sibling_names
+        ):
             raise ValueError("analysis source member is substituted")
     for compressed, decompressed in (
         ("raw_compressed_process", "raw_decompressed_process"),
@@ -1758,9 +2287,19 @@ def _validate_analysis_manifest(
     ):
         raise ValueError("analysis output members differ")
     completed = manifest["status"] == "completed"
-    for identity in outputs.values():
+    output_paths = {
+        "analysis_json": str(
+            Path(manifest["output_root"]) / OUTPUT_JSON_NAME
+        ),
+        "analysis_markdown": str(
+            Path(manifest["output_root"]) / OUTPUT_MARKDOWN_NAME
+        ),
+    }
+    for name, identity in outputs.items():
         if completed:
             _validate_manifest_identity(identity, domain="file_bytes")
+            if identity["path"] != output_paths[name]:
+                raise ValueError("analysis output identity is substituted")
         elif identity is not None:
             raise ValueError("preterminal/failed analysis carries output identity")
     expected = 140000 if invocation == "registered_analyzer" else 18
@@ -2107,6 +2646,47 @@ def _validate_analysis_result(result: Mapping) -> None:
             else "file_bytes"
         )
         _validate_result_identity(identity, domain=domain)
+        if (
+            name not in {"protocol", "authorization"}
+            or registered
+        ) and not _identity_path_has_role(identity, name):
+            raise ValueError("compact identity role is substituted")
+    for compressed, decompressed in (
+        ("raw_compressed_process", "raw_decompressed_process"),
+        ("v4_compressed_process", "v4_decompressed_process"),
+    ):
+        left = identities[compressed]
+        right = identities[decompressed]
+        if left is None:
+            continue
+        if any(
+            left[field] != right[field]
+            for field in ("path", "device", "inode", "size", "mtime_ns")
+        ):
+            raise ValueError("compact compressed/decompressed descriptor differs")
+    for manifest_name, sibling_names in (
+        (
+            "raw_manifest",
+            ("raw_compressed_process", "raw_decompressed_process"),
+        ),
+        (
+            "v4_manifest",
+            ("v4_compressed_process", "v4_decompressed_process"),
+        ),
+        (
+            "v4_analysis_manifest",
+            ("v4_analysis_json", "v4_analysis_markdown"),
+        ),
+    ):
+        manifest_identity = identities[manifest_name]
+        if manifest_identity is None:
+            continue
+        parent = Path(manifest_identity["path"]).parent
+        if any(
+            Path(identities[name]["path"]).parent != parent
+            for name in sibling_names
+        ):
+            raise ValueError("compact identity role is substituted")
     budgets = result["budgets"]
     if (
         not isinstance(budgets, Mapping)
@@ -2222,9 +2802,15 @@ def _validate_analysis_result(result: Mapping) -> None:
                 for value in numeric
             ):
                 raise ValueError("paired statistics differ")
-            if record[fields[1]] < 0 or record[fields[2]] < 0:
+            elif (
+                record[fields[1]] < 0
+                or record[fields[2]] < 0
+            ):
                 raise ValueError("paired p95 statistic is negative")
-            if record[fields[2]] - record[fields[1]] != record[fields[3]]:
+            elif (
+                record[fields[2]] - record[fields[1]]
+                != record[fields[3]]
+            ):
                 raise ValueError("paired signed difference differs")
         _validate_ordered_tails(v4["tails"], v4=True)
         if (
@@ -2393,37 +2979,195 @@ def _stage_output(
     *,
     final_name: str,
     payload: bytes,
-) -> tuple[str, dict]:
+) -> dict:
     temporary = (
         f".{final_name}.{os.getpid()}.{secrets.token_hex(8)}.staged"
     )
-    descriptor = os.open(
-        temporary,
-        os.O_WRONLY
-        | os.O_CREAT
-        | os.O_EXCL
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0),
-        0o600,
-        dir_fd=transaction["root_fd"],
-    )
+    descriptor = None
     try:
+        descriptor = os.open(
+            temporary,
+            os.O_RDWR
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=transaction["root_fd"],
+        )
         _write_all(descriptor, payload)
         os.fsync(descriptor)
         metadata = os.fstat(descriptor)
-    finally:
+        linked = os.stat(
+            temporary,
+            dir_fd=transaction["root_fd"],
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or (metadata.st_dev, metadata.st_ino)
+            != (linked.st_dev, linked.st_ino)
+        ):
+            raise ValueError("staged output identity differs after write")
+        identity = {
+            "path": str(Path(transaction["output_root"]) / final_name),
+            "device": metadata.st_dev,
+            "inode": metadata.st_ino,
+            "size": metadata.st_size,
+            "allocated_bytes": metadata.st_blocks * 512,
+            "mtime_ns": metadata.st_mtime_ns,
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "hash_domain": "file_bytes",
+        }
+        stage = {
+            "name": temporary,
+            "final_name": final_name,
+            "fd": descriptor,
+            "identity": identity,
+            "entry_name": temporary,
+            "published": False,
+            "closed": False,
+        }
+        transaction["resource_fds"].add(descriptor)
+        return stage
+    except BaseException as error:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except BaseException as cleanup_error:
+                error.add_note(
+                    "staged descriptor cleanup failed: "
+                    f"{cleanup_error}"
+                )
+        try:
+            os.unlink(temporary, dir_fd=transaction["root_fd"])
+        except FileNotFoundError:
+            pass
+        except BaseException as cleanup_error:
+            error.add_note(
+                "hidden staged entry cleanup failed: "
+                f"{cleanup_error}"
+            )
+        raise
+
+
+def _stage_descriptor_digest(descriptor: int, size: int) -> str:
+    digest = hashlib.sha256()
+    offset = 0
+    while offset < size:
+        chunk = os.pread(
+            descriptor, min(1024 * 1024, size - offset), offset
+        )
+        if not chunk:
+            raise ValueError("staged output short read")
+        digest.update(chunk)
+        offset += len(chunk)
+    return digest.hexdigest()
+
+
+def _verify_staged_output(transaction: Mapping, stage: Mapping) -> dict:
+    if stage.get("closed") or not isinstance(stage.get("fd"), int):
+        raise ValueError("staged output descriptor is not retained")
+    metadata = os.fstat(stage["fd"])
+    identity = stage["identity"]
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or any(
+            metadata_value != identity[field]
+            for metadata_value, field in (
+                (metadata.st_dev, "device"),
+                (metadata.st_ino, "inode"),
+                (metadata.st_size, "size"),
+                (metadata.st_blocks * 512, "allocated_bytes"),
+                (metadata.st_mtime_ns, "mtime_ns"),
+            )
+        )
+        or _stage_descriptor_digest(stage["fd"], metadata.st_size)
+        != identity["sha256"]
+    ):
+        raise ValueError("retained staged output identity changed")
+    entry_name = stage.get("entry_name")
+    if not isinstance(entry_name, str):
+        raise ValueError("staged output has no linked directory entry")
+    linked = os.stat(
+        entry_name,
+        dir_fd=transaction["root_fd"],
+        follow_symlinks=False,
+    )
+    if (
+        not stat.S_ISREG(linked.st_mode)
+        or any(
+            linked_value != identity[field]
+            for linked_value, field in (
+                (linked.st_dev, "device"),
+                (linked.st_ino, "inode"),
+                (linked.st_size, "size"),
+                (linked.st_blocks * 512, "allocated_bytes"),
+                (linked.st_mtime_ns, "mtime_ns"),
+            )
+        )
+    ):
+        raise ValueError("staged output directory-entry identity changed")
+    return dict(identity)
+
+
+def _close_staged_output(transaction: Mapping, stage: dict) -> None:
+    if stage.get("closed"):
+        return
+    descriptor = stage.get("fd")
+    stage["fd"] = None
+    stage["closed"] = True
+    if isinstance(descriptor, int):
+        transaction["resource_fds"].discard(descriptor)
         os.close(descriptor)
-    identity = {
-        "path": str(Path(transaction["output_root"]) / final_name),
-        "device": metadata.st_dev,
-        "inode": metadata.st_ino,
-        "size": metadata.st_size,
-        "allocated_bytes": metadata.st_blocks * 512,
-        "mtime_ns": metadata.st_mtime_ns,
-        "sha256": hashlib.sha256(payload).hexdigest(),
-        "hash_domain": "file_bytes",
-    }
-    return temporary, identity
+
+
+def _discard_staged_output(transaction: Mapping, stage: dict) -> None:
+    _verify_staged_output(transaction, stage)
+    os.unlink(stage["entry_name"], dir_fd=transaction["root_fd"])
+    stage["entry_name"] = None
+    os.fsync(transaction["root_fd"])
+    _close_staged_output(transaction, stage)
+
+
+def _publish_staged_output(transaction: Mapping, stage: dict) -> dict:
+    _verify_staged_output(transaction, stage)
+    os.rename(
+        stage["entry_name"],
+        stage["final_name"],
+        src_dir_fd=transaction["root_fd"],
+        dst_dir_fd=transaction["root_fd"],
+    )
+    stage["entry_name"] = stage["final_name"]
+    stage["published"] = True
+    os.fsync(transaction["root_fd"])
+    return _verify_staged_output(transaction, stage)
+
+
+def _cleanup_staged_output(
+    transaction: Mapping,
+    stage: dict,
+    error: BaseException,
+) -> None:
+    entry_name = stage.get("entry_name")
+    if isinstance(entry_name, str):
+        try:
+            os.unlink(entry_name, dir_fd=transaction["root_fd"])
+        except FileNotFoundError:
+            pass
+        except BaseException as cleanup_error:
+            error.add_note(
+                f"staged entry cleanup failed for {entry_name}: "
+                f"{cleanup_error}"
+            )
+        stage["entry_name"] = None
+    try:
+        _close_staged_output(transaction, stage)
+    except BaseException as cleanup_error:
+        error.add_note(
+            "staged descriptor close failed: "
+            f"{cleanup_error}"
+        )
 
 
 def _smoke_context(row: Mapping, fixture: Mapping) -> tuple[dict, object, object]:
@@ -2466,21 +3210,11 @@ def _reverify_inputs(expected: Mapping[str, Mapping]) -> None:
         try:
             _, compressed, decompressed = _pinned_raw_rows(process_path)
         except BaseException as error:
-            _, compressed = _pinned_file_identity(process_path)
-            decompressed = {
-                **expected[decompressed_name],
-                **{
-                    field: compressed[field]
-                    for field in (
-                        "path",
-                        "device",
-                        "inode",
-                        "size",
-                        "allocated_bytes",
-                        "mtime_ns",
-                    )
-                },
-            }
+            (
+                compressed,
+                decompressed,
+                decompression_error,
+            ) = _observed_raw_failure_identities(process_path)
             observed.update(
                 {
                     compressed_name: compressed,
@@ -2492,8 +3226,17 @@ def _reverify_inputs(expected: Mapping[str, Mapping]) -> None:
                 if compressed_name == "raw_compressed_process"
                 else compressed_name
             )
+            suffix = (
+                ""
+                if decompression_error is None
+                else (
+                    "; observed decompressed prefix ended with "
+                    f"{type(decompression_error).__name__}: "
+                    f"{decompression_error}"
+                )
+            )
             raise _SourceIdentityMismatch(
-                f"{label} cannot be reverified: {error}",
+                f"{label} cannot be reverified: {error}{suffix}",
                 observed,
             ) from error
         observed[compressed_name] = compressed
@@ -2526,6 +3269,17 @@ def _validate_smoke_rows(
         raise ValueError("smoke rows differ from exact ordered case grid")
     fixture = replay._load_fixture()
     for row in rows:
+        validation_protocol = protocol
+        if row["smoke_case_id"] == replay.MECHANISM_FIXTURE_ID:
+            validation_protocol = {
+                **protocol,
+                "_expected_mandatory_references": fixture[
+                    "mandatory_references"
+                ],
+                "_expected_squad_local_index": fixture["key"][
+                    "squad_local_index"
+                ],
+            }
         current_public, previous_private, held_command = _smoke_context(
             row, fixture
         )
@@ -2537,7 +3291,7 @@ def _validate_smoke_rows(
                 row["frame_index"],
                 row["robot_id"],
             ),
-            protocol=protocol,
+            protocol=validation_protocol,
             truth_position=row["offline_truth_position"],
             current_public=current_public,
             previous_private=previous_private,
@@ -2797,6 +3551,10 @@ def _validate_registered_rows(
     current_public: dict[int, dict] = {}
     previous_seed = None
     previous_frame = None
+    validation_protocol = {
+        **protocol,
+        "_truth_config": truth_data["config"],
+    }
     for row, expected_key in zip(
         rows, replay.iter_registered_keys(), strict=True
     ):
@@ -2818,7 +3576,7 @@ def _validate_registered_rows(
         reconstructed = validate_and_reconstruct_row(
             row,
             expected_key=expected_key,
-            protocol=protocol,
+            protocol=validation_protocol,
             truth_position=truth,
             current_public=current_public,
             previous_private=private_states.get(robot_id),
@@ -2839,6 +3597,15 @@ def _validate_registered_rows(
         previous_frame = frame_index
 
 
+def _runtime_absolute_no_resolve(path: Path, *, label: str) -> Path:
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    if ".." in candidate.parts:
+        raise ValueError(f"{label} must not contain parent traversal")
+    return candidate
+
+
 def analyze_two_range_reacquisition(
     *,
     protocol_path: Path,
@@ -2850,9 +3617,13 @@ def analyze_two_range_reacquisition(
     """Validate one exact raw invocation and publish compact evidence."""
     if invocation_name not in ANALYZER_INVOCATIONS:
         raise ValueError("analyzer invocation is not registered")
-    protocol_path = Path(protocol_path).resolve()
-    raw_root = Path(raw_root).resolve()
-    output_root = Path(output_root).resolve()
+    protocol_path = _runtime_absolute_no_resolve(
+        protocol_path, label="protocol_path"
+    )
+    raw_root = _runtime_absolute_no_resolve(raw_root, label="raw_root")
+    output_root = _runtime_absolute_no_resolve(
+        output_root, label="output_root"
+    )
     if invocation_name == "registered_analyzer" and authorization_json is None:
         raise ValueError("registered analyzer requires authorization")
     if invocation_name != "registered_analyzer" and authorization_json is not None:
@@ -2873,8 +3644,8 @@ def analyze_two_range_reacquisition(
         or not isinstance(disk_contract, Mapping)
         or not isinstance(declaration, Mapping)
         or declaration.get("invocation_name") != invocation_name
-        or Path(declaration.get("input_root", "")).resolve() != raw_root
-        or Path(declaration.get("output_root", "")).resolve() != output_root
+        or Path(declaration.get("input_root", "")) != raw_root
+        or Path(declaration.get("output_root", "")) != output_root
         or declaration.get("expected_rows")
         != (140000 if invocation_name == "registered_analyzer" else 18)
     ):
@@ -2895,7 +3666,7 @@ def analyze_two_range_reacquisition(
     if (
         raw_manifest["status"] != "completed"
         or raw_manifest["invocation_name"] != expected_raw_invocation
-        or Path(raw_manifest["output_root"]).resolve() != raw_root
+        or Path(raw_manifest["output_root"]) != raw_root
         or raw_manifest["expected_rows"]
         != declaration["expected_rows"]
         or raw_manifest["observed_rows"]
@@ -2947,7 +3718,9 @@ def analyze_two_range_reacquisition(
         ):
             raise ValueError("registered protocol binding differs")
         _, _, authorization_identity = _validate_registered_authorization(
-            authorization_path=Path(authorization_json).resolve(),
+            authorization_path=_runtime_absolute_no_resolve(
+                authorization_json, label="authorization_json"
+            ),
             protocol_path=protocol_path,
             protocol_payload=protocol_payload,
             protocol=protocol,
@@ -3096,75 +3869,105 @@ def analyze_two_range_reacquisition(
         _publish_analysis_preallocation_failure(output_root, failed)
         raise
     transaction["output_root"] = str(output_root)
-    staged_names = []
-    published_names = []
+    stages = []
     try:
         _publish_analysis_manifest(transaction, manifest)
         json_payload = (
             replay.ordered_strict_json_bytes(result, ANALYSIS_FIELDS) + b"\n"
         )
         markdown_payload = _markdown(result).encode("utf-8")
-        staged_json, json_identity = _stage_output(
+        json_stage = _stage_output(
             transaction,
             final_name=OUTPUT_JSON_NAME,
             payload=json_payload,
         )
-        staged_names.append(staged_json)
-        staged_markdown, markdown_identity = _stage_output(
+        stages.append(json_stage)
+        markdown_stage = _stage_output(
             transaction,
             final_name=OUTPUT_MARKDOWN_NAME,
             payload=markdown_payload,
         )
-        staged_names.append(staged_markdown)
+        stages.append(markdown_stage)
         manifest_metadata = os.stat(
             ANALYZER_MANIFEST_NAME,
             dir_fd=transaction["root_fd"],
             follow_symlinks=False,
         )
-        compact_allocated = (
-            json_identity["allocated_bytes"]
-            + markdown_identity["allocated_bytes"]
-            + manifest_metadata.st_blocks * 512
-        )
         compact_cap = min(
             COMPACT_OUTPUT_CAP_BYTES,
             disk_contract["compact_bundle_max_allocated_bytes"],
         )
-        if compact_allocated > compact_cap:
-            raise DiskSpaceError("compact bundle exceeds allocated-byte cap")
-        result["budgets"]["compact_allocated_bytes"] = compact_allocated
-        result["semantic_payload_sha256"] = _semantic_sha256(result)
-        _validate_analysis_result(result)
-        # Restage JSON after filling the compact-byte budget.
-        os.unlink(staged_json, dir_fd=transaction["root_fd"])
-        staged_names.remove(staged_json)
-        json_payload = (
-            replay.ordered_strict_json_bytes(result, ANALYSIS_FIELDS) + b"\n"
-        )
-        staged_json, json_identity = _stage_output(
-            transaction,
-            final_name=OUTPUT_JSON_NAME,
-            payload=json_payload,
-        )
-        staged_names.insert(0, staged_json)
-        for staged, final_name in (
-            (staged_json, OUTPUT_JSON_NAME),
-            (staged_markdown, OUTPUT_MARKDOWN_NAME),
-        ):
-            os.rename(
-                staged,
-                final_name,
-                src_dir_fd=transaction["root_fd"],
-                dst_dir_fd=transaction["root_fd"],
+        for _ in range(3):
+            compact_allocated = (
+                json_stage["identity"]["allocated_bytes"]
+                + markdown_stage["identity"]["allocated_bytes"]
+                + manifest_metadata.st_blocks * 512
             )
-            staged_names.remove(staged)
-            published_names.append(final_name)
-        os.fsync(transaction["root_fd"])
+            if compact_allocated > compact_cap:
+                raise DiskSpaceError(
+                    "compact bundle exceeds allocated-byte cap"
+                )
+            if (
+                result["budgets"]["compact_allocated_bytes"]
+                == compact_allocated
+            ):
+                break
+            result["budgets"][
+                "compact_allocated_bytes"
+            ] = compact_allocated
+            result["semantic_payload_sha256"] = _semantic_sha256(result)
+            _validate_analysis_result(result)
+            _discard_staged_output(transaction, json_stage)
+            stages.remove(json_stage)
+            json_payload = (
+                replay.ordered_strict_json_bytes(result, ANALYSIS_FIELDS)
+                + b"\n"
+            )
+            json_stage = _stage_output(
+                transaction,
+                final_name=OUTPUT_JSON_NAME,
+                payload=json_payload,
+            )
+            stages.insert(0, json_stage)
+        else:
+            raise DiskSpaceError(
+                "compact JSON allocated-byte budget did not stabilize"
+            )
+        json_identity = _publish_staged_output(
+            transaction, json_stage
+        )
+        markdown_identity = _publish_staged_output(
+            transaction, markdown_stage
+        )
         output_identities = {
             "analysis_json": json_identity,
             "analysis_markdown": markdown_identity,
         }
-        _reverify_inputs(source_identities)
+        verification_inputs = {"protocol": protocol_identity}
+        if authorization_identity is not None:
+            verification_inputs["authorization"] = authorization_identity
+        verification_inputs.update(source_identities)
+        _reverify_inputs(verification_inputs)
+        for stage in stages:
+            _verify_staged_output(transaction, stage)
+        final_manifest_metadata = os.stat(
+            ANALYZER_MANIFEST_NAME,
+            dir_fd=transaction["root_fd"],
+            follow_symlinks=False,
+        )
+        final_compact_allocated = (
+            json_identity["allocated_bytes"]
+            + markdown_identity["allocated_bytes"]
+            + final_manifest_metadata.st_blocks * 512
+        )
+        if (
+            final_compact_allocated
+            != result["budgets"]["compact_allocated_bytes"]
+            or final_compact_allocated > compact_cap
+        ):
+            raise DiskSpaceError(
+                "final compact bundle allocated-byte contract differs"
+            )
         completed = _analysis_manifest(
             protocol_id=protocol_id,
             invocation_name=invocation_name,
@@ -3182,15 +3985,43 @@ def analyze_two_range_reacquisition(
             error=None,
         )
         _publish_analysis_manifest(transaction, completed)
+        for stage in stages:
+            _verify_staged_output(transaction, stage)
+        completed_manifest_metadata = os.stat(
+            ANALYZER_MANIFEST_NAME,
+            dir_fd=transaction["root_fd"],
+            follow_symlinks=False,
+        )
+        completed_compact_allocated = (
+            json_identity["allocated_bytes"]
+            + markdown_identity["allocated_bytes"]
+            + completed_manifest_metadata.st_blocks * 512
+        )
+        if (
+            completed_compact_allocated
+            != result["budgets"]["compact_allocated_bytes"]
+            or completed_compact_allocated > compact_cap
+        ):
+            raise DiskSpaceError(
+                "completed compact bundle allocated-byte contract differs"
+            )
+        for stage in stages:
+            _close_staged_output(transaction, stage)
         return output_root
     except BaseException as error:
-        for name in (*staged_names, *published_names):
-            try:
-                os.unlink(name, dir_fd=transaction["root_fd"])
-            except FileNotFoundError:
-                pass
+        for stage in stages:
+            _cleanup_staged_output(transaction, stage, error)
+        failed_protocol_identity = protocol_identity
+        failed_authorization_identity = authorization_identity
         failed_sources = source_identities
         if isinstance(error, _SourceIdentityMismatch):
+            failed_protocol_identity = error.observed.get(
+                "protocol", protocol_identity
+            )
+            if authorization_identity is not None:
+                failed_authorization_identity = error.observed.get(
+                    "authorization", authorization_identity
+                )
             failed_sources = {
                 name: error.observed.get(name, source_identities[name])
                 for name in ANALYSIS_SOURCE_MEMBER_NAMES[invocation_name]
@@ -3200,8 +4031,8 @@ def analyze_two_range_reacquisition(
             invocation_name=invocation_name,
             status="failed",
             output_root=output_root,
-            protocol_identity=protocol_identity,
-            authorization_identity=authorization_identity,
+            protocol_identity=failed_protocol_identity,
+            authorization_identity=failed_authorization_identity,
             source_identities=failed_sources,
             output_identities=null_outputs,
             expected_rows=expected_rows,

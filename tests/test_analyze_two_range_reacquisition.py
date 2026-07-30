@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import copy
+import gzip
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -41,6 +43,24 @@ def mechanism_public(fixture: dict) -> dict[int, dict]:
             record["public_output"]
         )
         for record in fixture["current_reference_outputs"]
+    }
+
+
+def fixed_topology_config() -> dict:
+    return {
+        "num": 14,
+        "formation": {
+            "parts": 2,
+            "bases-id": [[1, 2, 3], [1, 2, 3]],
+        },
+        "cbfs": {
+            "without-slack": {
+                "comm-fixed": {
+                    "min-neighbour-id-offset": -2,
+                    "max-neighbour-id-offset": 0,
+                }
+            }
+        },
     }
 
 
@@ -94,6 +114,114 @@ def comparison_rows(
     return [baseline], [v4], [new]
 
 
+def compact_identity(path, *, seed=1, domain="file_bytes"):
+    return {
+        "path": path,
+        "device": 1,
+        "inode": seed,
+        "size": 100,
+        "mtime_ns": seed,
+        "sha256": f"{seed:064x}",
+        "hash_domain": domain,
+    }
+
+
+def canonical_registered_result(result):
+    paths = {
+        "protocol": (
+            "/tmp/docs/diagnostics/"
+            "2026-07-30-cbf2026-two-range-reacquisition-protocol-v1.json"
+        ),
+        "authorization": (
+            "/tmp/docs/diagnostics/reviews/"
+            "2026-07-30-cbf2026-two-range-reacquisition-"
+            "registered-authorization.json"
+        ),
+        "raw_manifest": "/tmp/raw/manifest.json",
+        "raw_compressed_process": (
+            f"/tmp/raw/{replay.RAW_PROCESS_NAME}"
+        ),
+        "raw_decompressed_process": (
+            f"/tmp/raw/{replay.RAW_PROCESS_NAME}"
+        ),
+        "v4_manifest": "/tmp/v4/manifest.json",
+        "v4_compressed_process": (
+            "/tmp/v4/predictive-wnls-development.jsonl.gz"
+        ),
+        "v4_decompressed_process": (
+            "/tmp/v4/predictive-wnls-development.jsonl.gz"
+        ),
+        "v4_analysis_manifest": "/tmp/v4-analysis/manifest.json",
+        "v4_analysis_json": (
+            "/tmp/v4-analysis/predictive-wnls-development.json"
+        ),
+        "v4_analysis_markdown": (
+            "/tmp/v4-analysis/predictive-wnls-development.md"
+        ),
+        "legacy_baseline_process": "/tmp/legacy/calibration.jsonl.gz",
+        "legacy_baseline_protocol_json": (
+            "/tmp/docs/diagnostics/"
+            "2026-07-30-predictive-wnls-stage1-protocol-v4.json"
+        ),
+        "truth_data": "/tmp/truth/data.json",
+    }
+    identities = {}
+    for index, name in enumerate(analyzer.IDENTITY_FIELDS, 1):
+        if name in {"mechanism_fixture", "synthetic_case_source"}:
+            identities[name] = None
+            continue
+        pair_seed = {
+            "raw_decompressed_process": analyzer.IDENTITY_FIELDS.index(
+                "raw_compressed_process"
+            )
+            + 1,
+            "v4_decompressed_process": analyzer.IDENTITY_FIELDS.index(
+                "v4_compressed_process"
+            )
+            + 1,
+        }.get(name, index)
+        identities[name] = compact_identity(
+            paths[name],
+            seed=pair_seed,
+            domain=(
+                "decompressed_jsonl_bytes"
+                if name.endswith("decompressed_process")
+                else "file_bytes"
+            ),
+        )
+    result["identities"] = identities
+    result["budgets"].update(
+        {
+            "expected_rows": 140000,
+            "observed_rows": 140000,
+            "unique_rows": 140000,
+        }
+    )
+    result["status_counts"] = {
+        "attempt_accepted": 140000,
+        "attempt_rejected": 0,
+        "attempt_failed": 0,
+        "attempt_invalid": 0,
+        "attempt_reference_unavailable": 0,
+        "output_fresh": 140000,
+        "output_predicted": 0,
+        "output_unavailable": 0,
+    }
+    result["decision"] = (
+        "pass"
+        if all(
+            record["passed"]
+            for record in (
+                *result["scientific_gates"],
+                *result["integrity_gates"],
+            )
+        )
+        else "fail"
+    )
+    result["semantic_payload_sha256"] = analyzer._semantic_sha256(result)
+    return result
+
+
 def validate_row(row: dict, *, expected_key=None, **overrides):
     if expected_key is None:
         expected_key = (
@@ -104,7 +232,11 @@ def validate_row(row: dict, *, expected_key=None, **overrides):
         )
     arguments = {
         "expected_key": expected_key,
-        "protocol": {},
+        "protocol": (
+            {"truth_config": fixed_topology_config()}
+            if row["frame_index"] is not None
+            else {}
+        ),
         "truth_position": row["offline_truth_position"],
         "current_public": {},
         "previous_private": None,
@@ -115,6 +247,20 @@ def validate_row(row: dict, *, expected_key=None, **overrides):
 
 
 class ExactSchemaTests(unittest.TestCase):
+    def test_strict_json_rejects_nonfinite_constants(self):
+        for constant in (b"NaN", b"Infinity", b"-Infinity"):
+            with self.subTest(constant=constant):
+                with self.assertRaisesRegex(ValueError, "invalid strict JSON"):
+                    analyzer._strict_json_object(
+                        b'{"value":' + constant + b"}",
+                        Path("/tmp/nonfinite.json"),
+                    )
+        with self.assertRaisesRegex(ValueError, "invalid strict JSON"):
+            analyzer._strict_json_object(
+                b'{"value":1e400}',
+                Path("/tmp/overflow.json"),
+            )
+
     def test_missing_field_rejects(self):
         row = valid_smoke_row()
         row.pop("offline_fresh_q_error")
@@ -504,6 +650,47 @@ class BranchReconstructionTests(unittest.TestCase):
 
         self.assert_tamper_rejects(mutate)
 
+    def test_consistent_alternate_fixed_reference_set_rejects(self):
+        row = copy.deepcopy(self.row)
+        remap = {10: 9, 11: 10}
+        row["mandatory_references"]["uav_ids"] = [9, 10]
+        for collection in (
+            row["active_references"],
+            row["reference_evidence"],
+            row["reference_freshness"],
+        ):
+            for record in collection:
+                record["reference_id"] = remap[record["reference_id"]]
+        substituted_public = {
+            9: self.public[10],
+            10: self.public[11],
+        }
+        with self.assertRaisesRegex(ValueError, "reference set"):
+            validate_row(
+                row,
+                current_public=substituted_public,
+                previous_private=self.fixture["preceding_private_state"],
+                held_command=self.fixture["held_command"],
+            )
+
+    def test_wrong_squad_local_index_rejects(self):
+        row = registered_new_row()
+        row["squad_local_index"] = 4
+        with self.assertRaisesRegex(ValueError, "squad"):
+            self.reconstruct(row)
+
+    def test_reference_freshness_projection_mutation_rejects(self):
+        row = registered_new_row()
+        row["reference_freshness"][0]["current_freshness"] = "predicted"
+        with self.assertRaisesRegex(ValueError, "freshness"):
+            self.reconstruct(row)
+
+    def test_measurement_noise_seed_mutation_rejects(self):
+        row = registered_new_row()
+        row["reference_evidence"][0]["noise_seed"] += 1
+        with self.assertRaisesRegex(ValueError, "noise seed"):
+            self.reconstruct(row)
+
 
 class LinearPercentileTests(unittest.TestCase):
     def test_one_element_returns_the_element(self):
@@ -540,6 +727,38 @@ class LinearPercentileTests(unittest.TestCase):
 
 
 class AggregateGateTests(unittest.TestCase):
+    def test_duplicate_missing_extra_and_out_of_order_new_stream_reject(self):
+        baseline, v4, new = comparison_rows()
+        first = new[0]
+        second = copy.deepcopy(first)
+        second["seed"] += 1
+        replay._validate_row(second)
+        mutations = {
+            "duplicate": [first, copy.deepcopy(first)],
+            "missing": [],
+            "extra": [first, second],
+            "out_of_order": [second, first],
+        }
+        messages = {
+            "duplicate": "duplicate",
+            "missing": "exact keys differ",
+            "extra": "exact keys differ",
+            "out_of_order": "out of order",
+        }
+        for name, changed in mutations.items():
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValueError, messages[name]):
+                    analyzer.aggregate_two_range_reacquisition(
+                        baseline_rows=baseline,
+                        v4_rows=v4,
+                        new_rows=changed,
+                        truth_data={"config": fixed_topology_config()},
+                        protocol={
+                            "protocol_id": "test-protocol",
+                            "gates": analyzer.GATES,
+                        },
+                    )
+
     def test_empty_paired_both_fresh_cohort_fails_gate(self):
         baseline, v4, new = comparison_rows(baseline_fresh=False)
         result = analyzer.aggregate_two_range_reacquisition(
@@ -560,6 +779,40 @@ class AggregateGateTests(unittest.TestCase):
         )
         paired_gate = result["scientific_gates"][2]
         self.assertFalse(paired_gate["passed"])
+
+    def test_zero_paired_cohort_is_canonical_and_validates(self):
+        baseline, v4, new = comparison_rows(baseline_fresh=False)
+        result = analyzer.aggregate_two_range_reacquisition(
+            baseline_rows=baseline,
+            v4_rows=v4,
+            new_rows=new,
+            truth_data={"config": fixed_topology_config()},
+            protocol={
+                "protocol_id": "test-protocol",
+                "gates": analyzer.GATES,
+            },
+        )
+        result = canonical_registered_result(result)
+        analyzer._validate_analysis_result(result)
+        self.assertEqual(result["paired_comparison"]["cohort_size"], 0)
+        self.assertFalse(result["scientific_gates"][2]["passed"])
+
+    def test_compact_compressed_decompressed_descriptor_mismatch_rejects(self):
+        baseline, v4, new = comparison_rows(baseline_fresh=False)
+        result = analyzer.aggregate_two_range_reacquisition(
+            baseline_rows=baseline,
+            v4_rows=v4,
+            new_rows=new,
+            truth_data={"config": fixed_topology_config()},
+            protocol={
+                "protocol_id": "test-protocol",
+                "gates": analyzer.GATES,
+            },
+        )
+        result = canonical_registered_result(result)
+        result["identities"]["raw_decompressed_process"]["inode"] += 1
+        with self.assertRaisesRegex(ValueError, "descriptor differs"):
+            analyzer._validate_analysis_result(result)
 
     def aggregate(self, *, baseline_error=1.0, new_error=None):
         baseline, v4, new = comparison_rows(
@@ -664,6 +917,7 @@ class AggregateGateTests(unittest.TestCase):
                 new_rows=rows,
                 paired=paired,
                 baseline_fresh_total=127190,
+                baseline_fresh_new_fresh=fresh_count,
                 expected_rows=140000,
             )
             with self.subTest(fresh_count=fresh_count):
@@ -677,10 +931,40 @@ class AggregateGateTests(unittest.TestCase):
                 new_rows=rows,
                 paired=paired,
                 baseline_fresh_total=127190,
+                baseline_fresh_new_fresh=127190,
                 expected_rows=140000,
             )
             with self.subTest(available_count=available_count):
                 self.assertIs(records[4]["passed"], passed)
+
+    def test_nonbaseline_fresh_rows_cannot_compensate_retention_loss(self):
+        paired = {
+            "cohort_size": 1,
+            "baseline_p95_m": 1.0,
+            "new_p95_m": 1.0,
+            "new_minus_baseline_p95_m": 0.0,
+        }
+        template = {
+            "output_status": "fresh",
+            "prediction_age": 0,
+            "offline_error_norm": 1.0,
+            "reference_evidence": [],
+            "reference_violations": [],
+            "active_references": [],
+            "robot_id": 1,
+        }
+        rows = [template] * 124647
+        records = analyzer._scientific_gate_records(
+            new_rows=rows,
+            paired=paired,
+            baseline_fresh_total=127190,
+            baseline_fresh_new_fresh=124646,
+            expected_rows=140000,
+        )
+        retention = records[3]
+        self.assertEqual(retention["numerator"], 124646)
+        self.assertEqual(retention["denominator"], 127190)
+        self.assertFalse(retention["passed"])
 
     def test_prediction_age_two_passes_and_three_fails(self):
         paired = {
@@ -702,6 +986,7 @@ class AggregateGateTests(unittest.TestCase):
                 new_rows=[{**template, "prediction_age": age}],
                 paired=paired,
                 baseline_fresh_total=1,
+                baseline_fresh_new_fresh=1,
                 expected_rows=1,
             )
             with self.subTest(age=age):
@@ -747,6 +1032,7 @@ class AggregateGateTests(unittest.TestCase):
             new_rows=[base],
             paired=paired,
             baseline_fresh_total=1,
+            baseline_fresh_new_fresh=1,
             expected_rows=1,
         )
         self.assertTrue(all(record["passed"] for record in exact[6:9]))
@@ -755,6 +1041,7 @@ class AggregateGateTests(unittest.TestCase):
                 new_rows=[{**base, **mutation}],
                 paired=paired,
                 baseline_fresh_total=1,
+                baseline_fresh_new_fresh=1,
                 expected_rows=1,
             )
             with self.subTest(gate=offset):
@@ -777,6 +1064,134 @@ class AggregateGateTests(unittest.TestCase):
             self.assertFalse(record["passed"])
             self.assertEqual(record["operator"], "equal")
             self.assertEqual(record["threshold"], 0)
+
+    def test_aggregate_integrity_counts_freshness_projection_mutation(self):
+        baseline, v4, new = comparison_rows()
+        new[0]["reference_freshness"][0][
+            "current_freshness"
+        ] = "predicted"
+        result = analyzer.aggregate_two_range_reacquisition(
+            baseline_rows=baseline,
+            v4_rows=v4,
+            new_rows=new,
+            truth_data={"config": fixed_topology_config()},
+            protocol={
+                "protocol_id": "test-protocol",
+                "gates": analyzer.GATES,
+            },
+        )
+        record = result["integrity_gates"][
+            analyzer.INTEGRITY_GATE_IDS.index(
+                "preserved_contract_violation"
+            )
+        ]
+        self.assertEqual(record["numerator"], 1)
+        self.assertFalse(record["passed"])
+        self.assertEqual(result["decision"], "fail")
+
+    def test_legal_aggregate_derives_all_fourteen_zero_integrity_counts(self):
+        baseline, v4, new = comparison_rows()
+        result = analyzer.aggregate_two_range_reacquisition(
+            baseline_rows=baseline,
+            v4_rows=v4,
+            new_rows=new,
+            truth_data={"config": fixed_topology_config()},
+            protocol={
+                "protocol_id": "test-protocol",
+                "gates": analyzer.GATES,
+            },
+        )
+        self.assertEqual(
+            tuple(
+                record["gate_id"]
+                for record in result["integrity_gates"]
+            ),
+            analyzer.INTEGRITY_GATE_IDS,
+        )
+        self.assertEqual(
+            [record["numerator"] for record in result["integrity_gates"]],
+            [0] * len(analyzer.INTEGRITY_GATE_IDS),
+        )
+
+    def test_aggregate_integrity_counts_noise_seed_mutation(self):
+        baseline, v4, new = comparison_rows()
+        new[0]["reference_evidence"][0]["noise_seed"] += 1
+        result = analyzer.aggregate_two_range_reacquisition(
+            baseline_rows=baseline,
+            v4_rows=v4,
+            new_rows=new,
+            truth_data={"config": fixed_topology_config()},
+            protocol={
+                "protocol_id": "test-protocol",
+                "gates": analyzer.GATES,
+            },
+        )
+        record = result["integrity_gates"][
+            analyzer.INTEGRITY_GATE_IDS.index(
+                "preserved_contract_violation"
+            )
+        ]
+        self.assertEqual(record["numerator"], 1)
+        self.assertFalse(record["passed"])
+
+    def test_aggregate_integrity_counts_fixed_reference_substitution(self):
+        baseline, v4, new = comparison_rows()
+        row = new[0]
+        remap = {10: 9, 11: 10}
+        row["mandatory_references"]["uav_ids"] = [9, 10]
+        for collection in (
+            row["active_references"],
+            row["reference_evidence"],
+            row["reference_freshness"],
+        ):
+            for record in collection:
+                record["reference_id"] = remap[record["reference_id"]]
+        result = analyzer.aggregate_two_range_reacquisition(
+            baseline_rows=baseline,
+            v4_rows=v4,
+            new_rows=new,
+            truth_data={"config": fixed_topology_config()},
+            protocol={
+                "protocol_id": "test-protocol",
+                "gates": analyzer.GATES,
+            },
+        )
+        record = result["integrity_gates"][
+            analyzer.INTEGRITY_GATE_IDS.index(
+                "selector_reference_set_violation"
+            )
+        ]
+        self.assertEqual(record["numerator"], 1)
+        self.assertFalse(record["passed"])
+
+    def test_outage_lineage_separates_root_and_downstream_unavailable(self):
+        root = {
+            "selector_considered": True,
+            "attempt_status": "rejected",
+            "attempt_failure_reason": "two_range_no_branch_passes",
+            "branches": [
+                {"passes_branch_gate": False},
+                {"passes_branch_gate": False},
+            ],
+            "output_status": "unavailable",
+            "offline_fresh_containment": None,
+            "seed": 20260727,
+            "frame_index": 0,
+            "robot_id": 12,
+        }
+        downstream = {
+            **root,
+            "selector_considered": False,
+            "attempt_status": "reference_unavailable",
+            "attempt_failure_reason": "fixed_reference_unavailable",
+            "branches": [],
+            "frame_index": 1,
+        }
+        accounting = analyzer._selector_accounting([root, downstream])
+        self.assertEqual(accounting["root_rejections"], 1)
+        self.assertEqual(accounting["downstream_unavailable"], 1)
+        self.assertEqual(accounting["outage_episode_count"], 1)
+        self.assertEqual(accounting["outage_episode_lengths"], [2])
 
 
 class InvocationSplitTests(unittest.TestCase):
@@ -845,6 +1260,10 @@ class InvocationSplitTests(unittest.TestCase):
         )
         self.assertFalse((output / analyzer.OUTPUT_JSON_NAME).exists())
         self.assertFalse((output / analyzer.OUTPUT_MARKDOWN_NAME).exists())
+        self.assertEqual(
+            sorted(path.name for path in output.iterdir()),
+            [analyzer.ANALYZER_MANIFEST_NAME],
+        )
 
     def registered_authorization_fixture(self):
         text = "I authorize this exact registered diagnostic replay."
@@ -964,6 +1383,83 @@ class InvocationSplitTests(unittest.TestCase):
             )
         self.assertFalse(self.analysis_b.exists())
 
+    def test_protocol_symlink_is_rejected_before_output_allocation(self):
+        self.produce("smoke_a")
+        alias = self.root / "protocol-alias.json"
+        alias.symlink_to(self.protocol_path)
+        with self.assertRaisesRegex(ValueError, "symbolic-link"):
+            analyzer.analyze_two_range_reacquisition(
+                protocol_path=alias,
+                raw_root=self.raw_a,
+                output_root=self.analysis_a,
+                invocation_name="smoke_analyzer_a",
+            )
+        self.assertFalse(self.analysis_a.exists())
+
+    def test_raw_root_symlink_is_rejected_before_output_allocation(self):
+        self.produce("smoke_a")
+        alias = self.root / "raw-alias"
+        alias.symlink_to(self.raw_a, target_is_directory=True)
+        self.protocol["invocations"]["smoke_analyzer_a"][
+            "input_root"
+        ] = str(alias)
+        self.protocol_path.write_text(json.dumps(self.protocol))
+        with self.assertRaisesRegex(ValueError, "symbolic-link"):
+            analyzer.analyze_two_range_reacquisition(
+                protocol_path=self.protocol_path,
+                raw_root=alias,
+                output_root=self.analysis_a,
+                invocation_name="smoke_analyzer_a",
+            )
+        self.assertFalse(self.analysis_a.exists())
+
+    def test_output_parent_symlink_is_rejected(self):
+        real_parent = self.root / "real-output-parent"
+        real_parent.mkdir()
+        alias_parent = self.root / "output-parent-alias"
+        alias_parent.symlink_to(real_parent, target_is_directory=True)
+        output = alias_parent / "analysis"
+        self.protocol["invocations"]["smoke_analyzer_a"][
+            "output_root"
+        ] = str(output)
+        self.protocol_path.write_text(json.dumps(self.protocol))
+        self.produce("smoke_a")
+        with self.assertRaisesRegex(
+            (ValueError, OSError), "symbolic-link|Too many levels"
+        ):
+            analyzer.analyze_two_range_reacquisition(
+                protocol_path=self.protocol_path,
+                raw_root=self.raw_a,
+                output_root=output,
+                invocation_name="smoke_analyzer_a",
+            )
+        self.assertFalse(real_parent.joinpath("analysis").exists())
+
+    def test_authorization_symlink_is_rejected_without_following(self):
+        authorization_path = self.root / "authorization-real.json"
+        authorization_path.write_text(
+            json.dumps(self.registered_authorization_fixture())
+        )
+        alias = self.root / "authorization-alias.json"
+        alias.symlink_to(authorization_path)
+        protocol_payload, protocol_identity = analyzer._pinned_file_identity(
+            self.protocol_path
+        )
+        with self.assertRaisesRegex(ValueError, "symbolic-link"):
+            analyzer._validate_registered_authorization(
+                authorization_path=alias,
+                protocol_path=self.protocol_path,
+                protocol_payload=protocol_payload,
+                protocol=self.protocol,
+                protocol_identity=protocol_identity,
+                raw_root=self.root / "registered-raw",
+                output_root=self.root / "registered-analysis",
+                raw_manifest={
+                    "authorization_identity": {},
+                    "source_identities": {},
+                },
+            )
+
     def test_registered_analyzer_rejects_absent_authorization(self):
         with self.assertRaisesRegex(ValueError, "requires authorization"):
             analyzer.analyze_two_range_reacquisition(
@@ -1059,10 +1555,22 @@ class InvocationSplitTests(unittest.TestCase):
 
     def test_json_write_failure_retains_failed_manifest(self):
         self.produce("smoke_a")
+        real_stage = analyzer._stage_output
+
+        def fail_json_write(*args, **kwargs):
+            if kwargs["final_name"] == analyzer.OUTPUT_JSON_NAME:
+                with mock.patch.object(
+                    analyzer,
+                    "_write_all",
+                    side_effect=OSError("injected JSON write failure"),
+                ):
+                    return real_stage(*args, **kwargs)
+            return real_stage(*args, **kwargs)
+
         with mock.patch.object(
             analyzer,
             "_stage_output",
-            side_effect=OSError("injected JSON write failure"),
+            side_effect=fail_json_write,
         ):
             with self.assertRaisesRegex(OSError, "JSON write"):
                 analyzer.analyze_two_range_reacquisition(
@@ -1078,17 +1586,162 @@ class InvocationSplitTests(unittest.TestCase):
         real_stage = analyzer._stage_output
 
         def fail_fsync(*args, **kwargs):
-            with mock.patch.object(
-                analyzer.os,
-                "fsync",
-                side_effect=OSError("injected JSON fsync failure"),
-            ):
-                return real_stage(*args, **kwargs)
+            if kwargs["final_name"] == analyzer.OUTPUT_JSON_NAME:
+                with mock.patch.object(
+                    analyzer.os,
+                    "fsync",
+                    side_effect=OSError("injected JSON fsync failure"),
+                ):
+                    return real_stage(*args, **kwargs)
+            return real_stage(*args, **kwargs)
 
         with mock.patch.object(
             analyzer, "_stage_output", side_effect=fail_fsync
         ):
             with self.assertRaisesRegex(OSError, "JSON fsync"):
+                analyzer.analyze_two_range_reacquisition(
+                    protocol_path=self.protocol_path,
+                    raw_root=self.raw_a,
+                    output_root=self.analysis_a,
+                    invocation_name="smoke_analyzer_a",
+                )
+        self.assert_failed_analysis(self.analysis_a)
+
+    def test_markdown_write_failure_retains_no_hidden_stage(self):
+        self.produce("smoke_a")
+        real_stage = analyzer._stage_output
+
+        def fail_markdown_write(*args, **kwargs):
+            if kwargs["final_name"] == analyzer.OUTPUT_MARKDOWN_NAME:
+                with mock.patch.object(
+                    analyzer,
+                    "_write_all",
+                    side_effect=OSError("injected Markdown write failure"),
+                ):
+                    return real_stage(*args, **kwargs)
+            return real_stage(*args, **kwargs)
+
+        with mock.patch.object(
+            analyzer,
+            "_stage_output",
+            side_effect=fail_markdown_write,
+        ):
+            with self.assertRaisesRegex(OSError, "Markdown write"):
+                analyzer.analyze_two_range_reacquisition(
+                    protocol_path=self.protocol_path,
+                    raw_root=self.raw_a,
+                    output_root=self.analysis_a,
+                    invocation_name="smoke_analyzer_a",
+                )
+        self.assert_failed_analysis(self.analysis_a)
+
+    def test_markdown_fsync_failure_retains_no_hidden_stage(self):
+        self.produce("smoke_a")
+        real_stage = analyzer._stage_output
+
+        def fail_markdown_fsync(*args, **kwargs):
+            if kwargs["final_name"] == analyzer.OUTPUT_MARKDOWN_NAME:
+                with mock.patch.object(
+                    analyzer.os,
+                    "fsync",
+                    side_effect=OSError("injected Markdown fsync failure"),
+                ):
+                    return real_stage(*args, **kwargs)
+            return real_stage(*args, **kwargs)
+
+        with mock.patch.object(
+            analyzer,
+            "_stage_output",
+            side_effect=fail_markdown_fsync,
+        ):
+            with self.assertRaisesRegex(OSError, "Markdown fsync"):
+                analyzer.analyze_two_range_reacquisition(
+                    protocol_path=self.protocol_path,
+                    raw_root=self.raw_a,
+                    output_root=self.analysis_a,
+                    invocation_name="smoke_analyzer_a",
+                )
+        self.assert_failed_analysis(self.analysis_a)
+
+    def test_stage_name_swap_cannot_publish_completed_manifest(self):
+        self.produce("smoke_a")
+        real_stage = analyzer._stage_output
+        swapped = False
+
+        def swap_json_stage(*args, **kwargs):
+            nonlocal swapped
+            stage = real_stage(*args, **kwargs)
+            if (
+                not swapped
+                and kwargs["final_name"] == analyzer.OUTPUT_JSON_NAME
+            ):
+                swapped = True
+                name = stage["name"]
+                transaction = args[0]
+                os.unlink(name, dir_fd=transaction["root_fd"])
+                descriptor = os.open(
+                    name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                    dir_fd=transaction["root_fd"],
+                )
+                try:
+                    os.write(descriptor, b"substituted stage\n")
+                finally:
+                    os.close(descriptor)
+            return stage
+
+        with mock.patch.object(
+            analyzer,
+            "_stage_output",
+            side_effect=swap_json_stage,
+        ):
+            with self.assertRaisesRegex(ValueError, "stage|identity"):
+                analyzer.analyze_two_range_reacquisition(
+                    protocol_path=self.protocol_path,
+                    raw_root=self.raw_a,
+                    output_root=self.analysis_a,
+                    invocation_name="smoke_analyzer_a",
+                )
+        self.assert_failed_analysis(self.analysis_a)
+
+    def test_final_link_swap_cannot_publish_completed_manifest(self):
+        self.produce("smoke_a")
+        real_publish = analyzer._publish_staged_output
+        swapped = False
+
+        def swap_json_link(transaction, stage):
+            nonlocal swapped
+            identity = real_publish(transaction, stage)
+            if (
+                not swapped
+                and stage["final_name"] == analyzer.OUTPUT_JSON_NAME
+            ):
+                swapped = True
+                os.unlink(
+                    stage["final_name"],
+                    dir_fd=transaction["root_fd"],
+                )
+                descriptor = os.open(
+                    stage["final_name"],
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                    dir_fd=transaction["root_fd"],
+                )
+                try:
+                    os.write(descriptor, b"substituted final link\n")
+                finally:
+                    os.close(descriptor)
+            return identity
+
+        with mock.patch.object(
+            analyzer,
+            "_publish_staged_output",
+            side_effect=swap_json_link,
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "directory-entry identity"
+            ):
                 analyzer.analyze_two_range_reacquisition(
                     protocol_path=self.protocol_path,
                     raw_root=self.raw_a,
@@ -1112,6 +1765,44 @@ class InvocationSplitTests(unittest.TestCase):
                     invocation_name="smoke_analyzer_a",
                 )
         self.assert_failed_analysis(self.analysis_a)
+
+    def test_failed_lifecycle_is_retained_when_retry_is_refused(self):
+        self.produce("smoke_a")
+        with mock.patch.object(
+            analyzer,
+            "_stage_output",
+            side_effect=RuntimeError("injected retained failure"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "retained failure"):
+                analyzer.analyze_two_range_reacquisition(
+                    protocol_path=self.protocol_path,
+                    raw_root=self.raw_a,
+                    output_root=self.analysis_a,
+                    invocation_name="smoke_analyzer_a",
+                )
+        retained = (
+            self.analysis_a / analyzer.ANALYZER_MANIFEST_NAME
+        ).read_bytes()
+        with self.assertRaises(FileExistsError):
+            analyzer.analyze_two_range_reacquisition(
+                protocol_path=self.protocol_path,
+                raw_root=self.raw_a,
+                output_root=self.analysis_a,
+                invocation_name="smoke_analyzer_a",
+            )
+        self.assertEqual(
+            (
+                self.analysis_a / analyzer.ANALYZER_MANIFEST_NAME
+            ).read_bytes(),
+            retained,
+        )
+        sibling = analyzer._analysis_preallocation_failure_path(
+            self.analysis_a
+        )
+        self.assertEqual(
+            json.loads(sibling.read_bytes())["status"],
+            "failed",
+        )
 
     def test_raw_identity_mismatch_retains_observed_failed_manifest(self):
         self.produce("smoke_a")
@@ -1147,6 +1838,98 @@ class InvocationSplitTests(unittest.TestCase):
             (self.raw_a / replay.RAW_PROCESS_NAME).stat().st_size,
         )
 
+    def test_protocol_drift_before_completion_retains_observed_failure(self):
+        self.produce("smoke_a")
+        original = analyzer._reverify_inputs
+        mutated = False
+
+        def mutate_then_reverify(expected):
+            nonlocal mutated
+            if not mutated:
+                mutated = True
+                self.protocol_path.write_bytes(
+                    self.protocol_path.read_bytes() + b"\n"
+                )
+            return original(expected)
+
+        with mock.patch.object(
+            analyzer,
+            "_reverify_inputs",
+            side_effect=mutate_then_reverify,
+        ):
+            with self.assertRaisesRegex(ValueError, "protocol|identity"):
+                analyzer.analyze_two_range_reacquisition(
+                    protocol_path=self.protocol_path,
+                    raw_root=self.raw_a,
+                    output_root=self.analysis_a,
+                    invocation_name="smoke_analyzer_a",
+                )
+        self.assert_failed_analysis(self.analysis_a)
+        terminal = json.loads(
+            (self.analysis_a / analyzer.ANALYZER_MANIFEST_NAME).read_bytes()
+        )
+        self.assertEqual(
+            terminal["protocol_identity"]["size"],
+            self.protocol_path.stat().st_size,
+        )
+
+    def test_authorization_final_reverification_rejects_drift(self):
+        authorization_path = self.root / "authorization-drift.json"
+        authorization_path.write_bytes(b"pinned authorization\n")
+        _, expected = analyzer._pinned_file_identity(authorization_path)
+        authorization_path.write_bytes(b"mutated authorization\n")
+        with self.assertRaisesRegex(
+            analyzer._SourceIdentityMismatch,
+            "authorization",
+        ) as captured:
+            analyzer._reverify_inputs({"authorization": expected})
+        self.assertEqual(
+            captured.exception.observed["authorization"]["sha256"],
+            hashlib.sha256(b"mutated authorization\n").hexdigest(),
+        )
+
+    def test_comparator_reverification_failures_retain_failed_lifecycle(self):
+        self.produce("smoke_a")
+        self.produce("smoke_b")
+        cases = (
+            (
+                "v4_compressed_process",
+                self.raw_a,
+                self.analysis_a,
+                "smoke_analyzer_a",
+            ),
+            (
+                "legacy_baseline_process",
+                self.raw_b,
+                self.analysis_b,
+                "smoke_analyzer_b",
+            ),
+        )
+        for label, raw_root, output_root, invocation in cases:
+            with self.subTest(label=label):
+                def reject(expected, source_label=label):
+                    raise analyzer._SourceIdentityMismatch(
+                        f"{source_label} identity changed",
+                        expected,
+                    )
+
+                with mock.patch.object(
+                    analyzer,
+                    "_reverify_inputs",
+                    side_effect=reject,
+                ):
+                    with self.assertRaisesRegex(
+                        analyzer._SourceIdentityMismatch,
+                        label,
+                    ):
+                        analyzer.analyze_two_range_reacquisition(
+                            protocol_path=self.protocol_path,
+                            raw_root=raw_root,
+                            output_root=output_root,
+                            invocation_name=invocation,
+                        )
+                self.assert_failed_analysis(output_root)
+
     def _assert_comparator_reverification_rejects(self, source_name):
         self.produce("smoke_a")
         process_path = self.raw_a / replay.RAW_PROCESS_NAME
@@ -1180,6 +1963,36 @@ class InvocationSplitTests(unittest.TestCase):
     def test_baseline_identity_mismatch_rejects(self):
         self._assert_comparator_reverification_rejects(
             "legacy_baseline_process"
+        )
+
+    def test_corrupt_gzip_reverification_records_observed_prefix_digest(self):
+        process_path = self.root / "corruptible.jsonl.gz"
+        with gzip.GzipFile(
+            filename=process_path, mode="wb", mtime=0
+        ) as stream:
+            stream.write(b'{"row":1}\n')
+        _, expected_compressed, expected_decompressed = (
+            analyzer._pinned_raw_rows(process_path)
+        )
+        process_path.write_bytes(b"not a gzip stream")
+        with self.assertRaisesRegex(
+            analyzer._SourceIdentityMismatch,
+            "cannot be reverified",
+        ) as captured:
+            analyzer._reverify_inputs(
+                {
+                    "raw_compressed_process": expected_compressed,
+                    "raw_decompressed_process": expected_decompressed,
+                }
+            )
+        observed = captured.exception.observed
+        self.assertNotEqual(
+            observed["raw_decompressed_process"]["sha256"],
+            expected_decompressed["sha256"],
+        )
+        self.assertEqual(
+            observed["raw_decompressed_process"]["sha256"],
+            hashlib.sha256(b"").hexdigest(),
         )
 
 
@@ -1230,9 +2043,12 @@ def valid_analysis_manifest(
         "v4_analysis_markdown": (
             "/tmp/v4-analysis/predictive-wnls-development.md"
         ),
-        "legacy_baseline_process": "/tmp/legacy.jsonl.gz",
-        "legacy_baseline_protocol_json": "/tmp/legacy-protocol.json",
-        "truth_data": "/tmp/truth.json",
+        "legacy_baseline_process": "/tmp/legacy/calibration.jsonl.gz",
+        "legacy_baseline_protocol_json": (
+            "/tmp/docs/diagnostics/"
+            "2026-07-30-predictive-wnls-stage1-protocol-v4.json"
+        ),
+        "truth_data": "/tmp/truth/data.json",
     }
     sources = {}
     for index, name in enumerate(
@@ -1278,14 +2094,25 @@ def valid_analysis_manifest(
         if status == "failed"
         else None
     )
+    protocol_path = (
+        "/tmp/docs/diagnostics/"
+        "2026-07-30-cbf2026-two-range-reacquisition-protocol-v1.json"
+        if invocation == "registered_analyzer"
+        else "/tmp/protocol.json"
+    )
+    authorization_path = (
+        "/tmp/docs/diagnostics/reviews/"
+        "2026-07-30-cbf2026-two-range-reacquisition-"
+        "registered-authorization.json"
+    )
     return analyzer._analysis_manifest(
         protocol_id="protocol-v1",
         invocation_name=invocation,
         status=status,
         output_root=Path("/tmp/analysis"),
-        protocol_identity=manifest_identity("/tmp/protocol.json", seed=2),
+        protocol_identity=manifest_identity(protocol_path, seed=2),
         authorization_identity=(
-            manifest_identity("/tmp/authorization.json", seed=3)
+            manifest_identity(authorization_path, seed=3)
             if invocation == "registered_analyzer"
             else None
         ),
@@ -1377,6 +2204,48 @@ class AnalysisManifestTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             analyzer._validate_analysis_manifest(manifest)
 
+    def test_same_domain_source_role_swap_rejects(self):
+        manifest = valid_analysis_manifest("registered_analyzer")
+        sources = manifest["source_identities"]
+        left = copy.deepcopy(sources["legacy_baseline_protocol_json"])
+        sources["legacy_baseline_protocol_json"] = copy.deepcopy(
+            sources["truth_data"]
+        )
+        sources["truth_data"] = left
+        with self.assertRaisesRegex(ValueError, "substituted"):
+            analyzer._validate_analysis_manifest(manifest)
+
+    def test_same_basename_manifest_role_swap_rejects(self):
+        manifest = valid_analysis_manifest("registered_analyzer")
+        sources = manifest["source_identities"]
+        left = copy.deepcopy(sources["raw_manifest"])
+        sources["raw_manifest"] = copy.deepcopy(sources["v4_manifest"])
+        sources["v4_manifest"] = left
+        with self.assertRaisesRegex(ValueError, "substituted"):
+            analyzer._validate_analysis_manifest(manifest)
+
+    def test_registered_protocol_and_authorization_role_substitution_rejects(
+        self,
+    ):
+        protocol_substitution = valid_analysis_manifest(
+            "registered_analyzer"
+        )
+        protocol_substitution["protocol_identity"]["path"] = (
+            "/tmp/data.json"
+        )
+        authorization_substitution = valid_analysis_manifest(
+            "registered_analyzer"
+        )
+        authorization_substitution["authorization_identity"]["path"] = (
+            "/tmp/protocol.json"
+        )
+        for changed in (
+            protocol_substitution,
+            authorization_substitution,
+        ):
+            with self.assertRaisesRegex(ValueError, "substituted"):
+                analyzer._validate_analysis_manifest(changed)
+
     def test_authorization_null_rules_reject(self):
         smoke = valid_analysis_manifest()
         smoke["authorization_identity"] = manifest_identity(
@@ -1399,6 +2268,14 @@ class AnalysisManifestTests(unittest.TestCase):
         for changed in (running, completed):
             with self.assertRaises(ValueError):
                 analyzer._validate_analysis_manifest(changed)
+
+    def test_completed_output_identity_path_substitution_rejects(self):
+        completed = valid_analysis_manifest(status="completed")
+        completed["output_identities"]["analysis_json"]["path"] = (
+            "/tmp/substituted.json"
+        )
+        with self.assertRaisesRegex(ValueError, "output.*substituted"):
+            analyzer._validate_analysis_manifest(completed)
 
     def test_row_count_overflow_and_incomplete_completion_reject(self):
         overflow = valid_analysis_manifest()
