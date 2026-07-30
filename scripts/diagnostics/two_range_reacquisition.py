@@ -122,12 +122,12 @@ def solve_two_range_reacquisition(
         raw_keys = tuple(reference_keys)
     except (TypeError, ValueError, OverflowError):
         return _rejected_attempt("two_range_input_invalid")
+    if len(raw_covariances) != 2 or len(raw_keys) != 2:
+        return _rejected_attempt("two_range_input_invalid")
     canonical_covariances = tuple(
         canonical_spd_covariance(value) for value in raw_covariances
     )
-    if len(canonical_covariances) != 2 or any(
-        value is None for value in canonical_covariances
-    ):
+    if any(value is None for value in canonical_covariances):
         return _rejected_attempt("two_range_reference_covariance_invalid")
     covariances = np.asarray(canonical_covariances, dtype=float)
     if (

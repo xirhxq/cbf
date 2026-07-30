@@ -693,6 +693,22 @@ class TwoRangeBranchSelectorTests(unittest.TestCase):
             "two_range_reference_covariance_invalid",
         )
 
+    def test_two_range_rejects_wrong_reference_covariance_count_as_input_invalid(self):
+        kwargs = valid_two_range_kwargs()
+        kwargs["reference_covariances"] = []
+
+        attempt = two_range.solve_two_range_reacquisition(**kwargs)
+
+        self.assertEqual(attempt["failure_reason"], "two_range_input_invalid")
+
+    def test_two_range_rejects_wrong_reference_key_count_as_input_invalid(self):
+        kwargs = valid_two_range_kwargs()
+        kwargs["reference_keys"] = []
+
+        attempt = two_range.solve_two_range_reacquisition(**kwargs)
+
+        self.assertEqual(attempt["failure_reason"], "two_range_input_invalid")
+
     def test_two_range_rejects_failed_branch_prediction_covariance_solve(self):
         with mock.patch.object(
             two_range,
