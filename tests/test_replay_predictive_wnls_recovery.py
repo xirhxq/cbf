@@ -116,14 +116,35 @@ class ReplayHarness(unittest.TestCase):
         }
 
     def protocol(self, output_root: Path, seeds: tuple[int, ...], max_frames: int | None):
+        command = [
+            "conda",
+            "run",
+            "-n",
+            "cbf_env",
+            "python",
+            "scripts/diagnostics/replay_predictive_wnls_recovery.py",
+            "--data-path",
+            str(self.data_path),
+            "--input-manifest-path",
+            str(self.input_manifest_path),
+            "--protocol-json",
+            str(self.protocol_path),
+            "--output-root",
+            str(output_root),
+            "--run-seeds",
+            ",".join(str(seed) for seed in seeds),
+        ]
+        if max_frames is not None:
+            command.extend(["--max-frames", str(max_frames)])
         return {
-            "schema_id": replay.PROTOCOL_SCHEMA_ID,
-            "protocol_id": replay.PROTOCOL_ID,
+            "schema_id": "cbf2026-predictive-wnls-stage1-hermetic-protocol-v1",
+            "protocol_id": "cbf2026-predictive-wnls-stage1-hermetic-v1",
             "implementation_parent_commit": "0" * 40,
             "binding_design": copy.deepcopy(replay.BINDING_DESIGN),
             "sources": self.source_entries(),
             "experiment": {
                 **copy.deepcopy(replay.EXPERIMENT_CONTRACT),
+                "evidence_class": "hermetic_non_evidence_only",
                 "range_noise_seeds": list(seeds),
                 "max_frames": max_frames,
             },
@@ -135,15 +156,15 @@ class ReplayHarness(unittest.TestCase):
             "gates": copy.deepcopy(replay.GATES),
             "disk_contract": copy.deepcopy(replay.DISK_CONTRACT),
             "invocations": {
-                "test_smoke": {
-                    "kind": "unregistered_smoke",
+                "hermetic_replay": {
+                    "kind": "hermetic_non_evidence",
                     "output_root": str(output_root),
                     "range_noise_seeds": list(seeds),
                     "max_frames": max_frames,
                 }
             },
             "evidence_lifecycle": copy.deepcopy(replay.EVIDENCE_LIFECYCLE),
-            "commands": {"test_smoke": ["replay", "test_smoke"]},
+            "commands": {"hermetic_replay": command},
         }
 
     def write_protocol(
@@ -180,39 +201,155 @@ class ReplayHarness(unittest.TestCase):
 
 
 class ProtocolAndPreflightTests(ReplayHarness):
-    def test_protocol_accepts_bound_analyzer_invocation_without_selecting_it(self):
-        analyzer_root = self.output_parent / "analysis"
-        registered_root = self.output_parent / "registered"
-
-        def add_analyzer(protocol):
-            protocol["invocations"]["registered_replay"] = {
-                "kind": "registered_exactly_once",
-                "output_root": str(registered_root),
-                "range_noise_seeds": [11, 12],
+    def test_production_v2_contract_is_exact_and_exports_canonical_argv(self):
+        self.assertEqual(
+            replay.PROTOCOL_SCHEMA_ID,
+            "cbf2026-predictive-wnls-stage1-protocol-v2",
+        )
+        self.assertEqual(
+            replay.PRODUCTION_RANGE_NOISE_SEEDS,
+            tuple(range(20260727, 20260747)),
+        )
+        invocations = replay.production_invocation_contract()
+        self.assertEqual(
+            tuple(invocations),
+            ("smoke_a", "smoke_b", "registered_replay", "registered_analyzer"),
+        )
+        self.assertEqual(
+            invocations["smoke_a"],
+            {
+                "kind": "unregistered_smoke",
+                "output_root": "/private/tmp/cbf2026-predictive-wnls-smoke-a",
+                "range_noise_seeds": [20260727],
                 "max_frames": 2,
-            }
-            protocol["invocations"]["registered_analyzer"] = {
-                "kind": "registered_exactly_once",
-                "development_manifest_path": str(
-                    registered_root / replay.TERMINAL_MANIFEST_NAME
-                ),
-                "output_root": str(analyzer_root),
-                "expected_baseline_sha256": sha256(self.baseline_path),
-            }
-            protocol["commands"]["registered_replay"] = [
-                "replay",
-                "registered_replay",
-            ]
-            protocol["commands"]["registered_analyzer"] = [
-                "analyze",
-                "registered_analyzer",
-            ]
+            },
+        )
+        self.assertEqual(
+            invocations["registered_replay"]["range_noise_seeds"],
+            list(range(20260727, 20260747)),
+        )
+        self.assertIsNone(invocations["registered_replay"]["max_frames"])
+        command = replay.canonical_replay_argv(
+            data_path=Path("/input/data.json"),
+            input_manifest_path=Path("/input/manifest.json"),
+            protocol_token="docs/protocol.json",
+            output_root=Path("/output"),
+            run_seeds=(20260727,),
+            max_frames=2,
+        )
+        self.assertEqual(
+            command,
+            [
+                "conda", "run", "-n", "cbf_env", "python",
+                "scripts/diagnostics/replay_predictive_wnls_recovery.py",
+                "--data-path", "/input/data.json",
+                "--input-manifest-path", "/input/manifest.json",
+                "--protocol-json", "docs/protocol.json",
+                "--output-root", "/output",
+                "--run-seeds", "20260727",
+                "--max-frames", "2",
+            ],
+        )
 
-        self.write_protocol(self.default_output, mutate=add_analyzer)
-        manifest = self.execute()
-        self.assertEqual(manifest["status"], "completed")
-        self.assertEqual(manifest["selected_invocation"], "test_smoke")
-        self.assertFalse(analyzer_root.exists())
+    def test_production_protocol_rejects_cohort_invocation_argv_and_analyzer_drift(self):
+        project = Path(replay.__file__).resolve().parents[2]
+        sources = {
+            "truth_data": {
+                "path": replay.PRODUCTION_TRUTH_DATA_PATH,
+                "sha256": replay.PRODUCTION_TRUTH_DATA_SHA256,
+            },
+            "input_manifest": {
+                "path": replay.PRODUCTION_INPUT_MANIFEST_PATH,
+                "sha256": replay.PRODUCTION_INPUT_MANIFEST_SHA256,
+            },
+            "baseline_process": {
+                "path": replay.PRODUCTION_BASELINE_PROCESS_PATH,
+                "sha256": replay.PRODUCTION_BASELINE_PROCESS_SHA256,
+            },
+            "replay_source": {
+                "path": str(Path(replay.__file__).resolve()),
+                "sha256": "1" * 64,
+            },
+            "estimator_source": {
+                "path": str(project / "scripts/diagnostics/predictive_wnls.py"),
+                "sha256": "2" * 64,
+            },
+            "analyzer_source": {
+                "path": str(
+                    project
+                    / "scripts/diagnostics/analyze_predictive_wnls_recovery.py"
+                ),
+                "sha256": "3" * 64,
+            },
+            "legacy_solver_source": {
+                "path": str(
+                    project
+                    / "scripts/diagnostics/replay_localization_calibration.py"
+                ),
+                "sha256": replay.LEGACY_SOLVER_SHA256,
+            },
+            "diagnostic_integrity_source": {
+                "path": str(project / "scripts/diagnostics/run_diagnostic.py"),
+                "sha256": "4" * 64,
+            },
+        }
+        protocol = {
+            "schema_id": replay.PROTOCOL_SCHEMA_ID,
+            "protocol_id": replay.PROTOCOL_ID,
+            "implementation_parent_commit": "0" * 40,
+            "binding_design": copy.deepcopy(replay.BINDING_DESIGN),
+            "sources": sources,
+            "experiment": {
+                **copy.deepcopy(replay.EXPERIMENT_CONTRACT),
+                "range_noise_seeds": list(range(20260727, 20260747)),
+                "max_frames": None,
+            },
+            "estimator_constants": copy.deepcopy(replay.ESTIMATOR_CONSTANTS),
+            "status_contract": copy.deepcopy(replay.STATUS_CONTRACT),
+            "ablation_contracts": copy.deepcopy(replay.ABLATION_CONTRACTS),
+            "raw_schema": copy.deepcopy(replay.RAW_SCHEMA_DECLARATION),
+            "analysis_schema": copy.deepcopy(replay.ANALYSIS_SCHEMA),
+            "gates": copy.deepcopy(replay.GATES),
+            "disk_contract": copy.deepcopy(replay.DISK_CONTRACT),
+            "invocations": replay.production_invocation_contract(),
+            "evidence_lifecycle": copy.deepcopy(replay.EVIDENCE_LIFECYCLE),
+            "commands": replay.production_command_contract(sources),
+        }
+        protocol_path = project / replay.PRODUCTION_PROTOCOL_TOKEN
+        selected = replay._validate_protocol_shape(
+            protocol,
+            protocol_path=protocol_path,
+            output_root=Path("/private/tmp/cbf2026-predictive-wnls-smoke-a"),
+            run_seeds=(20260727,),
+            max_frames=2,
+        )
+        self.assertEqual(selected, "smoke_a")
+        mutations = {
+            "cohort": lambda p: p["experiment"]["range_noise_seeds"].pop(),
+            "frames": lambda p: p["experiment"].update(max_frames=2),
+            "name": lambda p: p["invocations"].update(
+                renamed=p["invocations"].pop("smoke_b")
+            ),
+            "count": lambda p: p["invocations"].pop("registered_analyzer"),
+            "argv": lambda p: p["commands"]["smoke_a"].__setitem__(0, "wrong"),
+            "analyzer": lambda p: p["sources"]["analyzer_source"].update(
+                path="/tmp/unrelated.py"
+            ),
+        }
+        for name, mutation in mutations.items():
+            with self.subTest(name=name):
+                changed = copy.deepcopy(protocol)
+                mutation(changed)
+                with self.assertRaises(ValueError):
+                    replay._validate_protocol_shape(
+                        changed,
+                        protocol_path=protocol_path,
+                        output_root=Path(
+                            "/private/tmp/cbf2026-predictive-wnls-smoke-a"
+                        ),
+                        run_seeds=(20260727,),
+                        max_frames=2,
+                    )
 
     def test_protocol_is_authority_for_every_bound_contract(self):
         mutations = {
@@ -227,7 +364,11 @@ class ProtocolAndPreflightTests(ReplayHarness):
             "baseline": lambda p: p["sources"].pop("baseline_process"),
             "legacy": lambda p: p["sources"].pop("legacy_solver_source"),
             "integrity": lambda p: p["sources"].pop("diagnostic_integrity_source"),
-            "command": lambda p: p["commands"].update(test_smoke=[]),
+            "command": lambda p: p["commands"].update(hermetic_replay=[]),
+            "argv": lambda p: p["commands"]["hermetic_replay"].__setitem__(
+                0, "wrong"
+            ),
+            "extra_invocation": lambda p: p["invocations"].update(extra={}),
         }
         for name, mutation in mutations.items():
             with self.subTest(name=name):
@@ -250,6 +391,13 @@ class ProtocolAndPreflightTests(ReplayHarness):
         for value in (math.nan, math.inf, -math.inf, np.float64(math.nan)):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 replay._strict_json_bytes({"value": value})
+        with self.assertRaises(TypeError):
+            replay._strict_json_bytes({"value": np.longdouble("1.25")})
+
+        overflow = self.root / "overflow.json"
+        overflow.write_text('{"value": 1e400}')
+        with self.assertRaises(ValueError):
+            replay._strict_load(overflow)
 
         original = replay._compact_candidates
 
@@ -329,11 +477,21 @@ class EvidenceAndAblationTests(ReplayHarness):
         first = calls[0]["measurement_records"]
         key = sorted(first)[0]
         record = first[key]
+        self.assertEqual(set(record), {"present", "noisy_range"})
+        first_row = self.rows()[0]
+        decoded = [
+            dict(zip(replay.REFERENCE_EVIDENCE_FIELDS, item))
+            for item in first_row["reference_evidence"]
+        ]
+        evidence = next(
+            item
+            for item in decoded
+            if (item["reference_kind"], item["reference_id"]) == key
+        )
         self.assertEqual(
-            record["noise_seed"],
+            evidence["noise_seed"],
             replay.stable_measurement_seed(11, 0, 1, key[0], key[1]),
         )
-        self.assertEqual(set(record), {"present", "noisy_range", "noise_seed"})
 
     def test_qualification_and_expiry_are_distinguished_by_real_unavailable_state(self):
         failed = {
@@ -355,9 +513,12 @@ class EvidenceAndAblationTests(ReplayHarness):
                           for item in qualified["reference_evidence"]]
         expiry_uav = next(item for item in expiry_refs if item["reference_kind"] == "uav")
         qualified_uav = next(item for item in qualified_refs if item["reference_kind"] == "uav")
-        self.assertTrue(expiry_uav["used"])
+        self.assertFalse(expiry_uav["used"])
         self.assertFalse(expiry_uav["eligible"])
-        self.assertEqual(expiry_uav["exclusion_reason"], None)
+        self.assertEqual(
+            expiry_uav["exclusion_reason"],
+            "not_supplied_due_to_reference_state_unavailable",
+        )
         self.assertTrue(expiry["reference_violations"])
         self.assertFalse(qualified_uav["used"])
         self.assertEqual(qualified_uav["exclusion_reason"], "not_current_frame_fresh")
@@ -393,10 +554,41 @@ class EvidenceAndAblationTests(ReplayHarness):
         self.execute()
         manifest = json.loads((self.default_output / replay.TERMINAL_MANIFEST_NAME).read_text())
         self.assertEqual(manifest["raw_schema"], replay.RAW_SCHEMA_DECLARATION)
+        for declaration in (
+            "reference_freshness_fields",
+            "mandatory_reference_fields",
+            "reference_key_fields",
+            "exclusion_fields",
+            "violation_fields",
+            "private_state_fields",
+            "public_state_fields",
+        ):
+            self.assertIn(declaration, manifest["raw_schema"])
         for row in self.rows():
             self.assertIn("attempt_base_anchor_provenance", row)
             self.assertIn("base_anchor_provenance", row)
             self.assertIn("private_reacquisition_seed", row)
+            self.assertIn("reference_freshness", row)
+            for freshness in row["reference_freshness"]:
+                self.assertEqual(
+                    len(freshness),
+                    len(replay.REFERENCE_FRESHNESS_FIELDS),
+                )
+            self.assertEqual(
+                tuple(row["mandatory_references"]),
+                tuple(replay.MANDATORY_REFERENCE_FIELDS),
+            )
+            if row["private_reacquisition_seed"] is not None:
+                self.assertEqual(
+                    tuple(row["private_reacquisition_seed"]),
+                    tuple(replay.PRIVATE_STATE_FIELDS),
+                )
+            for key in row["optional_candidates"] + row["active_references"]:
+                self.assertEqual(len(key), len(replay.REFERENCE_KEY_FIELDS))
+            for excluded in row["excluded_references"]:
+                self.assertEqual(len(excluded), len(replay.EXCLUSION_FIELDS))
+            for violation in row["reference_violations"]:
+                self.assertEqual(len(violation), len(replay.VIOLATION_FIELDS))
             for evidence in row["reference_evidence"]:
                 self.assertIsInstance(evidence, list)
                 self.assertEqual(len(evidence), len(replay.REFERENCE_EVIDENCE_FIELDS))
@@ -426,6 +618,46 @@ class EvidenceAndAblationTests(ReplayHarness):
         )
         self.assertIsNotNone(nonfresh_with_attempt_roots)
         self.assertEqual(nonfresh_with_attempt_roots["base_anchor_provenance"], [])
+
+    def test_partial_reference_failure_marks_no_reference_used_and_all_reasons(self):
+        mandatory = {"base_ids": [0], "uav_ids": []}
+        optional = [("base", 1), ("base", 2)]
+        runtime_records = {
+            ("base", 0): {"present": False, "noisy_range": None},
+            ("base", 1): {"present": True, "noisy_range": 5.0},
+            ("base", 2): {"present": True, "noisy_range": -1.0},
+        }
+        qualification = estimator.qualify_active_references(
+            mandatory=mandatory,
+            optional_keys=optional,
+            measurement_records=runtime_records,
+            uav_outputs={},
+            variant="fresh_reference_qualification",
+        )
+        evidence = replay._reference_evidence(
+            mandatory=mandatory,
+            optional=optional,
+            records=runtime_records,
+            noise_seeds={("base", 0): 10, ("base", 1): 11, ("base", 2): 12},
+            qualification=qualification,
+            current_public={},
+            solver_used_keys=(),
+        )
+        decoded = [
+            dict(zip(replay.REFERENCE_EVIDENCE_FIELDS, item))
+            for item in evidence
+        ]
+        self.assertTrue(all(item["used"] is False for item in decoded))
+        base_one = next(item for item in decoded if item["reference_id"] == 1)
+        self.assertTrue(base_one["eligible"])
+        self.assertEqual(
+            base_one["exclusion_reason"],
+            "not_evaluated_due_to_missing_mandatory",
+        )
+        base_two = next(item for item in decoded if item["reference_id"] == 2)
+        self.assertTrue(base_two["measurement_present"])
+        self.assertFalse(base_two["eligible"])
+        self.assertEqual(base_two["exclusion_reason"], "measurement_not_present")
 
     def test_compact_invalid_and_rejected_candidate_traces_are_complete(self):
         candidates = [
@@ -494,6 +726,19 @@ class EvidenceAndAblationTests(ReplayHarness):
             ],
             "invalid_trial_terms",
         )
+        malformed = (
+            [None],
+            [{"source": "prediction"}],
+            [{**candidates[0], "unexpected": True}],
+            [{**candidates[0], "gate_diagnostics": {}}],
+            [{**candidates[0], "proposal_trace": [None]}],
+            [{**candidates[0], "proposal_trace": [
+                {**candidates[0]["proposal_trace"][0], "unexpected": True}
+            ]}],
+        )
+        for value in malformed:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                replay._compact_candidates(value)
 
     def test_offline_fresh_aged_and_unavailable_null_semantics(self):
         fresh = {
@@ -600,11 +845,17 @@ class PathDiskAndTerminalTests(ReplayHarness):
                 target = self.output_parent / name
                 self.write_protocol(target)
                 original = getattr(replay, attribute)
-                if attribute == "_cleanup_stage":
-                    injected = mock.Mock(side_effect=[error, None, None])
-                else:
-                    injected = mock.Mock(side_effect=error)
-                with mock.patch.object(replay, attribute, injected):
+
+                calls = 0
+
+                def inject_once(*args, **kwargs):
+                    nonlocal calls
+                    calls += 1
+                    if calls == 1:
+                        raise error
+                    return original(*args, **kwargs)
+
+                with mock.patch.object(replay, attribute, side_effect=inject_once):
                     with self.assertRaises(RuntimeError):
                         self.execute(target)
                 terminal = json.loads((target / replay.TERMINAL_MANIFEST_NAME).read_text())
@@ -612,9 +863,199 @@ class PathDiskAndTerminalTests(ReplayHarness):
                 self.assertFalse(any(target.parent.glob(f".{target.name}.manifest.*")))
                 setattr(replay, attribute, original)
 
+    def test_real_link_then_exception_is_reconciled_as_committed(self):
+        original = replay._link_stage
+
+        for error_type in (RuntimeError, KeyboardInterrupt, SystemExit):
+            with self.subTest(error_type=error_type):
+                target_root = self.output_parent / f"linked-{error_type.__name__}"
+                self.write_protocol(target_root)
+
+                def link_then_raise(stage, target):
+                    original(stage, target)
+                    raise error_type("delivered after link")
+
+                with mock.patch.object(
+                    replay, "_link_stage", side_effect=link_then_raise
+                ):
+                    manifest = self.execute(target_root)
+                self.assertEqual(manifest["status"], "completed")
+                terminal = json.loads(
+                    (target_root / replay.TERMINAL_MANIFEST_NAME).read_text()
+                )
+                self.assertEqual(terminal["status"], "completed")
+
+    def test_completed_stage_cleanup_failure_rolls_back_before_commit(self):
+        original = replay._cleanup_stage
+        calls = 0
+
+        def fail_completed_cleanup(stage):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("completed cleanup")
+            return original(stage)
+
+        with mock.patch.object(
+            replay, "_cleanup_stage", side_effect=fail_completed_cleanup
+        ):
+            with self.assertRaisesRegex(RuntimeError, "completed cleanup"):
+                self.execute()
+        terminal = json.loads(
+            (self.default_output / replay.TERMINAL_MANIFEST_NAME).read_text()
+        )
+        self.assertEqual(terminal["status"], "failed")
+        self.assertFalse(any(
+            self.output_parent.glob(f".{self.default_output.name}.manifest.*")
+        ))
+
+    def test_success_probe_interrupts_publish_failed_and_are_rethrown(self):
+        for error_type in (KeyboardInterrupt, SystemExit):
+            with self.subTest(error_type=error_type):
+                target = self.output_parent / error_type.__name__
+                self.write_protocol(target)
+                with mock.patch.object(
+                    replay,
+                    "_required_terminal_metrics",
+                    side_effect=error_type("probe"),
+                    create=True,
+                ):
+                    with self.assertRaises(error_type):
+                        self.execute(target)
+                terminal = json.loads(
+                    (target / replay.TERMINAL_MANIFEST_NAME).read_text()
+                )
+                self.assertEqual(terminal["status"], "failed")
+
+    def test_precommit_fsync_failures_roll_back_owned_target_and_publish_failed(self):
+        fault_points = ("_fsync_raw_output", "_fsync_output_directory")
+        for attribute in fault_points:
+            with self.subTest(attribute=attribute):
+                target = self.output_parent / attribute
+                self.write_protocol(target)
+                with mock.patch.object(
+                    replay,
+                    attribute,
+                    side_effect=OSError("fsync"),
+                    create=True,
+                ):
+                    with self.assertRaises(OSError):
+                        self.execute(target)
+                terminal = json.loads(
+                    (target / replay.TERMINAL_MANIFEST_NAME).read_text()
+                )
+                self.assertEqual(terminal["status"], "failed")
+
+    def test_foreign_sibling_stage_survives_failure(self):
+        foreign = replay._stage_path(self.default_output, "completed")
+        original = replay._write_row
+        injected = False
+
+        def create_foreign_then_fail(*args):
+            nonlocal injected
+            if not injected:
+                injected = True
+                foreign.write_bytes(b"foreign")
+                raise RuntimeError("row")
+            return original(*args)
+
+        with mock.patch.object(
+            replay, "_write_row", side_effect=create_foreign_then_fail
+        ):
+            with self.assertRaises(RuntimeError):
+                self.execute()
+        self.assertEqual(foreign.read_bytes(), b"foreign")
+        terminal = json.loads(
+            (self.default_output / replay.TERMINAL_MANIFEST_NAME).read_text()
+        )
+        self.assertEqual(terminal["status"], "failed")
+
+    def test_failed_publication_ordinary_error_does_not_mask_original(self):
+        with mock.patch.object(
+            replay, "_write_row", side_effect=RuntimeError("original")
+        ), mock.patch.object(
+            replay, "_publish_failed", side_effect=OSError("terminal")
+        ):
+            with self.assertRaisesRegex(RuntimeError, "original"):
+                self.execute()
+
+    def test_exception_immediately_after_root_creation_is_terminal(self):
+        original = replay._create_exact_root
+
+        def create_then_raise(output_root, *, identity_sink=None):
+            original(output_root, identity_sink=identity_sink)
+            raise RuntimeError("after allocation")
+
+        with mock.patch.object(
+            replay, "_create_exact_root", side_effect=create_then_raise
+        ):
+            with self.assertRaises(RuntimeError):
+                self.execute()
+        terminal = json.loads(
+            (self.default_output / replay.TERMINAL_MANIFEST_NAME).read_text()
+        )
+        self.assertEqual(terminal["status"], "failed")
+
+    def test_concurrent_foreign_root_is_never_claimed_by_failure_publication(self):
+        self.output_parent.mkdir()
+        real_mkdir = os.mkdir
+        injected = False
+
+        def create_foreign_then_conflict(path, mode=0o777, *, dir_fd=None):
+            nonlocal injected
+            if path == self.default_output.name and dir_fd is not None and not injected:
+                injected = True
+                real_mkdir(path, mode, dir_fd=dir_fd)
+                (self.default_output / "foreign-owner").write_text("foreign")
+                raise FileExistsError("concurrent foreign root")
+            return real_mkdir(path, mode, dir_fd=dir_fd)
+
+        with mock.patch("os.mkdir", side_effect=create_foreign_then_conflict):
+            with self.assertRaises(FileExistsError):
+                self.execute()
+        self.assertTrue(injected)
+        self.assertEqual(
+            (self.default_output / "foreign-owner").read_text(), "foreign"
+        )
+        self.assertFalse(
+            (self.default_output / replay.TERMINAL_MANIFEST_NAME).exists()
+        )
+
+    def test_parent_swap_during_mkdir_cannot_redirect_output(self):
+        self.output_parent.mkdir()
+        moved_parent = self.root / "moved-output-parent"
+        real_mkdir = os.mkdir
+        swapped = False
+
+        def swap_then_mkdir(path, mode=0o777, *, dir_fd=None):
+            nonlocal swapped
+            if path == self.default_output.name and dir_fd is not None and not swapped:
+                swapped = True
+                os.rename(self.output_parent, moved_parent)
+                real_mkdir(self.output_parent)
+                real_mkdir(self.default_output)
+                (self.default_output / "foreign-owner").write_text("foreign")
+            return real_mkdir(path, mode, dir_fd=dir_fd)
+
+        with mock.patch("os.mkdir", side_effect=swap_then_mkdir):
+            with self.assertRaises(ValueError):
+                self.execute()
+        self.assertTrue(swapped)
+        self.assertEqual(
+            (self.default_output / "foreign-owner").read_text(), "foreign"
+        )
+        self.assertFalse(
+            (self.default_output / replay.TERMINAL_MANIFEST_NAME).exists()
+        )
+
     def test_success_has_no_staging_and_completed_publication_is_last_throwing_boundary(self):
         manifest = self.execute()
         self.assertEqual(manifest["status"], "completed")
+        self.assertEqual(
+            manifest["protocol_schema_id"],
+            "cbf2026-predictive-wnls-stage1-hermetic-protocol-v1",
+        )
+        self.assertEqual(manifest["evidence_class"], "hermetic_non_evidence_only")
         self.assertFalse(any(self.output_parent.glob(f".{self.default_output.name}.manifest.*")))
         self.assertEqual(
             json.loads((self.default_output / replay.TERMINAL_MANIFEST_NAME).read_text())["status"],
@@ -662,6 +1103,80 @@ class DeterminismAndMutationTests(ReplayHarness):
         terminal = json.loads((self.default_output / replay.TERMINAL_MANIFEST_NAME).read_text())
         self.assertEqual(terminal["status"], "failed")
         self.assertNotEqual(terminal["status"], "completed")
+
+    def test_same_byte_source_inode_replacement_is_rejected(self):
+        original = replay._write_row
+        replaced = False
+
+        def replace_then_write(*args):
+            nonlocal replaced
+            if not replaced:
+                replaced = True
+                replacement = self.input_root / "same-bytes.json"
+                replacement.write_bytes(self.data_path.read_bytes())
+                os.replace(replacement, self.data_path)
+            return original(*args)
+
+        with mock.patch.object(replay, "_write_row", side_effect=replace_then_write):
+            with self.assertRaises(ValueError):
+                self.execute()
+        terminal = json.loads(
+            (self.default_output / replay.TERMINAL_MANIFEST_NAME).read_text()
+        )
+        self.assertEqual(terminal["status"], "failed")
+
+    def test_transient_different_bytes_cannot_be_parsed_under_registered_identity(self):
+        original_load = replay._strict_load
+        original_read = os.read
+        truth_inode = self.data_path.stat().st_ino
+        swapped = False
+
+        def transient(path):
+            nonlocal swapped
+            if Path(path) == self.data_path and not swapped:
+                swapped = True
+                original_bytes = self.data_path.read_bytes()
+                changed = tiny_data()
+                changed["state"][0]["robots"][0]["state"]["x"] = 303.0
+                write_json(self.data_path, changed)
+                try:
+                    return original_load(path)
+                finally:
+                    self.data_path.write_bytes(original_bytes)
+            return original_load(path)
+
+        def transient_during_fd_read(descriptor, size):
+            nonlocal swapped
+            if not swapped and os.fstat(descriptor).st_ino == truth_inode:
+                swapped = True
+                saved = self.input_root / "registered-data.json"
+                os.rename(self.data_path, saved)
+                changed = tiny_data()
+                changed["state"][0]["robots"][0]["state"]["x"] = 303.0
+                write_json(self.data_path, changed)
+                try:
+                    return original_read(descriptor, size)
+                finally:
+                    self.data_path.unlink()
+                    os.rename(saved, self.data_path)
+            return original_read(descriptor, size)
+
+        with mock.patch.object(
+            replay, "_strict_load", side_effect=transient
+        ), mock.patch.object(
+            replay.os, "read", side_effect=transient_during_fd_read
+        ):
+            self.execute()
+        self.assertTrue(swapped)
+        first = next(
+            row
+            for row in self.rows()
+            if row["variant"] == "prediction_expiry"
+            and row["seed"] == 11
+            and row["frame_index"] == 0
+            and row["robot_id"] == 1
+        )
+        self.assertEqual(first["offline_truth_position"], [3.0, 4.0])
 
     def test_protocol_identity_is_observed_and_protocol_mutation_fails_completion(self):
         original = replay._write_row

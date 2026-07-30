@@ -10,7 +10,6 @@ import math
 import os
 import re
 import stat
-import tempfile
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,7 +54,6 @@ from scripts.diagnostics.run_diagnostic import (
     START_BYTES,
     DiskSpaceError,
     _nearest_existing_ancestor,
-    _sha256,
     allocated_bytes,
     available_bytes,
     require_start_space,
@@ -67,8 +65,12 @@ DEVELOPMENT_VARIANTS = (
     "fresh_reference_qualification",
     "predictive_multistart",
 )
-PROTOCOL_SCHEMA_ID = "cbf2026-predictive-wnls-stage1-protocol-v1"
+PROTOCOL_SCHEMA_ID = "cbf2026-predictive-wnls-stage1-protocol-v2"
 PROTOCOL_ID = "cbf2026-predictive-wnls-stage1-v2"
+HERMETIC_PROTOCOL_SCHEMA_ID = (
+    "cbf2026-predictive-wnls-stage1-hermetic-protocol-v1"
+)
+HERMETIC_PROTOCOL_ID = "cbf2026-predictive-wnls-stage1-hermetic-v1"
 RAW_SCHEMA_ID = "cbf2026-predictive-wnls-development-rows-v2"
 RAW_PROCESS_NAME = "predictive-wnls-development.jsonl.gz"
 TERMINAL_MANIFEST_NAME = "manifest.json"
@@ -76,6 +78,35 @@ RAW_BUNDLE_CAP_BYTES = 2_000_000_000
 MOTION_SIGMA_M_PER_FRAME = 0.5
 LEGACY_SOLVER_SHA256 = (
     "0123ed283917f6f9c6a005df4b8b7928e927d3aa4e098e5740816f272e24e4b8"
+)
+PRODUCTION_RANGE_NOISE_SEEDS = tuple(range(20260727, 20260747))
+PRODUCTION_PROTOCOL_TOKEN = (
+    "docs/diagnostics/2026-07-30-predictive-wnls-stage1-protocol.json"
+)
+PRODUCTION_TRUTH_DATA_PATH = (
+    "/private/tmp/cbf2026-results/mc-first-mechanism-250s/R/"
+    "20260728T062752.357599Z_9cb3d4b121eb438c8688f0a121f01725/"
+    "2026-07-28_14-27-53_R_seed_20260727_250s/data.json"
+)
+PRODUCTION_TRUTH_DATA_SHA256 = (
+    "3defc62d11bb5996301b21b95ab3902c998bb982640b0f9be7b9536005145527"
+)
+PRODUCTION_INPUT_MANIFEST_PATH = (
+    "/private/tmp/cbf2026-results/mc-first-mechanism-250s/R/"
+    "20260728T062752.357599Z_9cb3d4b121eb438c8688f0a121f01725/manifest.json"
+)
+PRODUCTION_INPUT_MANIFEST_SHA256 = (
+    "6731444b7a4cdaaaba010a6297b8b258500978e8856f239c04c157bc4878d6fb"
+)
+PRODUCTION_BASELINE_PROCESS_PATH = (
+    "/private/tmp/cbf2026-warm-start-recovery/warm-start-recovery/"
+    "20260729T112153.797813Z_54338549bff348a093dd71f29366d29b/restart/"
+    "localization-calibration/"
+    "20260729T112437.413270Z_efb8e7137776415c833f11204cf519d5/"
+    "calibration.jsonl.gz"
+)
+PRODUCTION_BASELINE_PROCESS_SHA256 = (
+    "c964d415e68425e4b64e5acc9be925a237165a72c59a0b98342b9033734f2003"
 )
 
 CANDIDATE_FIELDS = (
@@ -89,6 +120,34 @@ CANDIDATE_FIELDS = (
     "rejection_reason",
     "q_innov",
     "gate_diagnostics",
+    "proposal_trace",
+)
+MULTISTART_CANDIDATE_RECORD_FIELDS = (
+    "source",
+    "initial_estimate",
+    "result",
+    "accepted",
+    "rejection_reason",
+    "gate_diagnostics",
+    "status",
+    "estimate",
+    "covariance",
+    "cost",
+    "q_innov",
+)
+SOLVER_RESULT_FIELDS = (
+    "status",
+    "estimate",
+    "covariance",
+    "epsilon",
+    "phi_min_eigenvalue",
+    "phi_condition",
+    "fim_valid",
+    "proposal_count",
+    "iterations",
+    "cost",
+    "stationarity_norm",
+    "failure_reason",
     "proposal_trace",
 )
 PROPOSAL_TRACE_FIELDS = (
@@ -122,6 +181,26 @@ REFERENCE_EVIDENCE_FIELDS = (
     "exclusion_reason",
     "base_anchor_provenance",
 )
+REFERENCE_FRESHNESS_FIELDS = (
+    "reference_kind",
+    "reference_id",
+    "current_freshness",
+)
+MANDATORY_REFERENCE_FIELDS = ("base_ids", "uav_ids")
+REFERENCE_KEY_FIELDS = ("reference_kind", "reference_id")
+EXCLUSION_FIELDS = ("reference_kind", "reference_id", "reason")
+VIOLATION_FIELDS = ("reference_kind", "reference_id", "reason")
+PRIVATE_STATE_FIELDS = ("estimate", "modeled_covariance")
+PUBLIC_STATE_FIELDS = (
+    "output_status",
+    "prediction_age",
+    "estimate",
+    "fresh_modeled_covariance",
+    "fresh_epsilon",
+    "aged_modeled_covariance",
+    "aged_modeled_radius",
+    "base_anchor_provenance",
+)
 ROW_FIELDS = (
     "variant",
     "seed",
@@ -148,6 +227,7 @@ ROW_FIELDS = (
     "optional_candidates",
     "active_references",
     "reference_evidence",
+    "reference_freshness",
     "excluded_references",
     "reference_violations",
     "candidates",
@@ -265,9 +345,21 @@ RAW_SCHEMA_DECLARATION = {
     "process_name": RAW_PROCESS_NAME,
     "row_fields": list(ROW_FIELDS),
     "candidate_fields": list(CANDIDATE_FIELDS),
+    "legacy_candidate_record_fields": list(CANDIDATE_FIELDS),
+    "multistart_candidate_record_fields": list(
+        MULTISTART_CANDIDATE_RECORD_FIELDS
+    ),
+    "solver_result_fields": list(SOLVER_RESULT_FIELDS),
     "proposal_trace_fields": list(PROPOSAL_TRACE_FIELDS),
     "gate_diagnostic_fields": list(GATE_DIAGNOSTIC_FIELDS),
     "reference_evidence_fields": list(REFERENCE_EVIDENCE_FIELDS),
+    "reference_freshness_fields": list(REFERENCE_FRESHNESS_FIELDS),
+    "mandatory_reference_fields": list(MANDATORY_REFERENCE_FIELDS),
+    "reference_key_fields": list(REFERENCE_KEY_FIELDS),
+    "exclusion_fields": list(EXCLUSION_FIELDS),
+    "violation_fields": list(VIOLATION_FIELDS),
+    "private_state_fields": list(PRIVATE_STATE_FIELDS),
+    "public_state_fields": list(PUBLIC_STATE_FIELDS),
 }
 ANALYSIS_SCHEMA = {
     "id": "cbf2026-predictive-wnls-development-analysis-v2",
@@ -325,16 +417,149 @@ REQUIRED_SOURCES = {
     "legacy_solver_source",
     "diagnostic_integrity_source",
     "baseline_process",
+    "analyzer_source",
 }
-OPTIONAL_SOURCES = {"analyzer_source"}
+HERMETIC_REQUIRED_SOURCES = REQUIRED_SOURCES - {"analyzer_source"}
 STAGING_NAMES = ("finalizing", "completed", "failed")
+
+
+def canonical_replay_argv(
+    *,
+    data_path: Path,
+    input_manifest_path: Path,
+    protocol_token: str,
+    output_root: Path,
+    run_seeds: tuple[int, ...],
+    max_frames: int | None,
+) -> list[str]:
+    """Return the token-for-token replay command bound by a protocol."""
+    command = [
+        "conda",
+        "run",
+        "-n",
+        "cbf_env",
+        "python",
+        "scripts/diagnostics/replay_predictive_wnls_recovery.py",
+        "--data-path",
+        str(data_path),
+        "--input-manifest-path",
+        str(input_manifest_path),
+        "--protocol-json",
+        protocol_token,
+        "--output-root",
+        str(output_root),
+        "--run-seeds",
+        ",".join(str(seed) for seed in run_seeds),
+    ]
+    if max_frames is not None:
+        command.extend(("--max-frames", str(max_frames)))
+    return command
+
+
+def canonical_analyzer_argv(
+    *,
+    baseline_process_path: Path,
+    development_manifest_path: Path,
+    protocol_token: str,
+    expected_baseline_sha256: str,
+    output_root: Path,
+) -> list[str]:
+    """Return the token-for-token analyzer command bound by production v2."""
+    return [
+        "conda",
+        "run",
+        "-n",
+        "cbf_env",
+        "python",
+        "scripts/diagnostics/analyze_predictive_wnls_recovery.py",
+        "--baseline-process-path",
+        str(baseline_process_path),
+        "--development-manifest-path",
+        str(development_manifest_path),
+        "--protocol-json",
+        protocol_token,
+        "--expected-baseline-sha256",
+        expected_baseline_sha256,
+        "--output-root",
+        str(output_root),
+    ]
+
+
+def production_invocation_contract() -> dict[str, dict]:
+    """Return the exact four-invocation registered Stage-1 contract."""
+    registered_root = Path(
+        "/private/tmp/cbf2026-predictive-wnls-development/stage1-v2"
+    )
+    return {
+        "smoke_a": {
+            "kind": "unregistered_smoke",
+            "output_root": "/private/tmp/cbf2026-predictive-wnls-smoke-a",
+            "range_noise_seeds": [20260727],
+            "max_frames": 2,
+        },
+        "smoke_b": {
+            "kind": "unregistered_smoke",
+            "output_root": "/private/tmp/cbf2026-predictive-wnls-smoke-b",
+            "range_noise_seeds": [20260727],
+            "max_frames": 2,
+        },
+        "registered_replay": {
+            "kind": "registered_exactly_once",
+            "output_root": str(registered_root),
+            "range_noise_seeds": list(PRODUCTION_RANGE_NOISE_SEEDS),
+            "max_frames": None,
+        },
+        "registered_analyzer": {
+            "kind": "registered_exactly_once",
+            "development_manifest_path": str(
+                registered_root / TERMINAL_MANIFEST_NAME
+            ),
+            "output_root": (
+                "/private/tmp/cbf2026-predictive-wnls-development-analysis/"
+                "stage1-v2"
+            ),
+            "expected_baseline_sha256": PRODUCTION_BASELINE_PROCESS_SHA256,
+        },
+    }
+
+
+def production_command_contract(sources: Mapping) -> dict[str, list[str]]:
+    """Return canonical argv arrays for Task 6's production registrar."""
+    invocations = production_invocation_contract()
+    data_path = Path(sources["truth_data"]["path"])
+    input_manifest_path = Path(sources["input_manifest"]["path"])
+    commands = {}
+    for name in ("smoke_a", "smoke_b", "registered_replay"):
+        declaration = invocations[name]
+        commands[name] = canonical_replay_argv(
+            data_path=data_path,
+            input_manifest_path=input_manifest_path,
+            protocol_token=PRODUCTION_PROTOCOL_TOKEN,
+            output_root=Path(declaration["output_root"]),
+            run_seeds=tuple(declaration["range_noise_seeds"]),
+            max_frames=declaration["max_frames"],
+        )
+    analyzer = invocations["registered_analyzer"]
+    commands["registered_analyzer"] = canonical_analyzer_argv(
+        baseline_process_path=Path(sources["baseline_process"]["path"]),
+        development_manifest_path=Path(analyzer["development_manifest_path"]),
+        protocol_token=PRODUCTION_PROTOCOL_TOKEN,
+        expected_baseline_sha256=analyzer["expected_baseline_sha256"],
+        output_root=Path(analyzer["output_root"]),
+    )
+    return commands
 
 
 def _native_json(value):
     if isinstance(value, np.ndarray):
         return _native_json(value.tolist())
     if isinstance(value, np.generic):
-        return _native_json(value.item())
+        converted = value.item()
+        if isinstance(converted, np.generic):
+            raise TypeError(
+                f"unsupported NumPy scalar evidence type: {type(value).__name__}"
+            )
+        return _native_json(converted)
     if isinstance(value, float):
         if not math.isfinite(value):
             raise ValueError("non-finite JSON evidence")
@@ -363,15 +588,106 @@ def _strict_json_bytes(value, *, indent=None) -> bytes:
     ).encode("utf-8")
 
 
-def _strict_load(path: Path) -> dict:
+def _parse_json_object(payload: bytes, path: Path) -> dict:
     def reject_constant(value: str):
         raise ValueError(f"non-finite JSON constant {value}")
 
-    with path.open(encoding="utf-8") as source:
-        value = json.load(source, parse_constant=reject_constant)
+    def finite_float(value: str) -> float:
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            raise ValueError(f"non-finite JSON float {value}")
+        return parsed
+
+    try:
+        value = json.loads(
+            payload.decode("utf-8"),
+            parse_constant=reject_constant,
+            parse_float=finite_float,
+        )
+    except UnicodeDecodeError as error:
+        raise ValueError(f"{path} is not UTF-8 JSON") from error
     if not isinstance(value, dict):
         raise ValueError(f"{path} must contain a JSON object")
+    _native_json(value)
     return value
+
+
+def _read_trusted_bytes(
+    path: Path,
+    *,
+    expected_identity: dict | None = None,
+    expected_sha256: str | None = None,
+    capture_payload: bool = True,
+) -> tuple[bytes | None, dict]:
+    """Read and identify the same no-follow descriptor bytes atomically."""
+    path = _absolute(path)
+    _lstat_components(path, leaf_required=True)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError(f"trusted leaf must be a regular file: {path}")
+        chunks = [] if capture_payload else None
+        digest = hashlib.sha256()
+        bytes_read = 0
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            bytes_read += len(chunk)
+            if chunks is not None:
+                chunks.append(chunk)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    state_before = (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+    )
+    state_after = (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+    )
+    if state_before != state_after:
+        raise ValueError(f"trusted file changed while reading: {path}")
+    payload = None if chunks is None else b"".join(chunks)
+    if bytes_read != before.st_size:
+        raise ValueError(f"trusted file size changed while reading: {path}")
+    _lstat_components(path, leaf_required=True)
+    path_state = path.lstat()
+    if (
+        path_state.st_dev,
+        path_state.st_ino,
+        path_state.st_size,
+        path_state.st_mtime_ns,
+    ) != state_after:
+        raise ValueError(f"trusted path identity changed while reading: {path}")
+    identity = {
+        "path": str(path),
+        "sha256": digest.hexdigest(),
+        "device": after.st_dev,
+        "inode": after.st_ino,
+        "size": after.st_size,
+        "mtime_ns": after.st_mtime_ns,
+    }
+    if expected_sha256 is not None and identity["sha256"] != expected_sha256:
+        raise ValueError(f"trusted file hash mismatch: {path}")
+    if expected_identity is not None and identity != expected_identity:
+        raise ValueError(f"trusted file identity changed: {path}")
+    return payload, identity
+
+
+def _strict_load(path: Path) -> dict:
+    payload, _ = _read_trusted_bytes(_absolute(Path(path)))
+    if payload is None:
+        raise RuntimeError("internal trusted JSON payload was not captured")
+    return _parse_json_object(payload, Path(path))
 
 
 def _absolute(path: Path) -> Path:
@@ -379,6 +695,15 @@ def _absolute(path: Path) -> Path:
     if not path.is_absolute() or ".." in path.parts:
         raise ValueError(f"path must be normalized and absolute: {path}")
     return path
+
+
+def _runtime_absolute(path: Path) -> Path:
+    path = Path(path)
+    if path.is_absolute():
+        return _absolute(path)
+    if ".." in path.parts:
+        raise ValueError(f"runtime path must not contain parent traversal: {path}")
+    return _absolute(Path.cwd() / path)
 
 
 def _lstat_components(path: Path, *, leaf_required: bool) -> None:
@@ -398,16 +723,8 @@ def _lstat_components(path: Path, *, leaf_required: bool) -> None:
 
 
 def _file_identity(path: Path) -> dict:
-    _lstat_components(path, leaf_required=True)
-    metadata = path.lstat()
-    return {
-        "path": str(path),
-        "sha256": _sha256(path),
-        "device": metadata.st_dev,
-        "inode": metadata.st_ino,
-        "size": metadata.st_size,
-        "mtime_ns": metadata.st_mtime_ns,
-    }
+    _, identity = _read_trusted_bytes(path, capture_payload=False)
+    return identity
 
 
 def _same_or_nested(first: Path, second: Path) -> bool:
@@ -454,33 +771,94 @@ def _validate_paths(
         _validate_stage_absence(output_root)
 
 
-def _create_exact_root(output_root: Path) -> None:
-    ancestor = _nearest_existing_ancestor(output_root)
-    _lstat_components(ancestor, leaf_required=False)
-    pending = []
-    cursor = output_root.parent
-    while cursor != ancestor:
-        pending.append(cursor)
-        cursor = cursor.parent
-    for directory in reversed(pending):
-        directory.mkdir()
-        if directory.is_symlink() or not directory.is_dir():
-            raise ValueError(f"unsafe output parent: {directory}")
-    output_root.mkdir(exist_ok=False)
+def _directory_identity(metadata: os.stat_result, path: Path) -> dict:
+    return {
+        "path": str(path),
+        "device": metadata.st_dev,
+        "inode": metadata.st_ino,
+    }
+
+
+def _create_exact_root(
+    output_root: Path,
+    *,
+    identity_sink: dict | None = None,
+) -> dict:
+    """Create every missing component through no-follow directory descriptors."""
+    output_root = _absolute(output_root)
+    if identity_sink is not None:
+        identity_sink.clear()
+    components = output_root.parts[1:]
+    if not components:
+        raise ValueError("output_root cannot be filesystem root")
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    parent_fd = os.open("/", directory_flags)
+    try:
+        for component in components[:-1]:
+            try:
+                next_fd = os.open(component, directory_flags, dir_fd=parent_fd)
+            except FileNotFoundError:
+                os.mkdir(component, dir_fd=parent_fd)
+                next_fd = os.open(component, directory_flags, dir_fd=parent_fd)
+            os.close(parent_fd)
+            parent_fd = next_fd
+        os.mkdir(components[-1], dir_fd=parent_fd)
+        root_fd = os.open(components[-1], directory_flags, dir_fd=parent_fd)
+        try:
+            metadata = os.fstat(root_fd)
+            linked = os.stat(
+                components[-1],
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISDIR(metadata.st_mode)
+                or (metadata.st_dev, metadata.st_ino)
+                != (linked.st_dev, linked.st_ino)
+            ):
+                raise ValueError("exclusive output root identity is invalid")
+            identity = _directory_identity(metadata, output_root)
+            if identity_sink is not None:
+                identity_sink["root_identity"] = identity
+            return identity
+        finally:
+            os.close(root_fd)
+    finally:
+        os.close(parent_fd)
+
+
+def _assert_directory_identity(output_root: Path, identity: dict) -> None:
+    try:
+        _lstat_components(output_root, leaf_required=False)
+        metadata = output_root.lstat()
+    except (FileNotFoundError, OSError) as error:
+        raise ValueError("allocated output_root path disappeared") from error
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or _directory_identity(metadata, output_root) != identity
+    ):
+        raise ValueError("allocated output_root identity changed")
 
 
 def _validate_protocol_shape(
     protocol: dict,
     *,
+    protocol_path: Path,
     output_root: Path,
     run_seeds: tuple[int, ...],
     max_frames: int | None,
 ) -> str:
     if set(protocol) != PROTOCOL_TOP_LEVEL_FIELDS:
         raise ValueError("protocol top-level fields differ from exact contract")
+    schema_id = protocol.get("schema_id")
+    if schema_id not in {PROTOCOL_SCHEMA_ID, HERMETIC_PROTOCOL_SCHEMA_ID}:
+        raise ValueError("protocol schema_id differs from exact contract")
     exact = {
-        "schema_id": PROTOCOL_SCHEMA_ID,
-        "protocol_id": PROTOCOL_ID,
         "binding_design": BINDING_DESIGN,
         "estimator_constants": ESTIMATOR_CONSTANTS,
         "status_contract": STATUS_CONTRACT,
@@ -497,186 +875,180 @@ def _validate_protocol_shape(
     commit = protocol.get("implementation_parent_commit")
     if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
         raise ValueError("implementation_parent_commit must be 40 lowercase hex")
+    sources = protocol.get("sources")
+    if not isinstance(sources, dict):
+        raise ValueError("protocol sources must be an object")
+    for name, declaration in sources.items():
+        if (
+            not isinstance(name, str)
+            or not isinstance(declaration, dict)
+            or set(declaration) != {"path", "sha256"}
+            or not isinstance(declaration["path"], str)
+            or not isinstance(declaration["sha256"], str)
+            or re.fullmatch(r"[0-9a-f]{64}", declaration["sha256"]) is None
+        ):
+            raise ValueError(f"protocol source declaration is invalid: {name}")
     experiment = protocol.get("experiment")
     if not isinstance(experiment, dict):
         raise ValueError("protocol experiment must be an object")
-    seeds = experiment.get("range_noise_seeds")
-    frames = experiment.get("max_frames")
-    expected_experiment = {
-        **EXPERIMENT_CONTRACT,
-        "range_noise_seeds": seeds,
-        "max_frames": frames,
-    }
-    if experiment != expected_experiment:
-        raise ValueError("protocol experiment differs from exact contract")
-    if (
-        not isinstance(seeds, list)
-        or not seeds
-        or any(isinstance(seed, bool) or not isinstance(seed, int) for seed in seeds)
-        or len(seeds) != len(set(seeds))
-    ):
-        raise ValueError("protocol seed cohort is invalid")
-    if frames is not None and (
-        isinstance(frames, bool) or not isinstance(frames, int) or frames <= 0
-    ):
-        raise ValueError("protocol max_frames is invalid")
     invocations = protocol.get("invocations")
     commands = protocol.get("commands")
-    if (
-        not isinstance(invocations, dict)
-        or not invocations
-        or not isinstance(commands, dict)
-        or set(commands) != set(invocations)
-        or any(
-            not isinstance(command, list)
-            or not command
-            or any(not isinstance(token, str) or not token for token in command)
-            for command in commands.values()
-        )
-    ):
+    if not isinstance(invocations, dict) or not isinstance(commands, dict):
         raise ValueError("protocol invocations/commands are invalid")
-    selected = None
-    replay_invocations = {}
-    analyzer_invocations = []
-    declared_output_roots = set()
-    for name, declaration in invocations.items():
-        if not isinstance(name, str) or not isinstance(declaration, dict):
-            raise ValueError("protocol invocation declaration is invalid")
-        replay_fields = {
-            "kind",
-            "output_root",
-            "range_noise_seeds",
-            "max_frames",
+    if schema_id == PROTOCOL_SCHEMA_ID:
+        if protocol.get("protocol_id") != PROTOCOL_ID:
+            raise ValueError("production protocol_id differs from exact contract")
+        expected_protocol_path = (
+            Path(__file__).resolve().parents[2] / PRODUCTION_PROTOCOL_TOKEN
+        )
+        if protocol_path != expected_protocol_path:
+            raise ValueError("production protocol path differs from exact contract")
+        expected_experiment = {
+            **EXPERIMENT_CONTRACT,
+            "range_noise_seeds": list(PRODUCTION_RANGE_NOISE_SEEDS),
+            "max_frames": None,
         }
-        analyzer_fields = {
-            "kind",
-            "development_manifest_path",
-            "output_root",
-            "expected_baseline_sha256",
+        if experiment != expected_experiment:
+            raise ValueError("production experiment differs from exact contract")
+        if set(sources) != REQUIRED_SOURCES:
+            raise ValueError("production sources differ from exact contract")
+        project_root = Path(__file__).resolve().parents[2]
+        expected_paths = {
+            "truth_data": PRODUCTION_TRUTH_DATA_PATH,
+            "input_manifest": PRODUCTION_INPUT_MANIFEST_PATH,
+            "baseline_process": PRODUCTION_BASELINE_PROCESS_PATH,
+            "replay_source": str(Path(__file__).resolve()),
+            "estimator_source": str(
+                project_root / "scripts/diagnostics/predictive_wnls.py"
+            ),
+            "analyzer_source": str(
+                project_root
+                / "scripts/diagnostics/analyze_predictive_wnls_recovery.py"
+            ),
+            "legacy_solver_source": str(
+                project_root
+                / "scripts/diagnostics/replay_localization_calibration.py"
+            ),
+            "diagnostic_integrity_source": str(
+                project_root / "scripts/diagnostics/run_diagnostic.py"
+            ),
         }
-        declaration_fields = set(declaration)
-        if declaration_fields == replay_fields:
-            if declaration["kind"] not in {
-                "unregistered_smoke",
-                "registered_exactly_once",
-            }:
-                raise ValueError("replay invocation kind is invalid")
-            declared_root = _absolute(Path(declaration["output_root"]))
-            if str(declared_root) != declaration["output_root"]:
-                raise ValueError("replay output_root is not normalized")
-            declared_seeds = declaration["range_noise_seeds"]
-            declared_frames = declaration["max_frames"]
-            if (
-                not isinstance(declared_seeds, list)
-                or not declared_seeds
-                or any(
-                    isinstance(seed, bool) or not isinstance(seed, int)
-                    for seed in declared_seeds
-                )
-                or len(declared_seeds) != len(set(declared_seeds))
-                or (
-                    declared_frames is not None
-                    and (
-                        isinstance(declared_frames, bool)
-                        or not isinstance(declared_frames, int)
-                        or declared_frames <= 0
-                    )
-                )
-            ):
-                raise ValueError("replay invocation arguments are invalid")
-            replay_invocations[name] = declaration
-            if declaration["output_root"] == str(output_root):
-                if selected is not None:
-                    raise ValueError("output_root is declared more than once")
-                selected = name
-                if (
-                    declared_seeds != list(run_seeds)
-                    or declared_frames != max_frames
-                ):
-                    raise ValueError(
-                        "runtime arguments differ from declared invocation"
-                    )
-        elif declaration_fields == analyzer_fields:
-            if declaration["kind"] != "registered_exactly_once":
-                raise ValueError("analyzer invocation kind is invalid")
-            declared_root = _absolute(Path(declaration["output_root"]))
-            development_manifest = _absolute(
-                Path(declaration["development_manifest_path"])
-            )
-            baseline_hash = declaration["expected_baseline_sha256"]
-            if (
-                str(declared_root) != declaration["output_root"]
-                or str(development_manifest)
-                != declaration["development_manifest_path"]
-                or not isinstance(baseline_hash, str)
-                or re.fullmatch(r"[0-9a-f]{64}", baseline_hash) is None
-            ):
-                raise ValueError("analyzer invocation is invalid")
-            analyzer_invocations.append(declaration)
-        else:
-            raise ValueError("invocation fields differ from exact contract")
-        if declaration["output_root"] in declared_output_roots:
-            raise ValueError("output_root is declared more than once")
-        declared_output_roots.add(declaration["output_root"])
-    if selected is None:
-        raise ValueError("runtime output_root is not declared by protocol")
-    registered_manifests = {
-        str(Path(declaration["output_root"]) / TERMINAL_MANIFEST_NAME)
-        for declaration in replay_invocations.values()
-        if declaration["kind"] == "registered_exactly_once"
-    }
-    expected_baseline = protocol.get("sources", {}).get(
-        "baseline_process", {}
-    ).get("sha256")
-    for declaration in analyzer_invocations:
+        expected_hashes = {
+            "truth_data": PRODUCTION_TRUTH_DATA_SHA256,
+            "input_manifest": PRODUCTION_INPUT_MANIFEST_SHA256,
+            "baseline_process": PRODUCTION_BASELINE_PROCESS_SHA256,
+            "legacy_solver_source": LEGACY_SOLVER_SHA256,
+        }
+        for name, path in expected_paths.items():
+            if sources[name]["path"] != path:
+                raise ValueError(f"production source path differs: {name}")
+        for name, digest in expected_hashes.items():
+            if sources[name]["sha256"] != digest:
+                raise ValueError(f"production source hash differs: {name}")
+        expected_invocations = production_invocation_contract()
+        if invocations != expected_invocations:
+            raise ValueError("production invocations differ from exact contract")
+        if commands != production_command_contract(sources):
+            raise ValueError("production command argv differs from exact contract")
+        replay_names = ("smoke_a", "smoke_b", "registered_replay")
+    else:
+        if protocol.get("protocol_id") != HERMETIC_PROTOCOL_ID:
+            raise ValueError("hermetic protocol_id differs from exact contract")
+        if set(sources) != HERMETIC_REQUIRED_SOURCES:
+            raise ValueError("hermetic sources differ from exact contract")
+        seeds = experiment.get("range_noise_seeds")
+        frames = experiment.get("max_frames")
+        expected_experiment = {
+            **EXPERIMENT_CONTRACT,
+            "evidence_class": "hermetic_non_evidence_only",
+            "range_noise_seeds": seeds,
+            "max_frames": frames,
+        }
         if (
-            declaration["development_manifest_path"] not in registered_manifests
-            or declaration["expected_baseline_sha256"] != expected_baseline
+            experiment != expected_experiment
+            or not isinstance(seeds, list)
+            or not seeds
+            or any(
+                isinstance(seed, bool) or not isinstance(seed, int)
+                for seed in seeds
+            )
+            or len(seeds) != len(set(seeds))
+            or (
+                frames is not None
+                and (
+                    isinstance(frames, bool)
+                    or not isinstance(frames, int)
+                    or frames <= 0
+                )
+            )
         ):
-            raise ValueError("analyzer invocation is not bound to registered replay")
-    if list(run_seeds) != seeds or max_frames != frames:
-        # A generated smoke protocol declares its own exact experiment cohort.
-        # The production registrar may instead include three invocations and
-        # sets experiment to the registered cohort; those invocations are
-        # validated independently by their exact declaration.
-        kinds = {
-            item.get("kind")
-            for item in replay_invocations.values()
+            raise ValueError("hermetic experiment differs from exact contract")
+        expected_invocations = {
+            "hermetic_replay": {
+                "kind": "hermetic_non_evidence",
+                "output_root": str(output_root),
+                "range_noise_seeds": list(run_seeds),
+                "max_frames": max_frames,
+            }
         }
-        if kinds == {"unregistered_smoke"}:
-            raise ValueError("smoke runtime differs from experiment declaration")
-    return selected
+        if invocations != expected_invocations:
+            raise ValueError("hermetic invocation differs from exact contract")
+        expected_command = canonical_replay_argv(
+            data_path=Path(sources["truth_data"]["path"]),
+            input_manifest_path=Path(sources["input_manifest"]["path"]),
+            protocol_token=str(protocol_path),
+            output_root=output_root,
+            run_seeds=run_seeds,
+            max_frames=max_frames,
+        )
+        if commands != {"hermetic_replay": expected_command}:
+            raise ValueError("hermetic command argv differs from exact contract")
+        if seeds != list(run_seeds) or frames != max_frames:
+            raise ValueError("hermetic runtime differs from exact experiment")
+        replay_names = ("hermetic_replay",)
+    selected = [
+        name
+        for name in replay_names
+        if invocations[name]["output_root"] == str(output_root)
+    ]
+    if len(selected) != 1:
+        raise ValueError("runtime output_root is not one exact replay invocation")
+    declaration = invocations[selected[0]]
+    if (
+        declaration["range_noise_seeds"] != list(run_seeds)
+        or declaration["max_frames"] != max_frames
+    ):
+        raise ValueError("runtime arguments differ from declared invocation")
+    return selected[0]
 
 
 def _verify_protocol_and_sources(
     *,
     protocol_path: Path,
     expected_protocol_identity: dict | None,
+    expected_source_identities: dict | None = None,
     data_path: Path,
     input_manifest_path: Path,
     output_root: Path,
     run_seeds: tuple[int, ...],
     max_frames: int | None,
     output_allocated: bool = False,
-) -> tuple[dict, dict, dict, str]:
-    protocol_identity = _file_identity(protocol_path)
-    if (
-        expected_protocol_identity is not None
-        and protocol_identity != expected_protocol_identity
-    ):
-        raise ValueError("protocol identity changed after initial read")
-    protocol = _strict_load(protocol_path)
+) -> tuple[dict, dict, dict, str, dict[str, bytes]]:
+    protocol_payload, protocol_identity = _read_trusted_bytes(
+        protocol_path,
+        expected_identity=expected_protocol_identity,
+    )
+    if protocol_payload is None:
+        raise RuntimeError("internal protocol payload was not captured")
+    protocol = _parse_json_object(protocol_payload, protocol_path)
     invocation = _validate_protocol_shape(
         protocol,
+        protocol_path=protocol_path,
         output_root=output_root,
         run_seeds=run_seeds,
         max_frames=max_frames,
     )
     sources = protocol.get("sources")
-    if not isinstance(sources, dict) or not (
-        REQUIRED_SOURCES <= set(sources) <= REQUIRED_SOURCES | OPTIONAL_SOURCES
-    ):
-        raise ValueError("protocol sources differ from required exact set")
     project_root = Path(__file__).resolve().parents[2]
     actual_paths = {
         "truth_data": data_path,
@@ -689,24 +1061,34 @@ def _verify_protocol_and_sources(
         "diagnostic_integrity_source": (
             project_root / "scripts/diagnostics/run_diagnostic.py"
         ),
+        "analyzer_source": (
+            project_root
+            / "scripts/diagnostics/analyze_predictive_wnls_recovery.py"
+        ),
     }
     identities = {}
+    payloads = {}
+    if expected_source_identities is not None and (
+        set(expected_source_identities) != set(sources)
+    ):
+        raise ValueError("source identity set changed after initial read")
     for name, declaration in sources.items():
-        if (
-            not isinstance(declaration, dict)
-            or set(declaration) != {"path", "sha256"}
-            or not isinstance(declaration["path"], str)
-            or not isinstance(declaration["sha256"], str)
-            or re.fullmatch(r"[0-9a-f]{64}", declaration["sha256"]) is None
-        ):
-            raise ValueError(f"protocol source declaration is invalid: {name}")
         declared_path = _absolute(Path(declaration["path"]))
         if name in actual_paths and declared_path != _absolute(actual_paths[name]):
             raise ValueError(f"protocol source path differs from runtime: {name}")
-        identity = _file_identity(declared_path)
-        if identity["sha256"] != declaration["sha256"]:
-            raise ValueError(f"protocol source hash mismatch: {name}")
+        payload, identity = _read_trusted_bytes(
+            declared_path,
+            expected_identity=(
+                None
+                if expected_source_identities is None
+                else expected_source_identities[name]
+            ),
+            expected_sha256=declaration["sha256"],
+            capture_payload=name in {"truth_data", "input_manifest"},
+        )
         identities[name] = identity
+        if payload is not None:
+            payloads[name] = payload
     if identities["legacy_solver_source"]["sha256"] != LEGACY_SOLVER_SHA256:
         raise ValueError("legacy solver source differs from frozen identity")
     _validate_paths(
@@ -716,7 +1098,7 @@ def _verify_protocol_and_sources(
         output_root,
         output_allocated=output_allocated,
     )
-    return protocol, protocol_identity, identities, invocation
+    return protocol, protocol_identity, identities, invocation, payloads
 
 
 def _preflight_frames(data: dict) -> tuple[list[dict], dict[int, dict[int, list[float]]]]:
@@ -782,7 +1164,12 @@ def _sensor_records(
     seed: int,
     frame_index: int,
     sigma: float,
-) -> tuple[dict, list[tuple[str, int]], dict[tuple[str, int], dict]]:
+) -> tuple[
+    dict,
+    list[tuple[str, int]],
+    dict[tuple[str, int], dict],
+    dict[tuple[str, int], int],
+]:
     mandatory = fixed_references(config, observer_id)
     active = active_references(config, observer_id, truth)
     mandatory_keys = {
@@ -796,6 +1183,7 @@ def _sensor_records(
         key=lambda key: (0 if key[0] == "base" else 1, key[1]),
     )
     records = {}
+    noise_seeds = {}
     for kind, identifier in sorted(
         active_keys,
         key=lambda key: (0 if key[0] == "base" else 1, key[1]),
@@ -815,9 +1203,22 @@ def _sensor_records(
         records[(kind, identifier)] = {
             "present": True,
             "noisy_range": noisy_range,
-            "noise_seed": noise_seed,
         }
-    return mandatory, optional, records
+        noise_seeds[(kind, identifier)] = noise_seed
+    return mandatory, optional, records, noise_seeds
+
+
+def _valid_measurement_record(record: object) -> bool:
+    if not isinstance(record, Mapping) or record.get("present") is not True:
+        return False
+    value = record.get("noisy_range")
+    if isinstance(value, bool) or not isinstance(value, (int, float, np.number)):
+        return False
+    try:
+        converted = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return math.isfinite(converted) and converted >= 0.0
 
 
 def _canonical_active_records(qualification: dict) -> list[dict]:
@@ -1158,34 +1559,63 @@ def _finalize_public(
 
 
 def _compact_gate(diagnostics: object) -> list:
-    diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
+    required = {"innovation_gate", "q_innov", "gate_outcome"}
+    if (
+        not isinstance(diagnostics, dict)
+        or not required <= set(diagnostics)
+        or not set(diagnostics) <= set(GATE_DIAGNOSTIC_FIELDS)
+    ):
+        raise ValueError("candidate gate diagnostics differ from exact schema")
     return [diagnostics.get(field) for field in GATE_DIAGNOSTIC_FIELDS]
 
 
 def _compact_candidates(candidates: object) -> list[list]:
+    if not isinstance(candidates, list):
+        raise ValueError("candidate evidence must be a list")
     result = []
-    for candidate in candidates if isinstance(candidates, list) else []:
+    for candidate in candidates:
         if not isinstance(candidate, dict):
-            continue
-        nested = candidate.get("result") if isinstance(candidate.get("result"), dict) else candidate
-        trace = nested.get("proposal_trace", candidate.get("proposal_trace", []))
-        compact_trace = [
-            [proposal.get(field) for field in PROPOSAL_TRACE_FIELDS]
-            for proposal in trace
-            if isinstance(proposal, dict)
-        ]
+            raise ValueError("candidate evidence entry must be an object")
+        if "result" in candidate:
+            if set(candidate) != set(MULTISTART_CANDIDATE_RECORD_FIELDS):
+                raise ValueError("multistart candidate differs from exact schema")
+            nested = candidate["result"]
+            if not isinstance(nested, dict) or set(nested) != set(
+                SOLVER_RESULT_FIELDS
+            ):
+                raise ValueError("solver result differs from exact schema")
+            for field in ("status", "estimate", "covariance", "cost"):
+                if candidate[field] != nested[field]:
+                    raise ValueError("candidate summary differs from solver result")
+            trace = nested["proposal_trace"]
+        else:
+            if set(candidate) != set(CANDIDATE_FIELDS):
+                raise ValueError("legacy candidate differs from exact schema")
+            nested = candidate
+            trace = candidate["proposal_trace"]
+        if not isinstance(trace, list):
+            raise ValueError("proposal trace must be a list")
+        compact_trace = []
+        for proposal in trace:
+            if not isinstance(proposal, dict) or set(proposal) != set(
+                PROPOSAL_TRACE_FIELDS
+            ):
+                raise ValueError("proposal trace entry differs from exact schema")
+            compact_trace.append(
+                [proposal[field] for field in PROPOSAL_TRACE_FIELDS]
+            )
         result.append(
             [
-                candidate.get("source"),
-                candidate.get("initial_estimate"),
-                candidate.get("status", nested.get("status")),
-                candidate.get("estimate", nested.get("estimate")),
-                candidate.get("covariance", nested.get("covariance")),
-                candidate.get("cost", nested.get("cost")),
-                candidate.get("accepted"),
-                candidate.get("rejection_reason"),
-                candidate.get("q_innov"),
-                _compact_gate(candidate.get("gate_diagnostics")),
+                candidate["source"],
+                candidate["initial_estimate"],
+                candidate["status"],
+                candidate["estimate"],
+                candidate["covariance"],
+                candidate["cost"],
+                candidate["accepted"],
+                candidate["rejection_reason"],
+                candidate["q_innov"],
+                _compact_gate(candidate["gate_diagnostics"]),
                 compact_trace,
             ]
         )
@@ -1197,8 +1627,11 @@ def _reference_evidence(
     mandatory: dict,
     optional: list[tuple[str, int]],
     records: dict[tuple[str, int], dict],
+    noise_seeds: dict[tuple[str, int], int],
     qualification: dict,
     current_public: dict[int, dict],
+    solver_used_keys: tuple[tuple[str, int], ...],
+    solver_exclusion_reason: str | None = None,
 ) -> list[list]:
     mandatory_keys = {
         ("base", identifier) for identifier in mandatory["base_ids"]
@@ -1207,7 +1640,7 @@ def _reference_evidence(
         mandatory_keys | set(optional),
         key=lambda key: (0 if key[0] == "base" else 1, key[1]),
     )
-    used = {tuple(record["key"]) for record in _canonical_active_records(qualification)}
+    used = set(solver_used_keys)
     excluded = {
         tuple(item["key"]): item["reason"]
         for item in qualification.get("excluded", [])
@@ -1220,11 +1653,13 @@ def _reference_evidence(
             else "not_current_frame_fresh"
         )
     evidence = []
+    qualification_failed = qualification.get("status") != "ok"
     for key in all_keys:
-        record = records.get(key, {"present": False, "noisy_range": None, "noise_seed": None})
+        record = records.get(key, {"present": False, "noisy_range": None})
+        valid_measurement = _valid_measurement_record(record)
         if key[0] == "base":
             freshness = "fresh"
-            eligible = bool(record.get("present"))
+            eligible = valid_measurement
             provenance = [key[1]]
         else:
             output = current_public.get(key[1])
@@ -1233,12 +1668,20 @@ def _reference_evidence(
                 if isinstance(output, dict)
                 else "missing"
             )
-            eligible = bool(record.get("present")) and reference_is_eligible(output)
+            eligible = valid_measurement and reference_is_eligible(output)
             provenance = (
                 list(output.get("base_anchor_provenance", []))
                 if isinstance(output, dict)
                 else []
             )
+        reason = excluded.get(key)
+        if key not in used and reason is None:
+            if not valid_measurement:
+                reason = "measurement_not_present"
+            elif qualification_failed:
+                reason = "not_evaluated_due_to_missing_mandatory"
+            elif solver_exclusion_reason is not None:
+                reason = solver_exclusion_reason
         evidence.append(
             [
                 key[0],
@@ -1246,15 +1689,53 @@ def _reference_evidence(
                 "mandatory" if key in mandatory_keys else "optional",
                 bool(record.get("present")),
                 record.get("noisy_range"),
-                record.get("noise_seed"),
+                noise_seeds.get(key),
                 freshness,
                 eligible,
                 key in used,
-                excluded.get(key),
+                reason,
                 provenance,
             ]
         )
     return evidence
+
+
+def _reference_freshness(evidence: list[list]) -> list[list]:
+    decoded = [
+        dict(zip(REFERENCE_EVIDENCE_FIELDS, item))
+        for item in evidence
+    ]
+    return [
+        [
+            item["reference_kind"],
+            item["reference_id"],
+            item["current_freshness"],
+        ]
+        for item in decoded
+    ]
+
+
+def _normalize_reason_records(
+    records: object,
+    *,
+    fields: tuple[str, ...],
+) -> list[list]:
+    if not isinstance(records, list):
+        raise ValueError("reference reason records must be a list")
+    normalized = []
+    for record in records:
+        if (
+            not isinstance(record, dict)
+            or set(record) != {"key", "reason"}
+            or not isinstance(record["key"], (list, tuple))
+            or len(record["key"]) != 2
+        ):
+            raise ValueError("reference reason record differs from exact schema")
+        kind, identifier = record["key"]
+        normalized.append([kind, identifier, record["reason"]])
+    if len(fields) != 3:
+        raise RuntimeError("internal reason-field declaration is invalid")
+    return normalized
 
 
 def _offline_metrics(output: dict, truth: np.ndarray) -> dict:
@@ -1294,77 +1775,151 @@ def _write_row(compressed, line: bytes, digest) -> None:
     digest.update(line)
 
 
-def _safe_probe(function, path: Path):
-    try:
-        return function(path)
-    except BaseException:
-        return None
-
-
-def _write_stage(path: Path, payload: bytes) -> None:
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+def _write_stage(path: Path, payload: bytes) -> dict:
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(path, flags, 0o600)
     with os.fdopen(descriptor, "wb") as target:
         target.write(payload)
         target.flush()
         os.fsync(target.fileno())
+        metadata = os.fstat(target.fileno())
+    return {
+        "path": str(path),
+        "device": metadata.st_dev,
+        "inode": metadata.st_ino,
+        "size": metadata.st_size,
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
 
 
-def _cleanup_stage(path: Path) -> None:
-    path.unlink()
-
-
-def _link_stage(stage: Path, target: Path) -> None:
-    os.link(stage, target)
-
-
-def _unlink_noexcept(path: Path) -> None:
+def _owned_stage_matches(stage: dict) -> bool:
     try:
-        path.unlink()
-    except BaseException:
-        pass
+        _, identity = _read_trusted_bytes(Path(stage["path"]))
+    except (OSError, ValueError):
+        return False
+    return all(
+        identity[field] == stage[field]
+        for field in ("device", "inode", "size", "sha256")
+    )
 
 
-def _external_stage(payload: bytes) -> Path:
-    descriptor, name = tempfile.mkstemp(prefix="cbf2026-terminal-", suffix=".json")
-    path = Path(name)
+def _cleanup_stage(stage: dict) -> None:
+    if not _owned_stage_matches(stage):
+        raise ValueError("refusing to remove an unowned staging path")
+    Path(stage["path"]).unlink()
+
+
+def _link_stage(stage: dict, target: Path) -> None:
+    if not _owned_stage_matches(stage):
+        raise ValueError("refusing to publish an unowned staging path")
+    if Path(stage["path"]).parent.stat().st_dev != target.parent.stat().st_dev:
+        raise ValueError("terminal stage is not on the target filesystem")
+    os.link(stage["path"], target, follow_symlinks=False)
+
+
+def _target_matches_stage(target: Path, stage: dict) -> bool:
     try:
-        with os.fdopen(descriptor, "wb") as target:
-            target.write(payload)
-            target.flush()
-            os.fsync(target.fileno())
-    except BaseException:
-        _unlink_noexcept(path)
-        raise
-    return path
+        _, identity = _read_trusted_bytes(target, capture_payload=False)
+    except (OSError, ValueError):
+        return False
+    return (
+        identity["device"] == stage["device"]
+        and identity["inode"] == stage["inode"]
+        and identity["size"] == stage["size"]
+        and identity["sha256"] == stage["sha256"]
+    )
+
+
+def _fsync_output_directory(output_root: Path) -> None:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(output_root, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _fsync_raw_output(process_path: Path) -> None:
+    descriptor = os.open(
+        process_path,
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _required_terminal_metrics(output_root: Path) -> dict:
+    return {
+        "free_bytes_after": available_bytes(output_root),
+        "allocated_bytes": allocated_bytes(output_root),
+    }
+
+
+def _failure_terminal_metrics(output_root: Path) -> dict:
+    values = {}
+    for name, function in (
+        ("free_bytes_after", available_bytes),
+        ("allocated_bytes", allocated_bytes),
+    ):
+        try:
+            values[name] = function(output_root)
+        except Exception:
+            values[name] = None
+    return values
 
 
 def _publish_failed(output_root: Path, manifest: dict) -> None:
     target = output_root / TERMINAL_MANIFEST_NAME
     if target.exists() or target.is_symlink():
-        return
+        raise FileExistsError("terminal manifest publication conflict")
     payload = _strict_json_bytes(manifest, indent=2) + b"\n"
-    stage = _external_stage(payload)
+    stage = _write_stage(_stage_path(output_root, "failed"), payload)
     try:
-        os.link(stage, target)
+        _link_stage(stage, target)
+        _fsync_output_directory(output_root)
     finally:
-        _unlink_noexcept(stage)
-        for state in STAGING_NAMES:
-            _unlink_noexcept(_stage_path(output_root, state))
+        try:
+            _cleanup_stage(stage)
+        except Exception:
+            pass
+
+
+def _rollback_owned_target(target: Path, stage: dict) -> None:
+    if _target_matches_stage(target, stage):
+        target.unlink()
+        _fsync_output_directory(target.parent)
 
 
 def _final_identity_and_disk_probe(
     *,
     protocol_path: Path,
     protocol_identity: dict,
+    source_identities: dict,
     data_path: Path,
     input_manifest_path: Path,
     output_root: Path,
     run_seeds: tuple[int, ...],
     max_frames: int | None,
-) -> tuple[dict, dict, str]:
-    _, observed_protocol, identities, invocation = _verify_protocol_and_sources(
+) -> tuple[dict, dict, str, dict]:
+    _, observed_protocol, identities, invocation, _ = _verify_protocol_and_sources(
         protocol_path=protocol_path,
         expected_protocol_identity=protocol_identity,
+        expected_source_identities=source_identities,
         data_path=data_path,
         input_manifest_path=input_manifest_path,
         output_root=output_root,
@@ -1372,11 +1927,12 @@ def _final_identity_and_disk_probe(
         max_frames=max_frames,
         output_allocated=True,
     )
-    if available_bytes(output_root) < HARD_FLOOR_BYTES:
+    metrics = _required_terminal_metrics(output_root)
+    if metrics["free_bytes_after"] < HARD_FLOOR_BYTES:
         raise DiskSpaceError("available bytes below live floor")
-    if allocated_bytes(output_root) > RAW_BUNDLE_CAP_BYTES:
+    if metrics["allocated_bytes"] > RAW_BUNDLE_CAP_BYTES:
         raise DiskSpaceError("raw bundle exceeds allocated-byte cap")
-    return observed_protocol, identities, invocation
+    return observed_protocol, identities, invocation, metrics
 
 
 def replay_predictive_recovery(
@@ -1389,17 +1945,17 @@ def replay_predictive_recovery(
     max_frames: int | None = None,
 ) -> dict:
     """Create exactly one protocol-authorized, disk-guarded Stage-1 bundle."""
-    data_path = _absolute(Path(data_path))
-    input_manifest_path = _absolute(Path(input_manifest_path))
-    protocol_path = _absolute(Path(protocol_path))
-    output_root = _absolute(Path(output_root))
+    data_path = _runtime_absolute(Path(data_path))
+    input_manifest_path = _runtime_absolute(Path(input_manifest_path))
+    protocol_path = _runtime_absolute(Path(protocol_path))
+    output_root = _runtime_absolute(Path(output_root))
     if (
         not run_seeds
         or any(isinstance(seed, bool) or not isinstance(seed, int) for seed in run_seeds)
         or len(set(run_seeds)) != len(run_seeds)
     ):
         raise ValueError("run_seeds must be unique non-empty integers")
-    protocol, protocol_identity, source_identities, invocation = (
+    protocol, protocol_identity, source_identities, invocation, source_payloads = (
         _verify_protocol_and_sources(
             protocol_path=protocol_path,
             expected_protocol_identity=None,
@@ -1410,15 +1966,19 @@ def replay_predictive_recovery(
             max_frames=max_frames,
         )
     )
-    data = _strict_load(data_path)
-    input_manifest = _strict_load(input_manifest_path)
+    data = _parse_json_object(source_payloads["truth_data"], data_path)
+    input_manifest = _parse_json_object(
+        source_payloads["input_manifest"], input_manifest_path
+    )
     if input_manifest.get("termination_reason") != "completed":
         raise ValueError("input manifest is not completed")
-    # Second identity pass closes the check/read race before any allocation.
-    protocol, protocol_identity, source_identities, invocation = (
+    # Pin every full descriptor identity immediately after parsing the exact
+    # bytes read during the first verification pass.
+    protocol, protocol_identity, source_identities, invocation, _ = (
         _verify_protocol_and_sources(
             protocol_path=protocol_path,
             expected_protocol_identity=protocol_identity,
+            expected_source_identities=source_identities,
             data_path=data_path,
             input_manifest_path=input_manifest_path,
             output_root=output_root,
@@ -1437,17 +1997,26 @@ def replay_predictive_recovery(
     if sigma != EXPERIMENT_CONTRACT["ranging_sigma_m"]:
         raise ValueError("ranging sigma differs from exact protocol")
     free_before = require_start_space(_nearest_existing_ancestor(output_root))
-    _create_exact_root(output_root)
     started_at = datetime.now(timezone.utc).isoformat()
     process_path = output_root / RAW_PROCESS_NAME
     rows_written = 0
     decompressed_digest = hashlib.sha256()
+    root_identity = None
 
-    def terminal(status: str, error: BaseException | None = None) -> dict:
+    def terminal(
+        status: str,
+        *,
+        metrics: dict,
+        process_hash: str | None,
+        error: BaseException | None = None,
+    ) -> dict:
         value = {
             "status": status,
             "schema_id": RAW_SCHEMA_ID,
             "raw_schema": RAW_SCHEMA_DECLARATION,
+            "protocol_schema_id": protocol["schema_id"],
+            "protocol_id": protocol["protocol_id"],
+            "evidence_class": protocol["experiment"]["evidence_class"],
             "protocol_identity": protocol_identity,
             "protocol_parent": str(protocol_path.parent),
             "selected_invocation": invocation,
@@ -1462,14 +2031,12 @@ def replay_predictive_recovery(
                 len(DEVELOPMENT_VARIANTS) * len(run_seeds) * len(frames) * number
             ),
             "free_bytes_before": free_before,
-            "free_bytes_after": _safe_probe(available_bytes, output_root),
-            "allocated_bytes": _safe_probe(allocated_bytes, output_root),
+            "free_bytes_after": metrics["free_bytes_after"],
+            "allocated_bytes": metrics["allocated_bytes"],
             "raw_bundle_cap_bytes": RAW_BUNDLE_CAP_BYTES,
-            "compressed_process_sha256": (
-                _sha256(process_path) if process_path.exists() else None
-            ),
+            "compressed_process_sha256": process_hash,
             "decompressed_process_sha256": (
-                decompressed_digest.hexdigest() if process_path.exists() else None
+                decompressed_digest.hexdigest() if process_hash is not None else None
             ),
         }
         if error is not None:
@@ -1479,11 +2046,44 @@ def replay_predictive_recovery(
             }
         return value
 
+    creation_state: dict = {}
     try:
+        root_identity = _create_exact_root(
+            output_root,
+            identity_sink=creation_state,
+        )
+    except BaseException as error:
+        try:
+            root_identity = creation_state.get("root_identity")
+            if root_identity is not None:
+                _assert_directory_identity(output_root, root_identity)
+                failure = terminal(
+                    "failed",
+                    metrics=_failure_terminal_metrics(output_root),
+                    process_hash=None,
+                    error=error,
+                )
+                _publish_failed(output_root, failure)
+        except Exception:
+            pass
+        raise
+
+    try:
+        _assert_directory_identity(output_root, root_identity)
         if available_bytes(output_root) < HARD_FLOOR_BYTES:
             raise DiskSpaceError("available bytes below live floor")
         states: dict[tuple[str, int], dict[int, dict]] = {}
-        with process_path.open("xb") as raw, gzip.GzipFile(
+        _assert_directory_identity(output_root, root_identity)
+        descriptor = os.open(
+            process_path,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        with os.fdopen(descriptor, "wb") as raw, gzip.GzipFile(
             filename="", fileobj=raw, mode="wb", mtime=0
         ) as compressed:
             for variant in DEVELOPMENT_VARIANTS:
@@ -1507,7 +2107,7 @@ def replay_predictive_recovery(
                                 previous.get("private_seed"),
                                 command,
                             )
-                            mandatory, optional, records = _sensor_records(
+                            mandatory, optional, records, noise_seeds = _sensor_records(
                                 config,
                                 robot_id,
                                 truth,
@@ -1566,6 +2166,7 @@ def replay_predictive_recovery(
                                     else None
                                 )
                             legacy_result = None
+                            solver_used_keys: tuple[tuple[str, int], ...] = ()
                             if arrays is None:
                                 legacy_attempt = {
                                     "status": "invalid",
@@ -1591,6 +2192,7 @@ def replay_predictive_recovery(
                                 }
                             else:
                                 positions, covariances, measurements, keys = arrays
+                                solver_used_keys = tuple(keys)
                                 if variant == "predictive_multistart":
                                     attempt = solve_predictive_multistart(
                                         reference_positions=positions,
@@ -1652,9 +2254,7 @@ def replay_predictive_recovery(
                                         active_count=len(positions),
                                         provenance=attempted_provenance,
                                     )
-                            if variant == "prediction_expiry" and legacy_result is not None:
-                                current_numeric[robot_id] = legacy_result
-                            elif legacy_result is not None:
+                            if legacy_result is not None:
                                 current_numeric[robot_id] = legacy_result
                             if legacy_result is not None:
                                 if legacy_result.get("status") == "converged":
@@ -1687,12 +2287,19 @@ def replay_predictive_recovery(
                                 mandatory=mandatory,
                                 optional=optional,
                                 records=records,
+                                noise_seeds=noise_seeds,
                                 qualification=qualification,
                                 current_public={
                                     key: value
                                     for key, value in current_public.items()
                                     if key != robot_id
                                 },
+                                solver_used_keys=solver_used_keys,
+                                solver_exclusion_reason=(
+                                    "not_supplied_due_to_reference_state_unavailable"
+                                    if arrays is None
+                                    else None
+                                ),
                             )
                             fresh_covariance = (
                                 output.get("modeled_covariance")
@@ -1750,7 +2357,10 @@ def replay_predictive_recovery(
                                 "base_anchor_provenance": output.get(
                                     "base_anchor_provenance", []
                                 ),
-                                "mandatory_references": mandatory,
+                                "mandatory_references": {
+                                    field: list(mandatory[field])
+                                    for field in MANDATORY_REFERENCE_FIELDS
+                                },
                                 "optional_candidates": [
                                     [kind, identifier]
                                     for kind, identifier in optional
@@ -1760,11 +2370,16 @@ def replay_predictive_recovery(
                                     for record in active_records
                                 ],
                                 "reference_evidence": reference_evidence,
-                                "excluded_references": qualification.get(
-                                    "excluded", []
+                                "reference_freshness": _reference_freshness(
+                                    reference_evidence
                                 ),
-                                "reference_violations": qualification.get(
-                                    "violations", []
+                                "excluded_references": _normalize_reason_records(
+                                    qualification.get("excluded", []),
+                                    fields=EXCLUSION_FIELDS,
+                                ),
+                                "reference_violations": _normalize_reason_records(
+                                    qualification.get("violations", []),
+                                    fields=VIOLATION_FIELDS,
                                 ),
                                 "candidates": _compact_candidates(
                                     attempt.get("candidates")
@@ -1786,15 +2401,36 @@ def replay_predictive_recovery(
                             raise DiskSpaceError(
                                 "raw bundle exceeds allocated-byte cap"
                             )
-        finalizing_stage = _stage_path(output_root, "finalizing")
-        _write_stage(
-            finalizing_stage,
-            _strict_json_bytes(terminal("finalizing"), indent=2) + b"\n",
+        _fsync_raw_output(process_path)
+        _assert_directory_identity(output_root, root_identity)
+        process_hash = _file_identity(process_path)["sha256"]
+        finalizing_metrics = _required_terminal_metrics(output_root)
+        if finalizing_metrics["free_bytes_after"] < HARD_FLOOR_BYTES:
+            raise DiskSpaceError("available bytes below live floor")
+        if finalizing_metrics["allocated_bytes"] > RAW_BUNDLE_CAP_BYTES:
+            raise DiskSpaceError("raw bundle exceeds allocated-byte cap")
+        finalizing_stage = _write_stage(
+            _stage_path(output_root, "finalizing"),
+            _strict_json_bytes(
+                terminal(
+                    "finalizing",
+                    metrics=finalizing_metrics,
+                    process_hash=process_hash,
+                ),
+                indent=2,
+            )
+            + b"\n",
         )
-        observed_protocol, observed_sources, observed_invocation = (
+        (
+            observed_protocol,
+            observed_sources,
+            observed_invocation,
+            completed_metrics,
+        ) = (
             _final_identity_and_disk_probe(
                 protocol_path=protocol_path,
                 protocol_identity=protocol_identity,
+                source_identities=source_identities,
                 data_path=data_path,
                 input_manifest_path=input_manifest_path,
                 output_root=output_root,
@@ -1806,24 +2442,68 @@ def replay_predictive_recovery(
         source_identities = observed_sources
         invocation = observed_invocation
         _cleanup_stage(finalizing_stage)
-        completed = terminal("completed")
-        completed_stage = _external_stage(
+        finalizing_stage = None
+        completed = terminal(
+            "completed",
+            metrics=completed_metrics,
+            process_hash=process_hash,
+        )
+        completed_stage = _write_stage(
+            _stage_path(output_root, "completed"),
             _strict_json_bytes(completed, indent=2) + b"\n"
         )
+        target = output_root / TERMINAL_MANIFEST_NAME
+        _assert_directory_identity(output_root, root_identity)
         try:
-            _link_stage(
-                completed_stage,
-                output_root / TERMINAL_MANIFEST_NAME,
-            )
+            _link_stage(completed_stage, target)
         except BaseException:
-            _unlink_noexcept(completed_stage)
+            if _target_matches_stage(target, completed_stage):
+                try:
+                    _cleanup_stage(completed_stage)
+                    _fsync_output_directory(output_root)
+                except BaseException:
+                    _rollback_owned_target(target, completed_stage)
+                    raise
+                return completed
+            try:
+                _cleanup_stage(completed_stage)
+            except Exception:
+                pass
             raise
-        # Publication above is the final throwing boundary.  Cleanup is
-        # best-effort and external to the exact output bundle.
-        _unlink_noexcept(completed_stage)
+        try:
+            _cleanup_stage(completed_stage)
+            _fsync_output_directory(output_root)
+        except BaseException:
+            _rollback_owned_target(target, completed_stage)
+            try:
+                _cleanup_stage(completed_stage)
+            except Exception:
+                pass
+            raise
         return completed
     except BaseException as error:
-        _publish_failed(output_root, terminal("failed", error))
+        for stage in (locals().get("finalizing_stage"), locals().get("completed_stage")):
+            if isinstance(stage, dict):
+                try:
+                    _cleanup_stage(stage)
+                except Exception:
+                    pass
+        try:
+            _assert_directory_identity(output_root, root_identity)
+            failed_process_hash = (
+                _file_identity(process_path)["sha256"]
+                if process_path.exists()
+                else None
+            )
+            failure = terminal(
+                "failed",
+                metrics=_failure_terminal_metrics(output_root),
+                process_hash=failed_process_hash,
+                error=error,
+            )
+            _publish_failed(output_root, failure)
+        except Exception:
+            pass
         raise
 
 
