@@ -24,6 +24,13 @@ from scripts.diagnostics.predictive_wnls import (
     solve_predictive_multistart,
     two_circle_candidates,
 )
+from scripts.diagnostics.extract_predictive_wnls_stage0 import run_stage0_fixture
+
+
+FIXTURE_ROOT = Path("tests/fixtures/cbf2026_predictive_wnls")
+FRAME44_PATH = FIXTURE_ROOT / "frame44_recovery.json"
+FRAME177_PATH = FIXTURE_ROOT / "frame177_cascade.json"
+REACQUISITION_PATH = FIXTURE_ROOT / "reacquisition.json"
 
 
 def make_test_output(
@@ -1303,3 +1310,38 @@ class PredictiveMultistartBoundaryTests(unittest.TestCase):
         self.assertEqual(attempt["attempt_status"], "invalid")
         self.assertEqual(output["attempt_status"], "invalid")
         self.assertEqual(output["output_status"], "predicted")
+
+
+class HistoricalMechanismFixtureTests(unittest.TestCase):
+    def test_frame44_is_fresh_accepted_and_within_five_metres(self):
+        result = run_stage0_fixture(FRAME44_PATH)
+        self.assertEqual(result["attempt_status"], "accepted")
+        self.assertEqual(result["output_status"], "fresh")
+        self.assertIsNotNone(result["selected_candidate_source"])
+        self.assertLessEqual(result["offline_error_norm"], 5.0)
+
+    def test_frame177_stale_u8_cannot_create_fresh_catastrophic_cascade(self):
+        result = run_stage0_fixture(FRAME177_PATH)
+        self.assertFalse(
+            any(
+                reference["kind"] == "uav"
+                and reference["used"]
+                and reference["output_status"] != "fresh"
+                for row in result["rows"]
+                for reference in row["reference_freshness"]
+            )
+        )
+        self.assertFalse(
+            any(
+                row["output_status"] == "fresh"
+                and row["offline_error_norm"] > 50.0
+                for row in result["rows"]
+            )
+        )
+
+    def test_expiry_reacquires_only_on_three_consistent_ranges(self):
+        result = run_stage0_fixture(REACQUISITION_PATH)
+        self.assertEqual(
+            [row["output_status"] for row in result["rows"]],
+            ["unavailable", "fresh"],
+        )
