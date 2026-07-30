@@ -14,6 +14,7 @@ import numpy as np
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import scripts.diagnostics.replay_localization_calibration as legacy_replay_module
 from scripts.diagnostics.predictive_wnls import (
     finalize_attempt,
     make_unavailable_output,
@@ -61,15 +62,8 @@ FROZEN_SOURCE_REGISTRY = {
         ),
         "sha256": "c964d415e68425e4b64e5acc9be925a237165a72c59a0b98342b9033734f2003",
     },
-    "legacy_replay": {
-        "path": Path(
-            "/private/tmp/cbf2026-diagnostic/scripts/diagnostics/"
-            "replay_localization_calibration.py"
-        ),
-        "sha256": "0123ed283917f6f9c6a005df4b8b7928e927d3aa4e098e5740816f272e24e4b8",
-    },
 }
-LEGACY_REPLAY_SHA256 = FROZEN_SOURCE_REGISTRY["legacy_replay"]["sha256"]
+LEGACY_REPLAY_SHA256 = "0123ed283917f6f9c6a005df4b8b7928e927d3aa4e098e5740816f272e24e4b8"
 HISTORICAL_CASES = (
     ("frame44_recovery", 20260736, 44, 14),
     ("frame177_cascade", 20260730, 177, 14),
@@ -148,6 +142,52 @@ def _verify_after(name: str, path: Path, before: dict) -> dict:
     if after != before or digest != before["sha256"]:
         raise ValueError(f"source changed while read: {path}")
     return {"path": before["path"], "sha256": before["sha256"]}
+
+
+def _legacy_source_state() -> dict:
+    expected_path = (
+        Path(__file__)
+        .resolve(strict=True)
+        .with_name("replay_localization_calibration.py")
+    )
+    module_file = getattr(legacy_replay_module, "__file__", None)
+    if not isinstance(module_file, str):
+        raise ValueError("imported legacy replay module has no source path")
+    try:
+        actual_path = Path(module_file).resolve(strict=True)
+        metadata = os.stat(actual_path, follow_symlinks=False)
+    except OSError as error:
+        raise ValueError("imported legacy replay module source is unavailable") from error
+    if actual_path != expected_path:
+        raise ValueError("imported legacy replay module path mismatch")
+    return {
+        "path": str(actual_path),
+        "sha256": LEGACY_REPLAY_SHA256,
+        "_path_state": (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_mode,
+            metadata.st_size,
+            metadata.st_mtime_ns,
+        ),
+    }
+
+
+def _verified_legacy_before() -> dict:
+    identity = _legacy_source_state()
+    if _sha256(Path(identity["path"])) != LEGACY_REPLAY_SHA256:
+        raise ValueError("legacy replay source SHA-256 mismatch before generation")
+    return identity
+
+
+def _verify_legacy_after(before: dict) -> dict:
+    after = _legacy_source_state()
+    if (
+        after != before
+        or _sha256(Path(after["path"])) != LEGACY_REPLAY_SHA256
+    ):
+        raise ValueError("legacy replay source changed during generation")
+    return {"path": before["path"], "sha256": LEGACY_REPLAY_SHA256}
 
 
 def _read_registered_json(name: str, path: Path) -> tuple[dict, dict]:
@@ -432,8 +472,7 @@ def extract_stage0_fixtures(
     output_dir = Path(output_dir)
     if output_dir.exists():
         raise FileExistsError(f"fixture output directory already exists: {output_dir}")
-    legacy_path = FROZEN_SOURCE_REGISTRY["legacy_replay"]["path"]
-    legacy_before = _verified_before("legacy_replay", legacy_path)
+    legacy_before = _verified_legacy_before()
     data, truth_identity = _read_registered_json(
         "truth_data",
         truth_data_path,
@@ -469,11 +508,7 @@ def extract_stage0_fixtures(
         fixture_hashes["reacquisition.json"] = _write_json_exclusive(
             output_dir / "reacquisition.json", _reacquisition_fixture()
         )
-        legacy_identity = _verify_after(
-            "legacy_replay",
-            legacy_path,
-            legacy_before,
-        )
+        legacy_identity = _verify_legacy_after(legacy_before)
         source_identities = {
             "truth_data": truth_identity,
             "input_manifest": input_manifest_identity,

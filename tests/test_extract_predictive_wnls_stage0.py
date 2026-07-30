@@ -30,6 +30,59 @@ TRUTH_PATH = Path(
 
 
 class Stage0ExtractorContractTests(unittest.TestCase):
+    def _relocated_legacy_sources(self, root):
+        root = root.resolve()
+        extractor = root / "extract_predictive_wnls_stage0.py"
+        legacy = root / "replay_localization_calibration.py"
+        extractor.write_text("# relocated extractor source\n")
+        legacy.write_bytes(
+            Path(stage0.legacy_replay_module.__file__).resolve().read_bytes()
+        )
+        return extractor, legacy
+
+    def test_legacy_source_verification_relocates_with_imported_module(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            extractor, legacy = self._relocated_legacy_sources(
+                Path(temporary)
+            )
+            with mock.patch.object(
+                stage0,
+                "__file__",
+                str(extractor),
+            ), mock.patch.object(
+                stage0.legacy_replay_module,
+                "__file__",
+                str(legacy),
+            ):
+                before = stage0._verified_legacy_before()
+                identity = stage0._verify_legacy_after(before)
+            self.assertEqual(identity, {
+                "path": str(legacy),
+                "sha256": stage0.LEGACY_REPLAY_SHA256,
+            })
+
+    def test_legacy_source_rejects_imported_module_path_mismatch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            extractor, legacy = self._relocated_legacy_sources(root)
+            separate = root / "separate" / legacy.name
+            separate.parent.mkdir()
+            separate.write_bytes(legacy.read_bytes())
+            with mock.patch.object(
+                stage0,
+                "__file__",
+                str(extractor),
+            ), mock.patch.object(
+                stage0.legacy_replay_module,
+                "__file__",
+                str(separate),
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "imported legacy replay module path mismatch",
+                ):
+                    stage0._verified_legacy_before()
+
     def _registered_json(self, root):
         root = root.resolve()
         source = root / "registered.json"
@@ -46,17 +99,14 @@ class Stage0ExtractorContractTests(unittest.TestCase):
         truth = root / "truth-source.json"
         manifest = root / "input-manifest-source.json"
         baseline = root / "baseline-source.jsonl.gz"
-        legacy = root / "legacy-replay-source.py"
         truth.write_text(json.dumps({"config": {}, "state": []}))
         manifest.write_text("{}")
         with gzip.open(baseline, "wt") as destination:
             destination.write("{}\n")
-        legacy.write_text("# immutable test legacy source\n")
         paths = {
             "truth_data": truth,
             "input_manifest": manifest,
             "baseline_process": baseline,
-            "legacy_replay": legacy,
         }
         registry = {
             name: {
@@ -190,11 +240,20 @@ class Stage0ExtractorContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             paths, registry = self._extractor_sources(root)
+            extractor, legacy = self._relocated_legacy_sources(root)
             output = root.resolve() / "output"
             with mock.patch.object(
                 stage0,
                 "FROZEN_SOURCE_REGISTRY",
                 registry,
+            ), mock.patch.object(
+                stage0,
+                "__file__",
+                str(extractor),
+            ), mock.patch.object(
+                stage0.legacy_replay_module,
+                "__file__",
+                str(legacy),
             ), mock.patch.object(
                 stage0,
                 "_runtime_prefix",
@@ -221,6 +280,11 @@ class Stage0ExtractorContractTests(unittest.TestCase):
                         "sha256": entry["sha256"],
                     }
                     for name, entry in registry.items()
+                } | {
+                    "legacy_replay": {
+                        "path": str(legacy),
+                        "sha256": stage0.LEGACY_REPLAY_SHA256,
+                    },
                 },
             )
 
@@ -228,9 +292,10 @@ class Stage0ExtractorContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             paths, registry = self._extractor_sources(root)
+            extractor, legacy = self._relocated_legacy_sources(root)
 
             def mutate_legacy(*_args, **_kwargs):
-                paths["legacy_replay"].write_text("# changed during extraction\n")
+                legacy.write_text("# changed during extraction\n")
                 return (
                     {"kind": "historical_prefix"},
                     {"truth_positions": []},
@@ -240,6 +305,14 @@ class Stage0ExtractorContractTests(unittest.TestCase):
                 stage0,
                 "FROZEN_SOURCE_REGISTRY",
                 registry,
+            ), mock.patch.object(
+                stage0,
+                "__file__",
+                str(extractor),
+            ), mock.patch.object(
+                stage0.legacy_replay_module,
+                "__file__",
+                str(legacy),
             ), mock.patch.object(
                 stage0,
                 "_runtime_prefix",
@@ -407,6 +480,13 @@ class Stage0ExtractorContractTests(unittest.TestCase):
                     "sha256": entry["sha256"],
                 }
                 for name, entry in stage0.FROZEN_SOURCE_REGISTRY.items()
+            } | {
+                "legacy_replay": {
+                    "path": str(
+                        Path(stage0.legacy_replay_module.__file__).resolve()
+                    ),
+                    "sha256": stage0.LEGACY_REPLAY_SHA256,
+                },
             },
         )
         for filename, expected_hash in manifest["fixtures"].items():
