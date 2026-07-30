@@ -1,0 +1,777 @@
+import copy
+import gzip
+import json
+import math
+import tempfile
+import types
+import unittest
+from pathlib import Path
+from unittest import mock
+
+import numpy as np
+
+import scripts.diagnostics.replay_two_range_reacquisition as replay
+from scripts.diagnostics.two_range_reacquisition import reset_private_state
+
+
+FIXTURE_ROOT = Path(
+    "tests/fixtures/cbf2026_two_range_reacquisition"
+)
+
+
+class OrderedStrictJsonTests(unittest.TestCase):
+    def test_declared_non_alphabetical_order_is_preserved(self):
+        payload = replay.ordered_strict_json_bytes(
+            {"z": 1, "a": [2, 3], "m": "μ"},
+            ("z", "a", "m"),
+        )
+        self.assertEqual(payload, '{"z":1,"a":[2,3],"m":"μ"}'.encode())
+
+    def test_writer_rejects_numpy_nonfinite_and_unordered_objects(self):
+        bad_values = (
+            {"x": np.float64(1.0)},
+            {"x": np.asarray([1.0])},
+            {"x": math.nan},
+            {"x": math.inf},
+            {"x": {1}},
+            {"x": (item for item in [1])},
+            {1: "bad"},
+        )
+        for value in bad_values:
+            with self.subTest(value=type(next(iter(value.values())))):
+                with self.assertRaises(ValueError):
+                    replay.ordered_strict_json_bytes(value, tuple(value))
+        with self.assertRaises(ValueError):
+            replay.ordered_strict_json_bytes({"a": 1, "b": 2}, ("b", "a"))
+        self.assertEqual(
+            replay.ordered_strict_json_bytes({"x": (1, 2)}, ("x",)),
+            b'{"x":[1,2]}',
+        )
+
+
+def fresh_output():
+    return {
+        "output_status": "fresh",
+        "prediction_age": 0,
+        "estimate": [1.0, 2.0],
+        "modeled_covariance": [[1.0, 0.0], [0.0, 1.0]],
+        "epsilon": 3.0,
+        "aged_modeled_radius": None,
+        "base_anchor_provenance": [0, 1],
+    }
+
+
+class RoutingTests(unittest.TestCase):
+    def _config_and_truth(self):
+        config = {
+            "num": 7,
+            "number": 7,
+            "parts": 1,
+            "formation": {"parts": 1, "bases-id": [[0, 1]]},
+            "bases": [[1000.0, 1000.0], [1200.0, 1200.0]],
+            "cbfs": {
+                "without-slack": {
+                    "comm-fixed": {
+                        "min-neighbour-id-offset": -2,
+                        "max-neighbour-id-offset": 0,
+                        "max-range": 10.0,
+                    },
+                },
+            },
+        }
+        truth = {
+            identifier: np.asarray([100.0 * identifier, 100.0])
+            for identifier in range(1, 8)
+        }
+        truth[4] = np.asarray([1.0, 0.0])
+        truth[5] = np.asarray([0.0, 1.0])
+        truth[6] = np.asarray([0.0, 0.0])
+        return config, truth
+
+    def _accepted_attempt(self):
+        result = copy.deepcopy(
+            replay.CANDIDATE_TEMPLATES[
+                "canonical_spd_zero_residual_v1"
+            ],
+        )
+        return {
+            "attempt_status": "accepted",
+            "failure_reason": None,
+            "candidate": {
+                "estimate": [1.0, 1.0],
+                "modeled_covariance": [[1.0, 0.0], [0.0, 1.0]],
+                "epsilon": 3.0,
+                "base_anchor_provenance": [0, 1],
+            },
+            "candidates": [],
+            "selected_candidate": {
+                "branch_id": "circle_positive",
+            },
+            "branches": [
+                {
+                    "branch_id": "circle_negative",
+                    "circle_start": [1.0, -1.0],
+                    "solver_result": copy.deepcopy(result),
+                    "q_branch": 100.0,
+                    "passes_branch_gate": False,
+                },
+                {
+                    "branch_id": "circle_positive",
+                    "circle_start": [1.0, 1.0],
+                    "solver_result": copy.deepcopy(result),
+                    "q_branch": 1.0,
+                    "passes_branch_gate": True,
+                },
+            ],
+            "selected_branch_id": "circle_positive",
+            "prior_used_for_branch_selection": True,
+        }
+
+    def test_non_robot_12_canonical_two_uav_case_is_considered(self):
+        considered = replay.selector_consideration(
+            robot_id=6,
+            live_prediction=None,
+            mandatory={"base_ids": [], "uav_ids": [3, 5]},
+            optional_keys=[],
+            qualification={
+                "status": "ok",
+                "active_keys": [("uav", 3), ("uav", 5)],
+                "active_records": [
+                    {"key": ("uav", 3), "present": True, "noisy_range": 4.0},
+                    {"key": ("uav", 5), "present": True, "noisy_range": 5.0},
+                ],
+                "missing_mandatory": [],
+                "excluded": [],
+                "violations": [],
+                "base_anchor_provenance": (0, 1),
+                "fixed_outputs": {3: fresh_output(), 5: fresh_output()},
+            },
+        )
+        self.assertEqual(considered, (True, "considered"))
+
+    def test_non_robot_12_full_producer_calls_only_two_range_solver(self):
+        config, truth = self._config_and_truth()
+        current_public = {
+            4: fresh_output(),
+            5: fresh_output(),
+        }
+        previous_state = {
+            "public_output": replay.make_unavailable_output("expired"),
+            "private_state": reset_private_state(
+                {
+                    "estimate": [1.0, 1.5],
+                    "modeled_covariance": [[0.2, 0.0], [0.0, 0.2]],
+                },
+                frame_index=19,
+            ),
+        }
+        with mock.patch.object(
+            replay,
+            "solve_two_range_reacquisition",
+            return_value=self._accepted_attempt(),
+        ) as two_range, mock.patch.object(
+            replay,
+            "solve_predictive_multistart",
+        ) as existing:
+            row, _ = replay.produce_method_row(
+                seed=20260727,
+                frame_index=20,
+                robot_id=6,
+                config=config,
+                truth_positions=truth,
+                current_public=current_public,
+                previous_state=previous_state,
+                applied_command=[0.0, 0.0],
+                ranging_sigma=0.5,
+            )
+        two_range.assert_called_once()
+        existing.assert_not_called()
+        self.assertEqual(row["attempt_path"], "two_range_reacquisition")
+        self.assertEqual(
+            row["active_references"],
+            [
+                {"reference_kind": "uav", "reference_id": 4},
+                {"reference_kind": "uav", "reference_id": 5},
+            ],
+        )
+
+    def test_mechanism_fixture_calls_real_two_range_route(self):
+        fixture = json.loads(
+            (FIXTURE_ROOT / "mechanism_20260727_180_12.json").read_bytes()
+        )
+        with mock.patch.object(
+            replay,
+            "solve_two_range_reacquisition",
+            wraps=replay.solve_two_range_reacquisition,
+        ) as two_range, mock.patch.object(
+            replay,
+            "solve_predictive_multistart",
+        ) as existing:
+            row = replay.produce_smoke_row(
+                case_id="mechanism_20260727_180_12",
+                mechanism_fixture=fixture,
+            )
+        two_range.assert_called_once()
+        existing.assert_not_called()
+        self.assertTrue(row["selector_considered"])
+        self.assertEqual(
+            row["active_references"],
+            [
+                {"reference_kind": "uav", "reference_id": 10},
+                {"reference_kind": "uav", "reference_id": 11},
+            ],
+        )
+
+    def test_live_prediction_full_producer_calls_only_existing_solver(self):
+        config, truth = self._config_and_truth()
+        current_public = {4: fresh_output(), 5: fresh_output()}
+        previous_state = {
+            "public_output": fresh_output(),
+            "private_state": reset_private_state(
+                {
+                    "estimate": [1.0, 1.5],
+                    "modeled_covariance": [[0.2, 0.0], [0.0, 0.2]],
+                },
+                frame_index=19,
+            ),
+        }
+        frozen_attempt = {
+            "attempt_status": "invalid",
+            "status": "invalid",
+            "candidates": [],
+            "selected_candidate": None,
+            "candidate": None,
+            "failure_reason": "no_valid_initial_candidates",
+        }
+        with mock.patch.object(
+            replay,
+            "solve_two_range_reacquisition",
+        ) as two_range, mock.patch.object(
+            replay,
+            "solve_predictive_multistart",
+            return_value=frozen_attempt,
+        ) as existing:
+            row, _ = replay.produce_method_row(
+                seed=20260727,
+                frame_index=20,
+                robot_id=6,
+                config=config,
+                truth_positions=truth,
+                current_public=current_public,
+                previous_state=previous_state,
+                applied_command=[0.0, 0.0],
+                ranging_sigma=0.5,
+            )
+        existing.assert_called_once()
+        two_range.assert_not_called()
+        self.assertEqual(row["attempt_path"], "existing_predictive_multistart")
+        self.assertEqual(
+            row["selector_consideration_reason"],
+            "live_public_prediction",
+        )
+
+    def test_ineligible_structures_route_to_frozen_existing_path(self):
+        base = {
+            "status": "ok",
+            "active_keys": [("uav", 3), ("uav", 5)],
+            "active_records": [
+                {"key": ("uav", 3), "present": True, "noisy_range": 4.0},
+                {"key": ("uav", 5), "present": True, "noisy_range": 5.0},
+            ],
+            "base_anchor_provenance": (0, 1),
+            "fixed_outputs": {3: fresh_output(), 5: fresh_output()},
+        }
+        cases = (
+            ("live_public_prediction", {"live_prediction": fresh_output()}),
+            (
+                "active_reference_count_not_two",
+                {"qualification": {**base, "active_keys": [("uav", 3)]}},
+            ),
+            (
+                "active_base_present",
+                {"qualification": {
+                    **base,
+                    "active_keys": [("base", 0), ("uav", 3)],
+                }},
+            ),
+            ("active_optional_present", {"optional_keys": [("uav", 4)]}),
+            (
+                "reference_not_strictly_lower_index",
+                {
+                    "mandatory": {"base_ids": [], "uav_ids": [3, 6]},
+                    "qualification": {
+                        **base,
+                        "active_keys": [("uav", 3), ("uav", 6)],
+                        "fixed_outputs": {
+                            3: fresh_output(),
+                            6: fresh_output(),
+                        },
+                    },
+                },
+            ),
+            (
+                "range_invalid",
+                {"qualification": {
+                    **base,
+                    "active_records": [
+                        {
+                            "key": ("uav", 3),
+                            "present": True,
+                            "noisy_range": -1.0,
+                        },
+                        base["active_records"][1],
+                    ],
+                }},
+            ),
+            (
+                "provenance_invalid",
+                {"qualification": {
+                    **base,
+                    "base_anchor_provenance": (0,),
+                }},
+            ),
+        )
+        for expected, overrides in cases:
+            kwargs = {
+                "robot_id": 6,
+                "live_prediction": None,
+                "mandatory": {"base_ids": [], "uav_ids": [3, 5]},
+                "optional_keys": [],
+                "qualification": copy.deepcopy(base),
+            }
+            kwargs.update(overrides)
+            with self.subTest(expected=expected):
+                self.assertEqual(
+                    replay.selector_consideration(**kwargs),
+                    (False, expected),
+                )
+
+
+class SmokeRowTests(unittest.TestCase):
+    def test_select_positive_flattens_prior_and_next_state(self):
+        fixture = json.loads(
+            (FIXTURE_ROOT / "mechanism_20260727_180_12.json").read_bytes()
+        )
+        row = replay.produce_smoke_row(
+            case_id="select_positive",
+            mechanism_fixture=fixture,
+        )
+        self.assertEqual(tuple(row), replay.ROW_FIELDS)
+        self.assertEqual(row["invocation_name"], "smoke_validation")
+        self.assertEqual(row["smoke_case_kind"], "selector")
+        self.assertEqual(row["attempt_path"], "two_range_reacquisition")
+        self.assertEqual(row["attempt_status"], "accepted")
+        self.assertEqual(row["selected_branch_id"], "circle_positive")
+        self.assertEqual(row["branch_selection_prior_status"], "available")
+        self.assertEqual(
+            row["branch_selection_prior_source_fresh_frame"], 20
+        )
+        self.assertEqual(
+            row["next_private_state_source_fresh_frame"], 20
+        )
+        self.assertEqual(row["next_private_state_age_frames"], 0)
+        self.assertEqual(len(row["branches"]), 2)
+
+    def test_exact_ordered_smoke_matrix_executes_all_18_cases(self):
+        fixture = json.loads(
+            (FIXTURE_ROOT / "mechanism_20260727_180_12.json").read_bytes()
+        )
+        rows = [
+            replay.produce_smoke_row(
+                case_id=case_id,
+                mechanism_fixture=fixture,
+            )
+            for case_id in replay.SMOKE_CASE_IDS
+        ]
+        self.assertEqual(
+            [row["smoke_case_id"] for row in rows],
+            list(replay.SMOKE_CASE_IDS),
+        )
+        self.assertTrue(all(tuple(row) == replay.ROW_FIELDS for row in rows))
+        self.assertTrue(
+            all(row["invocation_name"] == "smoke_validation" for row in rows)
+        )
+
+
+class RowAndKeyMutationTests(unittest.TestCase):
+    def setUp(self):
+        fixture = json.loads(
+            (FIXTURE_ROOT / "mechanism_20260727_180_12.json").read_bytes()
+        )
+        self.accepted = replay.produce_smoke_row(
+            case_id="select_positive",
+            mechanism_fixture=fixture,
+        )
+        self.candidate = replay.produce_smoke_row(
+            case_id="cost_equal_nine",
+            mechanism_fixture=fixture,
+        )["existing_candidates"][0]
+
+    def test_cross_path_candidate_branch_and_cardinality_substitutions_reject(self):
+        mutations = []
+        with_existing = copy.deepcopy(self.accepted)
+        with_existing["existing_candidates"] = [copy.deepcopy(self.candidate)]
+        mutations.append(with_existing)
+        existing = copy.deepcopy(self.accepted)
+        branch = copy.deepcopy(existing["branches"][0])
+        existing.update({
+            "attempt_path": "existing_predictive_multistart",
+            "selector_considered": False,
+            "selector_consideration_reason": "live_public_prediction",
+            "branches": [branch],
+            "selected_branch_id": None,
+            "prior_used_for_branch_selection": False,
+        })
+        mutations.append(existing)
+        one_branch = copy.deepcopy(self.accepted)
+        one_branch["branches"] = one_branch["branches"][:1]
+        mutations.append(one_branch)
+        zero_post = copy.deepcopy(self.accepted)
+        zero_post.update({
+            "attempt_status": "rejected",
+            "attempt_failure_reason": "two_range_no_branch_passes",
+            "branches": [],
+            "selected_branch_id": None,
+            "prior_used_for_branch_selection": False,
+        })
+        mutations.append(zero_post)
+        two_pre = copy.deepcopy(self.accepted)
+        two_pre.update({
+            "attempt_status": "rejected",
+            "attempt_failure_reason": "two_range_circle_geometry_invalid",
+            "selected_branch_id": None,
+            "prior_used_for_branch_selection": False,
+        })
+        for branch_record in two_pre["branches"]:
+            branch_record["q_branch"] = None
+            branch_record["passes_branch_gate"] = None
+        mutations.append(two_pre)
+        unavailable_selected = copy.deepcopy(self.accepted)
+        unavailable_selected.update({
+            "attempt_path": "reference_unavailable",
+            "attempt_status": "reference_unavailable",
+            "attempt_failure_reason": "reference_unavailable",
+            "branches": [],
+            "selected_branch_id": "circle_positive",
+            "prior_used_for_branch_selection": False,
+        })
+        mutations.append(unavailable_selected)
+        for index, row in enumerate(mutations):
+            with self.subTest(index=index):
+                with self.assertRaises(ValueError):
+                    replay._validate_row(row)
+
+    def test_old_positional_nested_encodings_reject(self):
+        nested_fields = (
+            "branches",
+            "existing_candidates",
+            "optional_candidates",
+            "active_references",
+            "reference_evidence",
+            "reference_freshness",
+            "excluded_references",
+            "reference_violations",
+        )
+        for field in nested_fields:
+            row = copy.deepcopy(self.accepted)
+            row[field] = [["old", "positional"]]
+            if field == "branches":
+                row["selected_branch_id"] = None
+                row["prior_used_for_branch_selection"] = False
+            with self.subTest(field=field):
+                with self.assertRaises((ValueError, TypeError)):
+                    replay._validate_row(row)
+
+    def test_registered_key_iterator_has_exact_140000_ordered_keys(self):
+        keys = replay.iter_registered_keys()
+        first = next(keys)
+        count = 1
+        last = first
+        for last in keys:
+            count += 1
+        self.assertEqual(
+            first,
+            (replay.METHOD_ID, 20260727, 0, 1),
+        )
+        self.assertEqual(
+            last,
+            (replay.METHOD_ID, 20260746, 499, 14),
+        )
+        self.assertEqual(count, 140000)
+
+    def test_duplicate_missing_extra_and_out_of_order_keys_reject(self):
+        exact = [("m", 1), ("m", 2), ("m", 3)]
+        self.assertEqual(replay.validate_key_sequence(exact, exact), 3)
+        mutations = (
+            [("m", 1), ("m", 1), ("m", 3)],
+            [("m", 1), ("m", 2)],
+            [("m", 1), ("m", 2), ("m", 3), ("m", 4)],
+            [("m", 2), ("m", 1), ("m", 3)],
+        )
+        for observed in mutations:
+            with self.subTest(observed=observed):
+                with self.assertRaises(ValueError):
+                    replay.validate_key_sequence(observed, exact)
+
+    def test_gate_diagnostic_discriminants_and_partial_canonicalization(self):
+        partial = replay._gate_diagnostics({
+            "innovation_gate": "not_applicable_reacquisition",
+            "q_innov": None,
+            "gate_outcome": "rejected",
+        })
+        self.assertEqual(tuple(partial), replay.GATE_DIAGNOSTIC_FIELDS)
+        self.assertIsNone(partial["valid"])
+        self.assertIsNone(partial["failure_reason"])
+        self.assertIsNone(partial["reduced_whitened_cost"])
+        applied = replay._gate_diagnostics({
+            "innovation_gate": "applied",
+            "q_innov": 1.0,
+            "gate_outcome": "accepted",
+            "valid": True,
+            "failure_reason": None,
+        })
+        self.assertEqual(applied["q_innov"], 1.0)
+        reacquisition = replay._gate_diagnostics({
+            "innovation_gate": "not_applicable_reacquisition",
+            "q_innov": None,
+            "gate_outcome": "accepted",
+            "reduced_whitened_cost": 4.0,
+        })
+        self.assertEqual(reacquisition["reduced_whitened_cost"], 4.0)
+
+    def test_gate_diagnostic_missing_half_present_and_unknown_keys_reject(self):
+        bad = (
+            {
+                "innovation_gate": "applied",
+                "q_innov": 1.0,
+            },
+            {
+                "innovation_gate": "applied",
+                "q_innov": 1.0,
+                "gate_outcome": "accepted",
+                "valid": True,
+            },
+            {
+                "innovation_gate": "applied",
+                "q_innov": 1.0,
+                "gate_outcome": "accepted",
+                "unknown": None,
+            },
+            {
+                "innovation_gate": "not_applicable_reacquisition",
+                "q_innov": None,
+                "gate_outcome": "accepted",
+                "valid": True,
+                "failure_reason": None,
+            },
+        )
+        for source in bad:
+            with self.subTest(source=source):
+                with self.assertRaises(ValueError):
+                    replay._gate_diagnostics(source)
+
+
+class ProducerLifecycleTests(unittest.TestCase):
+    def _protocol(self, root, *, hard_floor=0, raw_cap=100_000_000):
+        protocol = root / "protocol.json"
+        protocol.write_text(
+            json.dumps({
+                "protocol_id": "hermetic-two-range-smoke-v1",
+                "disk_contract": {
+                    "raw_bundle_max_allocated_bytes": raw_cap,
+                    "hard_floor_bytes": hard_floor,
+                },
+            }),
+            encoding="utf-8",
+        )
+        return protocol
+
+    def _run(self, protocol, output):
+        return replay.replay_two_range_reacquisition(
+            protocol_path=protocol,
+            data_path=FIXTURE_ROOT / "mechanism_20260727_180_12.json",
+            input_manifest_path=FIXTURE_ROOT / "manifest.json",
+            output_root=output,
+            run_seeds=(),
+            max_frames=0,
+            invocation_name="smoke_a",
+        )
+
+    def _assert_forensic_not_completed(self, output):
+        normalized = Path(str(output).replace("/var/", "/private/var/", 1))
+        candidates = []
+        if normalized.is_dir():
+            candidates.extend(normalized.glob("manifest*.json"))
+            manifest = normalized / "manifest.json"
+            if manifest.exists():
+                candidates.append(manifest)
+        sibling = replay._preallocation_failure_path(normalized)
+        if sibling.exists():
+            candidates.append(sibling)
+        records = [
+            json.loads(path.read_bytes())
+            for path in dict.fromkeys(candidates)
+        ]
+        self.assertTrue(records, "failure retained no forensic manifest")
+        self.assertTrue(all(record["status"] != "completed" for record in records))
+        self.assertTrue(any(record["status"] == "failed" for record in records))
+
+    def test_two_smoke_roots_have_identical_process_hashes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            protocol = self._protocol(root)
+            outputs = []
+            for invocation in ("smoke_a", "smoke_b"):
+                outputs.append(
+                    replay.replay_two_range_reacquisition(
+                        protocol_path=protocol,
+                        data_path=FIXTURE_ROOT
+                        / "mechanism_20260727_180_12.json",
+                        input_manifest_path=FIXTURE_ROOT / "manifest.json",
+                        output_root=root / invocation,
+                        run_seeds=(),
+                        max_frames=0,
+                        invocation_name=invocation,
+                    )
+                )
+            manifests = [
+                json.loads((path / "manifest.json").read_bytes())
+                for path in outputs
+            ]
+            self.assertEqual(
+                manifests[0]["process_identity"]["compressed_sha256"],
+                manifests[1]["process_identity"]["compressed_sha256"],
+            )
+            self.assertEqual(
+                manifests[0]["process_identity"]["decompressed_sha256"],
+                manifests[1]["process_identity"]["decompressed_sha256"],
+            )
+            self.assertEqual(manifests[0]["observed_rows"], 18)
+            with gzip.open(outputs[0] / replay.RAW_PROCESS_NAME, "rb") as stream:
+                rows = [json.loads(line) for line in stream]
+            self.assertEqual(
+                [row["smoke_case_id"] for row in rows],
+                list(replay.SMOKE_CASE_IDS),
+            )
+
+    def test_start_space_failure_retains_failed_forensic_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            protocol = self._protocol(root, hard_floor=1)
+            output = root / "start-space"
+            zero = types.SimpleNamespace(f_bavail=0, f_frsize=4096)
+            with mock.patch.object(replay.os, "statvfs", return_value=zero):
+                with self.assertRaisesRegex(OSError, "start floor"):
+                    self._run(protocol, output)
+            self._assert_forensic_not_completed(output)
+
+    def test_live_floor_failure_retains_failed_forensic_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            protocol = self._protocol(root, hard_floor=1)
+            output = root / "live-floor"
+            zero = types.SimpleNamespace(f_bavail=0, f_frsize=4096)
+            with mock.patch.object(replay.os, "fstatvfs", return_value=zero):
+                with self.assertRaisesRegex(OSError, "live floor"):
+                    self._run(protocol, output)
+            self._assert_forensic_not_completed(output)
+
+    def test_raw_cap_failure_retains_failed_forensic_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            protocol = self._protocol(root, raw_cap=0)
+            output = root / "raw-cap"
+            with self.assertRaisesRegex(OSError, "allocated-byte cap"):
+                self._run(protocol, output)
+            self._assert_forensic_not_completed(output)
+
+    def test_preexisting_root_retains_failed_forensic_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            protocol = self._protocol(root)
+            output = root / "preexisting"
+            output.mkdir()
+            with self.assertRaises(FileExistsError):
+                self._run(protocol, output)
+            self._assert_forensic_not_completed(output)
+
+    def test_symlink_component_retains_failed_forensic_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            protocol = self._protocol(root)
+            real = root / "real"
+            real.mkdir()
+            link = root / "link"
+            link.symlink_to(real, target_is_directory=True)
+            output = link / "symlink-output"
+            with self.assertRaises(OSError):
+                self._run(protocol, output)
+            self._assert_forensic_not_completed(output)
+
+    def test_write_failure_retains_failed_forensic_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            protocol = self._protocol(root)
+            output = root / "write-failure"
+            with mock.patch.object(
+                replay.gzip.GzipFile,
+                "write",
+                side_effect=OSError("injected write failure"),
+            ):
+                with self.assertRaisesRegex(OSError, "injected write"):
+                    self._run(protocol, output)
+            self._assert_forensic_not_completed(output)
+
+    def test_fsync_failure_retains_emergency_forensic_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            protocol = self._protocol(root)
+            output = root / "fsync-failure"
+            with mock.patch.object(
+                replay.os,
+                "fsync",
+                side_effect=OSError("injected fsync failure"),
+            ):
+                with self.assertRaisesRegex(OSError, "injected fsync"):
+                    self._run(protocol, output)
+            self._assert_forensic_not_completed(output)
+
+    def test_final_identity_mismatch_retains_failed_forensic_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            protocol = self._protocol(root)
+            output = root / "identity-mismatch"
+            with mock.patch.object(
+                replay,
+                "_verify_process_link",
+                side_effect=ValueError("injected identity mismatch"),
+            ):
+                with self.assertRaisesRegex(ValueError, "identity mismatch"):
+                    self._run(protocol, output)
+            self._assert_forensic_not_completed(output)
+
+    def test_terminal_manifest_failure_retains_failed_forensic_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            protocol = self._protocol(root)
+            output = root / "terminal-failure"
+            real_publish = replay._publish_manifest
+            calls = 0
+
+            def fail_completed(transaction, manifest):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise OSError("injected terminal manifest failure")
+                return real_publish(transaction, manifest)
+
+            with mock.patch.object(
+                replay, "_publish_manifest", side_effect=fail_completed,
+            ):
+                with self.assertRaisesRegex(OSError, "terminal manifest"):
+                    self._run(protocol, output)
+            self._assert_forensic_not_completed(output)
+
+
+if __name__ == "__main__":
+    unittest.main()
