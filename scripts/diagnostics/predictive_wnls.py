@@ -2,7 +2,7 @@
 
 import math
 from collections.abc import Mapping
-from numbers import Integral
+from numbers import Integral, Real
 
 import numpy as np
 
@@ -11,6 +11,11 @@ FRAME_DT_SECONDS = 0.5
 MAX_PUBLIC_PREDICTION_AGE = 2
 CANDIDATE_DEDUP_M = 1e-9
 RELATIVE_TIE_TOLERANCE = 1e-12
+QUALIFICATION_VARIANTS = (
+    "prediction_expiry",
+    "fresh_reference_qualification",
+    "predictive_multistart",
+)
 OUTPUT_STATUSES = ("fresh", "predicted", "unavailable")
 ATTEMPT_STATUSES = (
     "accepted",
@@ -340,10 +345,10 @@ def _reference_key_order(key: tuple[str, int]) -> tuple[int, int]:
 def _present_scalar_record(record: object) -> dict | None:
     if not isinstance(record, Mapping) or record.get("present") is not True:
         return None
-    try:
-        noisy_range = float(record.get("noisy_range"))
-    except (TypeError, ValueError, OverflowError):
+    raw_range = record.get("noisy_range")
+    if isinstance(raw_range, bool) or not isinstance(raw_range, Real):
         return None
+    noisy_range = float(raw_range)
     if not math.isfinite(noisy_range) or noisy_range < 0.0:
         return None
     # Copy only sensor-boundary fields so offline/truth fields cannot leak on.
@@ -384,25 +389,50 @@ def qualify_active_references(
     variant: str,
 ) -> dict:
     """Return active measurement/reference records or reference_unavailable."""
-    base_ids = mandatory.get("base_ids", []) if isinstance(mandatory, Mapping) else []
-    uav_ids = mandatory.get("uav_ids", []) if isinstance(mandatory, Mapping) else []
-    mandatory_keys = []
+    invalid_result = {
+        "status": "invalid",
+        "active_keys": [],
+        "active_records": [],
+        "missing_mandatory": [],
+        "excluded": [],
+        "violations": [],
+        "base_anchor_provenance": (),
+    }
+    if (
+        not isinstance(mandatory, dict)
+        or set(mandatory) != {"base_ids", "uav_ids"}
+        or variant not in QUALIFICATION_VARIANTS
+        or not isinstance(optional_keys, list)
+        or not isinstance(measurement_records, Mapping)
+        or not isinstance(uav_outputs, Mapping)
+    ):
+        return invalid_result
+    base_ids = mandatory["base_ids"]
+    uav_ids = mandatory["uav_ids"]
+    if not isinstance(base_ids, list) or not isinstance(uav_ids, list):
+        return invalid_result
+    mandatory_keys: list[tuple[str, int]] = []
     for kind, identifiers in (("base", base_ids), ("uav", uav_ids)):
-        if isinstance(identifiers, (list, tuple)):
-            mandatory_keys.extend(
-                (kind, int(identifier))
-                for identifier in identifiers
-                if not isinstance(identifier, bool)
-                and isinstance(identifier, Integral)
-                and identifier >= 0
-            )
-    mandatory_keys = sorted(set(mandatory_keys), key=_reference_key_order)
-    optional = []
-    if isinstance(optional_keys, (list, tuple)):
-        optional = [key for raw in optional_keys if (key := _reference_key(raw)) is not None]
-    optional = sorted(set(optional), key=_reference_key_order)
-    records = measurement_records if isinstance(measurement_records, Mapping) else {}
-    outputs = uav_outputs if isinstance(uav_outputs, Mapping) else {}
+        for identifier in identifiers:
+            if (
+                isinstance(identifier, bool)
+                or not isinstance(identifier, Integral)
+                or identifier < 0
+            ):
+                return invalid_result
+            mandatory_keys.append((kind, int(identifier)))
+    if len(set(mandatory_keys)) != len(mandatory_keys):
+        return invalid_result
+    optional = [_reference_key(raw) for raw in optional_keys]
+    if any(key is None for key in optional):
+        return invalid_result
+    optional = [key for key in optional if key is not None]
+    if len(set(optional)) != len(optional):
+        return invalid_result
+    mandatory_keys = sorted(mandatory_keys, key=_reference_key_order)
+    optional = sorted(optional, key=_reference_key_order)
+    records = measurement_records
+    outputs = uav_outputs
     active_keys: list[tuple[str, int]] = []
     active_records: list[dict] = []
     missing_mandatory: list[tuple[str, int]] = []
@@ -570,7 +600,12 @@ def best_conditioned_pair(
                     continue
                 score = math.sqrt(max(0.0, 1.0 - float(cosine) ** 2))
             ordered_keys = tuple(sorted((_reference_key_order(keys[first]), _reference_key_order(keys[second]))))
-            pair = (first, second)
+            pair = tuple(
+                sorted(
+                    (first, second),
+                    key=lambda index: _reference_key_order(keys[index]),
+                )
+            )
             if best is None:
                 best = (score, ordered_keys, pair)
                 continue

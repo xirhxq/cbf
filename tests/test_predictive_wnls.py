@@ -209,6 +209,92 @@ class FinalizeAttemptTests(unittest.TestCase):
 
 
 class ReferenceQualificationTests(unittest.TestCase):
+    def test_malformed_mandatory_specifications_are_invalid(self):
+        cases = (
+            None,
+            {},
+            {"base_ids": [0]},
+            {"base_ids": [0], "uav_ids": [], "other": []},
+            {"base_ids": "bad", "uav_ids": []},
+            {"base_ids": [0, "bad"], "uav_ids": []},
+            {"base_ids": [False], "uav_ids": []},
+            {"base_ids": [-1], "uav_ids": []},
+        )
+        for mandatory in cases:
+            with self.subTest(mandatory=mandatory):
+                result = qualify_active_references(
+                    mandatory=mandatory,
+                    optional_keys=[],
+                    measurement_records={
+                        ("base", 0): {
+                            "present": True,
+                            "noisy_range": 10.0,
+                        },
+                    },
+                    uav_outputs={},
+                    variant="predictive_multistart",
+                )
+                self.assertEqual(result["status"], "invalid")
+
+    def test_malformed_optional_keys_and_unknown_variant_are_invalid(self):
+        for optional_keys, variant in (
+            ("bad", "predictive_multistart"),
+            ([("base", False)], "predictive_multistart"),
+            ([("truth", 0)], "predictive_multistart"),
+            ([], "unknown"),
+        ):
+            with self.subTest(optional_keys=optional_keys, variant=variant):
+                result = qualify_active_references(
+                    mandatory={"base_ids": [], "uav_ids": []},
+                    optional_keys=optional_keys,
+                    measurement_records={},
+                    uav_outputs={},
+                    variant=variant,
+                )
+                self.assertEqual(result["status"], "invalid")
+
+    def test_malformed_mandatory_scalar_records_are_unavailable(self):
+        for noisy_range in (True, "10.0", math.nan, math.inf, -1.0):
+            with self.subTest(noisy_range=noisy_range):
+                result = qualify_active_references(
+                    mandatory={"base_ids": [0], "uav_ids": []},
+                    optional_keys=[],
+                    measurement_records={
+                        ("base", 0): {
+                            "present": True,
+                            "noisy_range": noisy_range,
+                        },
+                    },
+                    uav_outputs={},
+                    variant="predictive_multistart",
+                )
+                self.assertEqual(result["status"], "reference_unavailable")
+                self.assertEqual(result["missing_mandatory"], [("base", 0)])
+
+    def test_malformed_mandatory_uav_output_cannot_qualify(self):
+        malformed_outputs = (
+            None,
+            {},
+            {"output_status": "fresh"},
+            make_test_output(provenance=(0, 0)),
+        )
+        for malformed in malformed_outputs:
+            with self.subTest(malformed=malformed):
+                result = qualify_active_references(
+                    mandatory={"base_ids": [], "uav_ids": [1]},
+                    optional_keys=[],
+                    measurement_records={
+                        ("uav", 1): {
+                            "present": True,
+                            "noisy_range": 10.0,
+                        },
+                    },
+                    uav_outputs={1: malformed},
+                    variant="predictive_multistart",
+                )
+                self.assertEqual(result["status"], "reference_unavailable")
+                self.assertEqual(result["missing_mandatory"], [("uav", 1)])
+
     def test_missing_mandatory_measurement_is_reference_unavailable(self):
         result = qualify_active_references(
             mandatory={"base_ids": [0], "uav_ids": [1]},
@@ -281,6 +367,38 @@ class ReferenceQualificationTests(unittest.TestCase):
 
 
 class CandidateGeometryTests(unittest.TestCase):
+    def test_cosine_feasibility_uses_exact_one_e_minus_twelve_allowance(self):
+        inside_cosine = -1.0 - 0.5e-12
+        outside_cosine = -1.0 - 2.0e-12
+        inside_baseline = math.sqrt(2.0 - 2.0 * inside_cosine)
+        outside_baseline = math.sqrt(2.0 - 2.0 * outside_cosine)
+
+        inside = best_conditioned_pair(
+            None,
+            [[0.0, 0.0], [inside_baseline, 0.0]],
+            [1.0, 1.0],
+            [("base", 0), ("base", 1)],
+        )
+        outside = best_conditioned_pair(
+            None,
+            [[0.0, 0.0], [outside_baseline, 0.0]],
+            [1.0, 1.0],
+            [("base", 0), ("base", 1)],
+        )
+
+        self.assertEqual(inside, (0, 1))
+        self.assertIsNone(outside)
+
+    def test_tied_pair_is_selected_and_returned_in_lexical_key_order(self):
+        height = math.sqrt(3.0)
+        pair = best_conditioned_pair(
+            None,
+            [[0.0, 0.0], [2.0, 0.0], [1.0, height]],
+            [2.0, 2.0, 2.0],
+            [("base", 1), ("base", 0), ("base", 2)],
+        )
+        self.assertEqual(pair, (1, 0))
+
     def test_two_circle_branches_have_fixed_orientation_order(self):
         candidates = two_circle_candidates([0, 0], 5, [6, 0], 5)
         np.testing.assert_allclose(candidates[0], [3, -4])
@@ -327,6 +445,62 @@ class CandidateGeometryTests(unittest.TestCase):
             [candidate["source"] for candidate in candidates],
             ["prediction", "circle_negative"],
         )
+
+    def test_tangential_circle_branches_are_deduplicated(self):
+        candidates = initial_candidates(
+            live_prediction=None,
+            private_seed={
+                "estimate": [10.0, 10.0],
+                "modeled_covariance": [[1.0, 0.0], [0.0, 1.0]],
+            },
+            reference_positions=[[0.0, 0.0], [2.0, 0.0]],
+            measured_ranges=[1.0, 1.0],
+            reference_keys=[("base", 0), ("base", 1)],
+        )
+        self.assertEqual(
+            [candidate["source"] for candidate in candidates],
+            ["private_reacquisition_seed", "circle_negative"],
+        )
+
+    def test_exact_dedup_threshold_is_inclusive_and_candidate_cap_is_four(self):
+        common = {
+            "private_seed": None,
+            "reference_positions": [
+                [0.0, 0.0],
+                [3.0, 0.0],
+                [0.0, 4.0],
+            ],
+            "measured_ranges": [0.0, 3.0, 4.0],
+            "reference_keys": [
+                ("base", 0),
+                ("base", 1),
+                ("base", 2),
+            ],
+        }
+        at_threshold = initial_candidates(
+            live_prediction={
+                "estimate": [1e-9, 0.0],
+                "modeled_covariance": [[1.0, 0.0], [0.0, 1.0]],
+            },
+            **common,
+        )
+        above_threshold = initial_candidates(
+            live_prediction={
+                "estimate": [math.nextafter(1e-9, math.inf), 0.0],
+                "modeled_covariance": [[1.0, 0.0], [0.0, 1.0]],
+            },
+            **common,
+        )
+
+        self.assertNotIn(
+            "algebraic",
+            [candidate["source"] for candidate in at_threshold],
+        )
+        self.assertIn(
+            "algebraic",
+            [candidate["source"] for candidate in above_threshold],
+        )
+        self.assertLessEqual(len(above_threshold), 4)
 
 
 class FinalizeAttemptRemainderTests(unittest.TestCase):
