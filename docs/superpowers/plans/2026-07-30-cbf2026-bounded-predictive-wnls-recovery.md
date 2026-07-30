@@ -1221,9 +1221,12 @@ Tiny paired fixtures assert:
   `5.991464547107979` and `9.0`, aged containment/q, and online q-innovation
   use separate denominators;
 - depth, squad, time, seed, input-limit, frame44, and frame177 summaries exist;
-- input-limit audit deduplicates the repeated physical trajectory by
-  `(frame_index, robot_id)` and therefore reports `243/7000`, not one copy
-  per range-noise seed or variant;
+- input-limit audit loads the protocol-bound truth trajectory and audits every
+  optimizer output exactly once by `(frame_index, robot_id)`, therefore
+  reporting `243/7000`, not one copy per range-noise seed or variant;
+- raw-row `applied_command` is used only to validate predecessor-command
+  prediction timing because frame zero has no predecessor and the raw rows
+  therefore cover only `6986` of the `7000` physical optimizer outputs;
 - prediction age above two, invalid provenance, nonascending DAG use, or
   qualification-enabled predicted anchor use is a protocol failure;
 - the exact old `999.3318962079554` and `168.90169712504604` rows are resolved
