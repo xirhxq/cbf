@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import gzip
 import hashlib
 import json
@@ -875,11 +876,13 @@ def _create_exact_root(
                 next_fd = os.open(component, directory_flags, dir_fd=parent_fd)
             except FileNotFoundError:
                 os.mkdir(component, dir_fd=parent_fd)
+                os.fsync(parent_fd)
                 next_fd = os.open(component, directory_flags, dir_fd=parent_fd)
             os.close(parent_fd)
             parent_fd = next_fd
         os.mkdir(components[-1], dir_fd=parent_fd)
         leaf_created = True
+        os.fsync(parent_fd)
         root_fd = os.open(components[-1], directory_flags, dir_fd=parent_fd)
         metadata = os.fstat(root_fd)
         linked = os.stat(
@@ -926,6 +929,7 @@ def _create_exact_root(
         if leaf_created:
             try:
                 os.rmdir(components[-1], dir_fd=parent_fd)
+                os.fsync(parent_fd)
             except Exception as cleanup_error:
                 error.add_note(
                     "failed to remove the unexported output root: "
@@ -967,23 +971,42 @@ def _assert_registered_root(transaction: dict) -> None:
         raise ValueError("registered output root identity changed")
 
 
+def _close_descriptor_faults(descriptor: int) -> list[BaseException]:
+    faults = []
+    for _ in range(2):
+        try:
+            os.close(descriptor)
+            break
+        except OSError as error:
+            if error.errno == errno.EBADF:
+                break
+            faults.append(error)
+        except BaseException as error:
+            faults.append(error)
+    return faults
+
+
 def _close_output_transaction(transaction: dict) -> None:
     if transaction.get("closed"):
         return
     transaction["closed"] = True
-    for descriptor in tuple(transaction.get("resource_fds", ())):
-        try:
-            os.close(descriptor)
-        except OSError:
-            pass
-    transaction.get("resource_fds", set()).clear()
+    faults = []
+    resources = transaction.get("resource_fds", set())
+    descriptors = list(resources)
+    try:
+        resources.clear()
+    except BaseException as error:
+        faults.append(error)
     for name in ("root_fd", "parent_fd"):
         descriptor = transaction.get(name)
         if isinstance(descriptor, int):
-            try:
-                os.close(descriptor)
-            except OSError:
-                pass
+            descriptors.append(descriptor)
+        transaction[name] = None
+    for descriptor in descriptors:
+        faults.extend(_close_descriptor_faults(descriptor))
+    transaction["close_faults"] = [
+        f"{type(error).__name__}: {error}" for error in faults
+    ]
 
 
 def _validate_protocol_shape(
@@ -2020,6 +2043,129 @@ def _verify_raw_output(
     return held_identity
 
 
+def _rollback_open_entry_once(
+    directory_fd: int,
+    name: str,
+    descriptor: int,
+) -> BaseException | None:
+    held = os.fstat(descriptor)
+    quarantine = f".{name}.rollback.{secrets.token_hex(16)}"
+    rename_fault = None
+    try:
+        os.rename(
+            name,
+            quarantine,
+            src_dir_fd=directory_fd,
+            dst_dir_fd=directory_fd,
+        )
+    except BaseException as error:
+        rename_fault = error
+        try:
+            os.stat(
+                quarantine,
+                dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+        except Exception:
+            raise error
+    moved = os.stat(
+        quarantine,
+        dir_fd=directory_fd,
+        follow_symlinks=False,
+    )
+    if (moved.st_dev, moved.st_ino) != (held.st_dev, held.st_ino):
+        _restore_quarantine(directory_fd, quarantine, name)
+        raise ValueError("created entry was replaced before rollback")
+    os.unlink(quarantine, dir_fd=directory_fd)
+    return rename_fault
+
+
+def _rollback_created_entry(
+    *,
+    directory_fd: int,
+    name: str,
+    descriptor: int,
+    original_error: BaseException,
+    label: str,
+) -> None:
+    for _ in range(2):
+        try:
+            fault = _rollback_open_entry_once(
+                directory_fd,
+                name,
+                descriptor,
+            )
+            if fault is not None:
+                original_error.add_note(
+                    f"{label} rollback failed transiently: "
+                    f"{type(fault).__name__}: {fault}"
+                )
+            return
+        except BaseException as cleanup_error:
+            original_error.add_note(
+                f"{label} rollback failed: "
+                f"{type(cleanup_error).__name__}: {cleanup_error}"
+            )
+
+
+def _release_adopted_descriptor(
+    transaction: dict,
+    descriptor: int,
+    original_error: BaseException,
+) -> None:
+    try:
+        transaction["resource_fds"].discard(descriptor)
+    except BaseException as discard_error:
+        original_error.add_note(
+            "descriptor ownership release failed: "
+            f"{type(discard_error).__name__}: {discard_error}"
+        )
+    for close_error in _close_descriptor_faults(descriptor):
+        original_error.add_note(
+            "descriptor close failed: "
+            f"{type(close_error).__name__}: {close_error}"
+        )
+
+
+def _adopt_or_close(
+    transaction: dict,
+    descriptor: int,
+    *,
+    rollback,
+) -> int:
+    try:
+        transaction["resource_fds"].add(descriptor)
+    except BaseException as error:
+        rollback(error)
+        _release_adopted_descriptor(transaction, descriptor, error)
+        raise
+    return descriptor
+
+
+def _open_raw_output(transaction: dict) -> int:
+    descriptor = os.open(
+        RAW_PROCESS_NAME,
+        os.O_RDWR
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+        dir_fd=transaction["root_fd"],
+    )
+    return _adopt_or_close(
+        transaction,
+        descriptor,
+        rollback=lambda error: _rollback_created_entry(
+            directory_fd=transaction["root_fd"],
+            name=RAW_PROCESS_NAME,
+            descriptor=descriptor,
+            original_error=error,
+            label="raw entry",
+        ),
+    )
+
+
 def _write_stage(transaction: dict, state: str, payload: bytes) -> dict:
     name = _stage_path(Path(transaction["output_root"]), state).name
     flags = (
@@ -2035,19 +2181,38 @@ def _write_stage(transaction: dict, state: str, payload: bytes) -> dict:
         0o600,
         dir_fd=transaction["parent_fd"],
     )
-    transaction["resource_fds"].add(descriptor)
-    with os.fdopen(os.dup(descriptor), "wb") as target:
-        target.write(payload)
-        target.flush()
-        os.fsync(target.fileno())
-    identity = _fd_identity(descriptor)
-    return {
-        "name": name,
-        "fd": descriptor,
-        **identity,
-        "source_cleaned": False,
-        "target_linked": False,
-    }
+    rollback = lambda error: _rollback_created_entry(
+        directory_fd=transaction["parent_fd"],
+        name=name,
+        descriptor=descriptor,
+        original_error=error,
+        label="stage",
+    )
+    descriptor = _adopt_or_close(
+        transaction,
+        descriptor,
+        rollback=rollback,
+    )
+    try:
+        offset = 0
+        while offset < len(payload):
+            written = os.write(descriptor, payload[offset:])
+            if written <= 0:
+                raise OSError("stage write made no progress")
+            offset += written
+        os.fsync(descriptor)
+        identity = _fd_identity(descriptor)
+        return {
+            "name": name,
+            "fd": descriptor,
+            **identity,
+            "source_cleaned": False,
+            "target_linked": False,
+        }
+    except BaseException as error:
+        rollback(error)
+        _release_adopted_descriptor(transaction, descriptor, error)
+        raise
 
 
 def _held_stage_is_exact(stage: dict) -> bool:
@@ -2524,17 +2689,7 @@ def replay_predictive_recovery(
         if _available_bytes_fd(transaction) < HARD_FLOOR_BYTES:
             raise DiskSpaceError("available bytes below live floor")
         states: dict[tuple[str, int], dict[int, dict]] = {}
-        raw_descriptor = os.open(
-            RAW_PROCESS_NAME,
-            os.O_RDWR
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
-            dir_fd=transaction["root_fd"],
-        )
-        transaction["resource_fds"].add(raw_descriptor)
+        raw_descriptor = _open_raw_output(transaction)
         with os.fdopen(os.dup(raw_descriptor), "wb") as raw, gzip.GzipFile(
             filename="", fileobj=raw, mode="wb", mtime=0
         ) as compressed:

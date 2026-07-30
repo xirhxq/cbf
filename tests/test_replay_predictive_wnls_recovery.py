@@ -27,6 +27,10 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def open_fd_count() -> int:
+    return len(os.listdir("/dev/fd"))
+
+
 def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, allow_nan=False, sort_keys=True))
 
@@ -1505,6 +1509,171 @@ class PathDiskAndTerminalTests(ReplayHarness):
             self.assertEqual(preserved.read_bytes(), b"owned-stage")
         finally:
             close_transaction(transaction)
+
+    def test_stage_adoption_baseexception_closes_fd_and_removes_entry(self):
+        class ExplodingSet(set):
+            def add(self, value):
+                super().add(value)
+                raise KeyboardInterrupt("stage adoption")
+
+        root = self.output_parent / "stage-adoption"
+        baseline = open_fd_count()
+        transaction = replay._create_exact_root(root)
+        transaction["resource_fds"] = ExplodingSet()
+        try:
+            with self.assertRaisesRegex(KeyboardInterrupt, "stage adoption"):
+                replay._write_stage(transaction, "completed", b"stage")
+            self.assertFalse(
+                replay._stage_path(root, "completed").exists()
+            )
+        finally:
+            replay._close_output_transaction(transaction)
+        self.assertEqual(open_fd_count(), baseline)
+
+    def test_raw_adoption_baseexception_closes_fd_and_removes_entry(self):
+        class ExplodingSet(set):
+            def add(self, value):
+                super().add(value)
+                raise KeyboardInterrupt("raw adoption")
+
+        root = self.output_parent / "raw-adoption"
+        baseline = open_fd_count()
+        transaction = replay._create_exact_root(root)
+        transaction["resource_fds"] = ExplodingSet()
+        try:
+            with self.assertRaisesRegex(KeyboardInterrupt, "raw adoption"):
+                replay._open_raw_output(transaction)
+            self.assertFalse((root / replay.RAW_PROCESS_NAME).exists())
+        finally:
+            replay._close_output_transaction(transaction)
+        self.assertEqual(open_fd_count(), baseline)
+
+    def test_stage_write_baseexception_rolls_back_entry_and_descriptor(self):
+        root = self.output_parent / "stage-write-failure"
+        transaction = replay._create_exact_root(root)
+        baseline = open_fd_count()
+        try:
+            with mock.patch(
+                "os.fsync", side_effect=KeyboardInterrupt("stage fsync")
+            ):
+                with self.assertRaisesRegex(KeyboardInterrupt, "stage fsync"):
+                    replay._write_stage(
+                        transaction,
+                        "finalizing",
+                        b"partial-stage",
+                    )
+            self.assertFalse(
+                replay._stage_path(root, "finalizing").exists()
+            )
+            self.assertEqual(open_fd_count(), baseline)
+            self.assertEqual(transaction["resource_fds"], set())
+        finally:
+            replay._close_output_transaction(transaction)
+
+    def test_stage_rollback_fault_is_noted_and_retried_without_orphan(self):
+        root = self.output_parent / "stage-rollback-fault"
+        transaction = replay._create_exact_root(root)
+        real_rename = os.rename
+        rename_calls = 0
+
+        def fail_first_quarantine_rename(*args, **kwargs):
+            nonlocal rename_calls
+            rename_calls += 1
+            if rename_calls == 1:
+                raise OSError("quarantine fault")
+            return real_rename(*args, **kwargs)
+
+        try:
+            with mock.patch(
+                "os.fsync", side_effect=RuntimeError("stage write")
+            ), mock.patch(
+                "os.rename", side_effect=fail_first_quarantine_rename
+            ):
+                with self.assertRaisesRegex(RuntimeError, "stage write") as caught:
+                    replay._write_stage(
+                        transaction,
+                        "failed",
+                        b"partial-stage",
+                    )
+            self.assertTrue(
+                any(
+                    "stage rollback failed" in note
+                    and "quarantine fault" in note
+                    for note in getattr(caught.exception, "__notes__", [])
+                )
+            )
+            self.assertGreaterEqual(rename_calls, 2)
+            self.assertFalse(replay._stage_path(root, "failed").exists())
+        finally:
+            replay._close_output_transaction(transaction)
+
+    def test_every_descriptor_relative_mkdir_fsyncs_containing_directory(self):
+        root = self.output_parent / "mkdir-a" / "mkdir-b" / "bundle"
+        events = []
+        real_mkdir = os.mkdir
+        real_fsync = os.fsync
+
+        def record_mkdir(path, mode=0o777, *, dir_fd=None):
+            result = real_mkdir(path, mode, dir_fd=dir_fd)
+            events.append(("mkdir", path, dir_fd))
+            return result
+
+        def record_fsync(descriptor):
+            events.append(("fsync", descriptor))
+            return real_fsync(descriptor)
+
+        with mock.patch("os.mkdir", side_effect=record_mkdir), mock.patch(
+            "os.fsync", side_effect=record_fsync
+        ):
+            transaction = replay._create_exact_root(root)
+        try:
+            mkdir_indexes = [
+                index
+                for index, event in enumerate(events)
+                if event[0] == "mkdir"
+            ]
+            self.assertGreaterEqual(len(mkdir_indexes), 3)
+            for index in mkdir_indexes:
+                self.assertLess(index + 1, len(events))
+                self.assertEqual(
+                    events[index + 1],
+                    ("fsync", events[index][2]),
+                )
+        finally:
+            replay._close_output_transaction(transaction)
+
+    def test_close_transaction_suppresses_fault_and_closes_every_descriptor(self):
+        root = self.output_parent / "close-all"
+        baseline = open_fd_count()
+        transaction = replay._create_exact_root(root)
+        extras = {
+            os.open("/dev/null", os.O_RDONLY),
+            os.open("/dev/null", os.O_RDONLY),
+        }
+        transaction["resource_fds"].update(extras)
+        tracked = {
+            transaction["root_fd"],
+            transaction["parent_fd"],
+            *extras,
+        }
+        real_close = os.close
+        faulted = False
+
+        def close_then_interrupt(descriptor):
+            nonlocal faulted
+            real_close(descriptor)
+            if descriptor in tracked and not faulted:
+                faulted = True
+                raise KeyboardInterrupt("close boundary")
+
+        with mock.patch("os.close", side_effect=close_then_interrupt):
+            replay._close_output_transaction(transaction)
+        self.assertTrue(faulted)
+        for descriptor in tracked:
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
+        self.assertEqual(open_fd_count(), baseline)
+        self.assertTrue(transaction["close_faults"])
 
     def test_post_commit_boundary_exception_reconciles_to_completed(self):
         delivered = False
