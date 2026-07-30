@@ -6,6 +6,12 @@ from numbers import Integral, Real
 
 import numpy as np
 
+from scripts.diagnostics.replay_localization_calibration import (
+    _linearized_terms,
+    _validated_inputs,
+    fim_radius,
+)
+
 
 FRAME_DT_SECONDS = 0.5
 MAX_PUBLIC_PREDICTION_AGE = 2
@@ -24,6 +30,22 @@ ATTEMPT_STATUSES = (
     "invalid",
     "reference_unavailable",
 )
+MAX_WNLS_PROPOSALS = 50
+INITIAL_WNLS_DAMPING = 1e-3
+MIN_WNLS_DAMPING = 1e-15
+MAX_WNLS_DAMPING = 1e15
+WNLS_DAMPING_FACTOR = 10.0
+STATIONARITY_SCALE = 1e-6
+REPRESENTABLE_STEP_SCALE = 1e-12
+INNOVATION_REFERENCE_QUANTILE = 11.829007011943707
+RELATIVE_SPECTRAL_THRESHOLD = 1e-12
+_CANDIDATE_SOURCE_ORDER = {
+    "prediction": 0,
+    "private_reacquisition_seed": 0,
+    "algebraic": 1,
+    "circle_negative": 2,
+    "circle_positive": 3,
+}
 
 
 def _finite_vector(value: object) -> np.ndarray | None:
@@ -695,3 +717,548 @@ def initial_candidates(
         if len(branches) > 1:
             append("circle_positive", branches[1])
     return tuple(candidates)
+
+
+def scale_aware_stationary(gradient: object, residual: object) -> bool:
+    """Return whether the frozen, scale-aware stationarity rule is met."""
+    try:
+        gradient_array = np.asarray(gradient, dtype=float)
+        residual_array = np.asarray(residual, dtype=float)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if (
+        gradient_array.ndim != 1
+        or residual_array.ndim != 1
+        or not np.isfinite(gradient_array).all()
+        or not np.isfinite(residual_array).all()
+    ):
+        return False
+    return bool(
+        np.linalg.norm(gradient_array, ord=np.inf)
+        <= STATIONARITY_SCALE * (1.0 + np.linalg.norm(residual_array))
+    )
+
+
+def _finite_relative_spd(value: object) -> np.ndarray | None:
+    """Symmetrize a finite 2-D covariance and apply the frozen spectral rule."""
+    try:
+        matrix = np.asarray(value, dtype=float)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if matrix.shape != (2, 2) or not np.isfinite(matrix).all():
+        return None
+    symmetric = 0.5 * (matrix + matrix.T)
+    try:
+        eigenvalues = np.linalg.eigvalsh(symmetric)
+    except np.linalg.LinAlgError:
+        return None
+    if (
+        not np.isfinite(eigenvalues).all()
+        or eigenvalues[-1] <= 0.0
+        or eigenvalues[0] <= RELATIVE_SPECTRAL_THRESHOLD * eigenvalues[-1]
+    ):
+        return None
+    return symmetric
+
+
+def _solver_result(
+    status: str,
+    *,
+    estimate: np.ndarray | None,
+    cost: float | None,
+    stationarity_norm: float | None,
+    proposal_trace: list[dict],
+    failure_reason: str | None = None,
+    fim: dict | None = None,
+) -> dict:
+    """Construct a self-contained finite-budget WNLS result."""
+    result = {
+        "status": status,
+        "estimate": None if estimate is None else estimate.tolist(),
+        "covariance": None,
+        "epsilon": None,
+        "phi_min_eigenvalue": None,
+        "phi_condition": None,
+        "fim_valid": False,
+        "iterations": len(proposal_trace),
+        "cost": cost,
+        "stationarity_norm": stationarity_norm,
+        "failure_reason": failure_reason,
+        "proposal_trace": proposal_trace,
+    }
+    if fim is not None:
+        for key in (
+            "covariance",
+            "epsilon",
+            "phi_min_eigenvalue",
+            "phi_condition",
+        ):
+            result[key] = fim.get(key)
+        result["fim_valid"] = fim.get("status") == "converged"
+    return result
+
+
+def solve_finite_budget_wnls(
+    reference_positions: object,
+    reference_covariances: object,
+    measurements: object,
+    initial_estimate: object,
+    ranging_sigma: float,
+) -> dict:
+    """Run the unchanged residual/Jacobian with the frozen finite LM policy."""
+    validated = _validated_inputs(
+        reference_positions,
+        reference_covariances,
+        measurements,
+        initial_estimate,
+        ranging_sigma,
+    )
+    if validated is None:
+        return _solver_result(
+            "invalid",
+            estimate=None,
+            cost=None,
+            stationarity_norm=None,
+            proposal_trace=[],
+            failure_reason="non-finite or malformed WNLS input",
+        )
+    references, covariances, ranges, estimate, sigma = validated
+    if ranges is None:
+        return _solver_result(
+            "invalid",
+            estimate=None,
+            cost=None,
+            stationarity_norm=None,
+            proposal_trace=[],
+            failure_reason="measurements are required",
+        )
+
+    current = estimate.copy()
+    damping = INITIAL_WNLS_DAMPING
+    proposal_trace: list[dict] = []
+    for proposal in range(MAX_WNLS_PROPOSALS):
+        terms = _linearized_terms(current, references, covariances, ranges, sigma)
+        if terms is None:
+            return _solver_result(
+                "invalid",
+                estimate=current,
+                cost=None,
+                stationarity_norm=None,
+                proposal_trace=proposal_trace,
+                failure_reason="invalid linearized WNLS terms",
+            )
+        _, _, residual, gauss_newton, gradient, cost = terms
+        stationarity_norm = float(np.linalg.norm(gradient, ord=np.inf))
+        if scale_aware_stationary(gradient, residual):
+            fim = fim_radius(current, references, covariances, sigma)
+            if fim.get("status") != "converged":
+                return _solver_result(
+                    "invalid",
+                    estimate=current,
+                    cost=cost,
+                    stationarity_norm=stationarity_norm,
+                    proposal_trace=proposal_trace,
+                    failure_reason=fim.get("failure_reason"),
+                    fim=fim,
+                )
+            return _solver_result(
+                "converged",
+                estimate=current,
+                cost=cost,
+                stationarity_norm=stationarity_norm,
+                proposal_trace=proposal_trace,
+                fim=fim,
+            )
+
+        row = {
+            "proposal": proposal,
+            "damping": damping,
+            "cost": cost,
+            "stationarity_norm": stationarity_norm,
+            "raw_step_norm": None,
+            "trial_cost": None,
+            "invalid_trial_reason": None,
+            "accepted": False,
+        }
+        try:
+            delta = -np.linalg.solve(gauss_newton + damping * np.eye(2), gradient)
+        except np.linalg.LinAlgError:
+            row["invalid_trial_reason"] = "damped_normal_equations_unsolvable"
+            proposal_trace.append(row)
+            return _solver_result(
+                "invalid",
+                estimate=current,
+                cost=cost,
+                stationarity_norm=stationarity_norm,
+                proposal_trace=proposal_trace,
+                failure_reason=row["invalid_trial_reason"],
+            )
+        if delta.shape != (2,) or not np.isfinite(delta).all():
+            row["invalid_trial_reason"] = "non-finite damped step"
+            proposal_trace.append(row)
+            return _solver_result(
+                "invalid",
+                estimate=current,
+                cost=cost,
+                stationarity_norm=stationarity_norm,
+                proposal_trace=proposal_trace,
+                failure_reason=row["invalid_trial_reason"],
+            )
+        raw_step_norm = float(np.linalg.norm(delta))
+        row["raw_step_norm"] = raw_step_norm
+        if raw_step_norm <= REPRESENTABLE_STEP_SCALE * (1.0 + np.linalg.norm(current)):
+            row["invalid_trial_reason"] = "no_representable_improving_step"
+            proposal_trace.append(row)
+            return _solver_result(
+                "failed",
+                estimate=current,
+                cost=cost,
+                stationarity_norm=stationarity_norm,
+                proposal_trace=proposal_trace,
+                failure_reason="no_representable_improving_step",
+            )
+
+        trial = current + delta
+        trial_terms = (
+            None
+            if not np.isfinite(trial).all()
+            else _linearized_terms(trial, references, covariances, ranges, sigma)
+        )
+        if trial_terms is None:
+            row["invalid_trial_reason"] = "invalid_trial_terms"
+        else:
+            trial_cost = float(trial_terms[-1])
+            if math.isfinite(trial_cost):
+                row["trial_cost"] = trial_cost
+                if trial_cost < cost:
+                    row["accepted"] = True
+                    proposal_trace.append(row)
+                    current = trial
+                    trial_residual = trial_terms[2]
+                    trial_gradient = trial_terms[4]
+                    trial_stationarity_norm = float(
+                        np.linalg.norm(trial_gradient, ord=np.inf)
+                    )
+                    if scale_aware_stationary(trial_gradient, trial_residual):
+                        fim = fim_radius(current, references, covariances, sigma)
+                        if fim.get("status") != "converged":
+                            return _solver_result(
+                                "invalid",
+                                estimate=current,
+                                cost=trial_cost,
+                                stationarity_norm=trial_stationarity_norm,
+                                proposal_trace=proposal_trace,
+                                failure_reason=fim.get("failure_reason"),
+                                fim=fim,
+                            )
+                        return _solver_result(
+                            "converged",
+                            estimate=current,
+                            cost=trial_cost,
+                            stationarity_norm=trial_stationarity_norm,
+                            proposal_trace=proposal_trace,
+                            fim=fim,
+                        )
+                    damping = max(MIN_WNLS_DAMPING, damping / WNLS_DAMPING_FACTOR)
+                    continue
+            else:
+                row["invalid_trial_reason"] = "non-finite_trial_cost"
+        proposal_trace.append(row)
+        if damping > MAX_WNLS_DAMPING / WNLS_DAMPING_FACTOR:
+            return _solver_result(
+                "failed",
+                estimate=current,
+                cost=cost,
+                stationarity_norm=stationarity_norm,
+                proposal_trace=proposal_trace,
+                failure_reason="maximum_damping_exceeded",
+            )
+        damping *= WNLS_DAMPING_FACTOR
+
+    terms = _linearized_terms(current, references, covariances, ranges, sigma)
+    cost = None if terms is None else float(terms[-1])
+    stationarity_norm = (
+        None if terms is None else float(np.linalg.norm(terms[-2], ord=np.inf))
+    )
+    return _solver_result(
+        "failed",
+        estimate=current,
+        cost=cost,
+        stationarity_norm=stationarity_norm,
+        proposal_trace=proposal_trace,
+        failure_reason="maximum_proposals_exhausted",
+    )
+
+
+def normalized_innovation(
+    candidate_estimate: object,
+    candidate_covariance: object,
+    live_prediction: dict,
+) -> dict:
+    """Return the finite normalized innovation using the summed covariance."""
+    candidate = _finite_vector(candidate_estimate)
+    candidate_covariance_array = _finite_relative_spd(candidate_covariance)
+    prediction = (
+        _finite_vector(live_prediction.get("estimate"))
+        if isinstance(live_prediction, Mapping)
+        else None
+    )
+    prediction_covariance = (
+        _finite_relative_spd(live_prediction.get("modeled_covariance"))
+        if isinstance(live_prediction, Mapping)
+        else None
+    )
+    if (
+        candidate is None
+        or candidate_covariance_array is None
+        or prediction is None
+        or prediction_covariance is None
+    ):
+        return {
+            "valid": False,
+            "q_innov": None,
+            "failure_reason": "invalid_innovation_input",
+        }
+    covariance_sum = 0.5 * (
+        candidate_covariance_array
+        + prediction_covariance
+        + (candidate_covariance_array + prediction_covariance).T
+    )
+    covariance_sum = _finite_relative_spd(covariance_sum)
+    if covariance_sum is None:
+        return {
+            "valid": False,
+            "q_innov": None,
+            "failure_reason": "innovation_covariance_not_positive_definite",
+        }
+    innovation = candidate - prediction
+    try:
+        solved = np.linalg.solve(covariance_sum, innovation)
+        q_innov = float(innovation @ solved)
+    except np.linalg.LinAlgError:
+        return {
+            "valid": False,
+            "q_innov": None,
+            "failure_reason": "innovation_covariance_solve_failed",
+        }
+    if not math.isfinite(q_innov):
+        return {
+            "valid": False,
+            "q_innov": None,
+            "failure_reason": "non-finite_normalized_innovation",
+        }
+    return {
+        "valid": True,
+        "q_innov": q_innov,
+        "failure_reason": None,
+    }
+
+
+def candidate_acceptance(
+    candidate_result: dict,
+    *,
+    live_prediction: dict | None,
+    active_reference_count: int,
+    base_anchor_provenance: object,
+) -> tuple[bool, str, dict]:
+    """Apply the frozen numerical, FIM, provenance, and online gates."""
+    diagnostics: dict = {
+        "innovation_gate": None,
+        "q_innov": None,
+        "gate_outcome": "invalid",
+    }
+    if not isinstance(candidate_result, Mapping):
+        return False, "invalid_candidate_result", diagnostics
+    if candidate_result.get("status") != "converged":
+        return False, "candidate_not_numerically_converged", diagnostics
+    estimate = _finite_vector(candidate_result.get("estimate"))
+    covariance = _finite_relative_spd(candidate_result.get("covariance"))
+    try:
+        cost = float(candidate_result.get("cost"))
+    except (TypeError, ValueError, OverflowError):
+        cost = math.nan
+    if estimate is None or covariance is None or not math.isfinite(cost):
+        return False, "invalid_candidate_output", diagnostics
+    if candidate_result.get("fim_valid") is not True:
+        return False, "final_fim_not_positive_definite", diagnostics
+    provenance = _canonical_base_provenance(base_anchor_provenance)
+    if provenance is None:
+        return False, "insufficient_base_anchor_provenance", diagnostics
+    if isinstance(active_reference_count, bool) or not isinstance(active_reference_count, Integral):
+        return False, "invalid_active_reference_count", diagnostics
+    active_count = int(active_reference_count)
+    if live_prediction is not None:
+        diagnostics["innovation_gate"] = "applied"
+        innovation = normalized_innovation(estimate, covariance, live_prediction)
+        diagnostics.update(innovation)
+        if not innovation["valid"]:
+            return False, innovation["failure_reason"], diagnostics
+        if innovation["q_innov"] > INNOVATION_REFERENCE_QUANTILE:
+            diagnostics["gate_outcome"] = "rejected"
+            return False, "innovation_q_exceeds_reference_quantile", diagnostics
+        diagnostics["gate_outcome"] = "accepted"
+        return True, "accepted", diagnostics
+
+    diagnostics["innovation_gate"] = "not_applicable_reacquisition"
+    if active_count < 3:
+        diagnostics["gate_outcome"] = "rejected"
+        return False, "reacquisition_requires_three_active_references", diagnostics
+    reduced_cost = cost / max(1, active_count - 2)
+    diagnostics["reduced_whitened_cost"] = reduced_cost
+    if reduced_cost > 9.0:
+        diagnostics["gate_outcome"] = "rejected"
+        return False, "reacquisition_reduced_cost_exceeds_nine", diagnostics
+    diagnostics["gate_outcome"] = "accepted"
+    return True, "accepted", diagnostics
+
+
+def _candidate_source_rank(source: object) -> int:
+    return _CANDIDATE_SOURCE_ORDER.get(source, len(_CANDIDATE_SOURCE_ORDER))
+
+
+def select_candidate_result(
+    candidate_records: object,
+    *,
+    has_live_prediction: bool,
+) -> dict | None:
+    """Select accepted candidates by cost, innovation, then fixed source order."""
+    if not isinstance(candidate_records, (list, tuple)):
+        return None
+    selected: dict | None = None
+    for record in candidate_records:
+        if not isinstance(record, Mapping) or record.get("accepted") is not True:
+            continue
+        try:
+            cost = float(record.get("cost"))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not math.isfinite(cost):
+            continue
+        if has_live_prediction:
+            try:
+                q_innov = float(record.get("q_innov"))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(q_innov):
+                continue
+        if selected is None:
+            selected = dict(record)
+            continue
+        selected_cost = float(selected["cost"])
+        tolerance = RELATIVE_TIE_TOLERANCE * max(1.0, abs(cost), abs(selected_cost))
+        if cost < selected_cost - tolerance:
+            selected = dict(record)
+            continue
+        if abs(cost - selected_cost) > tolerance:
+            continue
+        if has_live_prediction:
+            selected_q = float(selected["q_innov"])
+            if q_innov < selected_q:
+                selected = dict(record)
+                continue
+            if q_innov > selected_q:
+                continue
+        if _candidate_source_rank(record.get("source")) < _candidate_source_rank(selected.get("source")):
+            selected = dict(record)
+    return selected
+
+
+def solve_predictive_multistart(
+    *,
+    reference_positions: object,
+    reference_covariances: object,
+    measurements: object,
+    reference_keys: object,
+    live_prediction: dict | None,
+    private_seed: dict | None,
+    ranging_sigma: float,
+    base_anchor_provenance: object,
+) -> dict:
+    """Solve and retain deterministic starts, candidate traces, and gate outcomes."""
+    live_state = (
+        None
+        if live_prediction is None
+        else _finite_estimate_and_covariance(live_prediction)
+    )
+    if live_prediction is not None and live_state is None:
+        return {
+            "attempt_status": "invalid",
+            "status": "invalid",
+            "candidates": [],
+            "selected_candidate": None,
+            "candidate": None,
+            "failure_reason": "invalid_live_prediction",
+        }
+    candidates = initial_candidates(
+        live_prediction=live_prediction,
+        private_seed=private_seed,
+        reference_positions=reference_positions,
+        measured_ranges=measurements,
+        reference_keys=reference_keys,
+    )
+    records: list[dict] = []
+    for candidate in candidates:
+        final = solve_finite_budget_wnls(
+            reference_positions,
+            reference_covariances,
+            measurements,
+            candidate["estimate"],
+            ranging_sigma,
+        )
+        accepted, reason, diagnostics = candidate_acceptance(
+            final,
+            live_prediction=live_prediction,
+            active_reference_count=len(reference_positions) if hasattr(reference_positions, "__len__") else -1,
+            base_anchor_provenance=base_anchor_provenance,
+        )
+        record = {
+            "source": candidate["source"],
+            "initial_estimate": list(candidate["estimate"]),
+            "result": final,
+            "accepted": accepted,
+            "rejection_reason": None if accepted else reason,
+            "gate_diagnostics": diagnostics,
+            "status": final["status"],
+            "estimate": final["estimate"],
+            "covariance": final["covariance"],
+            "cost": final["cost"],
+            "q_innov": diagnostics.get("q_innov"),
+        }
+        records.append(record)
+    selected = select_candidate_result(
+        records,
+        has_live_prediction=live_prediction is not None,
+    )
+    if selected is not None:
+        final = selected["result"]
+        candidate = {
+            "estimate": final["estimate"],
+            "modeled_covariance": final["covariance"],
+            "epsilon": final["epsilon"],
+            "base_anchor_provenance": list(_canonical_base_provenance(base_anchor_provenance) or ()),
+        }
+        return {
+            "attempt_status": "accepted",
+            "status": "accepted",
+            "candidates": records,
+            "selected_candidate": selected,
+            "candidate": candidate,
+            "failure_reason": None,
+        }
+    if any(
+        record["gate_diagnostics"].get("gate_outcome") == "rejected"
+        for record in records
+    ):
+        attempt_status = "rejected"
+    elif any(record["status"] == "failed" for record in records):
+        attempt_status = "failed"
+    else:
+        attempt_status = "invalid"
+    return {
+        "attempt_status": attempt_status,
+        "status": attempt_status,
+        "candidates": records,
+        "selected_candidate": None,
+        "candidate": None,
+        "failure_reason": None if records else "no_valid_initial_candidates",
+    }

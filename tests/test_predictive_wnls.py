@@ -8,14 +8,19 @@ import numpy as np
 from scripts.diagnostics.predictive_wnls import (
     algebraic_multilateration_candidate,
     best_conditioned_pair,
+    candidate_acceptance,
     finalize_attempt,
     initial_candidates,
     make_unavailable_output,
     merge_base_anchor_provenance,
+    normalized_innovation,
     output_is_fresh,
     propagate_estimator_prior,
     qualify_active_references,
     reference_is_eligible,
+    scale_aware_stationary,
+    select_candidate_result,
+    solve_finite_budget_wnls,
     two_circle_candidates,
 )
 
@@ -571,3 +576,179 @@ class FinalizeAttemptRemainderTests(unittest.TestCase):
 
                 self.assertEqual(result.get("attempt_status"), "invalid")
                 self.assertEqual(result["output_status"], "predicted")
+
+
+class FiniteBudgetWnlsTests(unittest.TestCase):
+    def test_scale_aware_stationarity_accepts_expected_solution(self):
+        self.assertTrue(
+            scale_aware_stationary(
+                [1.5e-6, 0.0],
+                [1.0],
+            )
+        )
+        self.assertFalse(
+            scale_aware_stationary(
+                [2.1e-6, 0.0],
+                [1.0],
+            )
+        )
+
+    def test_rejected_proposals_increase_damping_without_overflow(self):
+        with mock.patch(
+            "scripts.diagnostics.predictive_wnls._linearized_terms",
+            return_value=(
+                np.eye(2),
+                np.ones(2),
+                np.ones(2),
+                np.eye(2),
+                np.array([1e6, 0.0]),
+                2.0,
+            ),
+        ):
+            result = solve_finite_budget_wnls(
+                [[0.0, 0.0], [2.0, 0.0]],
+                [np.eye(2), np.eye(2)],
+                [1.0, 1.0],
+                [1.0, 1.0],
+                0.5,
+            )
+        damping = [row["damping"] for row in result["proposal_trace"]]
+        self.assertEqual(damping[:2], [1e-3, 1e-2])
+        self.assertLessEqual(damping[-1], 1e15)
+        self.assertEqual(result["failure_reason"], "maximum_damping_exceeded")
+
+    def test_tiny_nonstationary_step_fails_with_explicit_reason(self):
+        tiny_terms = (
+            np.eye(2),
+            np.ones(2),
+            np.ones(2),
+            1e20 * np.eye(2),
+            np.array([1e-3, 0.0]),
+            2.0,
+        )
+        with mock.patch(
+            "scripts.diagnostics.predictive_wnls._linearized_terms",
+            return_value=tiny_terms,
+        ):
+            result = solve_finite_budget_wnls(
+                [[0.0, 0.0], [2.0, 0.0]],
+                [np.eye(2), np.eye(2)],
+                [1.0, 1.0],
+                [1.0, 1.0],
+                0.5,
+            )
+        self.assertEqual(
+            result["failure_reason"],
+            "no_representable_improving_step",
+        )
+
+    def test_trace_records_every_proposal(self):
+        result = solve_finite_budget_wnls(
+            [[0.0, 0.0], [6.0, 0.0], [0.0, 8.0]],
+            [np.eye(2), np.eye(2), np.eye(2)],
+            [5.0, 5.0, 5.0],
+            [3.1, 4.1],
+            0.5,
+        )
+        self.assertGreaterEqual(len(result["proposal_trace"]), 1)
+        self.assertEqual(
+            set(result["proposal_trace"][0]),
+            {
+                "proposal",
+                "damping",
+                "cost",
+                "stationarity_norm",
+                "raw_step_norm",
+                "trial_cost",
+                "invalid_trial_reason",
+                "accepted",
+            },
+        )
+
+
+class CandidateAcceptanceTests(unittest.TestCase):
+    def test_mahalanobis_gate_uses_sum_of_prediction_and_range_covariance(self):
+        result = normalized_innovation(
+            [4.0, 0.0],
+            [[1.0, 0.0], [0.0, 1.0]],
+            {
+                "estimate": [0.0, 0.0],
+                "modeled_covariance": [[1.0, 0.0], [0.0, 1.0]],
+            },
+        )
+        self.assertAlmostEqual(result["q_innov"], 8.0)
+        self.assertTrue(result["valid"])
+
+    def test_candidate_above_11_829007011943707_is_rejected(self):
+        candidate = {
+            "status": "converged",
+            "estimate": [5.0, 0.0],
+            "covariance": [[1.0, 0.0], [0.0, 1.0]],
+            "cost": 0.0,
+            "fim_valid": True,
+        }
+        accepted, reason, diagnostics = candidate_acceptance(
+            candidate,
+            live_prediction={
+                "estimate": [0.0, 0.0],
+                "modeled_covariance": [[1.0, 0.0], [0.0, 1.0]],
+            },
+            active_reference_count=3,
+            base_anchor_provenance=[0, 1],
+        )
+        self.assertFalse(accepted)
+        self.assertEqual(reason, "innovation_q_exceeds_reference_quantile")
+        self.assertAlmostEqual(diagnostics["q_innov"], 12.5)
+
+    def test_reacquisition_requires_three_refs_and_reduced_cost_at_most_nine(self):
+        candidate = {
+            "status": "converged",
+            "estimate": [1.0, 1.0],
+            "covariance": [[1.0, 0.0], [0.0, 1.0]],
+            "cost": 9.0,
+            "fim_valid": True,
+        }
+        accepted, _, _ = candidate_acceptance(
+            candidate,
+            live_prediction=None,
+            active_reference_count=3,
+            base_anchor_provenance=[0, 1],
+        )
+        self.assertTrue(accepted)
+        too_large = dict(candidate, cost=math.nextafter(9.0, math.inf))
+        self.assertFalse(
+            candidate_acceptance(
+                too_large,
+                live_prediction=None,
+                active_reference_count=3,
+                base_anchor_provenance=[0, 1],
+            )[0]
+        )
+        self.assertFalse(
+            candidate_acceptance(
+                candidate,
+                live_prediction=None,
+                active_reference_count=2,
+                base_anchor_provenance=[0, 1],
+            )[0]
+        )
+
+    def test_multistart_ties_use_q_then_fixed_source_order(self):
+        selected = select_candidate_result(
+            [
+                {
+                    "source": "algebraic",
+                    "accepted": True,
+                    "cost": 1.0,
+                    "q_innov": 2.0,
+                },
+                {
+                    "source": "circle_negative",
+                    "accepted": True,
+                    "cost": 1.0 + 5e-13,
+                    "q_innov": 1.0,
+                },
+            ],
+            has_live_prediction=True,
+        )
+        self.assertEqual(selected["source"], "circle_negative")
