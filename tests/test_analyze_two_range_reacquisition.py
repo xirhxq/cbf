@@ -7,6 +7,7 @@ import gzip
 import hashlib
 import json
 import os
+import pickle
 import tempfile
 import unittest
 from pathlib import Path
@@ -456,38 +457,66 @@ def canonical_registered_result(result):
     return result
 
 
-def canonical_registered_projection(source_projection):
-    projection = json.loads(source_projection)
-    projection["expected_rows"] = 140000
-    projection["observed_rows"] = 140000
-    projection["unique_rows"] = 140000
-    projection["status_counts"] = {
-        "attempt_accepted": 1,
-        "attempt_rejected": 0,
-        "attempt_failed": 0,
-        "attempt_invalid": 0,
-        "attempt_reference_unavailable": 139999,
-        "output_fresh": 1,
-        "output_predicted": 0,
-        "output_unavailable": 139999,
+TEST_PROTOCOL_IDENTITY_COMMITMENT = hashlib.sha256(
+    b"test protocol identity"
+).hexdigest()
+TEST_RAW_IDENTITY_COMMITMENT = hashlib.sha256(
+    b"test raw identity"
+).hexdigest()
+
+
+def attacker_projection_bytes_from_compact(result):
+    registered = result["invocation_name"] == "registered_analyzer"
+    v4 = result["v4_descriptive_comparison"]
+    projection = {
+        "invocation_name": result["invocation_name"],
+        "expected_rows": result["budgets"]["expected_rows"],
+        "observed_rows": result["budgets"]["observed_rows"],
+        "unique_rows": result["budgets"]["unique_rows"],
+        "status_counts": copy.deepcopy(result["status_counts"]),
+        "selector_accounting": copy.deepcopy(
+            result["selector_accounting"]
+        ),
+        "baseline_fresh_transitions": copy.deepcopy(
+            result["baseline_fresh_transitions"]
+        ),
+        "v4_fresh_transitions": (
+            copy.deepcopy(v4["fresh_transitions"])
+            if registered
+            else None
+        ),
+        "paired_comparison": copy.deepcopy(
+            result["paired_comparison"]
+        ),
+        "v4_paired_comparison": (
+            copy.deepcopy(v4["paired_both_fresh"])
+            if registered
+            else None
+        ),
+        "maximum_published_error_m": (
+            result["scientific_gates"][0]["value"]
+            if registered
+            else None
+        ),
+        "maximum_fresh_error_m": (
+            result["scientific_gates"][1]["value"]
+            if registered
+            else None
+        ),
+        "maximum_prediction_age_frames": (
+            result["scientific_gates"][5]["value"]
+            if registered
+            else 0
+        ),
+        "integrity_counts": {
+            record["gate_id"]: record["numerator"]
+            for record in result["integrity_gates"]
+        },
+        "scientific_gates": copy.deepcopy(
+            result["scientific_gates"]
+        ),
+        "integrity_gates": copy.deepcopy(result["integrity_gates"]),
     }
-    availability = next(
-        record
-        for record in projection["scientific_gates"]
-        if record["gate_id"] == "fresh_or_predicted_min_fraction"
-    )
-    availability.update(
-        {
-            "numerator": 1,
-            "denominator": 140000,
-            "value": 1 / 140000,
-            "passed": False,
-        }
-    )
-    for gate in projection["scientific_gates"][6:]:
-        gate["denominator"] = 140000
-    for gate in projection["integrity_gates"]:
-        gate["denominator"] = 140000
     return replay.ordered_strict_json_bytes(
         projection,
         analyzer.SOURCE_PROJECTION_FIELDS,
@@ -496,8 +525,8 @@ def canonical_registered_projection(source_projection):
 
 def canonical_registered_fixture_with_projection():
     baseline, v4, new = comparison_rows()
-    result, source_projection = (
-        analyzer._aggregate_two_range_reacquisition_with_projection(
+    result = canonical_registered_result(
+        analyzer.aggregate_two_range_reacquisition(
             baseline_rows=baseline,
             v4_rows=v4,
             new_rows=new,
@@ -509,9 +538,46 @@ def canonical_registered_fixture_with_projection():
             branch_representatives=comparison_branch_representatives(),
         )
     )
-    return (
-        canonical_registered_result(result),
-        canonical_registered_projection(source_projection),
+    return result, attacker_projection_bytes_from_compact(result)
+
+
+def raw_registered_fixture_with_binding(*, baseline_fresh=True):
+    baseline, v4, new = comparison_rows(
+        baseline_fresh=baseline_fresh
+    )
+    return analyzer._aggregate_two_range_reacquisition_with_projection(
+        baseline_rows=baseline,
+        v4_rows=v4,
+        new_rows=new,
+        truth_data={"config": fixed_topology_config()},
+        protocol={
+            "protocol_id": "test-protocol",
+            "gates": analyzer.GATES,
+        },
+        branch_representatives=comparison_branch_representatives(),
+        protocol_identity_commitment=(
+            TEST_PROTOCOL_IDENTITY_COMMITMENT
+        ),
+        raw_identity_commitment=TEST_RAW_IDENTITY_COMMITMENT,
+    )
+
+
+def validate_raw_binding(
+    result,
+    binding,
+    *,
+    invocation_name="registered_analyzer",
+    protocol_id="test-protocol",
+    protocol_identity_commitment=TEST_PROTOCOL_IDENTITY_COMMITMENT,
+    raw_identity_commitment=TEST_RAW_IDENTITY_COMMITMENT,
+):
+    return analyzer._validate_source_projection_binding(
+        result,
+        binding,
+        expected_invocation_name=invocation_name,
+        expected_protocol_id=protocol_id,
+        protocol_identity_commitment=protocol_identity_commitment,
+        raw_identity_commitment=raw_identity_commitment,
     )
 
 
@@ -1051,6 +1117,161 @@ class LinearPercentileTests(unittest.TestCase):
         )
 
 
+class RawOriginBindingTests(unittest.TestCase):
+    def test_mint_rejects_caller_without_internal_authority(self):
+        with self.assertRaisesRegex(TypeError, "minted internally"):
+            analyzer._mint_raw_origin_binding(
+                object(),
+                b"{}",
+                invocation_name="registered_analyzer",
+                protocol_id="test-protocol",
+                protocol_identity_commitment=(
+                    TEST_PROTOCOL_IDENTITY_COMMITMENT
+                ),
+                raw_identity_commitment=TEST_RAW_IDENTITY_COMMITMENT,
+            )
+
+    def test_minted_binding_is_single_use(self):
+        result, source_binding = raw_registered_fixture_with_binding()
+        validate_raw_binding(result, source_binding)
+
+        with self.assertRaisesRegex(
+            ValueError, "revoked|already consumed"
+        ):
+            validate_raw_binding(result, source_binding)
+
+    def test_missing_binding_fails_closed(self):
+        baseline, v4, new = comparison_rows()
+        result = analyzer.aggregate_two_range_reacquisition(
+            baseline_rows=baseline,
+            v4_rows=v4,
+            new_rows=new,
+            truth_data={"config": fixed_topology_config()},
+            protocol={
+                "protocol_id": "test-protocol",
+                "gates": analyzer.GATES,
+            },
+            branch_representatives=comparison_branch_representatives(),
+        )
+
+        with self.assertRaisesRegex(ValueError, "raw-origin binding"):
+            validate_raw_binding(result, None)
+
+    def test_registered_binding_requires_pinned_identity_commitments(self):
+        baseline, v4, new = comparison_rows()
+        result, source_binding = (
+            analyzer._aggregate_two_range_reacquisition_with_projection(
+                baseline_rows=baseline,
+                v4_rows=v4,
+                new_rows=new,
+                truth_data={"config": fixed_topology_config()},
+                protocol={
+                    "protocol_id": "test-protocol",
+                    "gates": analyzer.GATES,
+                },
+                branch_representatives=(
+                    comparison_branch_representatives()
+                ),
+            )
+        )
+
+        with self.assertRaisesRegex(
+            ValueError, "identity commitments"
+        ):
+            analyzer._validate_source_projection_binding(
+                result, source_binding
+            )
+
+    def test_binding_cannot_cross_invocation(self):
+        result, source_binding = raw_registered_fixture_with_binding()
+
+        with self.assertRaisesRegex(ValueError, "raw-origin context"):
+            validate_raw_binding(
+                result,
+                source_binding,
+                invocation_name="smoke_analyzer_a",
+            )
+
+    def test_binding_cannot_cross_protocol_id(self):
+        result, source_binding = raw_registered_fixture_with_binding()
+
+        with self.assertRaisesRegex(ValueError, "raw-origin context"):
+            validate_raw_binding(
+                result,
+                source_binding,
+                protocol_id="different-protocol",
+            )
+
+    def test_binding_cannot_cross_protocol_identity(self):
+        result, source_binding = raw_registered_fixture_with_binding()
+
+        with self.assertRaisesRegex(
+            ValueError, "capability or context"
+        ):
+            validate_raw_binding(
+                result,
+                source_binding,
+                protocol_identity_commitment=hashlib.sha256(
+                    b"different protocol identity"
+                ).hexdigest(),
+            )
+
+    def test_binding_cannot_cross_raw_identity(self):
+        result, source_binding = raw_registered_fixture_with_binding()
+
+        with self.assertRaisesRegex(
+            ValueError, "capability or context"
+        ):
+            validate_raw_binding(
+                result,
+                source_binding,
+                raw_identity_commitment=hashlib.sha256(
+                    b"different raw identity"
+                ).hexdigest(),
+            )
+
+    def test_binding_cannot_be_copied_or_serialized(self):
+        _, source_binding = raw_registered_fixture_with_binding()
+        try:
+            with self.assertRaisesRegex(TypeError, "cannot be copied"):
+                copy.copy(source_binding)
+            with self.assertRaisesRegex(TypeError, "cannot be copied"):
+                copy.deepcopy(source_binding)
+            with self.assertRaisesRegex(TypeError, "cannot be serialized"):
+                pickle.dumps(source_binding)
+        finally:
+            analyzer._revoke_raw_origin_binding(source_binding)
+
+    def test_binding_hides_projection_and_capability_attributes(self):
+        _, source_binding = raw_registered_fixture_with_binding()
+        try:
+            for attribute in (
+                "_RawOriginBinding__projection_bytes",
+                "_RawOriginBinding__projection_sha256",
+                "_RawOriginBinding__capability",
+            ):
+                with self.subTest(attribute=attribute):
+                    with self.assertRaisesRegex(
+                        AttributeError, "opaque"
+                    ):
+                        getattr(source_binding, attribute)
+        finally:
+            analyzer._revoke_raw_origin_binding(source_binding)
+
+    def test_explicit_revoke_restores_registry_cardinality(self):
+        before = len(analyzer._RAW_ORIGIN_BINDING_REGISTRY)
+        _, source_binding = raw_registered_fixture_with_binding()
+        self.assertEqual(
+            len(analyzer._RAW_ORIGIN_BINDING_REGISTRY), before + 1
+        )
+
+        analyzer._revoke_raw_origin_binding(source_binding)
+
+        self.assertEqual(
+            len(analyzer._RAW_ORIGIN_BINDING_REGISTRY), before
+        )
+
+
 class AggregateGateTests(unittest.TestCase):
     def test_existing_fresh_and_rejected_selector_use_distinct_populations(
         self,
@@ -1200,41 +1421,68 @@ class AggregateGateTests(unittest.TestCase):
         self.assertFalse(paired_gate["passed"])
 
     def test_zero_paired_cohort_is_canonical_and_validates(self):
-        baseline, v4, new = comparison_rows(baseline_fresh=False)
-        result, source_projection = (
-            analyzer._aggregate_two_range_reacquisition_with_projection(
-                baseline_rows=baseline,
-                v4_rows=v4,
-                new_rows=new,
-                truth_data={"config": fixed_topology_config()},
-                protocol={
-                    "protocol_id": "test-protocol",
-                    "gates": analyzer.GATES,
-                },
-                branch_representatives=(
-                    comparison_branch_representatives()
-                ),
-            )
+        result, source_binding = raw_registered_fixture_with_binding(
+            baseline_fresh=False
         )
-        result = canonical_registered_result(result)
-        source_projection = canonical_registered_projection(
-            source_projection
-        )
-        analyzer._validate_analysis_result(
-            result,
-            source_projection=source_projection,
-        )
+        validate_raw_binding(result, source_binding)
         self.assertEqual(result["paired_comparison"]["cohort_size"], 0)
         self.assertFalse(result["scientific_gates"][2]["passed"])
 
-    def test_registered_compact_accepts_exact_raw_projection(self):
+    def test_registered_compact_accepts_exact_minted_raw_binding(self):
+        result, source_binding = raw_registered_fixture_with_binding()
+        validate_raw_binding(result, source_binding)
+
+    def test_coupled_paired_compact_and_projection_rewrite_is_rejected(self):
         result, source_projection = (
             canonical_registered_fixture_with_projection()
         )
-        analyzer._validate_analysis_result(
-            result,
-            source_projection=source_projection,
+        paired = result["paired_comparison"]
+        paired["new_p95_m"] += 1.0
+        paired["new_minus_baseline_p95_m"] += 1.0
+        paired_gate = result["scientific_gates"][2]
+        paired_gate["value"] = paired["new_minus_baseline_p95_m"]
+        paired_gate["passed"] = (
+            paired_gate["value"] <= paired_gate["threshold"]
         )
+        result["decision"] = (
+            "pass"
+            if all(
+                record["passed"]
+                for record in (
+                    *result["scientific_gates"],
+                    *result["integrity_gates"],
+                )
+            )
+            else "fail"
+        )
+        result["semantic_payload_sha256"] = analyzer._semantic_sha256(
+            result
+        )
+        projection = json.loads(source_projection)
+        projection["paired_comparison"] = copy.deepcopy(paired)
+        projection["scientific_gates"][2] = copy.deepcopy(paired_gate)
+        rewritten_projection = replay.ordered_strict_json_bytes(
+            projection,
+            analyzer.SOURCE_PROJECTION_FIELDS,
+        )
+
+        with self.assertRaisesRegex(ValueError, "raw-origin binding"):
+            analyzer._validate_analysis_result(
+                result,
+                source_projection=rewritten_projection,
+            )
+
+    def test_plain_copied_canonical_projection_bytes_are_rejected(self):
+        result, source_projection = (
+            canonical_registered_fixture_with_projection()
+        )
+        copied_projection = bytes(bytearray(source_projection))
+
+        with self.assertRaisesRegex(ValueError, "raw-origin binding"):
+            analyzer._validate_analysis_result(
+                result,
+                source_projection=copied_projection,
+            )
 
     def test_registered_compact_without_raw_projection_fails_closed(self):
         baseline, v4, new = comparison_rows()
@@ -1332,10 +1580,8 @@ class AggregateGateTests(unittest.TestCase):
         ):
             analyzer._validate_analysis_result(result)
 
-    def test_paired_p95_and_gate_cannot_be_rewritten_against_projection(self):
-        result, source_projection = (
-            canonical_registered_fixture_with_projection()
-        )
+    def test_paired_p95_cannot_be_rewritten_against_minted_binding(self):
+        result, source_binding = raw_registered_fixture_with_binding()
         paired = result["paired_comparison"]
         paired["baseline_p95_m"] += 1.0
         paired["new_p95_m"] += 1.0
@@ -1350,61 +1596,40 @@ class AggregateGateTests(unittest.TestCase):
         with self.assertRaisesRegex(
             ValueError, "raw-derived source projection"
         ):
-            analyzer._validate_analysis_result(
-                result,
-                source_projection=source_projection,
-            )
+            validate_raw_binding(result, source_binding)
 
-    def test_projection_binds_all_nine_and_fourteen_gate_records(self):
-        result, source_projection = (
-            canonical_registered_fixture_with_projection()
-        )
+    def test_binding_binds_all_nine_and_fourteen_gate_records(self):
         for container, gate_ids in (
             ("scientific_gates", tuple(analyzer.GATES)),
             ("integrity_gates", analyzer.INTEGRITY_GATE_IDS),
         ):
             for index, gate_id in enumerate(gate_ids):
-                projection = json.loads(source_projection)
-                projection[container][index]["denominator"] += 1
-                changed_projection = replay.ordered_strict_json_bytes(
-                    projection,
-                    analyzer.SOURCE_PROJECTION_FIELDS,
+                result, source_binding = (
+                    raw_registered_fixture_with_binding()
                 )
+                result[container][index]["denominator"] += 1
                 with self.subTest(container=container, gate_id=gate_id):
                     with self.assertRaisesRegex(
                         ValueError, "raw-derived source projection"
                     ):
-                        analyzer._validate_analysis_result(
-                            result,
-                            source_projection=changed_projection,
-                        )
+                        validate_raw_binding(result, source_binding)
 
-    def test_projection_binds_raw_maximum_and_prediction_age(self):
-        result, source_projection = (
-            canonical_registered_fixture_with_projection()
-        )
-        for field, increment in (
-            ("maximum_published_error_m", 1.0),
-            ("maximum_fresh_error_m", 1.0),
-            ("maximum_prediction_age_frames", 1),
+    def test_binding_binds_raw_maximum_and_prediction_age(self):
+        for gate_index, increment in (
+            (0, 1.0),
+            (1, 1.0),
+            (5, 1),
         ):
-            projection = json.loads(source_projection)
-            projection[field] += increment
-            changed_projection = replay.ordered_strict_json_bytes(
-                projection,
-                analyzer.SOURCE_PROJECTION_FIELDS,
-            )
-            with self.subTest(field=field):
+            result, source_binding = raw_registered_fixture_with_binding()
+            result["scientific_gates"][gate_index]["value"] += increment
+            with self.subTest(gate_index=gate_index):
                 with self.assertRaisesRegex(
                     ValueError, "raw-derived source projection"
                 ):
-                    analyzer._validate_analysis_result(
-                        result,
-                        source_projection=changed_projection,
-                    )
+                    validate_raw_binding(result, source_binding)
 
     def test_tail_partition_maximum_cannot_rewrite_error_gates(self):
-        result, source_projection = (
+        result, _ = (
             canonical_registered_fixture_with_projection()
         )
         seed_tail = next(
@@ -1429,10 +1654,7 @@ class AggregateGateTests(unittest.TestCase):
             result
         )
         with self.assertRaisesRegex(ValueError, "tail partition"):
-            analyzer._validate_analysis_result(
-                result,
-                source_projection=source_projection,
-            )
+            analyzer._validate_analysis_result(result)
 
     def test_compact_compressed_decompressed_descriptor_mismatch_rejects(self):
         baseline, v4, new = comparison_rows(baseline_fresh=False)
@@ -2056,6 +2278,7 @@ class InvocationSplitTests(unittest.TestCase):
 
     def test_smoke_a_accepts_only_its_exact_eighteen_row_root(self):
         self.produce("smoke_a")
+        binding_count = len(analyzer._RAW_ORIGIN_BINDING_REGISTRY)
         completed = analyzer.analyze_two_range_reacquisition(
             protocol_path=self.protocol_path,
             raw_root=self.raw_a,
@@ -2084,6 +2307,10 @@ class InvocationSplitTests(unittest.TestCase):
                 identity is not None
                 for identity in terminal["output_identities"].values()
             )
+        )
+        self.assertEqual(
+            len(analyzer._RAW_ORIGIN_BINDING_REGISTRY),
+            binding_count,
         )
 
     def test_smoke_b_accepts_only_its_exact_eighteen_row_root(self):
@@ -2601,6 +2828,7 @@ class InvocationSplitTests(unittest.TestCase):
     def test_preexisting_output_root_retains_failed_forensic_manifest(self):
         self.produce("smoke_a")
         self.analysis_a.mkdir()
+        binding_count = len(analyzer._RAW_ORIGIN_BINDING_REGISTRY)
         with self.assertRaises(FileExistsError):
             analyzer.analyze_two_range_reacquisition(
                 protocol_path=self.protocol_path,
@@ -2615,6 +2843,10 @@ class InvocationSplitTests(unittest.TestCase):
         self.assertEqual(terminal["status"], "failed")
         self.assertTrue(
             all(value is None for value in terminal["output_identities"].values())
+        )
+        self.assertEqual(
+            len(analyzer._RAW_ORIGIN_BINDING_REGISTRY),
+            binding_count,
         )
 
     def test_altered_compact_cap_rejects_before_output_root_allocation(self):
@@ -3259,6 +3491,7 @@ class InvocationSplitTests(unittest.TestCase):
 
     def test_analyzer_crash_after_root_creation_retains_failed_manifest(self):
         self.produce("smoke_a")
+        binding_count = len(analyzer._RAW_ORIGIN_BINDING_REGISTRY)
         real_stage = analyzer._stage_output
 
         def crash_output(*args, **kwargs):
@@ -3279,6 +3512,10 @@ class InvocationSplitTests(unittest.TestCase):
                     invocation_name="smoke_analyzer_a",
                 )
         self.assert_failed_analysis(self.analysis_a)
+        self.assertEqual(
+            len(analyzer._RAW_ORIGIN_BINDING_REGISTRY),
+            binding_count,
+        )
 
     def test_failed_lifecycle_is_retained_when_retry_is_refused(self):
         self.produce("smoke_a")

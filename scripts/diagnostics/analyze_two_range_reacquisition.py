@@ -14,6 +14,9 @@ import os
 import secrets
 import stat
 import sys
+import threading
+from typing import NamedTuple
+import weakref
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -277,6 +280,11 @@ SOURCE_PROJECTION_FIELDS = (
     "scientific_gates",
     "integrity_gates",
 )
+RAW_ORIGIN_IDENTITY_NAMES = (
+    "raw_manifest",
+    "raw_compressed_process",
+    "raw_decompressed_process",
+)
 ANALYSIS_MANIFEST_FIELDS = (
     "schema_id",
     "protocol_id",
@@ -375,6 +383,237 @@ LIMITATIONS = (
     "three_sigma_radius_is_conditional_modeled_surrogate",
     "source_has_243_of_7000_component_bound_violations",
 )
+
+_RAW_ORIGIN_MINT_AUTHORITY = object()
+_RAW_ORIGIN_PROCESS_CAPABILITY = object()
+_RAW_ORIGIN_BINDING_LOCK = threading.RLock()
+_RAW_ORIGIN_BINDING_REGISTRY = weakref.WeakKeyDictionary()
+
+
+class _RawOriginRecord(NamedTuple):
+    projection_bytes: bytes
+    projection_sha256: str
+    invocation_name: str
+    protocol_id: str
+    protocol_identity_commitment: str | None
+    raw_identity_commitment: str | None
+    capability: bytes
+    process_capability: object
+
+
+class _RawOriginBinding:
+    """Opaque, frozen, process-local proof of raw aggregation origin."""
+
+    __slots__ = (
+        "__capability",
+        "__projection_bytes",
+        "__projection_sha256",
+        "__invocation_name",
+        "__protocol_id",
+        "__protocol_identity_commitment",
+        "__raw_identity_commitment",
+        "__weakref__",
+    )
+
+    def __init__(
+        self,
+        authority: object,
+        *,
+        capability: bytes,
+        projection_bytes: bytes,
+        projection_sha256: str,
+        invocation_name: str,
+        protocol_id: str,
+        protocol_identity_commitment: str | None,
+        raw_identity_commitment: str | None,
+    ) -> None:
+        if authority is not _RAW_ORIGIN_MINT_AUTHORITY:
+            raise TypeError("raw-origin bindings are minted internally")
+        object.__setattr__(self, "_RawOriginBinding__capability", capability)
+        object.__setattr__(
+            self,
+            "_RawOriginBinding__projection_bytes",
+            projection_bytes,
+        )
+        object.__setattr__(
+            self,
+            "_RawOriginBinding__projection_sha256",
+            projection_sha256,
+        )
+        object.__setattr__(
+            self,
+            "_RawOriginBinding__invocation_name",
+            invocation_name,
+        )
+        object.__setattr__(
+            self,
+            "_RawOriginBinding__protocol_id",
+            protocol_id,
+        )
+        object.__setattr__(
+            self,
+            "_RawOriginBinding__protocol_identity_commitment",
+            protocol_identity_commitment,
+        )
+        object.__setattr__(
+            self,
+            "_RawOriginBinding__raw_identity_commitment",
+            raw_identity_commitment,
+        )
+
+    def __setattr__(self, name: str, value: object) -> None:
+        del name, value
+        raise AttributeError("raw-origin binding is frozen")
+
+    def __getattribute__(self, name: str) -> object:
+        if name.startswith("_RawOriginBinding__"):
+            raise AttributeError("raw-origin binding is opaque")
+        return object.__getattribute__(self, name)
+
+    def __repr__(self) -> str:
+        return "<opaque raw-origin binding>"
+
+    def __copy__(self):
+        raise TypeError("raw-origin binding cannot be copied")
+
+    def __deepcopy__(self, memo):
+        del memo
+        raise TypeError("raw-origin binding cannot be copied")
+
+    def __reduce__(self):
+        raise TypeError("raw-origin binding cannot be serialized")
+
+    def __reduce_ex__(self, protocol):
+        del protocol
+        raise TypeError("raw-origin binding cannot be serialized")
+
+
+def _binding_attribute(binding: _RawOriginBinding, name: str) -> object:
+    return object.__getattribute__(
+        binding, f"_RawOriginBinding__{name}"
+    )
+
+
+def _mint_raw_origin_binding(
+    authority: object,
+    projection_bytes: bytes,
+    *,
+    invocation_name: str,
+    protocol_id: str,
+    protocol_identity_commitment: str | None,
+    raw_identity_commitment: str | None,
+) -> _RawOriginBinding:
+    if authority is not _RAW_ORIGIN_MINT_AUTHORITY:
+        raise TypeError("raw-origin bindings are minted internally")
+    if (
+        not isinstance(projection_bytes, bytes)
+        or invocation_name not in ANALYZER_INVOCATIONS
+        or not isinstance(protocol_id, str)
+        or not protocol_id
+        or any(
+            commitment is not None
+            and (
+                not isinstance(commitment, str)
+                or len(commitment) != 64
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in commitment
+                )
+            )
+            for commitment in (
+                protocol_identity_commitment,
+                raw_identity_commitment,
+            )
+        )
+    ):
+        raise ValueError("raw-origin binding context is not canonical")
+    immutable_projection = bytes(projection_bytes)
+    projection_sha256 = hashlib.sha256(
+        immutable_projection
+    ).hexdigest()
+    capability = secrets.token_bytes(32)
+    binding = _RawOriginBinding(
+        _RAW_ORIGIN_MINT_AUTHORITY,
+        capability=capability,
+        projection_bytes=immutable_projection,
+        projection_sha256=projection_sha256,
+        invocation_name=invocation_name,
+        protocol_id=protocol_id,
+        protocol_identity_commitment=protocol_identity_commitment,
+        raw_identity_commitment=raw_identity_commitment,
+    )
+    record = _RawOriginRecord(
+        projection_bytes=immutable_projection,
+        projection_sha256=projection_sha256,
+        invocation_name=invocation_name,
+        protocol_id=protocol_id,
+        protocol_identity_commitment=protocol_identity_commitment,
+        raw_identity_commitment=raw_identity_commitment,
+        capability=capability,
+        process_capability=_RAW_ORIGIN_PROCESS_CAPABILITY,
+    )
+    with _RAW_ORIGIN_BINDING_LOCK:
+        _RAW_ORIGIN_BINDING_REGISTRY[binding] = record
+    return binding
+
+
+def _revoke_raw_origin_binding(binding: object) -> None:
+    if type(binding) is not _RawOriginBinding:
+        return
+    with _RAW_ORIGIN_BINDING_LOCK:
+        _RAW_ORIGIN_BINDING_REGISTRY.pop(binding, None)
+
+
+def _claim_raw_origin_binding(
+    binding: object,
+    *,
+    invocation_name: str,
+    protocol_id: str,
+    protocol_identity_commitment: str | None,
+    raw_identity_commitment: str | None,
+) -> bytes:
+    if type(binding) is not _RawOriginBinding:
+        raise ValueError(
+            "currently minted raw-origin binding is required for "
+            "raw-derived source projection"
+        )
+    with _RAW_ORIGIN_BINDING_LOCK:
+        record = _RAW_ORIGIN_BINDING_REGISTRY.pop(binding, None)
+    if record is None:
+        raise ValueError(
+            "raw-origin binding is absent, revoked, or already consumed"
+        )
+    binding_values = (
+        _binding_attribute(binding, "projection_bytes"),
+        _binding_attribute(binding, "projection_sha256"),
+        _binding_attribute(binding, "invocation_name"),
+        _binding_attribute(binding, "protocol_id"),
+        _binding_attribute(binding, "protocol_identity_commitment"),
+        _binding_attribute(binding, "raw_identity_commitment"),
+        _binding_attribute(binding, "capability"),
+    )
+    record_values = (
+        record.projection_bytes,
+        record.projection_sha256,
+        record.invocation_name,
+        record.protocol_id,
+        record.protocol_identity_commitment,
+        record.raw_identity_commitment,
+        record.capability,
+    )
+    if (
+        record.process_capability is not _RAW_ORIGIN_PROCESS_CAPABILITY
+        or binding_values != record_values
+        or hashlib.sha256(record.projection_bytes).hexdigest()
+        != record.projection_sha256
+        or record.invocation_name != invocation_name
+        or record.protocol_id != protocol_id
+        or record.protocol_identity_commitment
+        != protocol_identity_commitment
+        or record.raw_identity_commitment != raw_identity_commitment
+    ):
+        raise ValueError("raw-origin binding capability or context differs")
+    return record.projection_bytes
 
 
 def linear_percentile(
@@ -1131,7 +1370,9 @@ def _aggregate_two_range_reacquisition_with_projection(
     truth_data: Mapping,
     protocol: Mapping,
     branch_representatives: Iterable[object] | None = None,
-) -> tuple[dict, bytes]:
+    protocol_identity_commitment: str | None = None,
+    raw_identity_commitment: str | None = None,
+) -> tuple[dict, _RawOriginBinding]:
     """Aggregate raw evidence and retain its immutable source projection."""
     baseline_rows = [
         row
@@ -1335,7 +1576,15 @@ def _aggregate_two_range_reacquisition_with_projection(
         },
         SOURCE_PROJECTION_FIELDS,
     )
-    return result, source_projection
+    source_binding = _mint_raw_origin_binding(
+        _RAW_ORIGIN_MINT_AUTHORITY,
+        source_projection,
+        invocation_name="registered_analyzer",
+        protocol_id=result["protocol_id"],
+        protocol_identity_commitment=protocol_identity_commitment,
+        raw_identity_commitment=raw_identity_commitment,
+    )
+    return result, source_binding
 
 
 def aggregate_two_range_reacquisition(
@@ -1348,7 +1597,7 @@ def aggregate_two_range_reacquisition(
     branch_representatives: Iterable[object] | None = None,
 ) -> dict:
     """Join exact baseline/v4/new keys and compute frozen compact metrics."""
-    result, _ = _aggregate_two_range_reacquisition_with_projection(
+    result, source_binding = _aggregate_two_range_reacquisition_with_projection(
         baseline_rows=baseline_rows,
         v4_rows=v4_rows,
         new_rows=new_rows,
@@ -1356,7 +1605,10 @@ def aggregate_two_range_reacquisition(
         protocol=protocol,
         branch_representatives=branch_representatives,
     )
-    return result
+    try:
+        return result
+    finally:
+        _revoke_raw_origin_binding(source_binding)
 
 
 def _validate_exact_row_schema(row: Mapping) -> None:
@@ -2007,6 +2259,35 @@ def _result_identity(identity: Mapping) -> dict:
         field: identity[field]
         for field in ANALYSIS_IDENTITY_RECORD_FIELDS
     }
+
+
+def _raw_identity_commitment(identities: Mapping) -> str:
+    if not isinstance(identities, Mapping):
+        raise ValueError("raw-origin identity set is absent")
+    canonical = []
+    for name in RAW_ORIGIN_IDENTITY_NAMES:
+        identity = identities.get(name)
+        if (
+            not isinstance(identity, Mapping)
+            or tuple(identity) != ANALYSIS_MANIFEST_IDENTITY_FIELDS
+        ):
+            raise ValueError("raw-origin identity set differs")
+        canonical.append(
+            [
+                name,
+                [
+                    identity[field]
+                    for field in ANALYSIS_MANIFEST_IDENTITY_FIELDS
+                ],
+            ]
+        )
+    payload = json.dumps(
+        canonical,
+        ensure_ascii=True,
+        allow_nan=False,
+        separators=(",", ":"),
+    ).encode("ascii")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _pinned_file_identity(
@@ -3130,9 +3411,21 @@ def _validate_tail_partitions(
                 )
 
 
-def _decode_source_projection(source_projection: object) -> dict:
-    if not isinstance(source_projection, bytes):
-        raise ValueError("raw-derived source projection is required")
+def _decode_source_projection(
+    source_binding: object,
+    *,
+    invocation_name: str,
+    protocol_id: str,
+    protocol_identity_commitment: str | None,
+    raw_identity_commitment: str | None,
+) -> dict:
+    source_projection = _claim_raw_origin_binding(
+        source_binding,
+        invocation_name=invocation_name,
+        protocol_id=protocol_id,
+        protocol_identity_commitment=protocol_identity_commitment,
+        raw_identity_commitment=raw_identity_commitment,
+    )
     projection = _strict_json_object(
         source_projection,
         Path("/raw-derived-source-projection"),
@@ -3182,12 +3475,50 @@ def _decode_source_projection(source_projection: object) -> dict:
 
 def _validate_source_projection_binding(
     result: Mapping,
-    source_projection: object,
+    source_binding: object,
+    *,
+    expected_invocation_name: str | None = None,
+    expected_protocol_id: str | None = None,
+    protocol_identity_commitment: str | None = None,
+    raw_identity_commitment: str | None = None,
 ) -> None:
-    projection = _decode_source_projection(source_projection)
+    invocation_name = (
+        result["invocation_name"]
+        if expected_invocation_name is None
+        else expected_invocation_name
+    )
+    protocol_id = (
+        result["protocol_id"]
+        if expected_protocol_id is None
+        else expected_protocol_id
+    )
+    if (
+        result["invocation_name"] != invocation_name
+        or result["protocol_id"] != protocol_id
+    ):
+        _revoke_raw_origin_binding(source_binding)
+        raise ValueError(
+            "compact invocation/protocol differs from raw-origin context"
+        )
     registered = result["invocation_name"] == "registered_analyzer"
+    if registered and (
+        protocol_identity_commitment is None
+        or raw_identity_commitment is None
+    ):
+        _revoke_raw_origin_binding(source_binding)
+        raise ValueError(
+            "registered raw-origin binding requires pinned protocol and "
+            "raw identity commitments"
+        )
+    projection = _decode_source_projection(
+        source_binding,
+        invocation_name=invocation_name,
+        protocol_id=protocol_id,
+        protocol_identity_commitment=protocol_identity_commitment,
+        raw_identity_commitment=raw_identity_commitment,
+    )
     v4 = result["v4_descriptive_comparison"]
-    comparisons = {
+    observed_compact = {
         "invocation_name": result["invocation_name"],
         "expected_rows": result["budgets"]["expected_rows"],
         "observed_rows": result["budgets"]["observed_rows"],
@@ -3226,20 +3557,22 @@ def _validate_source_projection_binding(
         "scientific_gates": result["scientific_gates"],
         "integrity_gates": result["integrity_gates"],
     }
-    expected = {
-        field: comparisons[field]
-        for field in SOURCE_PROJECTION_FIELDS
-    }
-    if projection != expected:
-        raise ValueError(
-            "compact result differs from raw-derived source projection"
-        )
+    for field in SOURCE_PROJECTION_FIELDS:
+        if observed_compact[field] != projection[field]:
+            raise ValueError(
+                "compact result differs from raw-derived source "
+                f"projection at {field}"
+            )
 
 
 def _validate_analysis_result(
     result: Mapping,
     *,
     source_projection: object = None,
+    expected_invocation_name: str | None = None,
+    expected_protocol_id: str | None = None,
+    protocol_identity_commitment: str | None = None,
+    raw_identity_commitment: str | None = None,
 ) -> None:
     if (
         not isinstance(result, Mapping)
@@ -3629,10 +3962,18 @@ def _validate_analysis_result(
     if result["semantic_payload_sha256"] != _semantic_sha256(result):
         raise ValueError("semantic payload digest differs")
     if source_projection is not None:
-        _validate_source_projection_binding(result, source_projection)
+        _validate_source_projection_binding(
+            result,
+            source_projection,
+            expected_invocation_name=expected_invocation_name,
+            expected_protocol_id=expected_protocol_id,
+            protocol_identity_commitment=protocol_identity_commitment,
+            raw_identity_commitment=raw_identity_commitment,
+        )
     elif registered:
         raise ValueError(
-            "registered compact requires raw-derived source projection"
+            "registered compact requires a currently minted raw-origin "
+            "binding for its raw-derived source projection"
         )
 
 
@@ -3646,7 +3987,9 @@ def _smoke_result_with_projection(
     rows: list[Mapping],
     identities: Mapping,
     raw_allocated_bytes: int,
-) -> tuple[dict, bytes]:
+    protocol_identity_commitment: str | None = None,
+    raw_identity_commitment: str | None = None,
+) -> tuple[dict, _RawOriginBinding]:
     attempts = Counter(row["attempt_status"] for row in rows)
     outputs = Counter(row["output_status"] for row in rows)
     status_values = {
@@ -3755,11 +4098,15 @@ def _smoke_result_with_projection(
         },
         SOURCE_PROJECTION_FIELDS,
     )
-    _validate_analysis_result(
-        result,
-        source_projection=source_projection,
+    source_binding = _mint_raw_origin_binding(
+        _RAW_ORIGIN_MINT_AUTHORITY,
+        source_projection,
+        invocation_name=invocation_name,
+        protocol_id=protocol_id,
+        protocol_identity_commitment=protocol_identity_commitment,
+        raw_identity_commitment=raw_identity_commitment,
     )
-    return result, source_projection
+    return result, source_binding
 
 
 def _smoke_result(
@@ -3770,14 +4117,17 @@ def _smoke_result(
     identities: Mapping,
     raw_allocated_bytes: int,
 ) -> dict:
-    result, _ = _smoke_result_with_projection(
+    result, source_binding = _smoke_result_with_projection(
         invocation_name=invocation_name,
         protocol_id=protocol_id,
         rows=rows,
         identities=identities,
         raw_allocated_bytes=raw_allocated_bytes,
     )
-    return result
+    try:
+        return result
+    finally:
+        _revoke_raw_origin_binding(source_binding)
 
 
 def _markdown(result: Mapping) -> str:
@@ -4533,6 +4883,11 @@ def analyze_two_range_reacquisition(
         "raw_compressed_process": raw_compressed,
         "raw_decompressed_process": raw_decompressed,
     }
+    raw_identity_commitment = _raw_identity_commitment(
+        source_identities
+    )
+    protocol_identity_commitment = protocol_identity["sha256"]
+    source_binding = None
     result_identities = {field: None for field in IDENTITY_FIELDS}
     result_identities.update(
         {
@@ -4575,7 +4930,7 @@ def analyze_two_range_reacquisition(
         branch_representatives = _validate_registered_rows(
             rows, protocol=protocol, truth_data=truth_data
         )
-        result, source_projection = (
+        result, source_binding = (
             _aggregate_two_range_reacquisition_with_projection(
                 baseline_rows=baseline_rows,
                 v4_rows=v4_rows,
@@ -4583,6 +4938,10 @@ def analyze_two_range_reacquisition(
                 truth_data=truth_data,
                 protocol=protocol,
                 branch_representatives=branch_representatives,
+                protocol_identity_commitment=(
+                    protocol_identity_commitment
+                ),
+                raw_identity_commitment=raw_identity_commitment,
             )
         )
         result_identities["authorization"] = _result_identity(
@@ -4605,10 +4964,6 @@ def analyze_two_range_reacquisition(
             if not name.endswith("decompressed_process")
         )
         result["semantic_payload_sha256"] = _semantic_sha256(result)
-        _validate_analysis_result(
-            result,
-            source_projection=source_projection,
-        )
     else:
         _validate_smoke_rows(rows, protocol=protocol)
         raw_sources = raw_manifest["source_identities"]
@@ -4655,17 +5010,15 @@ def analyze_two_range_reacquisition(
                 raw_compressed,
             )
         )
-        result, source_projection = _smoke_result_with_projection(
+        result, source_binding = _smoke_result_with_projection(
             invocation_name=invocation_name,
             protocol_id=protocol_id,
             rows=rows,
             identities=result_identities,
             raw_allocated_bytes=raw_allocated,
+            protocol_identity_commitment=protocol_identity_commitment,
+            raw_identity_commitment=raw_identity_commitment,
         )
-    _validate_analysis_result(
-        result,
-        source_projection=source_projection,
-    )
     started_at = _utc_now()
     null_outputs = {
         name: None for name in ANALYSIS_OUTPUT_MEMBER_NAMES
@@ -4708,7 +5061,10 @@ def analyze_two_range_reacquisition(
                 "message": _canonical_error_message(error),
             },
         )
-        _publish_analysis_preallocation_failure(output_root, failed)
+        try:
+            _publish_analysis_preallocation_failure(output_root, failed)
+        finally:
+            _revoke_raw_origin_binding(source_binding)
         raise
     transaction["output_root"] = str(output_root)
     stages = []
@@ -4755,10 +5111,6 @@ def analyze_two_range_reacquisition(
                 "compact_allocated_bytes"
             ] = compact_allocated
             result["semantic_payload_sha256"] = _semantic_sha256(result)
-            _validate_analysis_result(
-                result,
-                source_projection=source_projection,
-            )
             _discard_staged_output(transaction, json_stage)
             stages.remove(json_stage)
             json_payload = (
@@ -4775,6 +5127,16 @@ def analyze_two_range_reacquisition(
             raise DiskSpaceError(
                 "compact JSON allocated-byte budget did not stabilize"
             )
+        _validate_analysis_result(
+            result,
+            source_projection=source_binding,
+            expected_invocation_name=invocation_name,
+            expected_protocol_id=protocol_id,
+            protocol_identity_commitment=(
+                protocol_identity_commitment
+            ),
+            raw_identity_commitment=raw_identity_commitment,
+        )
         json_identity = _publish_staged_output(
             transaction, json_stage
         )
@@ -4915,6 +5277,7 @@ def analyze_two_range_reacquisition(
             )
         raise
     finally:
+        _revoke_raw_origin_binding(source_binding)
         replay._close_output_transaction(transaction)
 
 
