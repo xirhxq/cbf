@@ -207,6 +207,19 @@ def canonical_registered_result(result):
         "output_predicted": 0,
         "output_unavailable": 0,
     }
+    availability = next(
+        record
+        for record in result["scientific_gates"]
+        if record["gate_id"] == "fresh_or_predicted_min_fraction"
+    )
+    availability.update(
+        {
+            "numerator": 140000,
+            "denominator": 140000,
+            "value": 1.0,
+            "passed": True,
+        }
+    )
     result["decision"] = (
         "pass"
         if all(
@@ -345,6 +358,20 @@ class AnalysisSchemaDeclarationTests(unittest.TestCase):
                 "tails",
                 "limitations",
             ),
+        )
+
+    def test_error_detail_boundary_is_exact_and_overflow_is_hashed(self):
+        exact = "x" * 4096
+        self.assertEqual(analyzer._canonical_error_message(exact), exact)
+        overflow = "x" * 4097
+        canonical = analyzer._canonical_error_message(overflow)
+        self.assertLessEqual(len(canonical.encode("utf-8")), 4096)
+        self.assertIn("detail_utf8_bytes=4097", canonical)
+        self.assertIn(
+            "detail_sha256=" + hashlib.sha256(
+                overflow.encode("utf-8")
+            ).hexdigest(),
+            canonical,
         )
 
 
@@ -1134,6 +1161,58 @@ class AggregateGateTests(unittest.TestCase):
         self.assertEqual(record["numerator"], 1)
         self.assertFalse(record["passed"])
 
+    def test_noncircle_private_prior_start_fails_integrity_end_to_end(self):
+        baseline, v4, new = comparison_rows()
+        new[0]["branches"][0]["circle_start"] = copy.deepcopy(
+            new[0]["branch_selection_prior_estimate"]
+        )
+        result = analyzer.aggregate_two_range_reacquisition(
+            baseline_rows=baseline,
+            v4_rows=v4,
+            new_rows=new,
+            truth_data={"config": fixed_topology_config()},
+            protocol={
+                "protocol_id": "test-protocol",
+                "gates": analyzer.GATES,
+            },
+        )
+        record = result["integrity_gates"][
+            analyzer.INTEGRITY_GATE_IDS.index(
+                "noncircle_continuous_start"
+            )
+        ]
+        self.assertEqual(record["numerator"], 1)
+        self.assertFalse(record["passed"])
+        self.assertEqual(result["decision"], "fail")
+
+    def test_nonselected_public_representative_maps_to_adjacent_integrity_axes(
+        self,
+    ):
+        baseline, v4, new = comparison_rows()
+        new[0]["estimate"] = copy.deepcopy(
+            new[0]["branch_selection_prior_estimate"]
+        )
+        result = analyzer.aggregate_two_range_reacquisition(
+            baseline_rows=baseline,
+            v4_rows=v4,
+            new_rows=new,
+            truth_data={"config": fixed_topology_config()},
+            protocol={
+                "protocol_id": "test-protocol",
+                "gates": analyzer.GATES,
+            },
+        )
+        by_id = {
+            record["gate_id"]: record["numerator"]
+            for record in result["integrity_gates"]
+        }
+        self.assertEqual(
+            by_id["noncircle_publication_representative"], 1
+        )
+        self.assertEqual(by_id["selected_result_binding_mismatch"], 1)
+        self.assertEqual(by_id["noncircle_continuous_start"], 0)
+        self.assertEqual(result["decision"], "fail")
+
     def test_aggregate_integrity_counts_fixed_reference_substitution(self):
         baseline, v4, new = comparison_rows()
         row = new[0]
@@ -1435,6 +1514,99 @@ class InvocationSplitTests(unittest.TestCase):
             )
         self.assertFalse(real_parent.joinpath("analysis").exists())
 
+    def _assert_root_path_replacement_fails_closed(
+        self,
+        boundary,
+        *,
+        trigger_failure=False,
+    ):
+        self.produce("smoke_a")
+        real_assert = analyzer._assert_output_root_path
+        moved = self.root / f"moved-{boundary}"
+        replaced = False
+
+        def replace_then_assert(transaction, observed_boundary):
+            nonlocal replaced
+            if observed_boundary == boundary and not replaced:
+                replaced = True
+                self.analysis_a.rename(moved)
+                self.analysis_a.mkdir()
+            return real_assert(transaction, observed_boundary)
+
+        real_stage = analyzer._stage_output
+
+        def optional_primary_failure(*args, **kwargs):
+            if (
+                trigger_failure
+                and kwargs["final_name"] == analyzer.OUTPUT_JSON_NAME
+            ):
+                raise RuntimeError("injected primary output failure")
+            return real_stage(*args, **kwargs)
+
+        with mock.patch.object(
+            analyzer,
+            "_assert_output_root_path",
+            side_effect=replace_then_assert,
+        ), mock.patch.object(
+            analyzer,
+            "_stage_output",
+            side_effect=optional_primary_failure,
+        ):
+            with self.assertRaisesRegex(
+                (analyzer._OutputRootIdentityMismatch, RuntimeError),
+                "output root path identity|primary output failure",
+            ):
+                analyzer.analyze_two_range_reacquisition(
+                    protocol_path=self.protocol_path,
+                    raw_root=self.raw_a,
+                    output_root=self.analysis_a,
+                    invocation_name="smoke_analyzer_a",
+                )
+        self.assertTrue(replaced)
+        self.assertEqual(list(self.analysis_a.iterdir()), [])
+        terminal = json.loads(
+            (moved / analyzer.ANALYZER_MANIFEST_NAME).read_bytes()
+        )
+        self.assertEqual(terminal["status"], "failed")
+        self.assertIn("output root path identity", terminal["error"]["message"])
+        self.assertFalse((moved / analyzer.OUTPUT_JSON_NAME).exists())
+        self.assertFalse((moved / analyzer.OUTPUT_MARKDOWN_NAME).exists())
+
+    def test_root_path_replacement_at_creating_before_fails_closed(self):
+        self._assert_root_path_replacement_fails_closed(
+            "creating_before"
+        )
+
+    def test_root_path_replacement_at_creating_after_fails_closed(self):
+        self._assert_root_path_replacement_fails_closed(
+            "creating_after"
+        )
+
+    def test_root_path_replacement_at_completed_before_fails_closed(self):
+        self._assert_root_path_replacement_fails_closed(
+            "completed_before"
+        )
+
+    def test_root_path_replacement_at_completed_after_fails_closed(self):
+        self._assert_root_path_replacement_fails_closed(
+            "completed_after"
+        )
+
+    def test_root_path_replacement_at_failed_before_retains_failure(self):
+        self._assert_root_path_replacement_fails_closed(
+            "failed_before", trigger_failure=True
+        )
+
+    def test_root_path_replacement_at_failed_after_retains_failure(self):
+        self._assert_root_path_replacement_fails_closed(
+            "failed_after", trigger_failure=True
+        )
+
+    def test_root_path_replacement_immediately_before_return_fails_closed(
+        self,
+    ):
+        self._assert_root_path_replacement_fails_closed("return")
+
     def test_authorization_symlink_is_rejected_without_following(self):
         authorization_path = self.root / "authorization-real.json"
         authorization_path.write_text(
@@ -1520,6 +1692,79 @@ class InvocationSplitTests(unittest.TestCase):
             right["semantic_payload_sha256"],
         )
 
+    def test_compact_rejects_contradictory_smoke_gate_and_pass_decision(self):
+        self.produce("smoke_a")
+        completed = analyzer.analyze_two_range_reacquisition(
+            protocol_path=self.protocol_path,
+            raw_root=self.raw_a,
+            output_root=self.analysis_a,
+            invocation_name="smoke_analyzer_a",
+        )
+        result = json.loads(
+            (completed / analyzer.OUTPUT_JSON_NAME).read_bytes()
+        )
+        gate = result["integrity_gates"][0]
+        gate["numerator"] = 1
+        gate["value"] = 1
+        gate["passed"] = True
+        result["decision"] = "smoke_pass"
+        result["semantic_payload_sha256"] = analyzer._semantic_sha256(
+            result
+        )
+        with self.assertRaisesRegex(
+            ValueError, "gate arithmetic|gate result"
+        ):
+            analyzer._validate_analysis_result(result)
+
+    def test_compact_gate_rejects_null_bool_and_nan_discriminants(self):
+        self.produce("smoke_a")
+        completed = analyzer.analyze_two_range_reacquisition(
+            protocol_path=self.protocol_path,
+            raw_root=self.raw_a,
+            output_root=self.analysis_a,
+            invocation_name="smoke_analyzer_a",
+        )
+        exact = json.loads(
+            (completed / analyzer.OUTPUT_JSON_NAME).read_bytes()
+        )
+        mutations = {
+            "null": {"numerator": None, "denominator": None},
+            "bool": {"numerator": True},
+            "nan": {"value": float("nan")},
+        }
+        for name, mutation in mutations.items():
+            changed = copy.deepcopy(exact)
+            changed["integrity_gates"][0].update(mutation)
+            if name != "nan":
+                changed["semantic_payload_sha256"] = (
+                    analyzer._semantic_sha256(changed)
+                )
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(
+                    ValueError, "gate numerator|gate numeric|gate arithmetic"
+                ):
+                    analyzer._validate_analysis_result(changed)
+
+    def test_compact_rejects_false_gate_with_smoke_pass_decision(self):
+        self.produce("smoke_a")
+        completed = analyzer.analyze_two_range_reacquisition(
+            protocol_path=self.protocol_path,
+            raw_root=self.raw_a,
+            output_root=self.analysis_a,
+            invocation_name="smoke_analyzer_a",
+        )
+        result = json.loads(
+            (completed / analyzer.OUTPUT_JSON_NAME).read_bytes()
+        )
+        gate = result["integrity_gates"][0]
+        gate.update({"numerator": 1, "value": 1, "passed": False})
+        result["decision"] = "smoke_pass"
+        result["semantic_payload_sha256"] = analyzer._semantic_sha256(
+            result
+        )
+        with self.assertRaisesRegex(ValueError, "decision differs"):
+            analyzer._validate_analysis_result(result)
+
     def test_preexisting_output_root_retains_failed_forensic_manifest(self):
         self.produce("smoke_a")
         self.analysis_a.mkdir()
@@ -1541,8 +1786,11 @@ class InvocationSplitTests(unittest.TestCase):
 
     def test_compact_cap_overflow_retains_failed_manifest(self):
         self.produce("smoke_a")
+        oversized_markdown = "x" * (
+            analyzer.COMPACT_OUTPUT_CAP_BYTES + 1
+        )
         with mock.patch.object(
-            analyzer, "COMPACT_OUTPUT_CAP_BYTES", 1
+            analyzer, "_markdown", return_value=oversized_markdown
         ):
             with self.assertRaises(analyzer.DiskSpaceError):
                 analyzer.analyze_two_range_reacquisition(
@@ -1551,6 +1799,54 @@ class InvocationSplitTests(unittest.TestCase):
                     output_root=self.analysis_a,
                     invocation_name="smoke_analyzer_a",
                 )
+        self.assert_failed_analysis(self.analysis_a)
+
+    def test_long_failure_detail_is_bounded_hashed_and_bundle_capped(self):
+        self.produce("smoke_a")
+        detail = "forensic-detail-" + (
+            "x" * (analyzer.COMPACT_OUTPUT_CAP_BYTES + 1)
+        )
+        expected_bytes = detail.encode("utf-8")
+        expected_digest = hashlib.sha256(expected_bytes).hexdigest()
+        real_stage = analyzer._stage_output
+
+        def fail_json_only(*args, **kwargs):
+            if kwargs["final_name"] == analyzer.OUTPUT_JSON_NAME:
+                raise RuntimeError(detail)
+            return real_stage(*args, **kwargs)
+
+        with mock.patch.object(
+            analyzer, "_stage_output", side_effect=fail_json_only
+        ):
+            with self.assertRaises(RuntimeError):
+                analyzer.analyze_two_range_reacquisition(
+                    protocol_path=self.protocol_path,
+                    raw_root=self.raw_a,
+                    output_root=self.analysis_a,
+                    invocation_name="smoke_analyzer_a",
+                )
+        terminal = json.loads(
+            (self.analysis_a / analyzer.ANALYZER_MANIFEST_NAME).read_bytes()
+        )
+        message = terminal["error"]["message"]
+        self.assertLessEqual(len(message.encode("utf-8")), 4096)
+        self.assertIn(
+            f"detail_utf8_bytes={len(expected_bytes)}", message
+        )
+        self.assertIn(f"detail_sha256={expected_digest}", message)
+        allocated = sum(
+            path.stat().st_blocks * 512
+            for path in self.analysis_a.iterdir()
+        )
+        self.assertLessEqual(
+            allocated,
+            min(
+                analyzer.COMPACT_OUTPUT_CAP_BYTES,
+                self.protocol["disk_contract"][
+                    "compact_bundle_max_allocated_bytes"
+                ],
+            ),
+        )
         self.assert_failed_analysis(self.analysis_a)
 
     def test_json_write_failure_retains_failed_manifest(self):
@@ -1663,6 +1959,156 @@ class InvocationSplitTests(unittest.TestCase):
                 )
         self.assert_failed_analysis(self.analysis_a)
 
+    def _assert_manifest_fault_leaves_only_failed_manifest(self, fault):
+        self.produce("smoke_a")
+        real_stage = analyzer._stage_output
+        real_publish = analyzer._publish_staged_output
+        injected = False
+
+        def stage_fault(*args, **kwargs):
+            nonlocal injected
+            if (
+                not injected
+                and kwargs["final_name"]
+                == analyzer.ANALYZER_MANIFEST_NAME
+                and fault in {"write", "file_fsync"}
+            ):
+                injected = True
+                target = (
+                    analyzer._write_all
+                    if fault == "write"
+                    else analyzer.os.fsync
+                )
+                with mock.patch.object(
+                    analyzer if fault == "write" else analyzer.os,
+                    "_write_all" if fault == "write" else "fsync",
+                    side_effect=OSError(
+                        f"injected manifest {fault} failure"
+                    ),
+                ):
+                    del target
+                    return real_stage(*args, **kwargs)
+            return real_stage(*args, **kwargs)
+
+        def publication_fault(transaction, stage):
+            nonlocal injected
+            if (
+                not injected
+                and stage["final_name"]
+                == analyzer.ANALYZER_MANIFEST_NAME
+                and fault in {"rename", "directory_fsync"}
+            ):
+                injected = True
+                if fault == "rename":
+                    with mock.patch.object(
+                        analyzer.os,
+                        "rename",
+                        side_effect=OSError(
+                            "injected manifest rename failure"
+                        ),
+                    ):
+                        return real_publish(transaction, stage)
+                real_fsync = analyzer.os.fsync
+
+                def fail_root_fsync(descriptor):
+                    if descriptor == transaction["root_fd"]:
+                        raise OSError(
+                            "injected manifest directory_fsync failure"
+                        )
+                    return real_fsync(descriptor)
+
+                with mock.patch.object(
+                    analyzer.os,
+                    "fsync",
+                    side_effect=fail_root_fsync,
+                ):
+                    return real_publish(transaction, stage)
+            return real_publish(transaction, stage)
+
+        with mock.patch.object(
+            analyzer, "_stage_output", side_effect=stage_fault
+        ), mock.patch.object(
+            analyzer,
+            "_publish_staged_output",
+            side_effect=publication_fault,
+        ):
+            with self.assertRaisesRegex(
+                OSError, f"manifest {fault}|manifest {fault.replace('_', ' ')}"
+            ):
+                analyzer.analyze_two_range_reacquisition(
+                    protocol_path=self.protocol_path,
+                    raw_root=self.raw_a,
+                    output_root=self.analysis_a,
+                    invocation_name="smoke_analyzer_a",
+                )
+        self.assertTrue(injected)
+        self.assert_failed_analysis(self.analysis_a)
+        self.assertFalse(
+            any(
+                path.name.startswith(".manifest.")
+                for path in self.analysis_a.iterdir()
+            )
+        )
+
+    def test_manifest_write_failure_cleans_own_hidden_stage(self):
+        self._assert_manifest_fault_leaves_only_failed_manifest("write")
+
+    def test_manifest_file_fsync_failure_cleans_own_hidden_stage(self):
+        self._assert_manifest_fault_leaves_only_failed_manifest(
+            "file_fsync"
+        )
+
+    def test_manifest_rename_failure_cleans_own_hidden_stage(self):
+        self._assert_manifest_fault_leaves_only_failed_manifest("rename")
+
+    def test_manifest_directory_fsync_failure_cleans_own_hidden_stage(self):
+        self._assert_manifest_fault_leaves_only_failed_manifest(
+            "directory_fsync"
+        )
+
+    def test_manifest_parent_fsync_failure_cleans_own_hidden_stage(self):
+        self.produce("smoke_a")
+        real_create = replay._create_exact_root
+        real_fsync = os.fsync
+        holder = {}
+        injected = False
+
+        def capture_transaction(*args, **kwargs):
+            transaction = real_create(*args, **kwargs)
+            holder["transaction"] = transaction
+            return transaction
+
+        def fail_parent_once(descriptor):
+            nonlocal injected
+            transaction = holder.get("transaction")
+            if (
+                transaction is not None
+                and descriptor == transaction["parent_fd"]
+                and not injected
+            ):
+                injected = True
+                raise OSError("injected manifest parent fsync failure")
+            return real_fsync(descriptor)
+
+        with mock.patch.object(
+            replay,
+            "_create_exact_root",
+            side_effect=capture_transaction,
+        ), mock.patch.object(
+            analyzer.os,
+            "fsync",
+            side_effect=fail_parent_once,
+        ):
+            with self.assertRaisesRegex(OSError, "parent fsync"):
+                analyzer.analyze_two_range_reacquisition(
+                    protocol_path=self.protocol_path,
+                    raw_root=self.raw_a,
+                    output_root=self.analysis_a,
+                    invocation_name="smoke_analyzer_a",
+                )
+        self.assertTrue(injected)
+        self.assert_failed_analysis(self.analysis_a)
+
     def test_stage_name_swap_cannot_publish_completed_manifest(self):
         self.produce("smoke_a")
         real_stage = analyzer._stage_output
@@ -1750,12 +2196,137 @@ class InvocationSplitTests(unittest.TestCase):
                 )
         self.assert_failed_analysis(self.analysis_a)
 
-    def test_analyzer_crash_after_root_creation_retains_failed_manifest(self):
+    def test_manifest_stage_swap_cannot_publish_completed_manifest(self):
         self.produce("smoke_a")
+        real_stage = analyzer._stage_output
+        swapped = False
+
+        def swap_manifest_stage(*args, **kwargs):
+            nonlocal swapped
+            stage = real_stage(*args, **kwargs)
+            if (
+                not swapped
+                and kwargs["final_name"]
+                == analyzer.ANALYZER_MANIFEST_NAME
+            ):
+                swapped = True
+                transaction = args[0]
+                os.unlink(stage["name"], dir_fd=transaction["root_fd"])
+                descriptor = os.open(
+                    stage["name"],
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                    dir_fd=transaction["root_fd"],
+                )
+                try:
+                    os.write(descriptor, b'{"forged":"manifest-stage"}\n')
+                finally:
+                    os.close(descriptor)
+            return stage
+
+        with mock.patch.object(
+            analyzer, "_stage_output", side_effect=swap_manifest_stage
+        ):
+            with self.assertRaisesRegex(ValueError, "directory-entry"):
+                analyzer.analyze_two_range_reacquisition(
+                    protocol_path=self.protocol_path,
+                    raw_root=self.raw_a,
+                    output_root=self.analysis_a,
+                    invocation_name="smoke_analyzer_a",
+                )
+        self.assert_failed_analysis(self.analysis_a)
+
+    def test_completed_manifest_final_link_swap_fails_closed(self):
+        self.produce("smoke_a")
+        real_publish = analyzer._publish_staged_output
+        manifest_publications = 0
+
+        def swap_completed_manifest(transaction, stage):
+            nonlocal manifest_publications
+            identity = real_publish(transaction, stage)
+            if stage["final_name"] == analyzer.ANALYZER_MANIFEST_NAME:
+                manifest_publications += 1
+                if manifest_publications == 2:
+                    os.unlink(
+                        stage["final_name"],
+                        dir_fd=transaction["root_fd"],
+                    )
+                    descriptor = os.open(
+                        stage["final_name"],
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                        0o600,
+                        dir_fd=transaction["root_fd"],
+                    )
+                    try:
+                        os.write(
+                            descriptor,
+                            b'{"forged":"completed-manifest"}\n',
+                        )
+                    finally:
+                        os.close(descriptor)
+            return identity
+
+        with mock.patch.object(
+            analyzer,
+            "_publish_staged_output",
+            side_effect=swap_completed_manifest,
+        ):
+            with self.assertRaisesRegex(ValueError, "directory-entry"):
+                analyzer.analyze_two_range_reacquisition(
+                    protocol_path=self.protocol_path,
+                    raw_root=self.raw_a,
+                    output_root=self.analysis_a,
+                    invocation_name="smoke_analyzer_a",
+                )
+        self.assert_failed_analysis(self.analysis_a)
+
+    def test_manifest_descriptor_bytes_hash_mutation_fails_closed(self):
+        self.produce("smoke_a")
+        real_stage = analyzer._stage_output
+        mutated = False
+
+        def mutate_manifest_descriptor(*args, **kwargs):
+            nonlocal mutated
+            stage = real_stage(*args, **kwargs)
+            if (
+                not mutated
+                and kwargs["final_name"]
+                == analyzer.ANALYZER_MANIFEST_NAME
+            ):
+                mutated = True
+                os.pwrite(stage["fd"], b"x", 0)
+                os.fsync(stage["fd"])
+            return stage
+
         with mock.patch.object(
             analyzer,
             "_stage_output",
-            side_effect=RuntimeError("injected analyzer crash"),
+            side_effect=mutate_manifest_descriptor,
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "retained staged output identity"
+            ):
+                analyzer.analyze_two_range_reacquisition(
+                    protocol_path=self.protocol_path,
+                    raw_root=self.raw_a,
+                    output_root=self.analysis_a,
+                    invocation_name="smoke_analyzer_a",
+                )
+        self.assert_failed_analysis(self.analysis_a)
+
+    def test_analyzer_crash_after_root_creation_retains_failed_manifest(self):
+        self.produce("smoke_a")
+        real_stage = analyzer._stage_output
+
+        def crash_output(*args, **kwargs):
+            if kwargs["final_name"] == analyzer.OUTPUT_JSON_NAME:
+                raise RuntimeError("injected analyzer crash")
+            return real_stage(*args, **kwargs)
+
+        with mock.patch.object(
+            analyzer,
+            "_stage_output",
+            side_effect=crash_output,
         ):
             with self.assertRaisesRegex(RuntimeError, "analyzer crash"):
                 analyzer.analyze_two_range_reacquisition(
@@ -1768,10 +2339,17 @@ class InvocationSplitTests(unittest.TestCase):
 
     def test_failed_lifecycle_is_retained_when_retry_is_refused(self):
         self.produce("smoke_a")
+        real_stage = analyzer._stage_output
+
+        def fail_output(*args, **kwargs):
+            if kwargs["final_name"] == analyzer.OUTPUT_JSON_NAME:
+                raise RuntimeError("injected retained failure")
+            return real_stage(*args, **kwargs)
+
         with mock.patch.object(
             analyzer,
             "_stage_output",
-            side_effect=RuntimeError("injected retained failure"),
+            side_effect=fail_output,
         ):
             with self.assertRaisesRegex(RuntimeError, "retained failure"):
                 analyzer.analyze_two_range_reacquisition(
@@ -1803,6 +2381,44 @@ class InvocationSplitTests(unittest.TestCase):
             json.loads(sibling.read_bytes())["status"],
             "failed",
         )
+
+    def test_staged_fd_close_failure_remains_owned_until_retry_closes_it(self):
+        output = self.root / "close-retry-output"
+        transaction = replay._create_exact_root(output)
+        transaction["output_root"] = str(output)
+        stage = analyzer._stage_output(
+            transaction,
+            final_name="close-retry.json",
+            payload=b"held descriptor\n",
+        )
+        descriptor = stage["fd"]
+        real_close = os.close
+        injected = False
+
+        def fail_once(candidate):
+            nonlocal injected
+            if candidate == descriptor and not injected:
+                injected = True
+                raise OSError("injected close failure")
+            return real_close(candidate)
+
+        try:
+            with mock.patch.object(
+                analyzer.os, "close", side_effect=fail_once
+            ):
+                with self.assertRaisesRegex(OSError, "close failure"):
+                    analyzer._close_staged_output(transaction, stage)
+            self.assertFalse(stage["closed"])
+            self.assertEqual(stage["fd"], descriptor)
+            self.assertIn(descriptor, transaction["resource_fds"])
+            os.fstat(descriptor)
+            analyzer._discard_staged_output(transaction, stage)
+            self.assertTrue(stage["closed"])
+            self.assertNotIn(descriptor, transaction["resource_fds"])
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
+        finally:
+            replay._close_output_transaction(transaction)
 
     def test_raw_identity_mismatch_retains_observed_failed_manifest(self):
         self.produce("smoke_a")
@@ -2135,6 +2751,28 @@ def valid_analysis_manifest(
 
 
 class AnalysisManifestTests(unittest.TestCase):
+    def test_running_manifest_uses_same_pinned_publication_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory).resolve() / "running-analysis"
+            transaction = replay._create_exact_root(output)
+            transaction["output_root"] = str(output)
+            manifest = valid_analysis_manifest(status="running")
+            manifest["output_root"] = str(output)
+            try:
+                analyzer._publish_analysis_manifest(
+                    transaction, manifest
+                )
+                published = json.loads(
+                    (output / analyzer.ANALYZER_MANIFEST_NAME).read_bytes()
+                )
+                self.assertEqual(published["status"], "running")
+                self.assertEqual(
+                    sorted(path.name for path in output.iterdir()),
+                    [analyzer.ANALYZER_MANIFEST_NAME],
+                )
+            finally:
+                replay._close_output_transaction(transaction)
+
     def test_creating_manifest_has_exact_full_field_order(self):
         manifest = valid_analysis_manifest()
         analyzer._validate_analysis_manifest(manifest)

@@ -28,6 +28,9 @@ from scripts.diagnostics.replay_localization_calibration import (
     stable_measurement_seed,
 )
 from scripts.diagnostics.run_diagnostic import DiskSpaceError
+from scripts.diagnostics.replay_predictive_wnls_recovery import (
+    _assert_registered_root,
+)
 from scripts.diagnostics.two_range_reacquisition import (
     BRANCH_IDS,
     branch_gate_passes,
@@ -42,6 +45,7 @@ OUTPUT_JSON_NAME = "two-range-reacquisition.json"
 OUTPUT_MARKDOWN_NAME = "two-range-reacquisition.md"
 ANALYZER_MANIFEST_NAME = "manifest.json"
 COMPACT_OUTPUT_CAP_BYTES = 10_000_000
+ERROR_MESSAGE_MAX_UTF8_BYTES = 4096
 ANALYZER_INVOCATIONS = (
     "smoke_analyzer_a",
     "smoke_analyzer_b",
@@ -809,6 +813,7 @@ def _integrity_counts_from_rows(
         ):
             counts["private_prior_role_violation"] += 1
         branches = row["branches"]
+        private_start = row["branch_selection_prior_estimate"]
         if considered and (
             tuple(branch["branch_id"] for branch in branches)
             != BRANCH_IDS
@@ -816,6 +821,13 @@ def _integrity_counts_from_rows(
                 len(branches) == 2
                 and branches[0]["circle_start"]
                 == branches[1]["circle_start"]
+            )
+            or (
+                private_start is not None
+                and any(
+                    branch["circle_start"] == private_start
+                    for branch in branches
+                )
             )
         ):
             counts["noncircle_continuous_start"] += 1
@@ -2081,6 +2093,21 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _canonical_error_message(detail: object) -> str:
+    raw = str(detail).encode("utf-8", errors="backslashreplace")
+    if len(raw) <= ERROR_MESSAGE_MAX_UTF8_BYTES:
+        return raw.decode("utf-8")
+    digest = hashlib.sha256(raw).hexdigest()
+    suffix = (
+        " ... [detail_truncated=true "
+        f"detail_utf8_bytes={len(raw)} "
+        f"detail_sha256={digest}]"
+    ).encode("ascii")
+    prefix_budget = ERROR_MESSAGE_MAX_UTF8_BYTES - len(suffix)
+    prefix = raw[:prefix_budget].decode("utf-8", errors="ignore")
+    return prefix + suffix.decode("ascii")
+
+
 def _analysis_manifest(
     *,
     protocol_id: str,
@@ -2363,9 +2390,27 @@ def _write_all(descriptor: int, payload: bytes) -> None:
         view = view[written:]
 
 
+class _OutputRootIdentityMismatch(ValueError):
+    pass
+
+
+def _assert_output_root_path(
+    transaction: Mapping,
+    boundary: str,
+) -> None:
+    try:
+        _assert_registered_root(transaction)
+    except BaseException as error:
+        raise _OutputRootIdentityMismatch(
+            f"output root path identity differs at {boundary}"
+        ) from error
+
+
 def _publish_analysis_manifest(
     transaction: Mapping,
     manifest: Mapping,
+    *,
+    require_path_binding: bool = True,
 ) -> None:
     _validate_analysis_manifest(manifest)
     payload = (
@@ -2374,30 +2419,31 @@ def _publish_analysis_manifest(
         )
         + b"\n"
     )
-    temporary = f".manifest.{os.getpid()}.{secrets.token_hex(8)}"
-    descriptor = os.open(
-        temporary,
-        os.O_WRONLY
-        | os.O_CREAT
-        | os.O_EXCL
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0),
-        0o600,
-        dir_fd=transaction["root_fd"],
-    )
+    stage = None
+    status = manifest["status"]
     try:
-        _write_all(descriptor, payload)
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-    os.rename(
-        temporary,
-        ANALYZER_MANIFEST_NAME,
-        src_dir_fd=transaction["root_fd"],
-        dst_dir_fd=transaction["root_fd"],
-    )
-    os.fsync(transaction["root_fd"])
-    os.fsync(transaction["parent_fd"])
+        stage = _stage_output(
+            transaction,
+            final_name=ANALYZER_MANIFEST_NAME,
+            payload=payload,
+        )
+        if require_path_binding:
+            _assert_output_root_path(
+                transaction, f"{status}_before"
+            )
+        _publish_staged_output(transaction, stage)
+        _verify_staged_output(transaction, stage)
+        os.fsync(transaction["parent_fd"])
+        if require_path_binding:
+            _assert_output_root_path(
+                transaction, f"{status}_after"
+            )
+    except BaseException as error:
+        if stage is not None:
+            _cleanup_staged_output(transaction, stage, error)
+        raise
+    else:
+        _close_staged_output(transaction, stage)
 
 
 def _analysis_preallocation_failure_path(output_root: Path) -> Path:
@@ -2437,7 +2483,42 @@ def _publish_analysis_preallocation_failure(
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+    allocated = target.stat().st_blocks * 512
+    compact_cap = min(
+        COMPACT_OUTPUT_CAP_BYTES,
+        manifest["disk_contract"][
+            "compact_bundle_max_allocated_bytes"
+        ],
+    )
+    if allocated > compact_cap:
+        target.unlink()
+        raise DiskSpaceError(
+            "preallocation failure manifest exceeds compact cap"
+        )
     return target
+
+
+def _audit_failed_bundle_cap(
+    transaction: Mapping,
+    disk_contract: Mapping,
+) -> int:
+    total = 0
+    for name in os.listdir(transaction["root_fd"]):
+        metadata = os.stat(
+            name,
+            dir_fd=transaction["root_fd"],
+            follow_symlinks=False,
+        )
+        total += metadata.st_blocks * 512
+    compact_cap = min(
+        COMPACT_OUTPUT_CAP_BYTES,
+        disk_contract["compact_bundle_max_allocated_bytes"],
+    )
+    if total > compact_cap:
+        raise DiskSpaceError(
+            "failed forensic bundle exceeds compact allocated-byte cap"
+        )
+    return total
 
 
 def _semantic_projection(result: Mapping) -> dict:
@@ -2519,6 +2600,97 @@ def _validate_gate(record: object, gate_id: str) -> None:
             or not math.isfinite(float(value))
         ):
             raise ValueError("gate numeric value differs")
+
+
+def _gate_comparison(
+    operator: str,
+    value: int | float | None,
+    threshold: int | float,
+) -> bool:
+    if value is None:
+        return False
+    if operator == "strictly_below":
+        return value < threshold
+    if operator == "less_than_or_equal":
+        return value <= threshold
+    if operator == "greater_than_or_equal":
+        return value >= threshold
+    if operator == "equal":
+        return value == threshold
+    raise ValueError("gate operator is not canonical")
+
+
+def _validate_gate_arithmetic(record: Mapping) -> None:
+    gate_id = record["gate_id"]
+    numerator = record["numerator"]
+    denominator = record["denominator"]
+    threshold = record["threshold"]
+    value = record["value"]
+    if (
+        numerator is None
+        or denominator is None
+        or threshold is None
+        or numerator > denominator
+    ):
+        raise ValueError("gate arithmetic is incomplete")
+    equal_count_gates = {
+        *INTEGRITY_GATE_IDS,
+        "qualification_anchor_violations_allowed",
+        "current_frame_provenance_violations_allowed",
+        "ascending_dag_violations_allowed",
+    }
+    if gate_id in equal_count_gates:
+        expected_value = numerator
+    elif gate_id == "fresh_availability_max_drop_fraction":
+        expected_value = (
+            None
+            if denominator == 0
+            else max(0.0, (denominator - numerator) / denominator)
+        )
+    elif gate_id == "fresh_or_predicted_min_fraction":
+        expected_value = (
+            None if denominator == 0 else numerator / denominator
+        )
+    elif gate_id == "paired_both_fresh_p95_must_not_worsen":
+        if numerator != denominator or (
+            denominator == 0 and value is not None
+        ) or (
+            denominator > 0 and value is None
+        ):
+            raise ValueError("gate arithmetic differs for paired cohort")
+        expected_value = value
+    elif gate_id == "maximum_prediction_age_frames":
+        if (
+            numerator != denominator
+            or isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < 0
+        ):
+            raise ValueError("gate arithmetic differs for prediction age")
+        expected_value = value
+    elif gate_id in {
+        "maximum_published_error_m_strictly_below",
+        "maximum_fresh_error_m_strictly_below",
+    }:
+        if (
+            (denominator == 0 and (numerator != 0 or value is not None))
+            or (denominator > 0 and value is None)
+            or (
+                denominator > 0
+                and ((numerator == 0) != (value < threshold))
+            )
+        ):
+            raise ValueError("gate arithmetic differs for maximum error")
+        expected_value = value
+    else:
+        raise ValueError("gate arithmetic has unknown gate ID")
+    if value != expected_value:
+        raise ValueError("gate arithmetic value differs")
+    expected_passed = _gate_comparison(
+        record["operator"], expected_value, threshold
+    )
+    if record["passed"] is not expected_passed:
+        raise ValueError("gate result differs from arithmetic")
 
 
 def _validate_tail(record: object, *, v4: bool) -> None:
@@ -2856,6 +3028,7 @@ def _validate_analysis_result(result: Mapping) -> None:
             _validate_gate(record, gate_id)
             if (record["operator"], record["threshold"]) != contract:
                 raise ValueError("scientific gate contract differs")
+            _validate_gate_arithmetic(record)
     integrity = result["integrity_gates"]
     if (
         not isinstance(integrity, list)
@@ -2871,6 +3044,7 @@ def _validate_analysis_result(result: Mapping) -> None:
         _validate_gate(record, gate_id)
         if record["operator"] != "equal" or record["threshold"] != 0:
             raise ValueError("integrity gate contract differs")
+        _validate_gate_arithmetic(record)
     tails = result["tails"]
     if registered:
         _validate_ordered_tails(tails, v4=False)
@@ -3115,11 +3289,11 @@ def _close_staged_output(transaction: Mapping, stage: dict) -> None:
     if stage.get("closed"):
         return
     descriptor = stage.get("fd")
+    if isinstance(descriptor, int):
+        os.close(descriptor)
+        transaction["resource_fds"].discard(descriptor)
     stage["fd"] = None
     stage["closed"] = True
-    if isinstance(descriptor, int):
-        transaction["resource_fds"].discard(descriptor)
-        os.close(descriptor)
 
 
 def _discard_staged_output(transaction: Mapping, stage: dict) -> None:
@@ -3863,7 +4037,7 @@ def analyze_two_range_reacquisition(
             completed_at=_utc_now(),
             error={
                 "type": type(error).__name__,
-                "message": str(error),
+                "message": _canonical_error_message(error),
             },
         )
         _publish_analysis_preallocation_failure(output_root, failed)
@@ -4007,6 +4181,7 @@ def analyze_two_range_reacquisition(
             )
         for stage in stages:
             _close_staged_output(transaction, stage)
+        _assert_output_root_path(transaction, "return")
         return output_root
     except BaseException as error:
         for stage in stages:
@@ -4042,11 +4217,29 @@ def analyze_two_range_reacquisition(
             completed_at=_utc_now(),
             error={
                 "type": type(error).__name__,
-                "message": str(error),
+                "message": _canonical_error_message(error),
             },
         )
         try:
             _publish_analysis_manifest(transaction, failed)
+            _audit_failed_bundle_cap(transaction, disk_contract)
+        except _OutputRootIdentityMismatch as root_error:
+            failed["error"]["message"] = _canonical_error_message(
+                f"{failed['error']['message']}; "
+                f"{root_error}"
+            )
+            try:
+                _publish_analysis_manifest(
+                    transaction,
+                    failed,
+                    require_path_binding=False,
+                )
+                _audit_failed_bundle_cap(transaction, disk_contract)
+            except BaseException as terminal_error:
+                error.add_note(
+                    "detached failed analysis manifest could not be "
+                    f"published: {terminal_error}"
+                )
         except BaseException as terminal_error:
             error.add_note(
                 "failed analysis manifest could not be published: "
