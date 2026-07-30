@@ -114,6 +114,21 @@ def comparison_rows(
     return [baseline], [v4], [new]
 
 
+def comparison_branch_representatives():
+    return (
+        (
+            (
+                "circle_negative",
+                (-309.07115715637144, 1048.980189969882),
+            ),
+            (
+                "circle_positive",
+                (-1250.9307153225486, 900.8806431295092),
+            ),
+        ),
+    )
+
+
 def compact_identity(path, *, seed=1, domain="file_bytes"):
     return {
         "path": path,
@@ -198,14 +213,14 @@ def canonical_registered_result(result):
         }
     )
     result["status_counts"] = {
-        "attempt_accepted": 140000,
+        "attempt_accepted": 1,
         "attempt_rejected": 0,
         "attempt_failed": 0,
         "attempt_invalid": 0,
-        "attempt_reference_unavailable": 0,
-        "output_fresh": 140000,
+        "attempt_reference_unavailable": 139999,
+        "output_fresh": 1,
         "output_predicted": 0,
-        "output_unavailable": 0,
+        "output_unavailable": 139999,
     }
     availability = next(
         record
@@ -214,12 +229,16 @@ def canonical_registered_result(result):
     )
     availability.update(
         {
-            "numerator": 140000,
+            "numerator": 1,
             "denominator": 140000,
-            "value": 1.0,
-            "passed": True,
+            "value": 1 / 140000,
+            "passed": False,
         }
     )
+    for gate in result["scientific_gates"][6:]:
+        gate["denominator"] = 140000
+    for gate in result["integrity_gates"]:
+        gate["denominator"] = 140000
     result["decision"] = (
         "pass"
         if all(
@@ -373,6 +392,24 @@ class AnalysisSchemaDeclarationTests(unittest.TestCase):
             ).hexdigest(),
             canonical,
         )
+
+    def test_exact_error_boundary_with_multiple_contexts_keeps_provenance(self):
+        detail = "x" * analyzer.ERROR_MESSAGE_MAX_UTF8_BYTES
+        canonical = analyzer._canonical_error_message(
+            detail,
+            contexts=("context-one", "context-two"),
+        )
+        self.assertLessEqual(
+            len(canonical.encode("utf-8")),
+            analyzer.ERROR_MESSAGE_MAX_UTF8_BYTES,
+        )
+        self.assertIn("detail_utf8_bytes=4096", canonical)
+        self.assertIn(
+            f"detail_sha256={hashlib.sha256(detail.encode()).hexdigest()}",
+            canonical,
+        )
+        self.assertIn("context-one", canonical)
+        self.assertIn("context-two", canonical)
 
 
 class PrivateStateReconstructionTests(unittest.TestCase):
@@ -784,6 +821,9 @@ class AggregateGateTests(unittest.TestCase):
                             "protocol_id": "test-protocol",
                             "gates": analyzer.GATES,
                         },
+                        branch_representatives=(
+                            comparison_branch_representatives()
+                        ),
                     )
 
     def test_empty_paired_both_fresh_cohort_fails_gate(self):
@@ -794,6 +834,7 @@ class AggregateGateTests(unittest.TestCase):
             new_rows=new,
             truth_data={},
             protocol={"protocol_id": "test-protocol", "gates": analyzer.GATES},
+            branch_representatives=comparison_branch_representatives(),
         )
         self.assertEqual(
             result["paired_comparison"],
@@ -818,6 +859,7 @@ class AggregateGateTests(unittest.TestCase):
                 "protocol_id": "test-protocol",
                 "gates": analyzer.GATES,
             },
+            branch_representatives=comparison_branch_representatives(),
         )
         result = canonical_registered_result(result)
         analyzer._validate_analysis_result(result)
@@ -835,6 +877,7 @@ class AggregateGateTests(unittest.TestCase):
                 "protocol_id": "test-protocol",
                 "gates": analyzer.GATES,
             },
+            branch_representatives=comparison_branch_representatives(),
         )
         result = canonical_registered_result(result)
         result["identities"]["raw_decompressed_process"]["inode"] += 1
@@ -852,6 +895,7 @@ class AggregateGateTests(unittest.TestCase):
             new_rows=new,
             truth_data={},
             protocol={"protocol_id": "test-protocol", "gates": analyzer.GATES},
+            branch_representatives=comparison_branch_representatives(),
         )
 
     def test_one_row_equality_paired_cohort_passes(self):
@@ -1106,6 +1150,7 @@ class AggregateGateTests(unittest.TestCase):
                 "protocol_id": "test-protocol",
                 "gates": analyzer.GATES,
             },
+            branch_representatives=comparison_branch_representatives(),
         )
         record = result["integrity_gates"][
             analyzer.INTEGRITY_GATE_IDS.index(
@@ -1127,6 +1172,7 @@ class AggregateGateTests(unittest.TestCase):
                 "protocol_id": "test-protocol",
                 "gates": analyzer.GATES,
             },
+            branch_representatives=comparison_branch_representatives(),
         )
         self.assertEqual(
             tuple(
@@ -1152,6 +1198,7 @@ class AggregateGateTests(unittest.TestCase):
                 "protocol_id": "test-protocol",
                 "gates": analyzer.GATES,
             },
+            branch_representatives=comparison_branch_representatives(),
         )
         record = result["integrity_gates"][
             analyzer.INTEGRITY_GATE_IDS.index(
@@ -1175,6 +1222,7 @@ class AggregateGateTests(unittest.TestCase):
                 "protocol_id": "test-protocol",
                 "gates": analyzer.GATES,
             },
+            branch_representatives=comparison_branch_representatives(),
         )
         record = result["integrity_gates"][
             analyzer.INTEGRITY_GATE_IDS.index(
@@ -1184,6 +1232,37 @@ class AggregateGateTests(unittest.TestCase):
         self.assertEqual(record["numerator"], 1)
         self.assertFalse(record["passed"])
         self.assertEqual(result["decision"], "fail")
+
+    def test_arbitrary_noncircle_starts_fail_integrity_end_to_end(self):
+        arbitrary_starts = (
+            [0.0, 0.0],
+            [1.0, -1.0],
+            [123.25, -456.5],
+            [1000.0, 1000.0],
+        )
+        for arbitrary_start in arbitrary_starts:
+            baseline, v4, new = comparison_rows()
+            new[0]["branches"][0]["circle_start"] = arbitrary_start
+            result = analyzer.aggregate_two_range_reacquisition(
+                baseline_rows=baseline,
+                v4_rows=v4,
+                new_rows=new,
+                truth_data={"config": fixed_topology_config()},
+                protocol={
+                    "protocol_id": "test-protocol",
+                    "gates": analyzer.GATES,
+                },
+                branch_representatives=comparison_branch_representatives(),
+            )
+            record = result["integrity_gates"][
+                analyzer.INTEGRITY_GATE_IDS.index(
+                    "noncircle_continuous_start"
+                )
+            ]
+            with self.subTest(arbitrary_start=arbitrary_start):
+                self.assertEqual(record["numerator"], 1)
+                self.assertFalse(record["passed"])
+                self.assertEqual(result["decision"], "fail")
 
     def test_nonselected_public_representative_maps_to_adjacent_integrity_axes(
         self,
@@ -1201,6 +1280,7 @@ class AggregateGateTests(unittest.TestCase):
                 "protocol_id": "test-protocol",
                 "gates": analyzer.GATES,
             },
+            branch_representatives=comparison_branch_representatives(),
         )
         by_id = {
             record["gate_id"]: record["numerator"]
@@ -1234,6 +1314,7 @@ class AggregateGateTests(unittest.TestCase):
                 "protocol_id": "test-protocol",
                 "gates": analyzer.GATES,
             },
+            branch_representatives=comparison_branch_representatives(),
         )
         record = result["integrity_gates"][
             analyzer.INTEGRITY_GATE_IDS.index(
@@ -1741,7 +1822,9 @@ class InvocationSplitTests(unittest.TestCase):
                 )
             with self.subTest(name=name):
                 with self.assertRaisesRegex(
-                    ValueError, "gate numerator|gate numeric|gate arithmetic"
+                    ValueError,
+                    "gate numerator|gate numeric|gate arithmetic"
+                    "|gate.*source|denominator",
                 ):
                     analyzer._validate_analysis_result(changed)
 
@@ -1765,6 +1848,188 @@ class InvocationSplitTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "decision differs"):
             analyzer._validate_analysis_result(result)
 
+    def test_registered_integrity_denominators_bind_to_expected_rows(self):
+        baseline, v4, new = comparison_rows()
+        exact = canonical_registered_result(
+            analyzer.aggregate_two_range_reacquisition(
+                baseline_rows=baseline,
+                v4_rows=v4,
+                new_rows=new,
+                truth_data={"config": fixed_topology_config()},
+                protocol={
+                    "protocol_id": "test-protocol",
+                    "gates": analyzer.GATES,
+                },
+                branch_representatives=(
+                    comparison_branch_representatives()
+                ),
+            )
+        )
+        for gate_id in analyzer.INTEGRITY_GATE_IDS:
+            changed = copy.deepcopy(exact)
+            gate = next(
+                record
+                for record in changed["integrity_gates"]
+                if record["gate_id"] == gate_id
+            )
+            gate["denominator"] = 1
+            changed["semantic_payload_sha256"] = analyzer._semantic_sha256(
+                changed
+            )
+            with self.subTest(gate_id=gate_id):
+                with self.assertRaisesRegex(
+                    ValueError, "gate.*source|denominator"
+                ):
+                    analyzer._validate_analysis_result(changed)
+
+    def test_paired_gate_cohort_cannot_exceed_baseline_fresh_population(self):
+        baseline, v4, new = comparison_rows()
+        exact = canonical_registered_result(
+            analyzer.aggregate_two_range_reacquisition(
+                baseline_rows=baseline,
+                v4_rows=v4,
+                new_rows=new,
+                truth_data={"config": fixed_topology_config()},
+                protocol={
+                    "protocol_id": "test-protocol",
+                    "gates": analyzer.GATES,
+                },
+                branch_representatives=(
+                    comparison_branch_representatives()
+                ),
+            )
+        )
+        cohort = (
+            exact["baseline_fresh_transitions"]["baseline_fresh_total"]
+            + 1
+        )
+        exact["paired_comparison"]["cohort_size"] = cohort
+        paired_gate = exact["scientific_gates"][2]
+        paired_gate["numerator"] = cohort
+        paired_gate["denominator"] = cohort
+        exact["semantic_payload_sha256"] = analyzer._semantic_sha256(exact)
+        with self.assertRaisesRegex(
+            ValueError, "paired.*baseline|gate.*source"
+        ):
+            analyzer._validate_analysis_result(exact)
+
+    def test_each_scientific_gate_binds_to_its_source_summary(self):
+        baseline, v4, new = comparison_rows()
+        exact = canonical_registered_result(
+            analyzer.aggregate_two_range_reacquisition(
+                baseline_rows=baseline,
+                v4_rows=v4,
+                new_rows=new,
+                truth_data={"config": fixed_topology_config()},
+                protocol={
+                    "protocol_id": "test-protocol",
+                    "gates": analyzer.GATES,
+                },
+                branch_representatives=(
+                    comparison_branch_representatives()
+                ),
+            )
+        )
+
+        def mutate_tail_maximum(result):
+            record = next(
+                item
+                for item in result["tails"]
+                if item["metric"] == "offline_error_norm"
+                and item["stratifier"] == "seed"
+                and item["count"] == 1
+            )
+            changed_value = record["maximum"] + 1.0
+            for field in ("minimum", "p50", "p95", "maximum"):
+                record[field] = changed_value
+
+        def mutate_paired(result):
+            result["paired_comparison"]["new_p95_m"] += 1.0
+            result["paired_comparison"][
+                "new_minus_baseline_p95_m"
+            ] += 1.0
+
+        def mutate_retention(result):
+            transitions = result["baseline_fresh_transitions"]
+            transitions["new_fresh"] = 0
+            transitions["new_unavailable"] = 1
+
+        def mutate_availability(result):
+            status = result["status_counts"]
+            status["output_predicted"] = 1
+            status["output_unavailable"] -= 1
+
+        def mutate_prediction_age(result):
+            status = result["status_counts"]
+            status["output_predicted"] = 1
+            status["output_unavailable"] -= 1
+
+        def mutate_integrity_source(result, gate_id):
+            gate = next(
+                record
+                for record in result["integrity_gates"]
+                if record["gate_id"] == gate_id
+            )
+            gate.update(
+                {"numerator": 1, "value": 1, "passed": False}
+            )
+
+        source_mutations = (
+            (
+                "maximum_published_error_m_strictly_below",
+                mutate_tail_maximum,
+            ),
+            (
+                "maximum_fresh_error_m_strictly_below",
+                mutate_tail_maximum,
+            ),
+            (
+                "paired_both_fresh_p95_must_not_worsen",
+                mutate_paired,
+            ),
+            (
+                "fresh_availability_max_drop_fraction",
+                mutate_retention,
+            ),
+            (
+                "fresh_or_predicted_min_fraction",
+                mutate_availability,
+            ),
+            (
+                "maximum_prediction_age_frames",
+                mutate_prediction_age,
+            ),
+            (
+                "qualification_anchor_violations_allowed",
+                lambda result: mutate_integrity_source(
+                    result, "nonfresh_anchor_use"
+                ),
+            ),
+            (
+                "current_frame_provenance_violations_allowed",
+                lambda result: mutate_integrity_source(
+                    result, "preserved_contract_violation"
+                ),
+            ),
+            (
+                "ascending_dag_violations_allowed",
+                lambda result: mutate_integrity_source(
+                    result, "selector_reference_set_violation"
+                ),
+            ),
+        )
+        for gate_id, mutate_source in source_mutations:
+            changed = copy.deepcopy(exact)
+            mutate_source(changed)
+            changed["semantic_payload_sha256"] = analyzer._semantic_sha256(
+                changed
+            )
+            with self.subTest(gate_id=gate_id):
+                with self.assertRaisesRegex(
+                    ValueError, "gate.*source|tail.*source"
+                ):
+                    analyzer._validate_analysis_result(changed)
+
     def test_preexisting_output_root_retains_failed_forensic_manifest(self):
         self.produce("smoke_a")
         self.analysis_a.mkdir()
@@ -1782,6 +2047,59 @@ class InvocationSplitTests(unittest.TestCase):
         self.assertEqual(terminal["status"], "failed")
         self.assertTrue(
             all(value is None for value in terminal["output_identities"].values())
+        )
+
+    def test_altered_compact_cap_rejects_before_output_root_allocation(self):
+        self.produce("smoke_a")
+        for declared_cap in (1, 9_999_999, 10_000_001):
+            changed = copy.deepcopy(self.protocol)
+            changed["disk_contract"][
+                "compact_bundle_max_allocated_bytes"
+            ] = declared_cap
+            self.protocol_path.write_text(json.dumps(changed))
+            with self.subTest(declared_cap=declared_cap):
+                with self.assertRaisesRegex(
+                    ValueError, "compact.*cap.*frozen"
+                ):
+                    analyzer.analyze_two_range_reacquisition(
+                        protocol_path=self.protocol_path,
+                        raw_root=self.raw_a,
+                        output_root=self.analysis_a,
+                        invocation_name="smoke_analyzer_a",
+                    )
+                self.assertFalse(self.analysis_a.exists())
+                self.assertFalse(
+                    analyzer._analysis_preallocation_failure_path(
+                        self.analysis_a
+                    ).exists()
+                )
+
+    def test_exact_production_compact_cap_bounds_completed_bundle(self):
+        self.produce("smoke_a")
+        completed = analyzer.analyze_two_range_reacquisition(
+            protocol_path=self.protocol_path,
+            raw_root=self.raw_a,
+            output_root=self.analysis_a,
+            invocation_name="smoke_analyzer_a",
+        )
+        result = json.loads(
+            (completed / analyzer.OUTPUT_JSON_NAME).read_bytes()
+        )
+        allocated = sum(
+            path.stat().st_blocks * 512
+            for path in completed.iterdir()
+        )
+        self.assertEqual(
+            self.protocol["disk_contract"][
+                "compact_bundle_max_allocated_bytes"
+            ],
+            analyzer.COMPACT_OUTPUT_CAP_BYTES,
+        )
+        self.assertEqual(
+            result["budgets"]["compact_allocated_bytes"], allocated
+        )
+        self.assertLessEqual(
+            allocated, analyzer.COMPACT_OUTPUT_CAP_BYTES
         )
 
     def test_compact_cap_overflow_retains_failed_manifest(self):
@@ -1848,6 +2166,63 @@ class InvocationSplitTests(unittest.TestCase):
             ),
         )
         self.assert_failed_analysis(self.analysis_a)
+
+    def test_multibyte_error_root_context_preserves_original_provenance(self):
+        self.produce("smoke_a")
+        detail = "é" * 3000
+        detail_bytes = detail.encode("utf-8")
+        detail_digest = hashlib.sha256(detail_bytes).hexdigest()
+        real_stage = analyzer._stage_output
+        real_assert_root = analyzer._assert_output_root_path
+
+        def fail_json_only(*args, **kwargs):
+            if kwargs["final_name"] == analyzer.OUTPUT_JSON_NAME:
+                raise RuntimeError(detail)
+            return real_stage(*args, **kwargs)
+
+        def add_root_context(transaction, boundary):
+            if boundary == "failed_before":
+                raise analyzer._OutputRootIdentityMismatch(
+                    "root-context-one; root-context-two"
+                )
+            return real_assert_root(transaction, boundary)
+
+        with (
+            mock.patch.object(
+                analyzer, "_stage_output", side_effect=fail_json_only
+            ),
+            mock.patch.object(
+                analyzer,
+                "_assert_output_root_path",
+                side_effect=add_root_context,
+            ),
+        ):
+            with self.assertRaises(RuntimeError):
+                analyzer.analyze_two_range_reacquisition(
+                    protocol_path=self.protocol_path,
+                    raw_root=self.raw_a,
+                    output_root=self.analysis_a,
+                    invocation_name="smoke_analyzer_a",
+                )
+        terminal = json.loads(
+            (self.analysis_a / analyzer.ANALYZER_MANIFEST_NAME).read_bytes()
+        )
+        message = terminal["error"]["message"]
+        self.assertLessEqual(
+            len(message.encode("utf-8")),
+            analyzer.ERROR_MESSAGE_MAX_UTF8_BYTES,
+        )
+        self.assertIn("detail_utf8_bytes=6000", message)
+        self.assertIn(f"detail_sha256={detail_digest}", message)
+        self.assertIn("root-context-one", message)
+        self.assertIn("root-context-two", message)
+        allocated = sum(
+            path.stat().st_blocks * 512
+            for path in self.analysis_a.iterdir()
+        )
+        self.assertLessEqual(
+            allocated, analyzer.COMPACT_OUTPUT_CAP_BYTES
+        )
 
     def test_json_write_failure_retains_failed_manifest(self):
         self.produce("smoke_a")

@@ -659,7 +659,10 @@ def _scientific_gate_records(
             "maximum_published_error_m_strictly_below",
             "strictly_below",
             50.0,
-            sum(error >= 50.0 for error in published_errors),
+            int(
+                maximum_published is not None
+                and maximum_published >= 50.0
+            ),
             len(published_errors),
             maximum_published,
             maximum_published is not None and maximum_published < 50.0,
@@ -668,7 +671,10 @@ def _scientific_gate_records(
             "maximum_fresh_error_m_strictly_below",
             "strictly_below",
             50.0,
-            sum(error >= 50.0 for error in fresh_errors),
+            int(
+                maximum_fresh is not None
+                and maximum_fresh >= 50.0
+            ),
             len(fresh_errors),
             maximum_fresh,
             maximum_fresh is not None and maximum_fresh < 50.0,
@@ -691,7 +697,7 @@ def _scientific_gate_records(
             baseline_fresh_new_fresh,
             baseline_fresh_total,
             drop_fraction,
-            baseline_fresh_new_fresh >= 124647,
+            drop_fraction is not None and drop_fraction <= 0.02,
         ),
         _gate_record(
             "fresh_or_predicted_min_fraction",
@@ -700,7 +706,8 @@ def _scientific_gate_records(
             available,
             expected_rows,
             availability_fraction,
-            available >= 133000,
+            availability_fraction is not None
+            and availability_fraction >= 0.95,
         ),
         _gate_record(
             "maximum_prediction_age_frames",
@@ -765,14 +772,26 @@ def _integrity_counts_from_rows(
     *,
     truth_data: Mapping,
     expected_rows: int,
+    branch_representatives: Iterable[object] | None = None,
 ) -> dict[str, int]:
     counts = {gate_id: 0 for gate_id in INTEGRITY_GATE_IDS}
+    expected_representatives = tuple(
+        (None for _ in rows)
+        if branch_representatives is None
+        else branch_representatives
+    )
+    if len(expected_representatives) != len(rows):
+        raise ValueError(
+            "independent branch representatives differ from row count"
+        )
     config = (
         truth_data.get("config")
         if isinstance(truth_data, Mapping)
         else None
     )
-    for row in rows:
+    for row, expected_branches in zip(
+        rows, expected_representatives, strict=True
+    ):
         considered = row["selector_considered"] is True
         evidence_records = row["reference_evidence"]
         if any(
@@ -813,22 +832,18 @@ def _integrity_counts_from_rows(
         ):
             counts["private_prior_role_violation"] += 1
         branches = row["branches"]
-        private_start = row["branch_selection_prior_estimate"]
+        observed_branches = tuple(
+            (
+                branch["branch_id"],
+                tuple(branch["circle_start"]),
+            )
+            for branch in branches
+        )
         if considered and (
             tuple(branch["branch_id"] for branch in branches)
             != BRANCH_IDS
-            or (
-                len(branches) == 2
-                and branches[0]["circle_start"]
-                == branches[1]["circle_start"]
-            )
-            or (
-                private_start is not None
-                and any(
-                    branch["circle_start"] == private_start
-                    for branch in branches
-                )
-            )
+            or expected_branches is None
+            or observed_branches != expected_branches
         ):
             counts["noncircle_continuous_start"] += 1
         scored = [
@@ -1097,6 +1112,7 @@ def aggregate_two_range_reacquisition(
     new_rows: Iterable[Mapping],
     truth_data: Mapping,
     protocol: Mapping,
+    branch_representatives: Iterable[object] | None = None,
 ) -> dict:
     """Join exact baseline/v4/new keys and compute frozen compact metrics."""
     baseline_rows = [
@@ -1189,6 +1205,7 @@ def aggregate_two_range_reacquisition(
         new_rows,
         truth_data=truth_data,
         expected_rows=expected_rows,
+        branch_representatives=branch_representatives,
     )
     integrity = _integrity_gate_records(
         integrity_counts, denominator=expected_rows
@@ -2093,19 +2110,67 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _canonical_error_message(detail: object) -> str:
-    raw = str(detail).encode("utf-8", errors="backslashreplace")
-    if len(raw) <= ERROR_MESSAGE_MAX_UTF8_BYTES:
-        return raw.decode("utf-8")
-    digest = hashlib.sha256(raw).hexdigest()
+def _canonical_error_message(
+    detail: object,
+    *,
+    contexts: Iterable[object] = (),
+) -> str:
+    detail_raw = str(detail).encode(
+        "utf-8", errors="backslashreplace"
+    )
+    context_values = tuple(str(context) for context in contexts)
+    context_raw = (
+        b""
+        if not context_values
+        else (
+            "; context="
+            + " | ".join(context_values)
+        ).encode("utf-8", errors="backslashreplace")
+    )
+    combined = detail_raw + context_raw
+    if len(combined) <= ERROR_MESSAGE_MAX_UTF8_BYTES:
+        return combined.decode("utf-8")
+    digest = hashlib.sha256(detail_raw).hexdigest()
     suffix = (
         " ... [detail_truncated=true "
-        f"detail_utf8_bytes={len(raw)} "
+        f"detail_utf8_bytes={len(detail_raw)} "
         f"detail_sha256={digest}]"
     ).encode("ascii")
-    prefix_budget = ERROR_MESSAGE_MAX_UTF8_BYTES - len(suffix)
-    prefix = raw[:prefix_budget].decode("utf-8", errors="ignore")
-    return prefix + suffix.decode("ascii")
+    context_budget = max(
+        0,
+        ERROR_MESSAGE_MAX_UTF8_BYTES - len(suffix),
+    )
+    bounded_context = context_raw[:context_budget]
+    if len(bounded_context) < len(context_raw):
+        context_digest = hashlib.sha256(context_raw).hexdigest()
+        context_suffix = (
+            " ... [context_truncated=true "
+            f"context_utf8_bytes={len(context_raw)} "
+            f"context_sha256={context_digest}]"
+        ).encode("ascii")
+        context_budget = max(
+            0,
+            ERROR_MESSAGE_MAX_UTF8_BYTES
+            - len(suffix)
+            - len(context_suffix),
+        )
+        bounded_context = (
+            context_raw[:context_budget] + context_suffix
+        )
+    prefix_budget = max(
+        0,
+        ERROR_MESSAGE_MAX_UTF8_BYTES
+        - len(bounded_context)
+        - len(suffix),
+    )
+    prefix = detail_raw[:prefix_budget].decode(
+        "utf-8", errors="ignore"
+    )
+    return (
+        prefix
+        + bounded_context.decode("utf-8", errors="ignore")
+        + suffix.decode("ascii")
+    )
 
 
 def _analysis_manifest(
@@ -2161,6 +2226,18 @@ def _analysis_manifest(
 
 def _valid_nonnegative_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _production_compact_cap(disk_contract: object) -> int:
+    if (
+        not isinstance(disk_contract, Mapping)
+        or disk_contract.get("compact_bundle_max_allocated_bytes")
+        != COMPACT_OUTPUT_CAP_BYTES
+    ):
+        raise ValueError(
+            "compact allocated-byte cap differs from frozen production cap"
+        )
+    return COMPACT_OUTPUT_CAP_BYTES
 
 
 def _lower_hex(value: object, length: int) -> bool:
@@ -2357,6 +2434,7 @@ def _validate_analysis_manifest(
         )
     ):
         raise ValueError("analysis manifest disk contract differs")
+    _production_compact_cap(disk_contract)
     for field in ("started_at", "completed_at"):
         value = manifest[field]
         if field == "completed_at" and value is None:
@@ -2484,12 +2562,7 @@ def _publish_analysis_preallocation_failure(
     finally:
         os.close(descriptor)
     allocated = target.stat().st_blocks * 512
-    compact_cap = min(
-        COMPACT_OUTPUT_CAP_BYTES,
-        manifest["disk_contract"][
-            "compact_bundle_max_allocated_bytes"
-        ],
-    )
+    compact_cap = _production_compact_cap(manifest["disk_contract"])
     if allocated > compact_cap:
         target.unlink()
         raise DiskSpaceError(
@@ -2510,10 +2583,7 @@ def _audit_failed_bundle_cap(
             follow_symlinks=False,
         )
         total += metadata.st_blocks * 512
-    compact_cap = min(
-        COMPACT_OUTPUT_CAP_BYTES,
-        disk_contract["compact_bundle_max_allocated_bytes"],
-    )
+    compact_cap = _production_compact_cap(disk_contract)
     if total > compact_cap:
         raise DiskSpaceError(
             "failed forensic bundle exceeds compact allocated-byte cap"
@@ -2618,6 +2688,178 @@ def _gate_comparison(
     if operator == "equal":
         return value == threshold
     raise ValueError("gate operator is not canonical")
+
+
+def _fresh_error_tail_source(
+    tails: Iterable[Mapping],
+    *,
+    expected_count: int,
+) -> tuple[int, float | None]:
+    seed_records = [
+        record
+        for record in tails
+        if record["metric"] == "offline_error_norm"
+        and record["stratifier"] == "seed"
+    ]
+    count = sum(record["count"] for record in seed_records)
+    maxima = [
+        record["maximum"]
+        for record in seed_records
+        if record["maximum"] is not None
+    ]
+    maximum = None if not maxima else float(max(maxima))
+    if count != expected_count or (count == 0) != (maximum is None):
+        raise ValueError("tail population differs from gate source")
+    return count, maximum
+
+
+def _expected_scientific_gates_from_sources(
+    result: Mapping,
+) -> list[dict]:
+    budgets = result["budgets"]
+    status = result["status_counts"]
+    accounting = result["selector_accounting"]
+    transitions = result["baseline_fresh_transitions"]
+    paired = result["paired_comparison"]
+    integrity = {
+        record["gate_id"]: record["numerator"]
+        for record in result["integrity_gates"]
+    }
+    expected_rows = budgets["expected_rows"]
+    if (
+        status["attempt_accepted"] != accounting["accepted"]
+        or status["output_fresh"] != accounting["accepted"]
+    ):
+        raise ValueError("selector accounting differs from gate source")
+    fresh_count, maximum_fresh = _fresh_error_tail_source(
+        result["tails"],
+        expected_count=status["output_fresh"],
+    )
+    predicted = status["output_predicted"]
+    if predicted != integrity["predicted_selector_output"]:
+        raise ValueError("predicted output count differs from gate source")
+    if predicted != 0:
+        raise ValueError(
+            "predicted output prevents exact compact gate reconstruction"
+        )
+    published_count = fresh_count
+    maximum_published = maximum_fresh
+    paired_difference = paired["new_minus_baseline_p95_m"]
+    drop_fraction = (
+        None
+        if transitions["baseline_fresh_total"] == 0
+        else max(
+            0.0,
+            (
+                transitions["baseline_fresh_total"]
+                - transitions["new_fresh"]
+            )
+            / transitions["baseline_fresh_total"],
+        )
+    )
+    available = status["output_fresh"] + predicted
+    availability_fraction = (
+        None if expected_rows == 0 else available / expected_rows
+    )
+    sources = (
+        (
+            "maximum_published_error_m_strictly_below",
+            "strictly_below",
+            50.0,
+            int(
+                maximum_published is not None
+                and maximum_published >= 50.0
+            ),
+            published_count,
+            maximum_published,
+        ),
+        (
+            "maximum_fresh_error_m_strictly_below",
+            "strictly_below",
+            50.0,
+            int(
+                maximum_fresh is not None
+                and maximum_fresh >= 50.0
+            ),
+            fresh_count,
+            maximum_fresh,
+        ),
+        (
+            "paired_both_fresh_p95_must_not_worsen",
+            "less_than_or_equal",
+            0.0,
+            paired["cohort_size"],
+            paired["cohort_size"],
+            paired_difference,
+        ),
+        (
+            "fresh_availability_max_drop_fraction",
+            "less_than_or_equal",
+            0.02,
+            transitions["new_fresh"],
+            transitions["baseline_fresh_total"],
+            drop_fraction,
+        ),
+        (
+            "fresh_or_predicted_min_fraction",
+            "greater_than_or_equal",
+            0.95,
+            available,
+            expected_rows,
+            availability_fraction,
+        ),
+        (
+            "maximum_prediction_age_frames",
+            "less_than_or_equal",
+            2,
+            predicted,
+            predicted,
+            0,
+        ),
+        (
+            "qualification_anchor_violations_allowed",
+            "equal",
+            0,
+            integrity["nonfresh_anchor_use"],
+            expected_rows,
+            integrity["nonfresh_anchor_use"],
+        ),
+        (
+            "current_frame_provenance_violations_allowed",
+            "equal",
+            0,
+            integrity["preserved_contract_violation"],
+            expected_rows,
+            integrity["preserved_contract_violation"],
+        ),
+        (
+            "ascending_dag_violations_allowed",
+            "equal",
+            0,
+            integrity["selector_reference_set_violation"],
+            expected_rows,
+            integrity["selector_reference_set_violation"],
+        ),
+    )
+    return [
+        _gate_record(
+            gate_id,
+            operator,
+            threshold,
+            numerator,
+            denominator,
+            value,
+            _gate_comparison(operator, value, threshold),
+        )
+        for (
+            gate_id,
+            operator,
+            threshold,
+            numerator,
+            denominator,
+            value,
+        ) in sources
+    ]
 
 
 def _validate_gate_arithmetic(record: Mapping) -> None:
@@ -2984,6 +3226,15 @@ def _validate_analysis_result(result: Mapping) -> None:
                 != record[fields[3]]
             ):
                 raise ValueError("paired signed difference differs")
+        if (
+            result["paired_comparison"]["cohort_size"]
+            > transitions["baseline_fresh_total"]
+            or result["paired_comparison"]["cohort_size"]
+            > status["output_fresh"]
+        ):
+            raise ValueError(
+                "paired cohort exceeds baseline-fresh or new-fresh source"
+            )
         _validate_ordered_tails(v4["tails"], v4=True)
         if (
             accounting["fresh_contained"]
@@ -3044,10 +3295,21 @@ def _validate_analysis_result(result: Mapping) -> None:
         _validate_gate(record, gate_id)
         if record["operator"] != "equal" or record["threshold"] != 0:
             raise ValueError("integrity gate contract differs")
+        if record["denominator"] != budgets["expected_rows"]:
+            raise ValueError(
+                "integrity gate denominator differs from source rows"
+            )
         _validate_gate_arithmetic(record)
     tails = result["tails"]
     if registered:
         _validate_ordered_tails(tails, v4=False)
+        expected_scientific = _expected_scientific_gates_from_sources(
+            result
+        )
+        if scientific != expected_scientific:
+            raise ValueError(
+                "scientific gate differs from compact source summary"
+            )
     expected_decision = (
         ("pass" if all(record["passed"] for record in (*scientific, *integrity))
          else "fail")
@@ -3714,7 +3976,7 @@ def _validate_registered_rows(
     *,
     protocol: Mapping,
     truth_data: Mapping,
-) -> None:
+) -> tuple[object, ...]:
     if len(rows) != 140000:
         raise ValueError("registered raw row denominator differs")
     frames, commands = replay._preflight_frames(dict(truth_data))
@@ -3729,6 +3991,7 @@ def _validate_registered_rows(
         **protocol,
         "_truth_config": truth_data["config"],
     }
+    branch_representatives = []
     for row, expected_key in zip(
         rows, replay.iter_registered_keys(), strict=True
     ):
@@ -3767,8 +4030,21 @@ def _validate_registered_rows(
         else:
             private_states[robot_id] = private_state
         current_public[robot_id] = reconstructed["public_output"]
+        branch_reconstruction = reconstructed["branch_reconstruction"]
+        branch_representatives.append(
+            None
+            if branch_reconstruction is None
+            else tuple(
+                (
+                    branch["branch_id"],
+                    tuple(branch["circle_start"]),
+                )
+                for branch in branch_reconstruction["branches"]
+            )
+        )
         previous_seed = seed
         previous_frame = frame_index
+    return tuple(branch_representatives)
 
 
 def _runtime_absolute_no_resolve(path: Path, *, label: str) -> Path:
@@ -3806,6 +4082,7 @@ def analyze_two_range_reacquisition(
     protocol = _strict_json_object(protocol_payload, protocol_path)
     protocol_id = protocol.get("protocol_id")
     disk_contract = protocol.get("disk_contract")
+    _production_compact_cap(disk_contract)
     invocations = protocol.get("invocations")
     declaration = (
         invocations.get(invocation_name)
@@ -3914,7 +4191,7 @@ def analyze_two_range_reacquisition(
             raw_manifest=raw_manifest,
         )
         source_identities.update(registered_sources)
-        _validate_registered_rows(
+        branch_representatives = _validate_registered_rows(
             rows, protocol=protocol, truth_data=truth_data
         )
         result = aggregate_two_range_reacquisition(
@@ -3923,6 +4200,7 @@ def analyze_two_range_reacquisition(
             new_rows=rows,
             truth_data=truth_data,
             protocol=protocol,
+            branch_representatives=branch_representatives,
         )
         result_identities["authorization"] = _result_identity(
             authorization_identity
@@ -4067,10 +4345,7 @@ def analyze_two_range_reacquisition(
             dir_fd=transaction["root_fd"],
             follow_symlinks=False,
         )
-        compact_cap = min(
-            COMPACT_OUTPUT_CAP_BYTES,
-            disk_contract["compact_bundle_max_allocated_bytes"],
-        )
+        compact_cap = _production_compact_cap(disk_contract)
         for _ in range(3):
             compact_allocated = (
                 json_stage["identity"]["allocated_bytes"]
@@ -4225,8 +4500,8 @@ def analyze_two_range_reacquisition(
             _audit_failed_bundle_cap(transaction, disk_contract)
         except _OutputRootIdentityMismatch as root_error:
             failed["error"]["message"] = _canonical_error_message(
-                f"{failed['error']['message']}; "
-                f"{root_error}"
+                error,
+                contexts=(root_error,),
             )
             try:
                 _publish_analysis_manifest(
