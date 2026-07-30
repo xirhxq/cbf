@@ -138,7 +138,27 @@ class TaggedPrivateStateTests(unittest.TestCase):
         )
 
     def test_frame_zero_has_no_incoming_public_or_private_prior(self):
-        bundle = advance_two_range_prior(None, None, None, next_frame_index=0)
+        bundle = advance_two_range_prior(
+            previous_public={
+                "output_status": "fresh",
+                "prediction_age": 0,
+                "estimate": [10.0, 20.0],
+                "modeled_covariance": [[1.0, 0.0], [0.0, 1.0]],
+                "epsilon": 3.0,
+                "aged_modeled_radius": None,
+                "base_anchor_provenance": [0, 1],
+            },
+            previous_private={
+                "status": "available",
+                "estimate": [1.0, 2.0],
+                "modeled_covariance": [[1.0, 0.0], [0.0, 1.0]],
+                "source_fresh_frame": 0,
+                "propagated_to_frame": 0,
+                "age_frames": 0,
+            },
+            held_velocity=[2.0, 0.0],
+            next_frame_index=0,
+        )
         self.assertEqual(
             bundle["public_prediction"]["output_status"], "unavailable"
         )
