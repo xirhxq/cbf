@@ -25,6 +25,7 @@ from scripts.diagnostics.predictive_wnls import (
     ATTEMPT_STATUSES,
     INNOVATION_REFERENCE_QUANTILE,
     OUTPUT_STATUSES,
+    _complete_converged_solver_result,
     candidate_acceptance,
     make_unavailable_output,
     qualify_active_references,
@@ -832,6 +833,14 @@ def _builder_json_value(value: object) -> object:
 
 def _solver_result(source: object) -> dict:
     result = _ordered_source(source, SOLVER_RESULT_FIELDS)
+    if result["status"] != "converged":
+        for field in (
+            "covariance",
+            "epsilon",
+            "phi_min_eigenvalue",
+            "phi_condition",
+        ):
+            result[field] = None
     traces = result["proposal_trace"]
     if not isinstance(traces, list):
         raise ValueError("proposal trace must be a list")
@@ -1281,27 +1290,7 @@ def _validate_solver_result(result: object) -> None:
         ):
             raise ValueError("rejected proposal trace is inconsistent")
     if result["status"] == "converged":
-        if (
-            result["estimate"] is None
-            or result["covariance"] is None
-            or result["epsilon"] is None
-            or result["epsilon"] <= 0.0
-            or result["phi_min_eigenvalue"] is None
-            or result["phi_min_eigenvalue"] <= 0.0
-            or result["phi_condition"] is None
-            or result["phi_condition"] < 1.0
-            or result["cost"] is None
-            or result["stationarity_norm"] is None
-            or result["fim_valid"] is not True
-            or result["failure_reason"] is not None
-            or (
-                traces
-                and (
-                    traces[-1]["accepted"] is not True
-                    or traces[-1]["trial_cost"] != result["cost"]
-                )
-            )
-        ):
+        if not _complete_converged_solver_result(result):
             raise ValueError("converged solver result is incomplete")
     elif (
         not isinstance(result["failure_reason"], str)
@@ -1309,6 +1298,8 @@ def _validate_solver_result(result: object) -> None:
         or result["fim_valid"] is not False
         or result["covariance"] is not None
         or result["epsilon"] is not None
+        or result["phi_min_eigenvalue"] is not None
+        or result["phi_condition"] is not None
     ):
         raise ValueError("nonconverged solver result null semantics differ")
 

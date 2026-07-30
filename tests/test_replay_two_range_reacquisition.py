@@ -512,6 +512,104 @@ class RowAndKeyMutationTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     replay._validate_row(row)
 
+    def test_converged_solver_fim_summary_matches_covariance_with_frozen_tolerance(
+        self,
+    ):
+        result = copy.deepcopy(
+            replay.CANDIDATE_TEMPLATES[
+                "canonical_spd_zero_residual_v1"
+            ],
+        )
+        result.update({
+            "covariance": [[4.0, 0.0], [0.0, 1.0]],
+            "epsilon": 6.0,
+            "phi_min_eigenvalue": 0.25,
+            "phi_condition": 4.0,
+        })
+        replay._validate_solver_result(result)
+
+        within_tolerance = copy.deepcopy(result)
+        within_tolerance.update({
+            "epsilon": 6.0 + 3.0e-9,
+            "phi_min_eigenvalue": 0.25 + 1.0e-10,
+            "phi_condition": 4.0 + 2.0e-9,
+        })
+        replay._validate_solver_result(within_tolerance)
+
+        outside_tolerance = (
+            ("epsilon", 6.0 + 12.0e-9),
+            ("phi_min_eigenvalue", 0.25 + 0.5e-9),
+            ("phi_condition", 4.0 + 8.0e-9),
+        )
+        for field, value in outside_tolerance:
+            mismatched = copy.deepcopy(result)
+            mismatched[field] = value
+            with self.subTest(field=field):
+                with self.assertRaises(ValueError):
+                    replay._validate_solver_result(mismatched)
+
+    def test_converged_solver_fim_summary_rejects_nonfinite_and_boolean_values(
+        self,
+    ):
+        result = copy.deepcopy(
+            replay.CANDIDATE_TEMPLATES[
+                "canonical_spd_zero_residual_v1"
+            ],
+        )
+        for field, value in (
+            ("epsilon", math.nan),
+            ("phi_min_eigenvalue", math.inf),
+            ("phi_condition", True),
+        ):
+            malformed = copy.deepcopy(result)
+            malformed[field] = value
+            with self.subTest(field=field, value=value):
+                with self.assertRaises(ValueError):
+                    replay._validate_solver_result(malformed)
+
+    def test_nonconverged_solver_has_exact_fim_null_semantics(self):
+        for status in ("invalid", "failed"):
+            result = copy.deepcopy(
+                replay.CANDIDATE_TEMPLATES[
+                    "canonical_spd_zero_residual_v1"
+                ],
+            )
+            result.update({
+                "status": status,
+                "covariance": None,
+                "epsilon": None,
+                "fim_valid": False,
+                "failure_reason": f"{status}_for_test",
+            })
+            for field in ("phi_min_eigenvalue", "phi_condition"):
+                malformed = copy.deepcopy(result)
+                malformed[field] = 1.0
+                with self.subTest(status=status, field=field):
+                    with self.assertRaises(ValueError):
+                        replay._validate_solver_result(malformed)
+
+    def test_nonconverged_smoke_solver_serializes_exact_fim_nulls(self):
+        row = replay.produce_smoke_row(
+            case_id="nearly_collinear",
+            mechanism_fixture=self.fixture,
+        )
+        for branch in row["branches"]:
+            result = branch["solver_result"]
+            with self.subTest(branch_id=branch["branch_id"]):
+                self.assertEqual(result["status"], "invalid")
+                self.assertIs(result["fim_valid"], False)
+                self.assertTrue(
+                    all(
+                        result[field] is None
+                        for field in (
+                            "covariance",
+                            "epsilon",
+                            "phi_min_eigenvalue",
+                            "phi_condition",
+                        )
+                    ),
+                )
+
     def test_cross_path_candidate_branch_and_cardinality_substitutions_reject(self):
         mutations = []
         with_existing = copy.deepcopy(self.accepted)
