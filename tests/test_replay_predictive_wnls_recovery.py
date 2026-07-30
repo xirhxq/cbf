@@ -1607,6 +1607,105 @@ class PathDiskAndTerminalTests(ReplayHarness):
         finally:
             replay._close_output_transaction(transaction)
 
+    def test_stage_rollback_resumes_after_quarantine_unlink_fault(self):
+        root = self.output_parent / "stage-rollback-unlink-fault"
+        transaction = replay._create_exact_root(root)
+        baseline = open_fd_count()
+        stage_path = replay._stage_path(root, "finalizing")
+        rollback_prefix = f".{stage_path.name}.rollback."
+        real_unlink = os.unlink
+        unlink_faulted = False
+
+        def fail_first_rollback_unlink(path, *, dir_fd=None):
+            nonlocal unlink_faulted
+            if str(path).startswith(rollback_prefix) and not unlink_faulted:
+                unlink_faulted = True
+                raise OSError("transient quarantine unlink fault")
+            return real_unlink(path, dir_fd=dir_fd)
+
+        try:
+            with mock.patch(
+                "os.fsync", side_effect=RuntimeError("stage fsync")
+            ), mock.patch(
+                "os.unlink", side_effect=fail_first_rollback_unlink
+            ):
+                with self.assertRaisesRegex(RuntimeError, "stage fsync") as caught:
+                    replay._write_stage(
+                        transaction,
+                        "finalizing",
+                        b"partial-stage",
+                    )
+            self.assertTrue(unlink_faulted)
+            self.assertFalse(stage_path.exists())
+            self.assertEqual(
+                [
+                    entry.name
+                    for entry in root.parent.iterdir()
+                    if entry.name.startswith(rollback_prefix)
+                ],
+                [],
+            )
+            self.assertEqual(open_fd_count(), baseline)
+            self.assertEqual(transaction["resource_fds"], set())
+            self.assertTrue(
+                any(
+                    "transient quarantine unlink fault" in note
+                    for note in getattr(caught.exception, "__notes__", [])
+                )
+            )
+        finally:
+            replay._close_output_transaction(transaction)
+
+    def test_raw_adoption_rollback_resumes_after_quarantine_unlink_fault(self):
+        class ExplodingSet(set):
+            def add(self, value):
+                super().add(value)
+                raise KeyboardInterrupt("raw adoption")
+
+        root = self.output_parent / "raw-rollback-unlink-fault"
+        transaction = replay._create_exact_root(root)
+        transaction["resource_fds"] = ExplodingSet()
+        baseline = open_fd_count()
+        rollback_prefix = f".{replay.RAW_PROCESS_NAME}.rollback."
+        real_unlink = os.unlink
+        unlink_faulted = False
+
+        def fail_first_rollback_unlink(path, *, dir_fd=None):
+            nonlocal unlink_faulted
+            if str(path).startswith(rollback_prefix) and not unlink_faulted:
+                unlink_faulted = True
+                raise OSError("transient quarantine unlink fault")
+            return real_unlink(path, dir_fd=dir_fd)
+
+        try:
+            with mock.patch(
+                "os.unlink", side_effect=fail_first_rollback_unlink
+            ):
+                with self.assertRaisesRegex(
+                    KeyboardInterrupt, "raw adoption"
+                ) as caught:
+                    replay._open_raw_output(transaction)
+            self.assertTrue(unlink_faulted)
+            self.assertFalse((root / replay.RAW_PROCESS_NAME).exists())
+            self.assertEqual(
+                [
+                    entry.name
+                    for entry in root.iterdir()
+                    if entry.name.startswith(rollback_prefix)
+                ],
+                [],
+            )
+            self.assertEqual(open_fd_count(), baseline)
+            self.assertEqual(transaction["resource_fds"], set())
+            self.assertTrue(
+                any(
+                    "transient quarantine unlink fault" in note
+                    for note in getattr(caught.exception, "__notes__", [])
+                )
+            )
+        finally:
+            replay._close_output_transaction(transaction)
+
     def test_every_descriptor_relative_mkdir_fsyncs_containing_directory(self):
         root = self.output_parent / "mkdir-a" / "mkdir-b" / "bundle"
         events = []

@@ -908,6 +908,7 @@ def _create_exact_root(
             ),
             "root_identity": _directory_identity(metadata, output_root),
             "resource_fds": set(),
+            "pending_fd": None,
             "closed": False,
         }
         if identity_sink is not None:
@@ -997,12 +998,16 @@ def _close_output_transaction(transaction: dict) -> None:
         resources.clear()
     except BaseException as error:
         faults.append(error)
+    pending = transaction.get("pending_fd")
+    if isinstance(pending, int):
+        descriptors.append(pending)
+    transaction["pending_fd"] = None
     for name in ("root_fd", "parent_fd"):
         descriptor = transaction.get(name)
         if isinstance(descriptor, int):
             descriptors.append(descriptor)
         transaction[name] = None
-    for descriptor in descriptors:
+    for descriptor in dict.fromkeys(descriptors):
         faults.extend(_close_descriptor_faults(descriptor))
     transaction["close_faults"] = [
         f"{type(error).__name__}: {error}" for error in faults
@@ -2045,39 +2050,69 @@ def _verify_raw_output(
 
 def _rollback_open_entry_once(
     directory_fd: int,
-    name: str,
+    rollback_state: dict,
     descriptor: int,
-) -> BaseException | None:
-    held = os.fstat(descriptor)
-    quarantine = f".{name}.rollback.{secrets.token_hex(16)}"
-    rename_fault = None
+) -> tuple[bool, BaseException | None]:
+    original_name = rollback_state["original_name"]
+    active_name = rollback_state["active_name"]
+    transient_fault = None
     try:
-        os.rename(
-            name,
-            quarantine,
-            src_dir_fd=directory_fd,
-            dst_dir_fd=directory_fd,
-        )
-    except BaseException as error:
-        rename_fault = error
+        held = os.fstat(descriptor)
+        if active_name is None:
+            return True, None
+        if active_name == original_name:
+            quarantine = rollback_state.get("quarantine_name")
+            if quarantine is None:
+                quarantine = (
+                    f".{original_name}.rollback.{secrets.token_hex(16)}"
+                )
+                rollback_state["quarantine_name"] = quarantine
+            try:
+                os.rename(
+                    original_name,
+                    quarantine,
+                    src_dir_fd=directory_fd,
+                    dst_dir_fd=directory_fd,
+                )
+            except BaseException as error:
+                transient_fault = error
+                try:
+                    os.stat(
+                        quarantine,
+                        dir_fd=directory_fd,
+                        follow_symlinks=False,
+                    )
+                except BaseException:
+                    return False, error
+            rollback_state["active_name"] = quarantine
+            active_name = quarantine
         try:
-            os.stat(
-                quarantine,
+            moved = os.stat(
+                active_name,
                 dir_fd=directory_fd,
                 follow_symlinks=False,
             )
-        except Exception:
-            raise error
-    moved = os.stat(
-        quarantine,
-        dir_fd=directory_fd,
-        follow_symlinks=False,
-    )
-    if (moved.st_dev, moved.st_ino) != (held.st_dev, held.st_ino):
-        _restore_quarantine(directory_fd, quarantine, name)
-        raise ValueError("created entry was replaced before rollback")
-    os.unlink(quarantine, dir_fd=directory_fd)
-    return rename_fault
+        except FileNotFoundError as error:
+            if os.fstat(descriptor).st_nlink == 0:
+                rollback_state["active_name"] = None
+                return True, transient_fault
+            return False, error
+        if (moved.st_dev, moved.st_ino) != (held.st_dev, held.st_ino):
+            if active_name != original_name:
+                _restore_quarantine(
+                    directory_fd,
+                    active_name,
+                    original_name,
+                )
+                rollback_state["active_name"] = original_name
+            return False, ValueError(
+                "created entry was replaced before rollback"
+            )
+        os.unlink(active_name, dir_fd=directory_fd)
+        rollback_state["active_name"] = None
+        return True, transient_fault
+    except BaseException as error:
+        return False, error
 
 
 def _rollback_created_entry(
@@ -2087,25 +2122,31 @@ def _rollback_created_entry(
     descriptor: int,
     original_error: BaseException,
     label: str,
-) -> None:
+) -> bool:
+    rollback_state = {
+        "original_name": name,
+        "active_name": name,
+        "quarantine_name": None,
+    }
     for _ in range(2):
-        try:
-            fault = _rollback_open_entry_once(
-                directory_fd,
-                name,
-                descriptor,
-            )
+        success, fault = _rollback_open_entry_once(
+            directory_fd,
+            rollback_state,
+            descriptor,
+        )
+        if success:
             if fault is not None:
                 original_error.add_note(
                     f"{label} rollback failed transiently: "
                     f"{type(fault).__name__}: {fault}"
                 )
-            return
-        except BaseException as cleanup_error:
+            return True
+        if fault is not None:
             original_error.add_note(
                 f"{label} rollback failed: "
-                f"{type(cleanup_error).__name__}: {cleanup_error}"
+                f"{type(fault).__name__}: {fault}"
             )
+    return False
 
 
 def _release_adopted_descriptor(
@@ -2120,6 +2161,8 @@ def _release_adopted_descriptor(
             "descriptor ownership release failed: "
             f"{type(discard_error).__name__}: {discard_error}"
         )
+    if transaction.get("pending_fd") == descriptor:
+        transaction["pending_fd"] = None
     for close_error in _close_descriptor_faults(descriptor):
         original_error.add_note(
             "descriptor close failed: "
@@ -2133,12 +2176,14 @@ def _adopt_or_close(
     *,
     rollback,
 ) -> int:
+    transaction["pending_fd"] = descriptor
     try:
         transaction["resource_fds"].add(descriptor)
     except BaseException as error:
-        rollback(error)
-        _release_adopted_descriptor(transaction, descriptor, error)
+        if rollback(error):
+            _release_adopted_descriptor(transaction, descriptor, error)
         raise
+    transaction["pending_fd"] = None
     return descriptor
 
 
@@ -2210,8 +2255,8 @@ def _write_stage(transaction: dict, state: str, payload: bytes) -> dict:
             "target_linked": False,
         }
     except BaseException as error:
-        rollback(error)
-        _release_adopted_descriptor(transaction, descriptor, error)
+        if rollback(error):
+            _release_adopted_descriptor(transaction, descriptor, error)
         raise
 
 
