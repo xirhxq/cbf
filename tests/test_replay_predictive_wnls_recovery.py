@@ -7,6 +7,7 @@ import json
 import math
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -206,6 +207,51 @@ class ReplayHarness(unittest.TestCase):
 
 
 class ProtocolAndPreflightTests(ReplayHarness):
+    def test_direct_path_help_runs_from_repository_root(self):
+        project = Path(replay.__file__).resolve().parents[2]
+        result = subprocess.run(
+            [
+                sys.executable,
+                "scripts/diagnostics/replay_predictive_wnls_recovery.py",
+                "--help",
+            ],
+            cwd=project,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("usage:", result.stdout)
+
+    def test_direct_path_help_rejects_preceding_shadow_scripts_package(self):
+        project = Path(replay.__file__).resolve().parents[2]
+        shadow_root = self.root / "shadow"
+        shadow_scripts = shadow_root / "scripts"
+        shadow_scripts.mkdir(parents=True)
+        marker = self.root / "shadow-imported"
+        (shadow_scripts / "__init__.py").write_text(
+            "from pathlib import Path\n"
+            f"Path({str(marker)!r}).write_text('imported')\n"
+        )
+        environment = os.environ.copy()
+        python_path = [str(shadow_root)]
+        if environment.get("PYTHONPATH"):
+            python_path.append(environment["PYTHONPATH"])
+        environment["PYTHONPATH"] = os.pathsep.join(python_path)
+        result = subprocess.run(
+            [
+                sys.executable,
+                "scripts/diagnostics/replay_predictive_wnls_recovery.py",
+                "--help",
+            ],
+            cwd=project,
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(marker.exists())
+        self.assertIn("usage:", result.stdout)
+
     def test_production_v2_contract_is_exact_and_exports_canonical_argv(self):
         self.assertEqual(
             replay.PROTOCOL_SCHEMA_ID,

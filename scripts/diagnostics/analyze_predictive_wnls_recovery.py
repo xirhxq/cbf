@@ -5,15 +5,50 @@ from __future__ import annotations
 import argparse
 import gzip
 import hashlib
+import importlib.machinery
+import importlib.util
 import json
 import math
 import os
+import sys
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
+
+if __package__ in {None, ""}:
+    _SCRIPT_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+
+    def _is_script_repository_path(entry: object) -> bool:
+        if not isinstance(entry, str):
+            return False
+        candidate = Path.cwd() if entry == "" else Path(entry)
+        try:
+            return candidate.resolve() == _SCRIPT_REPOSITORY_ROOT
+        except (OSError, RuntimeError):
+            return False
+
+    sys.path[:] = [
+        entry for entry in sys.path if not _is_script_repository_path(entry)
+    ]
+    sys.path.insert(0, str(_SCRIPT_REPOSITORY_ROOT))
+    for _module_name in tuple(sys.modules):
+        if _module_name == "scripts" or _module_name.startswith("scripts."):
+            del sys.modules[_module_name]
+    _SCRIPT_PACKAGE_SPEC = importlib.machinery.PathFinder.find_spec(
+        "scripts",
+        [str(_SCRIPT_REPOSITORY_ROOT)],
+    )
+    if (
+        _SCRIPT_PACKAGE_SPEC is None
+        or _SCRIPT_PACKAGE_SPEC.submodule_search_locations is None
+    ):
+        raise ImportError("implementation-root scripts package is unavailable")
+    sys.modules["scripts"] = importlib.util.module_from_spec(
+        _SCRIPT_PACKAGE_SPEC
+    )
 
 from scripts.diagnostics import replay_predictive_wnls_recovery as replay
 from scripts.diagnostics.run_diagnostic import (

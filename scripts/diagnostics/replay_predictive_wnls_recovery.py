@@ -13,11 +13,40 @@ import re
 import secrets
 import stat
 import subprocess
+import sys
+import types
 from collections.abc import Mapping
 from datetime import datetime, timezone
+from importlib.machinery import ModuleSpec
 from pathlib import Path
 
 import numpy as np
+
+if __package__ in (None, ""):
+    _IMPLEMENTATION_ROOT = Path(__file__).resolve().parents[2]
+    _IMPLEMENTATION_ROOT_TEXT = os.fspath(_IMPLEMENTATION_ROOT)
+    sys.path[:] = [
+        _IMPLEMENTATION_ROOT_TEXT,
+        *(
+            entry
+            for entry in sys.path
+            if entry != _IMPLEMENTATION_ROOT_TEXT
+        ),
+    ]
+    _SCRIPTS_NAMESPACE = types.ModuleType("scripts")
+    _SCRIPTS_NAMESPACE.__package__ = "scripts"
+    _SCRIPTS_NAMESPACE.__path__ = [
+        os.fspath(_IMPLEMENTATION_ROOT / "scripts")
+    ]
+    _SCRIPTS_NAMESPACE.__spec__ = ModuleSpec(
+        "scripts",
+        loader=None,
+        is_package=True,
+    )
+    _SCRIPTS_NAMESPACE.__spec__.submodule_search_locations = (
+        _SCRIPTS_NAMESPACE.__path__
+    )
+    sys.modules["scripts"] = _SCRIPTS_NAMESPACE
 
 from scripts.diagnostics.predictive_wnls import (
     ATTEMPT_STATUSES,

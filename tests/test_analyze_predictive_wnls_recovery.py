@@ -6,6 +6,9 @@ import copy
 import gzip
 import hashlib
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -770,6 +773,66 @@ class PureAggregationTests(unittest.TestCase):
         ):
             with self.subTest(label=label):
                 self.assertIn(label, markdown)
+
+
+class DirectCliBootstrapTests(unittest.TestCase):
+    def test_direct_script_help_runs_from_repository_root(self):
+        """Breaks if direct registered-path execution cannot import the package."""
+        implementation_root = Path(analyzer.__file__).resolve().parents[2]
+        environment = os.environ.copy()
+        environment.pop("PYTHONPATH", None)
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "scripts/diagnostics/analyze_predictive_wnls_recovery.py",
+                "--help",
+            ],
+            cwd=implementation_root,
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("--baseline-process-path", completed.stdout)
+
+    def test_direct_script_cannot_import_preceding_shadow_scripts_package(self):
+        """Breaks if PYTHONPATH can replace the registered implementation."""
+        implementation_root = Path(analyzer.__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            shadow_root = root / "shadow-pythonpath"
+            shadow_diagnostics = shadow_root / "scripts" / "diagnostics"
+            shadow_diagnostics.mkdir(parents=True)
+            (shadow_root / "scripts" / "__init__.py").write_text("")
+            (shadow_diagnostics / "__init__.py").write_text("")
+            marker = root / "shadow-imported"
+            (
+                shadow_diagnostics / "replay_predictive_wnls_recovery.py"
+            ).write_text(
+                "import os\n"
+                "from pathlib import Path\n"
+                "Path(os.environ['CBF2026_SHADOW_MARKER']).write_text('shadow')\n"
+                "raise RuntimeError('shadow replay imported')\n"
+            )
+            environment = os.environ.copy()
+            environment["CBF2026_SHADOW_MARKER"] = str(marker)
+            environment["PYTHONPATH"] = os.pathsep.join(
+                (str(shadow_root), str(implementation_root))
+            )
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/diagnostics/analyze_predictive_wnls_recovery.py",
+                    "--help",
+                ],
+                cwd=implementation_root,
+                env=environment,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("--baseline-process-path", completed.stdout)
+            self.assertFalse(marker.exists())
 
 
 def sha256(path: Path) -> str:
