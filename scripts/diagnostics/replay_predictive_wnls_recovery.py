@@ -9,7 +9,9 @@ import json
 import math
 import os
 import re
+import secrets
 import stat
+import subprocess
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,8 +56,6 @@ from scripts.diagnostics.run_diagnostic import (
     START_BYTES,
     DiskSpaceError,
     _nearest_existing_ancestor,
-    allocated_bytes,
-    available_bytes,
     require_start_space,
 )
 
@@ -421,6 +421,14 @@ REQUIRED_SOURCES = {
 }
 HERMETIC_REQUIRED_SOURCES = REQUIRED_SOURCES - {"analyzer_source"}
 STAGING_NAMES = ("finalizing", "completed", "failed")
+REPOSITORY_SOURCE_NAMES = (
+    "replay_source",
+    "estimator_source",
+    "legacy_solver_source",
+    "diagnostic_integrity_source",
+    "analyzer_source",
+)
+EMERGENCY_FAILURE_PREFIX = "manifest.failed.emergency."
 
 
 def canonical_replay_argv(
@@ -548,6 +556,61 @@ def production_command_contract(sources: Mapping) -> dict[str, list[str]]:
         output_root=Path(analyzer["output_root"]),
     )
     return commands
+
+
+def verify_implementation_parent_provenance(
+    *,
+    project_root: Path,
+    implementation_parent_commit: str,
+    sources: Mapping,
+    source_names: tuple[str, ...] = REPOSITORY_SOURCE_NAMES,
+) -> dict:
+    """Verify declared repository sources against blobs at a bound Git commit."""
+    project_root = _absolute(Path(project_root))
+    commit_check = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(project_root),
+            "cat-file",
+            "-e",
+            f"{implementation_parent_commit}^{{commit}}",
+        ],
+        capture_output=True,
+        check=False,
+    )
+    if commit_check.returncode != 0:
+        raise ValueError("implementation-parent Git commit does not exist")
+    observed_names = []
+    for name in source_names:
+        declaration = sources.get(name)
+        if not isinstance(declaration, Mapping):
+            raise ValueError(f"missing Git-bound source declaration: {name}")
+        source_path = _absolute(Path(declaration["path"]))
+        try:
+            relative = source_path.relative_to(project_root)
+        except ValueError:
+            raise ValueError(f"Git-bound source is outside repository: {name}") from None
+        blob = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(project_root),
+                "show",
+                f"{implementation_parent_commit}:{relative.as_posix()}",
+            ],
+            capture_output=True,
+            check=False,
+        )
+        if blob.returncode != 0:
+            raise ValueError(f"Git blob is absent at implementation parent: {name}")
+        if hashlib.sha256(blob.stdout).hexdigest() != declaration.get("sha256"):
+            raise ValueError(f"Git blob hash differs from declaration: {name}")
+        observed_names.append(name)
+    return {
+        "commit": implementation_parent_commit,
+        "source_names": observed_names,
+    }
 
 
 def _native_json(value):
@@ -779,25 +842,33 @@ def _directory_identity(metadata: os.stat_result, path: Path) -> dict:
     }
 
 
+def _directory_open_flags() -> int:
+    return (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+
+
 def _create_exact_root(
     output_root: Path,
     *,
     identity_sink: dict | None = None,
 ) -> dict:
-    """Create every missing component through no-follow directory descriptors."""
+    """Create and retain the exact parent/root directory descriptors."""
     output_root = _absolute(output_root)
     if identity_sink is not None:
         identity_sink.clear()
     components = output_root.parts[1:]
     if not components:
         raise ValueError("output_root cannot be filesystem root")
-    directory_flags = (
-        os.O_RDONLY
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
+    directory_flags = _directory_open_flags()
     parent_fd = os.open("/", directory_flags)
+    root_fd = None
+    leaf_created = False
+    retained = False
+    transaction = None
     try:
         for component in components[:-1]:
             try:
@@ -808,41 +879,111 @@ def _create_exact_root(
             os.close(parent_fd)
             parent_fd = next_fd
         os.mkdir(components[-1], dir_fd=parent_fd)
+        leaf_created = True
         root_fd = os.open(components[-1], directory_flags, dir_fd=parent_fd)
-        try:
-            metadata = os.fstat(root_fd)
-            linked = os.stat(
-                components[-1],
-                dir_fd=parent_fd,
-                follow_symlinks=False,
-            )
-            if (
-                not stat.S_ISDIR(metadata.st_mode)
-                or (metadata.st_dev, metadata.st_ino)
-                != (linked.st_dev, linked.st_ino)
-            ):
-                raise ValueError("exclusive output root identity is invalid")
-            identity = _directory_identity(metadata, output_root)
-            if identity_sink is not None:
-                identity_sink["root_identity"] = identity
-            return identity
-        finally:
+        metadata = os.fstat(root_fd)
+        linked = os.stat(
+            components[-1],
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or (metadata.st_dev, metadata.st_ino)
+            != (linked.st_dev, linked.st_ino)
+        ):
+            raise ValueError("exclusive output root identity is invalid")
+        parent_metadata = os.fstat(parent_fd)
+        transaction = {
+            "output_root": str(output_root),
+            "parent_path": str(output_root.parent),
+            "root_name": components[-1],
+            "parent_fd": parent_fd,
+            "root_fd": root_fd,
+            "parent_identity": _directory_identity(
+                parent_metadata, output_root.parent
+            ),
+            "root_identity": _directory_identity(metadata, output_root),
+            "resource_fds": set(),
+            "closed": False,
+        }
+        if identity_sink is not None:
+            identity_sink["transaction"] = transaction
+            identity_sink["root_identity"] = transaction["root_identity"]
+        retained = True
+        return transaction
+    except BaseException as error:
+        if (
+            transaction is not None
+            and identity_sink is not None
+            and identity_sink.get("transaction") is transaction
+        ):
+            retained = True
+            raise
+        if root_fd is not None:
             os.close(root_fd)
+            root_fd = None
+        if leaf_created:
+            try:
+                os.rmdir(components[-1], dir_fd=parent_fd)
+            except Exception as cleanup_error:
+                error.add_note(
+                    "failed to remove the unexported output root: "
+                    f"{type(cleanup_error).__name__}: {cleanup_error}"
+                )
+        raise
     finally:
-        os.close(parent_fd)
+        if not retained:
+            os.close(parent_fd)
 
 
-def _assert_directory_identity(output_root: Path, identity: dict) -> None:
+def _assert_registered_root(transaction: dict) -> None:
+    if transaction.get("closed"):
+        raise ValueError("output transaction is already closed")
     try:
-        _lstat_components(output_root, leaf_required=False)
-        metadata = output_root.lstat()
+        parent_path = Path(transaction["parent_path"])
+        _lstat_components(parent_path, leaf_required=False)
+        parent_path_metadata = parent_path.lstat()
+        parent_metadata = os.fstat(transaction["parent_fd"])
+        root_metadata = os.fstat(transaction["root_fd"])
+        linked = os.stat(
+            transaction["root_name"],
+            dir_fd=transaction["parent_fd"],
+            follow_symlinks=False,
+        )
     except (FileNotFoundError, OSError) as error:
-        raise ValueError("allocated output_root path disappeared") from error
+        raise ValueError("registered output root disappeared") from error
     if (
-        not stat.S_ISDIR(metadata.st_mode)
-        or _directory_identity(metadata, output_root) != identity
+        not stat.S_ISDIR(parent_metadata.st_mode)
+        or not stat.S_ISDIR(root_metadata.st_mode)
+        or (
+            parent_path_metadata.st_dev,
+            parent_path_metadata.st_ino,
+        )
+        != (parent_metadata.st_dev, parent_metadata.st_ino)
+        or (linked.st_dev, linked.st_ino)
+        != (root_metadata.st_dev, root_metadata.st_ino)
     ):
-        raise ValueError("allocated output_root identity changed")
+        raise ValueError("registered output root identity changed")
+
+
+def _close_output_transaction(transaction: dict) -> None:
+    if transaction.get("closed"):
+        return
+    transaction["closed"] = True
+    for descriptor in tuple(transaction.get("resource_fds", ())):
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+    transaction.get("resource_fds", set()).clear()
+    for name in ("root_fd", "parent_fd"):
+        descriptor = transaction.get(name)
+        if isinstance(descriptor, int):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
 
 
 def _validate_protocol_shape(
@@ -1091,6 +1232,14 @@ def _verify_protocol_and_sources(
             payloads[name] = payload
     if identities["legacy_solver_source"]["sha256"] != LEGACY_SOLVER_SHA256:
         raise ValueError("legacy solver source differs from frozen identity")
+    if protocol["schema_id"] == PROTOCOL_SCHEMA_ID:
+        verify_implementation_parent_provenance(
+            project_root=project_root,
+            implementation_parent_commit=protocol[
+                "implementation_parent_commit"
+            ],
+            sources=sources,
+        )
     _validate_paths(
         project_root,
         protocol_path,
@@ -1648,8 +1797,8 @@ def _reference_evidence(
     }
     for key in qualification.get("missing_mandatory", []):
         excluded[tuple(key)] = (
-            "measurement_not_present"
-            if not records.get(tuple(key), {}).get("present")
+            "measurement_invalid_or_absent"
+            if not _valid_measurement_record(records.get(tuple(key)))
             else "not_current_frame_fresh"
         )
     evidence = []
@@ -1677,7 +1826,7 @@ def _reference_evidence(
         reason = excluded.get(key)
         if key not in used and reason is None:
             if not valid_measurement:
-                reason = "measurement_not_present"
+                reason = "measurement_invalid_or_absent"
             elif qualification_failed:
                 reason = "not_evaluated_due_to_missing_mandatory"
             elif solver_exclusion_reason is not None:
@@ -1775,134 +1924,431 @@ def _write_row(compressed, line: bytes, digest) -> None:
     digest.update(line)
 
 
-def _write_stage(path: Path, payload: bytes) -> dict:
+def _fd_identity(descriptor: int) -> dict:
+    before = os.fstat(descriptor)
+    digest = hashlib.sha256()
+    offset = 0
+    while offset < before.st_size:
+        chunk = os.pread(descriptor, min(1024 * 1024, before.st_size - offset), offset)
+        if not chunk:
+            break
+        digest.update(chunk)
+        offset += len(chunk)
+    after = os.fstat(descriptor)
+    before_state = (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+    )
+    after_state = (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+    )
+    if before_state != after_state or offset != before.st_size:
+        raise ValueError("file changed while hashing retained descriptor")
+    return {
+        "device": after.st_dev,
+        "inode": after.st_ino,
+        "size": after.st_size,
+        "mtime_ns": after.st_mtime_ns,
+        "sha256": digest.hexdigest(),
+    }
+
+
+def _same_file_identity(first: dict, second: dict) -> bool:
+    return all(
+        first[field] == second[field]
+        for field in ("device", "inode", "size", "sha256")
+    )
+
+
+def _same_pinned_identity(first: dict, second: dict) -> bool:
+    return all(
+        first[field] == second[field]
+        for field in ("device", "inode", "size", "mtime_ns", "sha256")
+    )
+
+
+def _read_entry_identity(directory_fd: int, name: str) -> dict:
+    descriptor = os.open(
+        name,
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+        dir_fd=directory_fd,
+    )
+    try:
+        return _fd_identity(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _verify_raw_output(
+    transaction: dict,
+    raw_descriptor: int,
+    *,
+    expected_identity: dict | None = None,
+) -> dict:
+    held_identity = _fd_identity(raw_descriptor)
+    if (
+        expected_identity is not None
+        and not _same_pinned_identity(held_identity, expected_identity)
+    ):
+        raise ValueError("raw process descriptor changed after initial hash")
+    linked = os.stat(
+        RAW_PROCESS_NAME,
+        dir_fd=transaction["root_fd"],
+        follow_symlinks=False,
+    )
+    linked_state = (
+        linked.st_dev,
+        linked.st_ino,
+        linked.st_size,
+        linked.st_mtime_ns,
+    )
+    held_state = (
+        held_identity["device"],
+        held_identity["inode"],
+        held_identity["size"],
+        held_identity["mtime_ns"],
+    )
+    if linked_state != held_state:
+        raise ValueError("raw process entry differs from retained descriptor")
+    return held_identity
+
+
+def _write_stage(transaction: dict, state: str, payload: bytes) -> dict:
+    name = _stage_path(Path(transaction["output_root"]), state).name
     flags = (
-        os.O_WRONLY
+        os.O_RDWR
         | os.O_CREAT
         | os.O_EXCL
         | getattr(os, "O_CLOEXEC", 0)
         | getattr(os, "O_NOFOLLOW", 0)
     )
-    descriptor = os.open(path, flags, 0o600)
-    with os.fdopen(descriptor, "wb") as target:
+    descriptor = os.open(
+        name,
+        flags,
+        0o600,
+        dir_fd=transaction["parent_fd"],
+    )
+    transaction["resource_fds"].add(descriptor)
+    with os.fdopen(os.dup(descriptor), "wb") as target:
         target.write(payload)
         target.flush()
         os.fsync(target.fileno())
-        metadata = os.fstat(target.fileno())
+    identity = _fd_identity(descriptor)
     return {
-        "path": str(path),
-        "device": metadata.st_dev,
-        "inode": metadata.st_ino,
-        "size": metadata.st_size,
-        "sha256": hashlib.sha256(payload).hexdigest(),
+        "name": name,
+        "fd": descriptor,
+        **identity,
+        "source_cleaned": False,
+        "target_linked": False,
     }
 
 
-def _owned_stage_matches(stage: dict) -> bool:
+def _held_stage_is_exact(stage: dict) -> bool:
     try:
-        _, identity = _read_trusted_bytes(Path(stage["path"]))
+        identity = _fd_identity(stage["fd"])
+    except (OSError, ValueError, KeyError):
+        return False
+    return _same_file_identity(identity, stage)
+
+
+def _restore_quarantine(directory_fd: int, quarantine: str, name: str) -> None:
+    os.link(
+        quarantine,
+        name,
+        src_dir_fd=directory_fd,
+        dst_dir_fd=directory_fd,
+        follow_symlinks=False,
+    )
+    os.unlink(quarantine, dir_fd=directory_fd)
+
+
+def _remove_entry_exact(
+    directory_fd: int,
+    name: str,
+    expected_identity: dict,
+) -> None:
+    quarantine = f".{name}.quarantine.{secrets.token_hex(16)}"
+    os.rename(
+        name,
+        quarantine,
+        src_dir_fd=directory_fd,
+        dst_dir_fd=directory_fd,
+    )
+    try:
+        moved_identity = _read_entry_identity(directory_fd, quarantine)
+    except Exception:
+        try:
+            _restore_quarantine(directory_fd, quarantine, name)
+        except Exception:
+            pass
+        raise
+    if not _same_file_identity(moved_identity, expected_identity):
+        _restore_quarantine(directory_fd, quarantine, name)
+        raise ValueError("directory entry changed at quarantine boundary")
+    os.unlink(quarantine, dir_fd=directory_fd)
+
+
+def _cleanup_stage(transaction: dict, stage: dict) -> None:
+    if stage.get("source_cleaned"):
+        return
+    if not _held_stage_is_exact(stage):
+        raise ValueError("retained stage descriptor changed")
+    quarantine = f".{stage['name']}.quarantine.{secrets.token_hex(16)}"
+    os.rename(
+        stage["name"],
+        quarantine,
+        src_dir_fd=transaction["parent_fd"],
+        dst_dir_fd=transaction["parent_fd"],
+    )
+    try:
+        moved_identity = _read_entry_identity(
+            transaction["parent_fd"], quarantine
+        )
+    except BaseException:
+        try:
+            _restore_quarantine(
+                transaction["parent_fd"], quarantine, stage["name"]
+            )
+        except Exception:
+            pass
+        raise
+    if not _same_file_identity(moved_identity, stage):
+        _restore_quarantine(
+            transaction["parent_fd"], quarantine, stage["name"]
+        )
+        raise ValueError("staging entry was replaced before cleanup")
+    os.unlink(quarantine, dir_fd=transaction["parent_fd"])
+    stage["source_cleaned"] = True
+
+
+def _target_matches_stage(transaction: dict, stage: dict) -> bool:
+    if not _held_stage_is_exact(stage):
+        return False
+    try:
+        identity = _read_entry_identity(
+            transaction["root_fd"], TERMINAL_MANIFEST_NAME
+        )
     except (OSError, ValueError):
         return False
-    return all(
-        identity[field] == stage[field]
-        for field in ("device", "inode", "size", "sha256")
-    )
+    return _same_file_identity(identity, stage)
 
 
-def _cleanup_stage(stage: dict) -> None:
-    if not _owned_stage_matches(stage):
-        raise ValueError("refusing to remove an unowned staging path")
-    Path(stage["path"]).unlink()
-
-
-def _link_stage(stage: dict, target: Path) -> None:
-    if not _owned_stage_matches(stage):
-        raise ValueError("refusing to publish an unowned staging path")
-    if Path(stage["path"]).parent.stat().st_dev != target.parent.stat().st_dev:
+def _link_stage(transaction: dict, stage: dict) -> None:
+    if not _held_stage_is_exact(stage):
+        raise ValueError("retained stage descriptor changed")
+    if os.fstat(transaction["parent_fd"]).st_dev != os.fstat(
+        transaction["root_fd"]
+    ).st_dev:
         raise ValueError("terminal stage is not on the target filesystem")
-    os.link(stage["path"], target, follow_symlinks=False)
-
-
-def _target_matches_stage(target: Path, stage: dict) -> bool:
-    try:
-        _, identity = _read_trusted_bytes(target, capture_payload=False)
-    except (OSError, ValueError):
-        return False
-    return (
-        identity["device"] == stage["device"]
-        and identity["inode"] == stage["inode"]
-        and identity["size"] == stage["size"]
-        and identity["sha256"] == stage["sha256"]
-    )
-
-
-def _fsync_output_directory(output_root: Path) -> None:
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
-    descriptor = os.open(output_root, flags)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def _fsync_raw_output(process_path: Path) -> None:
-    descriptor = os.open(
-        process_path,
-        os.O_RDONLY
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0),
+    os.link(
+        stage["name"],
+        TERMINAL_MANIFEST_NAME,
+        src_dir_fd=transaction["parent_fd"],
+        dst_dir_fd=transaction["root_fd"],
+        follow_symlinks=False,
     )
     try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+        linked_identity = _read_entry_identity(
+            transaction["root_fd"], TERMINAL_MANIFEST_NAME
+        )
+    except BaseException:
+        raise
+    if not _same_file_identity(linked_identity, stage):
+        _remove_entry_exact(
+            transaction["root_fd"],
+            TERMINAL_MANIFEST_NAME,
+            linked_identity,
+        )
+        raise ValueError("terminal link does not match retained stage")
+    stage["target_linked"] = True
 
 
-def _required_terminal_metrics(output_root: Path) -> dict:
+def _fsync_output_directory(transaction: dict) -> None:
+    os.fsync(transaction["root_fd"])
+    os.fsync(transaction["parent_fd"])
+
+
+def _fsync_raw_output(raw_descriptor: int) -> None:
+    os.fsync(raw_descriptor)
+
+
+def _available_bytes_fd(transaction: dict) -> int:
+    values = os.fstatvfs(transaction["root_fd"])
+    return values.f_bavail * values.f_frsize
+
+
+def _allocated_bytes_fd(raw_descriptor: int | None) -> int:
+    if raw_descriptor is None:
+        return 0
+    metadata = os.fstat(raw_descriptor)
+    return metadata.st_blocks * 512
+
+
+def _required_terminal_metrics(
+    transaction: dict,
+    raw_descriptor: int | None,
+) -> dict:
     return {
-        "free_bytes_after": available_bytes(output_root),
-        "allocated_bytes": allocated_bytes(output_root),
+        "free_bytes_after": _available_bytes_fd(transaction),
+        "allocated_bytes": _allocated_bytes_fd(raw_descriptor),
     }
 
 
-def _failure_terminal_metrics(output_root: Path) -> dict:
+def _failure_terminal_metrics(
+    transaction: dict,
+    raw_descriptor: int | None,
+) -> dict:
     values = {}
     for name, function in (
-        ("free_bytes_after", available_bytes),
-        ("allocated_bytes", allocated_bytes),
+        ("free_bytes_after", lambda: _available_bytes_fd(transaction)),
+        ("allocated_bytes", lambda: _allocated_bytes_fd(raw_descriptor)),
     ):
         try:
-            values[name] = function(output_root)
+            values[name] = function()
         except Exception:
             values[name] = None
     return values
 
 
-def _publish_failed(output_root: Path, manifest: dict) -> None:
-    target = output_root / TERMINAL_MANIFEST_NAME
-    if target.exists() or target.is_symlink():
-        raise FileExistsError("terminal manifest publication conflict")
+def _publish_failed(transaction: dict, manifest: dict) -> None:
     payload = _strict_json_bytes(manifest, indent=2) + b"\n"
-    stage = _write_stage(_stage_path(output_root, "failed"), payload)
+    stage = _write_stage(transaction, "failed", payload)
     try:
-        _link_stage(stage, target)
-        _fsync_output_directory(output_root)
+        _link_stage(transaction, stage)
+        _cleanup_stage(transaction, stage)
+        _fsync_output_directory(transaction)
+        if not _target_matches_stage(transaction, stage):
+            raise ValueError("failed target changed before durable publication")
     finally:
+        if not stage.get("source_cleaned"):
+            try:
+                _cleanup_stage(transaction, stage)
+            except Exception:
+                pass
+
+
+def _write_emergency_failure(
+    transaction: dict,
+    manifest: dict,
+    publication_error: Exception,
+) -> str:
+    name = f"{EMERGENCY_FAILURE_PREFIX}{secrets.token_hex(16)}.json"
+    record = {
+        **manifest,
+        "terminal_publication_error": {
+            "type": type(publication_error).__name__,
+            "message": str(publication_error),
+        },
+    }
+    descriptor = os.open(
+        name,
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+        dir_fd=transaction["root_fd"],
+    )
+    try:
+        payload = _strict_json_bytes(record, indent=2) + b"\n"
+        with os.fdopen(os.dup(descriptor), "wb") as target:
+            target.write(payload)
+            target.flush()
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    os.fsync(transaction["root_fd"])
+    return name
+
+
+def _rollback_owned_target(transaction: dict, stage: dict) -> None:
+    if _target_matches_stage(transaction, stage):
+        _remove_entry_exact(
+            transaction["root_fd"],
+            TERMINAL_MANIFEST_NAME,
+            stage,
+        )
+        _fsync_output_directory(transaction)
+
+
+def _post_commit_boundary() -> None:
+    """Explicit delivery boundary used to reconcile asynchronous exceptions."""
+
+
+def _publish_failure_or_note(
+    transaction: dict,
+    manifest: dict,
+    original_error: BaseException,
+) -> None:
+    try:
+        _publish_failed(transaction, manifest)
+    except Exception as publication_error:
+        original_error.add_note(
+            "terminal publication failed: "
+            f"{type(publication_error).__name__}: {publication_error}"
+        )
         try:
-            _cleanup_stage(stage)
+            emergency_name = _write_emergency_failure(
+                transaction,
+                manifest,
+                publication_error,
+            )
+            original_error.add_note(
+                f"emergency failure record: {emergency_name}"
+            )
+        except Exception as emergency_error:
+            original_error.add_note(
+                "emergency failure publication failed: "
+                f"{type(emergency_error).__name__}: {emergency_error}"
+            )
+
+
+def _reconcile_completed(
+    transaction: dict,
+    stage: dict,
+    raw_descriptor: int,
+    raw_identity: dict,
+) -> bool:
+    if not _target_matches_stage(transaction, stage):
+        return False
+    if stage.get("cleanup_started") and not stage.get("source_cleaned"):
+        try:
+            _rollback_owned_target(transaction, stage)
         except Exception:
             pass
-
-
-def _rollback_owned_target(target: Path, stage: dict) -> None:
-    if _target_matches_stage(target, stage):
-        target.unlink()
-        _fsync_output_directory(target.parent)
+        return False
+    try:
+        _verify_raw_output(
+            transaction,
+            raw_descriptor,
+            expected_identity=raw_identity,
+        )
+        if not stage.get("source_cleaned"):
+            _cleanup_stage(transaction, stage)
+        _fsync_output_directory(transaction)
+        if not _target_matches_stage(transaction, stage):
+            raise ValueError("completed target changed before reconciliation")
+        _verify_raw_output(
+            transaction,
+            raw_descriptor,
+            expected_identity=raw_identity,
+        )
+        _assert_registered_root(transaction)
+        return True
+    except Exception:
+        try:
+            _rollback_owned_target(transaction, stage)
+        except Exception:
+            pass
+        return False
 
 
 def _final_identity_and_disk_probe(
@@ -1913,6 +2359,8 @@ def _final_identity_and_disk_probe(
     data_path: Path,
     input_manifest_path: Path,
     output_root: Path,
+    transaction: dict,
+    raw_descriptor: int,
     run_seeds: tuple[int, ...],
     max_frames: int | None,
 ) -> tuple[dict, dict, str, dict]:
@@ -1927,7 +2375,7 @@ def _final_identity_and_disk_probe(
         max_frames=max_frames,
         output_allocated=True,
     )
-    metrics = _required_terminal_metrics(output_root)
+    metrics = _required_terminal_metrics(transaction, raw_descriptor)
     if metrics["free_bytes_after"] < HARD_FLOOR_BYTES:
         raise DiskSpaceError("available bytes below live floor")
     if metrics["allocated_bytes"] > RAW_BUNDLE_CAP_BYTES:
@@ -1998,10 +2446,14 @@ def replay_predictive_recovery(
         raise ValueError("ranging sigma differs from exact protocol")
     free_before = require_start_space(_nearest_existing_ancestor(output_root))
     started_at = datetime.now(timezone.utc).isoformat()
-    process_path = output_root / RAW_PROCESS_NAME
     rows_written = 0
     decompressed_digest = hashlib.sha256()
-    root_identity = None
+    transaction = None
+    raw_descriptor = None
+    raw_identity = None
+    finalizing_stage = None
+    completed_stage = None
+    completed = None
 
     def terminal(
         status: str,
@@ -2048,42 +2500,42 @@ def replay_predictive_recovery(
 
     creation_state: dict = {}
     try:
-        root_identity = _create_exact_root(
+        transaction = _create_exact_root(
             output_root,
             identity_sink=creation_state,
         )
     except BaseException as error:
-        try:
-            root_identity = creation_state.get("root_identity")
-            if root_identity is not None:
-                _assert_directory_identity(output_root, root_identity)
+        transaction = creation_state.get("transaction")
+        if transaction is not None:
+            try:
                 failure = terminal(
                     "failed",
-                    metrics=_failure_terminal_metrics(output_root),
+                    metrics=_failure_terminal_metrics(transaction, None),
                     process_hash=None,
                     error=error,
                 )
-                _publish_failed(output_root, failure)
-        except Exception:
-            pass
+                _publish_failure_or_note(transaction, failure, error)
+            finally:
+                _close_output_transaction(transaction)
         raise
 
     try:
-        _assert_directory_identity(output_root, root_identity)
-        if available_bytes(output_root) < HARD_FLOOR_BYTES:
+        _assert_registered_root(transaction)
+        if _available_bytes_fd(transaction) < HARD_FLOOR_BYTES:
             raise DiskSpaceError("available bytes below live floor")
         states: dict[tuple[str, int], dict[int, dict]] = {}
-        _assert_directory_identity(output_root, root_identity)
-        descriptor = os.open(
-            process_path,
-            os.O_WRONLY
+        raw_descriptor = os.open(
+            RAW_PROCESS_NAME,
+            os.O_RDWR
             | os.O_CREAT
             | os.O_EXCL
             | getattr(os, "O_CLOEXEC", 0)
             | getattr(os, "O_NOFOLLOW", 0),
             0o600,
+            dir_fd=transaction["root_fd"],
         )
-        with os.fdopen(descriptor, "wb") as raw, gzip.GzipFile(
+        transaction["resource_fds"].add(raw_descriptor)
+        with os.fdopen(os.dup(raw_descriptor), "wb") as raw, gzip.GzipFile(
             filename="", fileobj=raw, mode="wb", mtime=0
         ) as compressed:
             for variant in DEVELOPMENT_VARIANTS:
@@ -2395,22 +2847,28 @@ def replay_predictive_recovery(
                             _write_row(compressed, line, decompressed_digest)
                             rows_written += 1
                         compressed.flush()
-                        if available_bytes(output_root) < HARD_FLOOR_BYTES:
+                        if _available_bytes_fd(transaction) < HARD_FLOOR_BYTES:
                             raise DiskSpaceError("available bytes below live floor")
-                        if allocated_bytes(output_root) > RAW_BUNDLE_CAP_BYTES:
+                        if (
+                            _allocated_bytes_fd(raw_descriptor)
+                            > RAW_BUNDLE_CAP_BYTES
+                        ):
                             raise DiskSpaceError(
                                 "raw bundle exceeds allocated-byte cap"
                             )
-        _fsync_raw_output(process_path)
-        _assert_directory_identity(output_root, root_identity)
-        process_hash = _file_identity(process_path)["sha256"]
-        finalizing_metrics = _required_terminal_metrics(output_root)
+        _fsync_raw_output(raw_descriptor)
+        raw_identity = _verify_raw_output(transaction, raw_descriptor)
+        process_hash = raw_identity["sha256"]
+        finalizing_metrics = _required_terminal_metrics(
+            transaction, raw_descriptor
+        )
         if finalizing_metrics["free_bytes_after"] < HARD_FLOOR_BYTES:
             raise DiskSpaceError("available bytes below live floor")
         if finalizing_metrics["allocated_bytes"] > RAW_BUNDLE_CAP_BYTES:
             raise DiskSpaceError("raw bundle exceeds allocated-byte cap")
         finalizing_stage = _write_stage(
-            _stage_path(output_root, "finalizing"),
+            transaction,
+            "finalizing",
             _strict_json_bytes(
                 terminal(
                     "finalizing",
@@ -2434,6 +2892,8 @@ def replay_predictive_recovery(
                 data_path=data_path,
                 input_manifest_path=input_manifest_path,
                 output_root=output_root,
+                transaction=transaction,
+                raw_descriptor=raw_descriptor,
                 run_seeds=run_seeds,
                 max_frames=max_frames,
             )
@@ -2441,7 +2901,12 @@ def replay_predictive_recovery(
         protocol_identity = observed_protocol
         source_identities = observed_sources
         invocation = observed_invocation
-        _cleanup_stage(finalizing_stage)
+        _verify_raw_output(
+            transaction,
+            raw_descriptor,
+            expected_identity=raw_identity,
+        )
+        _cleanup_stage(transaction, finalizing_stage)
         finalizing_stage = None
         completed = terminal(
             "completed",
@@ -2449,62 +2914,89 @@ def replay_predictive_recovery(
             process_hash=process_hash,
         )
         completed_stage = _write_stage(
-            _stage_path(output_root, "completed"),
-            _strict_json_bytes(completed, indent=2) + b"\n"
+            transaction,
+            "completed",
+            _strict_json_bytes(completed, indent=2) + b"\n",
         )
-        target = output_root / TERMINAL_MANIFEST_NAME
-        _assert_directory_identity(output_root, root_identity)
-        try:
-            _link_stage(completed_stage, target)
-        except BaseException:
-            if _target_matches_stage(target, completed_stage):
-                try:
-                    _cleanup_stage(completed_stage)
-                    _fsync_output_directory(output_root)
-                except BaseException:
-                    _rollback_owned_target(target, completed_stage)
-                    raise
-                return completed
-            try:
-                _cleanup_stage(completed_stage)
-            except Exception:
-                pass
-            raise
-        try:
-            _cleanup_stage(completed_stage)
-            _fsync_output_directory(output_root)
-        except BaseException:
-            _rollback_owned_target(target, completed_stage)
-            try:
-                _cleanup_stage(completed_stage)
-            except Exception:
-                pass
-            raise
+        _verify_raw_output(
+            transaction,
+            raw_descriptor,
+            expected_identity=raw_identity,
+        )
+        _assert_registered_root(transaction)
+        _link_stage(transaction, completed_stage)
+        _verify_raw_output(
+            transaction,
+            raw_descriptor,
+            expected_identity=raw_identity,
+        )
+        completed_stage["cleanup_started"] = True
+        _cleanup_stage(transaction, completed_stage)
+        _fsync_output_directory(transaction)
+        if not _target_matches_stage(transaction, completed_stage):
+            raise ValueError("completed target changed before commit")
+        _verify_raw_output(
+            transaction,
+            raw_descriptor,
+            expected_identity=raw_identity,
+        )
+        _assert_registered_root(transaction)
+        _post_commit_boundary()
+        if not _target_matches_stage(transaction, completed_stage):
+            raise ValueError("completed target changed at delivery boundary")
+        _verify_raw_output(
+            transaction,
+            raw_descriptor,
+            expected_identity=raw_identity,
+        )
+        _assert_registered_root(transaction)
         return completed
     except BaseException as error:
-        for stage in (locals().get("finalizing_stage"), locals().get("completed_stage")):
+        if (
+            isinstance(completed, dict)
+            and isinstance(completed_stage, dict)
+            and isinstance(raw_descriptor, int)
+            and isinstance(raw_identity, dict)
+            and _reconcile_completed(
+                transaction,
+                completed_stage,
+                raw_descriptor,
+                raw_identity,
+            )
+        ):
+            return completed
+        if isinstance(completed_stage, dict):
+            try:
+                _rollback_owned_target(transaction, completed_stage)
+            except Exception:
+                pass
+        for stage in (finalizing_stage, completed_stage):
             if isinstance(stage, dict):
                 try:
-                    _cleanup_stage(stage)
+                    _cleanup_stage(transaction, stage)
                 except Exception:
                     pass
         try:
-            _assert_directory_identity(output_root, root_identity)
             failed_process_hash = (
-                _file_identity(process_path)["sha256"]
-                if process_path.exists()
+                _verify_raw_output(transaction, raw_descriptor)["sha256"]
+                if isinstance(raw_descriptor, int)
                 else None
             )
-            failure = terminal(
-                "failed",
-                metrics=_failure_terminal_metrics(output_root),
-                process_hash=failed_process_hash,
-                error=error,
-            )
-            _publish_failed(output_root, failure)
         except Exception:
-            pass
+            failed_process_hash = None
+        failure = terminal(
+            "failed",
+            metrics=_failure_terminal_metrics(
+                transaction,
+                raw_descriptor if isinstance(raw_descriptor, int) else None,
+            ),
+            process_hash=failed_process_hash,
+            error=error,
+        )
+        _publish_failure_or_note(transaction, failure, error)
         raise
+    finally:
+        _close_output_transaction(transaction)
 
 
 def main(argv: list[str] | None = None) -> int:

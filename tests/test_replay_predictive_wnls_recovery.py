@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -351,6 +352,52 @@ class ProtocolAndPreflightTests(ReplayHarness):
                         max_frames=2,
                     )
 
+    def test_git_parent_provenance_accepts_ancestor_blobs_and_rejects_false_hashes(self):
+        project = Path(replay.__file__).resolve().parents[2]
+        parent = subprocess.run(
+            ["git", "-C", str(project), "rev-parse", "HEAD^"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        relative = "scripts/diagnostics/predictive_wnls.py"
+        blob = subprocess.run(
+            ["git", "-C", str(project), "show", f"{parent}:{relative}"],
+            check=True,
+            capture_output=True,
+        ).stdout
+        sources = {
+            "estimator_source": {
+                "path": str(project / relative),
+                "sha256": hashlib.sha256(blob).hexdigest(),
+            }
+        }
+        observed = replay.verify_implementation_parent_provenance(
+            project_root=project,
+            implementation_parent_commit=parent,
+            sources=sources,
+            source_names=("estimator_source",),
+        )
+        self.assertEqual(observed["commit"], parent)
+        self.assertEqual(observed["source_names"], ["estimator_source"])
+
+        false_sources = copy.deepcopy(sources)
+        false_sources["estimator_source"]["sha256"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "Git blob hash"):
+            replay.verify_implementation_parent_provenance(
+                project_root=project,
+                implementation_parent_commit=parent,
+                sources=false_sources,
+                source_names=("estimator_source",),
+            )
+        with self.assertRaisesRegex(ValueError, "Git commit"):
+            replay.verify_implementation_parent_provenance(
+                project_root=project,
+                implementation_parent_commit="0" * 40,
+                sources=sources,
+                source_names=("estimator_source",),
+            )
+
     def test_protocol_is_authority_for_every_bound_contract(self):
         mutations = {
             "schema": lambda p: p.update(schema_id="wrong"),
@@ -657,7 +704,38 @@ class EvidenceAndAblationTests(ReplayHarness):
         base_two = next(item for item in decoded if item["reference_id"] == 2)
         self.assertTrue(base_two["measurement_present"])
         self.assertFalse(base_two["eligible"])
-        self.assertEqual(base_two["exclusion_reason"], "measurement_not_present")
+        self.assertEqual(
+            base_two["exclusion_reason"],
+            "measurement_invalid_or_absent",
+        )
+
+    def test_invalid_mandatory_measurement_uses_measurement_reason(self):
+        mandatory = {"base_ids": [0], "uav_ids": []}
+        records = {("base", 0): {"present": True, "noisy_range": -1.0}}
+        qualification = estimator.qualify_active_references(
+            mandatory=mandatory,
+            optional_keys=[],
+            measurement_records=records,
+            uav_outputs={},
+            variant="fresh_reference_qualification",
+        )
+        evidence = replay._reference_evidence(
+            mandatory=mandatory,
+            optional=[],
+            records=records,
+            noise_seeds={("base", 0): 10},
+            qualification=qualification,
+            current_public={},
+            solver_used_keys=(),
+        )
+        decoded = dict(zip(replay.REFERENCE_EVIDENCE_FIELDS, evidence[0]))
+        self.assertTrue(decoded["measurement_present"])
+        self.assertFalse(decoded["eligible"])
+        self.assertEqual(decoded["current_freshness"], "fresh")
+        self.assertEqual(
+            decoded["exclusion_reason"],
+            "measurement_invalid_or_absent",
+        )
 
     def test_compact_invalid_and_rejected_candidate_traces_are_complete(self):
         candidates = [
@@ -802,14 +880,22 @@ class PathDiskAndTerminalTests(ReplayHarness):
 
         target = self.output_parent / "floor"
         self.write_protocol(target)
-        with mock.patch.object(replay, "available_bytes", return_value=replay.HARD_FLOOR_BYTES - 1):
+        with mock.patch.object(
+            replay,
+            "_available_bytes_fd",
+            return_value=replay.HARD_FLOOR_BYTES - 1,
+        ):
             with self.assertRaises(DiskSpaceError):
                 self.execute(target)
         self.assertEqual(json.loads((target / replay.TERMINAL_MANIFEST_NAME).read_text())["status"], "failed")
 
         target = self.output_parent / "cap"
         self.write_protocol(target)
-        with mock.patch.object(replay, "allocated_bytes", return_value=replay.RAW_BUNDLE_CAP_BYTES + 1):
+        with mock.patch.object(
+            replay,
+            "_allocated_bytes_fd",
+            return_value=replay.RAW_BUNDLE_CAP_BYTES + 1,
+        ):
             with self.assertRaises(DiskSpaceError):
                 self.execute(target)
         self.assertEqual(json.loads((target / replay.TERMINAL_MANIFEST_NAME).read_text())["status"], "failed")
@@ -871,8 +957,8 @@ class PathDiskAndTerminalTests(ReplayHarness):
                 target_root = self.output_parent / f"linked-{error_type.__name__}"
                 self.write_protocol(target_root)
 
-                def link_then_raise(stage, target):
-                    original(stage, target)
+                def link_then_raise(transaction, stage):
+                    original(transaction, stage)
                     raise error_type("delivered after link")
 
                 with mock.patch.object(
@@ -889,12 +975,12 @@ class PathDiskAndTerminalTests(ReplayHarness):
         original = replay._cleanup_stage
         calls = 0
 
-        def fail_completed_cleanup(stage):
+        def fail_completed_cleanup(transaction, stage):
             nonlocal calls
             calls += 1
             if calls == 2:
                 raise RuntimeError("completed cleanup")
-            return original(stage)
+            return original(transaction, stage)
 
         with mock.patch.object(
             replay, "_cleanup_stage", side_effect=fail_completed_cleanup
@@ -976,8 +1062,19 @@ class PathDiskAndTerminalTests(ReplayHarness):
         ), mock.patch.object(
             replay, "_publish_failed", side_effect=OSError("terminal")
         ):
-            with self.assertRaisesRegex(RuntimeError, "original"):
+            with self.assertRaisesRegex(RuntimeError, "original") as caught:
                 self.execute()
+        notes = getattr(caught.exception, "__notes__", [])
+        self.assertTrue(
+            any("terminal" in note and "publication" in note for note in notes)
+        )
+        emergency = list(
+            self.default_output.glob("manifest.failed.emergency.*.json")
+        )
+        self.assertEqual(len(emergency), 1)
+        record = json.loads(emergency[0].read_text())
+        self.assertEqual(record["status"], "failed")
+        self.assertEqual(record["terminal_publication_error"]["type"], "OSError")
 
     def test_exception_immediately_after_root_creation_is_terminal(self):
         original = replay._create_exact_root
@@ -995,6 +1092,113 @@ class PathDiskAndTerminalTests(ReplayHarness):
             (self.default_output / replay.TERMINAL_MANIFEST_NAME).read_text()
         )
         self.assertEqual(terminal["status"], "failed")
+
+    def test_post_mkdir_leaf_open_failure_removes_unexported_root(self):
+        real_mkdir = os.mkdir
+        real_open = os.open
+        leaf_created = False
+        failed = False
+
+        def track_leaf_mkdir(path, mode=0o777, *, dir_fd=None):
+            nonlocal leaf_created
+            result = real_mkdir(path, mode, dir_fd=dir_fd)
+            if path == self.default_output.name and dir_fd is not None:
+                leaf_created = True
+            return result
+
+        def fail_first_leaf_open(path, flags, mode=0o777, *, dir_fd=None):
+            nonlocal failed
+            if (
+                leaf_created
+                and not failed
+                and path == self.default_output.name
+                and dir_fd is not None
+            ):
+                failed = True
+                raise OSError("post-mkdir leaf open")
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+
+        with mock.patch("os.mkdir", side_effect=track_leaf_mkdir), mock.patch(
+            "os.open", side_effect=fail_first_leaf_open
+        ):
+            with self.assertRaisesRegex(OSError, "post-mkdir leaf open"):
+                self.execute()
+        self.assertTrue(failed)
+        self.assertFalse(self.default_output.exists())
+
+    def test_post_mkdir_leaf_fstat_and_stat_failures_remove_unexported_root(self):
+        for fault in ("fstat", "stat"):
+            with self.subTest(fault=fault):
+                target = self.output_parent / f"post-mkdir-{fault}"
+                self.write_protocol(target)
+                real_mkdir = os.mkdir
+                real_open = os.open
+                real_fstat = os.fstat
+                real_stat = os.stat
+                leaf_created = False
+                leaf_descriptor = None
+                failed = False
+
+                def track_leaf_mkdir(path, mode=0o777, *, dir_fd=None):
+                    nonlocal leaf_created
+                    result = real_mkdir(path, mode, dir_fd=dir_fd)
+                    if path == target.name and dir_fd is not None:
+                        leaf_created = True
+                    return result
+
+                def track_leaf_open(path, flags, mode=0o777, *, dir_fd=None):
+                    nonlocal leaf_descriptor
+                    descriptor = real_open(path, flags, mode, dir_fd=dir_fd)
+                    if leaf_created and path == target.name and dir_fd is not None:
+                        leaf_descriptor = descriptor
+                    return descriptor
+
+                def fail_leaf_fstat(descriptor):
+                    nonlocal failed
+                    if (
+                        fault == "fstat"
+                        and descriptor == leaf_descriptor
+                        and not failed
+                    ):
+                        failed = True
+                        raise OSError("post-mkdir leaf fstat")
+                    return real_fstat(descriptor)
+
+                def fail_leaf_stat(
+                    path,
+                    *,
+                    dir_fd=None,
+                    follow_symlinks=True,
+                ):
+                    nonlocal failed
+                    if (
+                        fault == "stat"
+                        and leaf_created
+                        and path == target.name
+                        and dir_fd is not None
+                        and not failed
+                    ):
+                        failed = True
+                        raise OSError("post-mkdir leaf stat")
+                    return real_stat(
+                        path,
+                        dir_fd=dir_fd,
+                        follow_symlinks=follow_symlinks,
+                    )
+
+                with mock.patch(
+                    "os.mkdir", side_effect=track_leaf_mkdir
+                ), mock.patch("os.open", side_effect=track_leaf_open), mock.patch(
+                    "os.fstat", side_effect=fail_leaf_fstat
+                ), mock.patch(
+                    "os.stat", side_effect=fail_leaf_stat
+                ):
+                    with self.assertRaisesRegex(
+                        OSError, f"post-mkdir leaf {fault}"
+                    ):
+                        self.execute(target)
+                self.assertTrue(failed)
+                self.assertFalse(target.exists())
 
     def test_concurrent_foreign_root_is_never_claimed_by_failure_publication(self):
         self.output_parent.mkdir()
@@ -1048,6 +1252,284 @@ class PathDiskAndTerminalTests(ReplayHarness):
             (self.default_output / replay.TERMINAL_MANIFEST_NAME).exists()
         )
 
+    def test_root_swap_at_raw_open_never_writes_foreign_replacement(self):
+        moved = self.output_parent / "owned-moved-raw"
+        real_open = os.open
+        swapped = False
+
+        def swap_at_raw_open(path, flags, mode=0o777, *, dir_fd=None):
+            nonlocal swapped
+            if Path(path).name == replay.RAW_PROCESS_NAME and not swapped:
+                swapped = True
+                os.rename(self.default_output, moved)
+                self.default_output.mkdir()
+                (self.default_output / "foreign-owner").write_text("foreign")
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+
+        with mock.patch("os.open", side_effect=swap_at_raw_open):
+            with self.assertRaises(ValueError):
+                self.execute()
+        self.assertTrue(swapped)
+        self.assertEqual(
+            (self.default_output / "foreign-owner").read_text(), "foreign"
+        )
+        self.assertFalse((self.default_output / replay.RAW_PROCESS_NAME).exists())
+        self.assertFalse(
+            (self.default_output / replay.TERMINAL_MANIFEST_NAME).exists()
+        )
+        self.assertTrue((moved / replay.RAW_PROCESS_NAME).exists())
+        self.assertEqual(
+            json.loads((moved / replay.TERMINAL_MANIFEST_NAME).read_text())[
+                "status"
+            ],
+            "failed",
+        )
+
+    def test_root_swap_at_terminal_link_rolls_back_owned_completion(self):
+        moved = self.output_parent / "owned-moved-link"
+        real_link = os.link
+        swapped = False
+
+        def swap_at_manifest_link(
+            source,
+            destination,
+            *,
+            src_dir_fd=None,
+            dst_dir_fd=None,
+            follow_symlinks=True,
+        ):
+            nonlocal swapped
+            if Path(destination).name == replay.TERMINAL_MANIFEST_NAME and not swapped:
+                swapped = True
+                os.rename(self.default_output, moved)
+                self.default_output.mkdir()
+                (self.default_output / "foreign-owner").write_text("foreign")
+            return real_link(
+                source,
+                destination,
+                src_dir_fd=src_dir_fd,
+                dst_dir_fd=dst_dir_fd,
+                follow_symlinks=follow_symlinks,
+            )
+
+        with mock.patch("os.link", side_effect=swap_at_manifest_link):
+            with self.assertRaises(ValueError):
+                self.execute()
+        self.assertTrue(swapped)
+        self.assertEqual(
+            (self.default_output / "foreign-owner").read_text(), "foreign"
+        )
+        self.assertFalse(
+            (self.default_output / replay.TERMINAL_MANIFEST_NAME).exists()
+        )
+        self.assertTrue((moved / replay.RAW_PROCESS_NAME).exists())
+        self.assertEqual(
+            json.loads((moved / replay.TERMINAL_MANIFEST_NAME).read_text())[
+                "status"
+            ],
+            "failed",
+        )
+
+    def test_root_swap_at_failed_link_never_writes_foreign_replacement(self):
+        moved = self.output_parent / "owned-moved-failed-link"
+        real_link = os.link
+        swapped = False
+
+        def swap_at_failed_manifest_link(
+            source,
+            destination,
+            *,
+            src_dir_fd=None,
+            dst_dir_fd=None,
+            follow_symlinks=True,
+        ):
+            nonlocal swapped
+            if (
+                Path(source).name.endswith(".failed")
+                and Path(destination).name == replay.TERMINAL_MANIFEST_NAME
+                and not swapped
+            ):
+                swapped = True
+                os.rename(self.default_output, moved)
+                self.default_output.mkdir()
+                (self.default_output / "foreign-owner").write_text("foreign")
+            return real_link(
+                source,
+                destination,
+                src_dir_fd=src_dir_fd,
+                dst_dir_fd=dst_dir_fd,
+                follow_symlinks=follow_symlinks,
+            )
+
+        with mock.patch.object(
+            replay, "_write_row", side_effect=RuntimeError("row")
+        ), mock.patch("os.link", side_effect=swap_at_failed_manifest_link):
+            with self.assertRaisesRegex(RuntimeError, "row"):
+                self.execute()
+        self.assertTrue(swapped)
+        self.assertEqual(
+            (self.default_output / "foreign-owner").read_text(), "foreign"
+        )
+        self.assertFalse(
+            (self.default_output / replay.TERMINAL_MANIFEST_NAME).exists()
+        )
+        self.assertEqual(
+            json.loads((moved / replay.TERMINAL_MANIFEST_NAME).read_text())[
+                "status"
+            ],
+            "failed",
+        )
+
+    def test_stage_cleanup_swap_preserves_foreign_and_owned_inodes(self):
+        root = self.output_parent / "direct-cleanup"
+        transaction = replay._create_exact_root(root)
+        close_transaction = getattr(
+            replay, "_close_output_transaction", lambda unused: None
+        )
+        try:
+            stage = replay._write_stage(
+                transaction,
+                "completed",
+                b"owned-stage",
+            )
+            stage_path = replay._stage_path(root, "completed")
+            preserved = stage_path.with_name(stage_path.name + ".owned-preserved")
+            real_rename = os.rename
+            real_open = os.open
+            injected = False
+
+            def replace_before_quarantine(
+                source,
+                destination,
+                *,
+                src_dir_fd=None,
+                dst_dir_fd=None,
+            ):
+                nonlocal injected
+                if source == stage["name"] and not injected:
+                    injected = True
+                    real_rename(
+                        source,
+                        preserved.name,
+                        src_dir_fd=src_dir_fd,
+                        dst_dir_fd=src_dir_fd,
+                    )
+                    descriptor = real_open(
+                        source,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                        0o600,
+                        dir_fd=src_dir_fd,
+                    )
+                    try:
+                        os.write(descriptor, b"foreign-stage")
+                    finally:
+                        os.close(descriptor)
+                return real_rename(
+                    source,
+                    destination,
+                    src_dir_fd=src_dir_fd,
+                    dst_dir_fd=dst_dir_fd,
+                )
+
+            with mock.patch("os.rename", side_effect=replace_before_quarantine):
+                with self.assertRaises(ValueError):
+                    replay._cleanup_stage(transaction, stage)
+            self.assertTrue(injected)
+            self.assertEqual(stage_path.read_bytes(), b"foreign-stage")
+            self.assertEqual(preserved.read_bytes(), b"owned-stage")
+        finally:
+            close_transaction(transaction)
+
+    def test_stage_link_swap_never_publishes_foreign_stage_bytes(self):
+        root = self.output_parent / "direct-link"
+        transaction = replay._create_exact_root(root)
+        close_transaction = getattr(
+            replay, "_close_output_transaction", lambda unused: None
+        )
+        try:
+            stage = replay._write_stage(
+                transaction,
+                "completed",
+                b"owned-stage",
+            )
+            stage_path = replay._stage_path(root, "completed")
+            preserved = stage_path.with_name(stage_path.name + ".owned-preserved")
+            real_link = os.link
+            real_rename = os.rename
+            real_open = os.open
+            injected = False
+
+            def replace_before_link(
+                source,
+                destination,
+                *,
+                src_dir_fd=None,
+                dst_dir_fd=None,
+                follow_symlinks=True,
+            ):
+                nonlocal injected
+                if source == stage["name"] and not injected:
+                    injected = True
+                    real_rename(
+                        source,
+                        preserved.name,
+                        src_dir_fd=src_dir_fd,
+                        dst_dir_fd=src_dir_fd,
+                    )
+                    descriptor = real_open(
+                        source,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                        0o600,
+                        dir_fd=src_dir_fd,
+                    )
+                    try:
+                        os.write(descriptor, b"foreign-stage")
+                    finally:
+                        os.close(descriptor)
+                return real_link(
+                    source,
+                    destination,
+                    src_dir_fd=src_dir_fd,
+                    dst_dir_fd=dst_dir_fd,
+                    follow_symlinks=follow_symlinks,
+                )
+
+            with mock.patch("os.link", side_effect=replace_before_link):
+                with self.assertRaises(ValueError):
+                    replay._link_stage(transaction, stage)
+            self.assertTrue(injected)
+            self.assertFalse(
+                (root / replay.TERMINAL_MANIFEST_NAME).exists()
+            )
+            self.assertEqual(stage_path.read_bytes(), b"foreign-stage")
+            self.assertEqual(preserved.read_bytes(), b"owned-stage")
+        finally:
+            close_transaction(transaction)
+
+    def test_post_commit_boundary_exception_reconciles_to_completed(self):
+        delivered = False
+
+        def raise_after_commit():
+            nonlocal delivered
+            delivered = True
+            raise RuntimeError("post-commit boundary")
+
+        with mock.patch.object(
+            replay,
+            "_post_commit_boundary",
+            side_effect=raise_after_commit,
+            create=True,
+        ):
+            manifest = self.execute()
+        self.assertTrue(delivered)
+        self.assertEqual(manifest["status"], "completed")
+        self.assertEqual(
+            json.loads(
+                (self.default_output / replay.TERMINAL_MANIFEST_NAME).read_text()
+            )["status"],
+            "completed",
+        )
+
     def test_success_has_no_staging_and_completed_publication_is_last_throwing_boundary(self):
         manifest = self.execute()
         self.assertEqual(manifest["status"], "completed")
@@ -1085,6 +1567,36 @@ class DeterminismAndMutationTests(ReplayHarness):
             first_manifest["decompressed_process_sha256"],
         )
         self.assertNotIn(self.baseline_marker, first_decompressed)
+
+    def test_raw_append_after_first_hash_cannot_publish_completed(self):
+        original = replay._final_identity_and_disk_probe
+        appended = False
+
+        def append_during_final_probe(*args, **kwargs):
+            nonlocal appended
+            if not appended:
+                appended = True
+                with (self.default_output / replay.RAW_PROCESS_NAME).open(
+                    "ab"
+                ) as target:
+                    target.write(b"post-hash-drift")
+                    target.flush()
+                    os.fsync(target.fileno())
+            return original(*args, **kwargs)
+
+        with mock.patch.object(
+            replay,
+            "_final_identity_and_disk_probe",
+            side_effect=append_during_final_probe,
+        ):
+            with self.assertRaises(ValueError):
+                self.execute()
+        self.assertTrue(appended)
+        terminal = json.loads(
+            (self.default_output / replay.TERMINAL_MANIFEST_NAME).read_text()
+        )
+        self.assertEqual(terminal["status"], "failed")
+        self.assertNotEqual(terminal["status"], "completed")
 
     def test_concrete_source_mutation_after_read_cannot_publish_completed(self):
         original = replay._write_row
