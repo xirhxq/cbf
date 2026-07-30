@@ -129,6 +129,208 @@ def comparison_branch_representatives():
     )
 
 
+def routing_config_and_truth():
+    config = {
+        "num": 7,
+        "number": 7,
+        "parts": 1,
+        "formation": {"parts": 1, "bases-id": [[0, 1]]},
+        "bases": [[1000.0, 1000.0], [1200.0, 1200.0]],
+        "cbfs": {
+            "without-slack": {
+                "comm-fixed": {
+                    "min-neighbour-id-offset": -2,
+                    "max-neighbour-id-offset": 0,
+                    "max-range": 10.0,
+                },
+            },
+        },
+    }
+    truth = {
+        identifier: np.asarray([100.0 * identifier, 100.0])
+        for identifier in range(1, 8)
+    }
+    truth[4] = np.asarray([1.0, 0.0])
+    truth[5] = np.asarray([0.0, 1.0])
+    truth[6] = np.asarray([0.0, 0.0])
+    return config, truth
+
+
+def routing_fresh_output():
+    return {
+        "output_status": "fresh",
+        "prediction_age": 0,
+        "estimate": [1.0, 2.0],
+        "modeled_covariance": [[1.0, 0.0], [0.0, 1.0]],
+        "epsilon": 3.0,
+        "aged_modeled_radius": None,
+        "base_anchor_provenance": [0, 1],
+    }
+
+
+def legal_existing_predicted_row():
+    config, truth = routing_config_and_truth()
+    current = routing_fresh_output()
+    previous_state = {
+        "public_output": current,
+        "private_state": {
+            "status": "available",
+            "estimate": [1.0, 1.5],
+            "modeled_covariance": [[0.2, 0.0], [0.0, 0.2]],
+            "source_fresh_frame": 19,
+            "propagated_to_frame": 19,
+            "age_frames": 0,
+        },
+    }
+    row, _ = replay.produce_method_row(
+        seed=20260727,
+        frame_index=20,
+        robot_id=6,
+        config=config,
+        truth_positions=truth,
+        current_public={4: current, 5: current},
+        previous_state=previous_state,
+        applied_command=[0.0, 0.0],
+        ranging_sigma=0.5,
+    )
+    if (
+        row["attempt_path"],
+        row["selector_considered"],
+        row["output_status"],
+        row["prediction_age"],
+    ) != (
+        "existing_predictive_multistart",
+        False,
+        "predicted",
+        1,
+    ):
+        raise AssertionError("existing-path predicted fixture differs")
+    return row, config
+
+
+def legal_rejected_selector_row():
+    config, truth = routing_config_and_truth()
+    current = routing_fresh_output()
+    row, _ = replay.produce_method_row(
+        seed=20260728,
+        frame_index=20,
+        robot_id=6,
+        config=config,
+        truth_positions=truth,
+        current_public={4: current, 5: current},
+        previous_state={},
+        applied_command=[0.0, 0.0],
+        ranging_sigma=0.5,
+    )
+    if (
+        row["attempt_path"],
+        row["selector_considered"],
+        row["attempt_status"],
+        row["output_status"],
+    ) != (
+        "two_range_reacquisition",
+        True,
+        "rejected",
+        "unavailable",
+    ):
+        raise AssertionError("rejected-selector fixture differs")
+    return row
+
+
+def legal_existing_fresh_row():
+    row = registered_new_row()
+    candidate = replay.frozen_candidate_gate_record(
+        cost=0.0,
+        accepted=True,
+        reason="accepted",
+    )
+    result = candidate["result"]
+    row.update(
+        {
+            "attempt_path": "existing_predictive_multistart",
+            "selector_considered": False,
+            "selector_consideration_reason": "live_public_prediction",
+            "attempt_status": "accepted",
+            "attempt_failure_reason": None,
+            "output_status": "fresh",
+            "prediction_age": 0,
+            "estimate": copy.deepcopy(result["estimate"]),
+            "fresh_modeled_covariance": copy.deepcopy(
+                result["covariance"]
+            ),
+            "fresh_epsilon": result["epsilon"],
+            "aged_modeled_covariance": None,
+            "aged_modeled_radius": None,
+            "prior_used_for_branch_selection": False,
+            "branches": [],
+            "selected_branch_id": None,
+            "next_private_state_status": "available",
+            "next_private_state_estimate": copy.deepcopy(
+                result["estimate"]
+            ),
+            "next_private_state_covariance": copy.deepcopy(
+                result["covariance"]
+            ),
+            "next_private_state_source_fresh_frame": row["frame_index"],
+            "next_private_state_propagated_to_frame": row["frame_index"],
+            "next_private_state_age_frames": 0,
+            "existing_candidates": [candidate],
+            "existing_selected_candidate_source": candidate["source"],
+            "base_anchor_provenance": [0, 1],
+        }
+    )
+    residual = (
+        np.asarray(row["offline_truth_position"])
+        - np.asarray(row["estimate"])
+    )
+    row["offline_error_norm"] = float(np.linalg.norm(residual))
+    row["offline_fresh_containment"] = bool(
+        row["offline_error_norm"] <= row["fresh_epsilon"]
+    )
+    row["offline_fresh_q_error"] = float(
+        residual
+        @ np.linalg.solve(
+            np.asarray(row["fresh_modeled_covariance"]),
+            residual,
+        )
+    )
+    replay._validate_row(row)
+    return row
+
+
+def comparison_sources(new_rows):
+    baseline = []
+    v4 = []
+    for row in new_rows:
+        baseline.append(
+            {
+                "graph_case": "dynamic_dag_wnls",
+                "seed": row["seed"],
+                "frame_index": row["frame_index"],
+                "robot_id": row["robot_id"],
+                "attempt_status": "converged",
+                "status": "converged",
+                "error_norm": 1.0,
+                "finite": True,
+            }
+        )
+        v4.append(
+            {
+                "variant": "predictive_multistart",
+                "seed": row["seed"],
+                "frame_index": row["frame_index"],
+                "robot_id": row["robot_id"],
+                "squad_local_index": row["squad_local_index"],
+                "attempt_status": "accepted",
+                "output_status": "fresh",
+                "prediction_age": 0,
+                "offline_error_norm": 1.0,
+                "offline_fresh_q_error": 1.0,
+            }
+        )
+    return baseline, v4
+
+
 def compact_identity(path, *, seed=1, domain="file_bytes"):
     return {
         "path": path,
@@ -252,6 +454,65 @@ def canonical_registered_result(result):
     )
     result["semantic_payload_sha256"] = analyzer._semantic_sha256(result)
     return result
+
+
+def canonical_registered_projection(source_projection):
+    projection = json.loads(source_projection)
+    projection["expected_rows"] = 140000
+    projection["observed_rows"] = 140000
+    projection["unique_rows"] = 140000
+    projection["status_counts"] = {
+        "attempt_accepted": 1,
+        "attempt_rejected": 0,
+        "attempt_failed": 0,
+        "attempt_invalid": 0,
+        "attempt_reference_unavailable": 139999,
+        "output_fresh": 1,
+        "output_predicted": 0,
+        "output_unavailable": 139999,
+    }
+    availability = next(
+        record
+        for record in projection["scientific_gates"]
+        if record["gate_id"] == "fresh_or_predicted_min_fraction"
+    )
+    availability.update(
+        {
+            "numerator": 1,
+            "denominator": 140000,
+            "value": 1 / 140000,
+            "passed": False,
+        }
+    )
+    for gate in projection["scientific_gates"][6:]:
+        gate["denominator"] = 140000
+    for gate in projection["integrity_gates"]:
+        gate["denominator"] = 140000
+    return replay.ordered_strict_json_bytes(
+        projection,
+        analyzer.SOURCE_PROJECTION_FIELDS,
+    )
+
+
+def canonical_registered_fixture_with_projection():
+    baseline, v4, new = comparison_rows()
+    result, source_projection = (
+        analyzer._aggregate_two_range_reacquisition_with_projection(
+            baseline_rows=baseline,
+            v4_rows=v4,
+            new_rows=new,
+            truth_data={"config": fixed_topology_config()},
+            protocol={
+                "protocol_id": "test-protocol",
+                "gates": analyzer.GATES,
+            },
+            branch_representatives=comparison_branch_representatives(),
+        )
+    )
+    return (
+        canonical_registered_result(result),
+        canonical_registered_projection(source_projection),
+    )
 
 
 def validate_row(row: dict, *, expected_key=None, **overrides):
@@ -791,6 +1052,96 @@ class LinearPercentileTests(unittest.TestCase):
 
 
 class AggregateGateTests(unittest.TestCase):
+    def test_existing_fresh_and_rejected_selector_use_distinct_populations(
+        self,
+    ):
+        new = [legal_existing_fresh_row(), legal_rejected_selector_row()]
+        baseline, v4 = comparison_sources(new)
+        result = analyzer.aggregate_two_range_reacquisition(
+            baseline_rows=baseline,
+            v4_rows=v4,
+            new_rows=new,
+            truth_data={"config": fixed_topology_config()},
+            protocol={
+                "protocol_id": "test-protocol",
+                "gates": analyzer.GATES,
+            },
+            branch_representatives=(None, ()),
+        )
+        reconstructed = analyzer._expected_scientific_gates_from_sources(
+            result
+        )
+        self.assertEqual(result["status_counts"]["attempt_accepted"], 1)
+        self.assertEqual(result["status_counts"]["output_fresh"], 1)
+        self.assertEqual(result["selector_accounting"]["accepted"], 0)
+        self.assertEqual(
+            reconstructed,
+            result["scientific_gates"],
+        )
+
+    def test_existing_age_one_prediction_is_not_selector_prediction(self):
+        row, config = legal_existing_predicted_row()
+        baseline, v4 = comparison_sources([row])
+        result = analyzer.aggregate_two_range_reacquisition(
+            baseline_rows=baseline,
+            v4_rows=v4,
+            new_rows=[row],
+            truth_data={"config": config},
+            protocol={
+                "protocol_id": "test-protocol",
+                "gates": analyzer.GATES,
+            },
+            branch_representatives=(None,),
+        )
+        reconstructed = analyzer._expected_scientific_gates_from_sources(
+            result
+        )
+        self.assertEqual(result["status_counts"]["output_predicted"], 1)
+        self.assertEqual(
+            result["integrity_gates"][
+                analyzer.INTEGRITY_GATE_IDS.index(
+                    "predicted_selector_output"
+                )
+            ]["numerator"],
+            0,
+        )
+        self.assertEqual(reconstructed[5]["value"], 1)
+        self.assertTrue(reconstructed[5]["passed"])
+
+    def test_selector_prediction_remains_an_integrity_failure(self):
+        row, config = legal_existing_predicted_row()
+        row.update(
+            {
+                "attempt_path": "two_range_reacquisition",
+                "selector_considered": True,
+                "selector_consideration_reason": "considered",
+                "attempt_failure_reason": "two_range_input_invalid",
+                "existing_candidates": [],
+                "existing_selected_candidate_source": None,
+            }
+        )
+        replay._validate_row(row)
+        baseline, v4 = comparison_sources([row])
+        result = analyzer.aggregate_two_range_reacquisition(
+            baseline_rows=baseline,
+            v4_rows=v4,
+            new_rows=[row],
+            truth_data={"config": config},
+            protocol={
+                "protocol_id": "test-protocol",
+                "gates": analyzer.GATES,
+            },
+            branch_representatives=((),),
+        )
+        gate = result["integrity_gates"][
+            analyzer.INTEGRITY_GATE_IDS.index(
+                "predicted_selector_output"
+            )
+        ]
+        self.assertEqual(gate["numerator"], 1)
+        self.assertFalse(gate["passed"])
+        self.assertEqual(result["decision"], "fail")
+
     def test_duplicate_missing_extra_and_out_of_order_new_stream_reject(self):
         baseline, v4, new = comparison_rows()
         first = new[0]
@@ -850,21 +1201,238 @@ class AggregateGateTests(unittest.TestCase):
 
     def test_zero_paired_cohort_is_canonical_and_validates(self):
         baseline, v4, new = comparison_rows(baseline_fresh=False)
-        result = analyzer.aggregate_two_range_reacquisition(
-            baseline_rows=baseline,
-            v4_rows=v4,
-            new_rows=new,
-            truth_data={"config": fixed_topology_config()},
-            protocol={
-                "protocol_id": "test-protocol",
-                "gates": analyzer.GATES,
-            },
-            branch_representatives=comparison_branch_representatives(),
+        result, source_projection = (
+            analyzer._aggregate_two_range_reacquisition_with_projection(
+                baseline_rows=baseline,
+                v4_rows=v4,
+                new_rows=new,
+                truth_data={"config": fixed_topology_config()},
+                protocol={
+                    "protocol_id": "test-protocol",
+                    "gates": analyzer.GATES,
+                },
+                branch_representatives=(
+                    comparison_branch_representatives()
+                ),
+            )
         )
         result = canonical_registered_result(result)
-        analyzer._validate_analysis_result(result)
+        source_projection = canonical_registered_projection(
+            source_projection
+        )
+        analyzer._validate_analysis_result(
+            result,
+            source_projection=source_projection,
+        )
         self.assertEqual(result["paired_comparison"]["cohort_size"], 0)
         self.assertFalse(result["scientific_gates"][2]["passed"])
+
+    def test_registered_compact_accepts_exact_raw_projection(self):
+        result, source_projection = (
+            canonical_registered_fixture_with_projection()
+        )
+        analyzer._validate_analysis_result(
+            result,
+            source_projection=source_projection,
+        )
+
+    def test_registered_compact_without_raw_projection_fails_closed(self):
+        baseline, v4, new = comparison_rows()
+        result = canonical_registered_result(
+            analyzer.aggregate_two_range_reacquisition(
+                baseline_rows=baseline,
+                v4_rows=v4,
+                new_rows=new,
+                truth_data={"config": fixed_topology_config()},
+                protocol={
+                    "protocol_id": "test-protocol",
+                    "gates": analyzer.GATES,
+                },
+                branch_representatives=(
+                    comparison_branch_representatives()
+                ),
+            )
+        )
+        with self.assertRaisesRegex(
+            ValueError, "raw-derived source projection"
+        ):
+            analyzer._validate_analysis_result(result)
+
+    def test_transition_subcounts_cannot_exceed_global_populations(self):
+        baseline, v4, new = comparison_rows()
+        result = canonical_registered_result(
+            analyzer.aggregate_two_range_reacquisition(
+                baseline_rows=baseline,
+                v4_rows=v4,
+                new_rows=new,
+                truth_data={"config": fixed_topology_config()},
+                protocol={
+                    "protocol_id": "test-protocol",
+                    "gates": analyzer.GATES,
+                },
+                branch_representatives=(
+                    comparison_branch_representatives()
+                ),
+            )
+        )
+        transitions = result["baseline_fresh_transitions"]
+        transitions.update(
+            {
+                "baseline_fresh_total": 2,
+                "new_fresh": 2,
+                "new_predicted": 0,
+                "new_unavailable": 0,
+            }
+        )
+        retention = result["scientific_gates"][3]
+        retention.update(
+            {
+                "numerator": 2,
+                "denominator": 2,
+                "value": 0.0,
+                "passed": True,
+            }
+        )
+        result["semantic_payload_sha256"] = analyzer._semantic_sha256(
+            result
+        )
+        with self.assertRaisesRegex(ValueError, "transition.*global"):
+            analyzer._validate_analysis_result(result)
+
+    def test_exact_denominator_violation_is_derived_from_budgets(self):
+        baseline, v4, new = comparison_rows()
+        result = canonical_registered_result(
+            analyzer.aggregate_two_range_reacquisition(
+                baseline_rows=baseline,
+                v4_rows=v4,
+                new_rows=new,
+                truth_data={"config": fixed_topology_config()},
+                protocol={
+                    "protocol_id": "test-protocol",
+                    "gates": analyzer.GATES,
+                },
+                branch_representatives=(
+                    comparison_branch_representatives()
+                ),
+            )
+        )
+        exact_denominator = next(
+            record
+            for record in result["integrity_gates"]
+            if record["gate_id"] == "exact_denominator_violation"
+        )
+        exact_denominator.update(
+            {"numerator": 1, "value": 1, "passed": False}
+        )
+        result["semantic_payload_sha256"] = analyzer._semantic_sha256(
+            result
+        )
+        with self.assertRaisesRegex(
+            ValueError, "exact denominator.*budgets"
+        ):
+            analyzer._validate_analysis_result(result)
+
+    def test_paired_p95_and_gate_cannot_be_rewritten_against_projection(self):
+        result, source_projection = (
+            canonical_registered_fixture_with_projection()
+        )
+        paired = result["paired_comparison"]
+        paired["baseline_p95_m"] += 1.0
+        paired["new_p95_m"] += 1.0
+        paired_gate = result["scientific_gates"][2]
+        paired_gate["value"] = paired["new_minus_baseline_p95_m"]
+        paired_gate["passed"] = (
+            paired_gate["value"] <= paired_gate["threshold"]
+        )
+        result["semantic_payload_sha256"] = analyzer._semantic_sha256(
+            result
+        )
+        with self.assertRaisesRegex(
+            ValueError, "raw-derived source projection"
+        ):
+            analyzer._validate_analysis_result(
+                result,
+                source_projection=source_projection,
+            )
+
+    def test_projection_binds_all_nine_and_fourteen_gate_records(self):
+        result, source_projection = (
+            canonical_registered_fixture_with_projection()
+        )
+        for container, gate_ids in (
+            ("scientific_gates", tuple(analyzer.GATES)),
+            ("integrity_gates", analyzer.INTEGRITY_GATE_IDS),
+        ):
+            for index, gate_id in enumerate(gate_ids):
+                projection = json.loads(source_projection)
+                projection[container][index]["denominator"] += 1
+                changed_projection = replay.ordered_strict_json_bytes(
+                    projection,
+                    analyzer.SOURCE_PROJECTION_FIELDS,
+                )
+                with self.subTest(container=container, gate_id=gate_id):
+                    with self.assertRaisesRegex(
+                        ValueError, "raw-derived source projection"
+                    ):
+                        analyzer._validate_analysis_result(
+                            result,
+                            source_projection=changed_projection,
+                        )
+
+    def test_projection_binds_raw_maximum_and_prediction_age(self):
+        result, source_projection = (
+            canonical_registered_fixture_with_projection()
+        )
+        for field, increment in (
+            ("maximum_published_error_m", 1.0),
+            ("maximum_fresh_error_m", 1.0),
+            ("maximum_prediction_age_frames", 1),
+        ):
+            projection = json.loads(source_projection)
+            projection[field] += increment
+            changed_projection = replay.ordered_strict_json_bytes(
+                projection,
+                analyzer.SOURCE_PROJECTION_FIELDS,
+            )
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(
+                    ValueError, "raw-derived source projection"
+                ):
+                    analyzer._validate_analysis_result(
+                        result,
+                        source_projection=changed_projection,
+                    )
+
+    def test_tail_partition_maximum_cannot_rewrite_error_gates(self):
+        result, source_projection = (
+            canonical_registered_fixture_with_projection()
+        )
+        seed_tail = next(
+            record
+            for record in result["tails"]
+            if record["metric"] == "offline_error_norm"
+            and record["stratifier"] == "seed"
+            and record["count"] == 1
+        )
+        changed_maximum = seed_tail["maximum"] + 1.0
+        for field in ("minimum", "p50", "p95", "maximum"):
+            seed_tail[field] = changed_maximum
+        for gate in result["scientific_gates"][:2]:
+            gate.update(
+                {
+                    "numerator": int(changed_maximum >= 50.0),
+                    "value": changed_maximum,
+                    "passed": changed_maximum < 50.0,
+                }
+            )
+        result["semantic_payload_sha256"] = analyzer._semantic_sha256(
+            result
+        )
+        with self.assertRaisesRegex(ValueError, "tail partition"):
+            analyzer._validate_analysis_result(
+                result,
+                source_projection=source_projection,
+            )
 
     def test_compact_compressed_decompressed_descriptor_mismatch_rejects(self):
         baseline, v4, new = comparison_rows(baseline_fresh=False)

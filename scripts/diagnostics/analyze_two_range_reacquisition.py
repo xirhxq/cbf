@@ -259,6 +259,24 @@ SMOKE_SEMANTIC_FIELDS = (
     "tails",
     "limitations",
 )
+SOURCE_PROJECTION_FIELDS = (
+    "invocation_name",
+    "expected_rows",
+    "observed_rows",
+    "unique_rows",
+    "status_counts",
+    "selector_accounting",
+    "baseline_fresh_transitions",
+    "v4_fresh_transitions",
+    "paired_comparison",
+    "v4_paired_comparison",
+    "maximum_published_error_m",
+    "maximum_fresh_error_m",
+    "maximum_prediction_age_frames",
+    "integrity_counts",
+    "scientific_gates",
+    "integrity_gates",
+)
 ANALYSIS_MANIFEST_FIELDS = (
     "schema_id",
     "protocol_id",
@@ -1105,7 +1123,7 @@ def _selector_accounting(rows: list[Mapping]) -> dict:
     return {field: values[field] for field in SELECTOR_ACCOUNTING_FIELDS}
 
 
-def aggregate_two_range_reacquisition(
+def _aggregate_two_range_reacquisition_with_projection(
     *,
     baseline_rows: Iterable[Mapping],
     v4_rows: Iterable[Mapping],
@@ -1113,8 +1131,8 @@ def aggregate_two_range_reacquisition(
     truth_data: Mapping,
     protocol: Mapping,
     branch_representatives: Iterable[object] | None = None,
-) -> dict:
-    """Join exact baseline/v4/new keys and compute frozen compact metrics."""
+) -> tuple[dict, bytes]:
+    """Aggregate raw evidence and retain its immutable source projection."""
     baseline_rows = [
         row
         for row in baseline_rows
@@ -1227,6 +1245,34 @@ def aggregate_two_range_reacquisition(
     status_counts = {
         field: status_values[field] for field in STATUS_COUNT_FIELDS
     }
+    selector_accounting = _selector_accounting(new_rows)
+    tails = _tail_records(new_rows, v4=False)
+    published_errors = [
+        row["offline_error_norm"]
+        for row in new_rows
+        if row["output_status"] in {"fresh", "predicted"}
+    ]
+    fresh_errors = [
+        row["offline_error_norm"]
+        for row in new_rows
+        if row["output_status"] == "fresh"
+    ]
+    maximum_published_error = (
+        None
+        if not published_errors
+        else float(max(published_errors))
+    )
+    maximum_fresh_error = (
+        None if not fresh_errors else float(max(fresh_errors))
+    )
+    maximum_prediction_age = max(
+        (
+            row["prediction_age"]
+            for row in new_rows
+            if row["output_status"] == "predicted"
+        ),
+        default=0,
+    )
     v4_description = {
         "fresh_transitions": v4_transitions,
         "paired_both_fresh": v4_paired,
@@ -1237,7 +1283,7 @@ def aggregate_two_range_reacquisition(
         if all(record["passed"] for record in (*scientific, *integrity))
         else "fail"
     )
-    return {
+    result = {
         "schema_id": ANALYSIS_SCHEMA_ID,
         "protocol_id": protocol.get("protocol_id", ""),
         "invocation_name": "registered_analyzer",
@@ -1252,15 +1298,65 @@ def aggregate_two_range_reacquisition(
             "compact_allocated_bytes": 0,
         },
         "status_counts": status_counts,
-        "selector_accounting": _selector_accounting(new_rows),
+        "selector_accounting": selector_accounting,
         "baseline_fresh_transitions": baseline_transitions,
         "v4_descriptive_comparison": v4_description,
         "paired_comparison": paired,
         "scientific_gates": scientific,
         "integrity_gates": integrity,
-        "tails": _tail_records(new_rows, v4=False),
+        "tails": tails,
         "limitations": list(LIMITATIONS),
     }
+    projection_values = {
+        "invocation_name": "registered_analyzer",
+        "expected_rows": expected_rows,
+        "observed_rows": len(new_rows),
+        "unique_rows": len(new),
+        "status_counts": status_counts,
+        "selector_accounting": selector_accounting,
+        "baseline_fresh_transitions": baseline_transitions,
+        "v4_fresh_transitions": v4_transitions,
+        "paired_comparison": paired,
+        "v4_paired_comparison": v4_paired,
+        "maximum_published_error_m": maximum_published_error,
+        "maximum_fresh_error_m": maximum_fresh_error,
+        "maximum_prediction_age_frames": maximum_prediction_age,
+        "integrity_counts": {
+            gate_id: integrity_counts[gate_id]
+            for gate_id in INTEGRITY_GATE_IDS
+        },
+        "scientific_gates": scientific,
+        "integrity_gates": integrity,
+    }
+    source_projection = replay.ordered_strict_json_bytes(
+        {
+            field: projection_values[field]
+            for field in SOURCE_PROJECTION_FIELDS
+        },
+        SOURCE_PROJECTION_FIELDS,
+    )
+    return result, source_projection
+
+
+def aggregate_two_range_reacquisition(
+    *,
+    baseline_rows: Iterable[Mapping],
+    v4_rows: Iterable[Mapping],
+    new_rows: Iterable[Mapping],
+    truth_data: Mapping,
+    protocol: Mapping,
+    branch_representatives: Iterable[object] | None = None,
+) -> dict:
+    """Join exact baseline/v4/new keys and compute frozen compact metrics."""
+    result, _ = _aggregate_two_range_reacquisition_with_projection(
+        baseline_rows=baseline_rows,
+        v4_rows=v4_rows,
+        new_rows=new_rows,
+        truth_data=truth_data,
+        protocol=protocol,
+        branch_representatives=branch_representatives,
+    )
+    return result
 
 
 def _validate_exact_row_schema(row: Mapping) -> None:
@@ -2690,29 +2786,6 @@ def _gate_comparison(
     raise ValueError("gate operator is not canonical")
 
 
-def _fresh_error_tail_source(
-    tails: Iterable[Mapping],
-    *,
-    expected_count: int,
-) -> tuple[int, float | None]:
-    seed_records = [
-        record
-        for record in tails
-        if record["metric"] == "offline_error_norm"
-        and record["stratifier"] == "seed"
-    ]
-    count = sum(record["count"] for record in seed_records)
-    maxima = [
-        record["maximum"]
-        for record in seed_records
-        if record["maximum"] is not None
-    ]
-    maximum = None if not maxima else float(max(maxima))
-    if count != expected_count or (count == 0) != (maximum is None):
-        raise ValueError("tail population differs from gate source")
-    return count, maximum
-
-
 def _expected_scientific_gates_from_sources(
     result: Mapping,
 ) -> list[dict]:
@@ -2727,23 +2800,18 @@ def _expected_scientific_gates_from_sources(
     }
     expected_rows = budgets["expected_rows"]
     if (
-        status["attempt_accepted"] != accounting["accepted"]
-        or status["output_fresh"] != accounting["accepted"]
+        accounting["accepted"] > status["attempt_accepted"]
+        or accounting["accepted"] > status["output_fresh"]
     ):
-        raise ValueError("selector accounting differs from gate source")
-    fresh_count, maximum_fresh = _fresh_error_tail_source(
-        result["tails"],
-        expected_count=status["output_fresh"],
-    )
+        raise ValueError("selector accounting exceeds global gate source")
+    fresh_count = status["output_fresh"]
+    maximum_fresh = result["scientific_gates"][1]["value"]
     predicted = status["output_predicted"]
-    if predicted != integrity["predicted_selector_output"]:
-        raise ValueError("predicted output count differs from gate source")
-    if predicted != 0:
-        raise ValueError(
-            "predicted output prevents exact compact gate reconstruction"
-        )
-    published_count = fresh_count
-    maximum_published = maximum_fresh
+    if integrity["predicted_selector_output"] > predicted:
+        raise ValueError("selector predictions exceed global predictions")
+    published_count = fresh_count + predicted
+    maximum_published = result["scientific_gates"][0]["value"]
+    maximum_age = result["scientific_gates"][5]["value"]
     paired_difference = paired["new_minus_baseline_p95_m"]
     drop_fraction = (
         None
@@ -2814,7 +2882,7 @@ def _expected_scientific_gates_from_sources(
             2,
             predicted,
             predicted,
-            0,
+            maximum_age,
         ),
         (
             "qualification_anchor_violations_allowed",
@@ -3015,7 +3083,164 @@ def _validate_ordered_tails(tails: object, *, v4: bool) -> None:
         _validate_tail(record, v4=v4)
 
 
-def _validate_analysis_result(result: Mapping) -> None:
+def _validate_tail_partitions(
+    tails: list[Mapping],
+    *,
+    expected_count: int,
+    v4: bool,
+) -> None:
+    stratifiers = V4_TAIL_STRATIFIERS if v4 else TAIL_STRATIFIERS
+    for metric in TAIL_METRICS:
+        global_extrema = None
+        for stratifier in stratifiers:
+            partition = [
+                record
+                for record in tails
+                if record["metric"] == metric
+                and record["stratifier"] == stratifier
+            ]
+            count = sum(record["count"] for record in partition)
+            minima = [
+                record["minimum"]
+                for record in partition
+                if record["minimum"] is not None
+            ]
+            maxima = [
+                record["maximum"]
+                for record in partition
+                if record["maximum"] is not None
+            ]
+            extrema = (
+                (None, None)
+                if not minima
+                else (min(minima), max(maxima))
+            )
+            if (
+                count != expected_count
+                or (count == 0) != (extrema == (None, None))
+            ):
+                raise ValueError(
+                    "tail partition count differs from population"
+                )
+            if global_extrema is None:
+                global_extrema = extrema
+            elif extrema != global_extrema:
+                raise ValueError(
+                    "tail partition source global extrema differ"
+                )
+
+
+def _decode_source_projection(source_projection: object) -> dict:
+    if not isinstance(source_projection, bytes):
+        raise ValueError("raw-derived source projection is required")
+    projection = _strict_json_object(
+        source_projection,
+        Path("/raw-derived-source-projection"),
+    )
+    if (
+        tuple(projection) != SOURCE_PROJECTION_FIELDS
+        or replay.ordered_strict_json_bytes(
+            projection, SOURCE_PROJECTION_FIELDS
+        )
+        != source_projection
+        or projection["invocation_name"] not in ANALYZER_INVOCATIONS
+        or any(
+            not _valid_nonnegative_int(projection[field])
+            for field in (
+                "expected_rows",
+                "observed_rows",
+                "unique_rows",
+                "maximum_prediction_age_frames",
+            )
+        )
+        or not isinstance(projection["integrity_counts"], Mapping)
+        or tuple(projection["integrity_counts"]) != INTEGRITY_GATE_IDS
+        or any(
+            not _valid_nonnegative_int(value)
+            for value in projection["integrity_counts"].values()
+        )
+    ):
+        raise ValueError(
+            "raw-derived source projection differs from canonical schema"
+        )
+    for field in (
+        "maximum_published_error_m",
+        "maximum_fresh_error_m",
+    ):
+        value = projection[field]
+        if value is not None and (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or value < 0
+        ):
+            raise ValueError(
+                "raw-derived source projection maximum differs"
+            )
+    return projection
+
+
+def _validate_source_projection_binding(
+    result: Mapping,
+    source_projection: object,
+) -> None:
+    projection = _decode_source_projection(source_projection)
+    registered = result["invocation_name"] == "registered_analyzer"
+    v4 = result["v4_descriptive_comparison"]
+    comparisons = {
+        "invocation_name": result["invocation_name"],
+        "expected_rows": result["budgets"]["expected_rows"],
+        "observed_rows": result["budgets"]["observed_rows"],
+        "unique_rows": result["budgets"]["unique_rows"],
+        "status_counts": result["status_counts"],
+        "selector_accounting": result["selector_accounting"],
+        "baseline_fresh_transitions": result[
+            "baseline_fresh_transitions"
+        ],
+        "v4_fresh_transitions": (
+            v4["fresh_transitions"] if registered else None
+        ),
+        "paired_comparison": result["paired_comparison"],
+        "v4_paired_comparison": (
+            v4["paired_both_fresh"] if registered else None
+        ),
+        "maximum_published_error_m": (
+            result["scientific_gates"][0]["value"]
+            if registered
+            else projection["maximum_published_error_m"]
+        ),
+        "maximum_fresh_error_m": (
+            result["scientific_gates"][1]["value"]
+            if registered
+            else projection["maximum_fresh_error_m"]
+        ),
+        "maximum_prediction_age_frames": (
+            result["scientific_gates"][5]["value"]
+            if registered
+            else projection["maximum_prediction_age_frames"]
+        ),
+        "integrity_counts": {
+            record["gate_id"]: record["numerator"]
+            for record in result["integrity_gates"]
+        },
+        "scientific_gates": result["scientific_gates"],
+        "integrity_gates": result["integrity_gates"],
+    }
+    expected = {
+        field: comparisons[field]
+        for field in SOURCE_PROJECTION_FIELDS
+    }
+    if projection != expected:
+        raise ValueError(
+            "compact result differs from raw-derived source projection"
+        )
+
+
+def _validate_analysis_result(
+    result: Mapping,
+    *,
+    source_projection: object = None,
+) -> None:
     if (
         not isinstance(result, Mapping)
         or tuple(result) != ANALYSIS_FIELDS
@@ -3156,6 +3381,25 @@ def _validate_analysis_result(result: Mapping) -> None:
         != accounting["considered"]
     ):
         raise ValueError("selector accounting differs")
+    if (
+        accounting["accepted"] > status["attempt_accepted"]
+        or accounting["accepted"] > status["output_fresh"]
+        or accounting["rejected"] > status["attempt_rejected"]
+        or accounting["unavailable"]
+        > status["attempt_reference_unavailable"]
+        or accounting["root_rejections"]
+        > (
+            status["attempt_rejected"]
+            + status["attempt_failed"]
+            + status["attempt_invalid"]
+            + status["attempt_reference_unavailable"]
+        )
+        or accounting["downstream_unavailable"]
+        > status["output_unavailable"]
+    ):
+        raise ValueError(
+            "selector accounting exceeds global status populations"
+        )
     if registered:
         transitions = result["baseline_fresh_transitions"]
         if (
@@ -3171,6 +3415,17 @@ def _validate_analysis_result(result: Mapping) -> None:
             + transitions["new_unavailable"]
         ):
             raise ValueError("baseline transition record differs")
+        if any(
+            transitions[field] > status[status_field]
+            for field, status_field in (
+                ("new_fresh", "output_fresh"),
+                ("new_predicted", "output_predicted"),
+                ("new_unavailable", "output_unavailable"),
+            )
+        ):
+            raise ValueError(
+                "baseline transition subcount exceeds global population"
+            )
         v4 = result["v4_descriptive_comparison"]
         if (
             not isinstance(v4, Mapping)
@@ -3191,6 +3446,17 @@ def _validate_analysis_result(result: Mapping) -> None:
             + fresh_transitions["new_unavailable"]
         ):
             raise ValueError("v4 fresh transitions differ")
+        if any(
+            fresh_transitions[field] > status[status_field]
+            for field, status_field in (
+                ("new_fresh", "output_fresh"),
+                ("new_predicted", "output_predicted"),
+                ("new_unavailable", "output_unavailable"),
+            )
+        ):
+            raise ValueError(
+                "v4 transition subcount exceeds global population"
+            )
         for field, fields in (
             ("paired_comparison", PAIRED_COMPARISON_FIELDS),
             ("paired_both_fresh", V4_PAIRED_COMPARISON_FIELDS),
@@ -3231,11 +3497,21 @@ def _validate_analysis_result(result: Mapping) -> None:
             > transitions["baseline_fresh_total"]
             or result["paired_comparison"]["cohort_size"]
             > status["output_fresh"]
+            or v4["paired_both_fresh"]["cohort_size"]
+            > fresh_transitions["v4_fresh_total"]
+            or v4["paired_both_fresh"]["cohort_size"]
+            > status["output_fresh"]
         ):
             raise ValueError(
-                "paired cohort exceeds baseline-fresh or new-fresh source"
+                "paired cohort exceeds baseline/v4 or new-fresh "
+                "source population"
             )
         _validate_ordered_tails(v4["tails"], v4=True)
+        _validate_tail_partitions(
+            v4["tails"],
+            expected_count=fresh_transitions["v4_fresh_total"],
+            v4=True,
+        )
         if (
             accounting["fresh_contained"]
             + accounting["fresh_not_contained"]
@@ -3300,9 +3576,35 @@ def _validate_analysis_result(result: Mapping) -> None:
                 "integrity gate denominator differs from source rows"
             )
         _validate_gate_arithmetic(record)
+    integrity_by_id = {
+        record["gate_id"]: record for record in integrity
+    }
+    expected_denominator_violation = int(
+        budgets["observed_rows"] != budgets["expected_rows"]
+        or budgets["unique_rows"] != budgets["expected_rows"]
+    )
+    if (
+        integrity_by_id["exact_denominator_violation"]["numerator"]
+        != expected_denominator_violation
+    ):
+        raise ValueError(
+            "exact denominator violation differs from compact budgets"
+        )
+    if (
+        integrity_by_id["predicted_selector_output"]["numerator"]
+        > status["output_predicted"]
+    ):
+        raise ValueError(
+            "selector predictions exceed global predicted population"
+        )
     tails = result["tails"]
     if registered:
         _validate_ordered_tails(tails, v4=False)
+        _validate_tail_partitions(
+            tails,
+            expected_count=accounting["accepted"],
+            v4=False,
+        )
         expected_scientific = _expected_scientific_gates_from_sources(
             result
         )
@@ -3326,19 +3628,25 @@ def _validate_analysis_result(result: Mapping) -> None:
         raise ValueError("limitations differ from frozen order")
     if result["semantic_payload_sha256"] != _semantic_sha256(result):
         raise ValueError("semantic payload digest differs")
+    if source_projection is not None:
+        _validate_source_projection_binding(result, source_projection)
+    elif registered:
+        raise ValueError(
+            "registered compact requires raw-derived source projection"
+        )
 
 
 _validate_analysis = _validate_analysis_result
 
 
-def _smoke_result(
+def _smoke_result_with_projection(
     *,
     invocation_name: str,
     protocol_id: str,
     rows: list[Mapping],
     identities: Mapping,
     raw_allocated_bytes: int,
-) -> dict:
+) -> tuple[dict, bytes]:
     attempts = Counter(row["attempt_status"] for row in rows)
     outputs = Counter(row["output_status"] for row in rows)
     status_values = {
@@ -3356,10 +3664,10 @@ def _smoke_result(
     accounting = _selector_accounting(rows)
     accounting["fresh_contained"] = 0
     accounting["fresh_not_contained"] = 0
-    integrity = _integrity_gate_records(
-        {gate_id: 0 for gate_id in INTEGRITY_GATE_IDS},
-        denominator=18,
-    )
+    integrity_counts = {
+        gate_id: 0 for gate_id in INTEGRITY_GATE_IDS
+    }
+    integrity = _integrity_gate_records(integrity_counts, denominator=18)
     values = {
         "schema_id": ANALYSIS_SCHEMA_ID,
         "protocol_id": protocol_id,
@@ -3395,7 +3703,80 @@ def _smoke_result(
     }
     result = {field: values[field] for field in ANALYSIS_FIELDS}
     result["semantic_payload_sha256"] = _semantic_sha256(result)
-    _validate_analysis_result(result)
+    published_errors = [
+        row["offline_error_norm"]
+        for row in rows
+        if row["output_status"] in {"fresh", "predicted"}
+        and row["offline_error_norm"] is not None
+    ]
+    fresh_errors = [
+        row["offline_error_norm"]
+        for row in rows
+        if row["output_status"] == "fresh"
+        and row["offline_error_norm"] is not None
+    ]
+    projection_values = {
+        "invocation_name": invocation_name,
+        "expected_rows": 18,
+        "observed_rows": len(rows),
+        "unique_rows": len({row["smoke_case_id"] for row in rows}),
+        "status_counts": {
+            field: status_values[field] for field in STATUS_COUNT_FIELDS
+        },
+        "selector_accounting": accounting,
+        "baseline_fresh_transitions": None,
+        "v4_fresh_transitions": None,
+        "paired_comparison": None,
+        "v4_paired_comparison": None,
+        "maximum_published_error_m": (
+            None
+            if not published_errors
+            else float(max(published_errors))
+        ),
+        "maximum_fresh_error_m": (
+            None if not fresh_errors else float(max(fresh_errors))
+        ),
+        "maximum_prediction_age_frames": max(
+            (
+                row["prediction_age"]
+                for row in rows
+                if row["output_status"] == "predicted"
+            ),
+            default=0,
+        ),
+        "integrity_counts": integrity_counts,
+        "scientific_gates": [],
+        "integrity_gates": integrity,
+    }
+    source_projection = replay.ordered_strict_json_bytes(
+        {
+            field: projection_values[field]
+            for field in SOURCE_PROJECTION_FIELDS
+        },
+        SOURCE_PROJECTION_FIELDS,
+    )
+    _validate_analysis_result(
+        result,
+        source_projection=source_projection,
+    )
+    return result, source_projection
+
+
+def _smoke_result(
+    *,
+    invocation_name: str,
+    protocol_id: str,
+    rows: list[Mapping],
+    identities: Mapping,
+    raw_allocated_bytes: int,
+) -> dict:
+    result, _ = _smoke_result_with_projection(
+        invocation_name=invocation_name,
+        protocol_id=protocol_id,
+        rows=rows,
+        identities=identities,
+        raw_allocated_bytes=raw_allocated_bytes,
+    )
     return result
 
 
@@ -4194,13 +4575,15 @@ def analyze_two_range_reacquisition(
         branch_representatives = _validate_registered_rows(
             rows, protocol=protocol, truth_data=truth_data
         )
-        result = aggregate_two_range_reacquisition(
-            baseline_rows=baseline_rows,
-            v4_rows=v4_rows,
-            new_rows=rows,
-            truth_data=truth_data,
-            protocol=protocol,
-            branch_representatives=branch_representatives,
+        result, source_projection = (
+            _aggregate_two_range_reacquisition_with_projection(
+                baseline_rows=baseline_rows,
+                v4_rows=v4_rows,
+                new_rows=rows,
+                truth_data=truth_data,
+                protocol=protocol,
+                branch_representatives=branch_representatives,
+            )
         )
         result_identities["authorization"] = _result_identity(
             authorization_identity
@@ -4222,7 +4605,10 @@ def analyze_two_range_reacquisition(
             if not name.endswith("decompressed_process")
         )
         result["semantic_payload_sha256"] = _semantic_sha256(result)
-        _validate_analysis_result(result)
+        _validate_analysis_result(
+            result,
+            source_projection=source_projection,
+        )
     else:
         _validate_smoke_rows(rows, protocol=protocol)
         raw_sources = raw_manifest["source_identities"]
@@ -4269,13 +4655,17 @@ def analyze_two_range_reacquisition(
                 raw_compressed,
             )
         )
-        result = _smoke_result(
+        result, source_projection = _smoke_result_with_projection(
             invocation_name=invocation_name,
             protocol_id=protocol_id,
             rows=rows,
             identities=result_identities,
             raw_allocated_bytes=raw_allocated,
         )
+    _validate_analysis_result(
+        result,
+        source_projection=source_projection,
+    )
     started_at = _utc_now()
     null_outputs = {
         name: None for name in ANALYSIS_OUTPUT_MEMBER_NAMES
@@ -4365,7 +4755,10 @@ def analyze_two_range_reacquisition(
                 "compact_allocated_bytes"
             ] = compact_allocated
             result["semantic_payload_sha256"] = _semantic_sha256(result)
-            _validate_analysis_result(result)
+            _validate_analysis_result(
+                result,
+                source_projection=source_projection,
+            )
             _discard_staged_output(transaction, json_stage)
             stages.remove(json_stage)
             json_payload = (
