@@ -252,10 +252,37 @@ class ProtocolAndPreflightTests(ReplayHarness):
         self.assertFalse(marker.exists())
         self.assertIn("usage:", result.stdout)
 
-    def test_production_v2_contract_is_exact_and_exports_canonical_argv(self):
+    def test_production_v3_contract_is_exact_and_exports_canonical_argv(self):
         self.assertEqual(
             replay.PROTOCOL_SCHEMA_ID,
-            "cbf2026-predictive-wnls-stage1-protocol-v2",
+            "cbf2026-predictive-wnls-stage1-protocol-v3",
+        )
+        self.assertEqual(
+            replay.PROTOCOL_ID,
+            "cbf2026-predictive-wnls-stage1-v3",
+        )
+        self.assertEqual(
+            replay.PRODUCTION_PROTOCOL_TOKEN,
+            (
+                "docs/diagnostics/"
+                "2026-07-30-predictive-wnls-stage1-protocol-v3.json"
+            ),
+        )
+        self.assertEqual(
+            replay.RAW_SCHEMA_ID,
+            "cbf2026-predictive-wnls-development-rows-v2",
+        )
+        self.assertEqual(
+            replay.ANALYSIS_SCHEMA["id"],
+            "cbf2026-predictive-wnls-development-analysis-v2",
+        )
+        self.assertEqual(
+            replay.HERMETIC_PROTOCOL_SCHEMA_ID,
+            "cbf2026-predictive-wnls-stage1-hermetic-protocol-v1",
+        )
+        self.assertEqual(
+            replay.HERMETIC_PROTOCOL_ID,
+            "cbf2026-predictive-wnls-stage1-hermetic-v1",
         )
         self.assertEqual(
             replay.PRODUCTION_RANGE_NOISE_SEEDS,
@@ -270,16 +297,82 @@ class ProtocolAndPreflightTests(ReplayHarness):
             invocations["smoke_a"],
             {
                 "kind": "unregistered_smoke",
-                "output_root": "/private/tmp/cbf2026-predictive-wnls-smoke-a",
+                "output_root": (
+                    "/private/tmp/cbf2026-predictive-wnls-smoke-v3-a"
+                ),
                 "range_noise_seeds": [20260727],
                 "max_frames": 2,
             },
+        )
+        self.assertEqual(
+            invocations["smoke_b"],
+            {
+                "kind": "unregistered_smoke",
+                "output_root": (
+                    "/private/tmp/cbf2026-predictive-wnls-smoke-v3-b"
+                ),
+                "range_noise_seeds": [20260727],
+                "max_frames": 2,
+            },
+        )
+        self.assertEqual(
+            invocations["registered_replay"]["output_root"],
+            (
+                "/private/tmp/cbf2026-predictive-wnls-development/"
+                "stage1-v3"
+            ),
         )
         self.assertEqual(
             invocations["registered_replay"]["range_noise_seeds"],
             list(range(20260727, 20260747)),
         )
         self.assertIsNone(invocations["registered_replay"]["max_frames"])
+        self.assertEqual(
+            invocations["registered_analyzer"]["development_manifest_path"],
+            (
+                "/private/tmp/cbf2026-predictive-wnls-development/"
+                "stage1-v3/manifest.json"
+            ),
+        )
+        self.assertEqual(
+            invocations["registered_analyzer"]["output_root"],
+            (
+                "/private/tmp/"
+                "cbf2026-predictive-wnls-development-analysis/stage1-v3"
+            ),
+        )
+        production_declarations = json.dumps(
+            {
+                "schema_id": replay.PROTOCOL_SCHEMA_ID,
+                "protocol_id": replay.PROTOCOL_ID,
+                "protocol_token": replay.PRODUCTION_PROTOCOL_TOKEN,
+                "invocations": invocations,
+                "commands": replay.production_command_contract(
+                    {
+                        "truth_data": {"path": "/input/data.json"},
+                        "input_manifest": {
+                            "path": "/input/manifest.json"
+                        },
+                        "baseline_process": {
+                            "path": "/input/baseline.jsonl.gz"
+                        },
+                    }
+                ),
+            },
+            sort_keys=True,
+        )
+        for retired in (
+            "docs/diagnostics/2026-07-30-predictive-wnls-stage1-protocol.json",
+            "/private/tmp/cbf2026-predictive-wnls-smoke-a",
+            "/private/tmp/cbf2026-predictive-wnls-smoke-b",
+            "/private/tmp/cbf2026-predictive-wnls-development/stage1-v2",
+            (
+                "/private/tmp/"
+                "cbf2026-predictive-wnls-development-analysis/stage1-v2"
+            ),
+        ):
+            with self.subTest(retired=retired):
+                self.assertNotIn(retired, production_declarations)
         command = replay.canonical_replay_argv(
             data_path=Path("/input/data.json"),
             input_manifest_path=Path("/input/manifest.json"),
@@ -370,7 +463,9 @@ class ProtocolAndPreflightTests(ReplayHarness):
         selected = replay._validate_protocol_shape(
             protocol,
             protocol_path=protocol_path,
-            output_root=Path("/private/tmp/cbf2026-predictive-wnls-smoke-a"),
+            output_root=Path(
+                "/private/tmp/cbf2026-predictive-wnls-smoke-v3-a"
+            ),
             run_seeds=(20260727,),
             max_frames=2,
         )
@@ -396,7 +491,8 @@ class ProtocolAndPreflightTests(ReplayHarness):
                         changed,
                         protocol_path=protocol_path,
                         output_root=Path(
-                            "/private/tmp/cbf2026-predictive-wnls-smoke-a"
+                            "/private/tmp/"
+                            "cbf2026-predictive-wnls-smoke-v3-a"
                         ),
                         run_seeds=(20260727,),
                         max_frames=2,

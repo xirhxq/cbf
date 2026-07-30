@@ -134,6 +134,22 @@ class RegistrarTests(unittest.TestCase):
         self.assertEqual(result, payload)
         self.assertEqual(payload["implementation_parent_commit"], head)
         self.assertEqual(
+            payload["schema_id"],
+            "cbf2026-predictive-wnls-stage1-protocol-v3",
+        )
+        self.assertEqual(
+            payload["protocol_id"],
+            "cbf2026-predictive-wnls-stage1-v3",
+        )
+        self.assertEqual(
+            payload["raw_schema"]["id"],
+            "cbf2026-predictive-wnls-development-rows-v2",
+        )
+        self.assertEqual(
+            payload["analysis_schema"]["id"],
+            "cbf2026-predictive-wnls-development-analysis-v2",
+        )
+        self.assertEqual(
             set(payload),
             {
                 "schema_id",
@@ -271,7 +287,7 @@ class RegistrarTests(unittest.TestCase):
             "--protocol-json",
             (
                 "docs/diagnostics/"
-                "2026-07-30-predictive-wnls-stage1-protocol.json"
+                "2026-07-30-predictive-wnls-stage1-protocol-v3.json"
             ),
         ]
         self.assertEqual(
@@ -279,7 +295,19 @@ class RegistrarTests(unittest.TestCase):
             expected_prefix
             + [
                 "--output-root",
-                "/private/tmp/cbf2026-predictive-wnls-smoke-a",
+                "/private/tmp/cbf2026-predictive-wnls-smoke-v3-a",
+                "--run-seeds",
+                "20260727",
+                "--max-frames",
+                "2",
+            ],
+        )
+        self.assertEqual(
+            payload["commands"]["smoke_b"],
+            expected_prefix
+            + [
+                "--output-root",
+                "/private/tmp/cbf2026-predictive-wnls-smoke-v3-b",
                 "--run-seeds",
                 "20260727",
                 "--max-frames",
@@ -293,7 +321,7 @@ class RegistrarTests(unittest.TestCase):
                 "--output-root",
                 (
                     "/private/tmp/cbf2026-predictive-wnls-development/"
-                    "stage1-v2"
+                    "stage1-v3"
                 ),
                 "--run-seeds",
                 ",".join(str(seed) for seed in range(20260727, 20260747)),
@@ -313,22 +341,43 @@ class RegistrarTests(unittest.TestCase):
                 "--development-manifest-path",
                 (
                     "/private/tmp/cbf2026-predictive-wnls-development/"
-                    "stage1-v2/manifest.json"
+                    "stage1-v3/manifest.json"
                 ),
                 "--protocol-json",
                 (
                     "docs/diagnostics/"
-                    "2026-07-30-predictive-wnls-stage1-protocol.json"
+                    "2026-07-30-predictive-wnls-stage1-protocol-v3.json"
                 ),
                 "--expected-baseline-sha256",
                 sha256(self.baseline),
                 "--output-root",
                 (
                     "/private/tmp/"
-                    "cbf2026-predictive-wnls-development-analysis/stage1-v2"
+                    "cbf2026-predictive-wnls-development-analysis/stage1-v3"
                 ),
             ],
         )
+        production_declarations = json.dumps(
+            {
+                "schema_id": payload["schema_id"],
+                "protocol_id": payload["protocol_id"],
+                "invocations": payload["invocations"],
+                "commands": payload["commands"],
+            },
+            sort_keys=True,
+        )
+        for retired in (
+            "docs/diagnostics/2026-07-30-predictive-wnls-stage1-protocol.json",
+            "/private/tmp/cbf2026-predictive-wnls-smoke-a",
+            "/private/tmp/cbf2026-predictive-wnls-smoke-b",
+            "/private/tmp/cbf2026-predictive-wnls-development/stage1-v2",
+            (
+                "/private/tmp/"
+                "cbf2026-predictive-wnls-development-analysis/stage1-v2"
+            ),
+        ):
+            with self.subTest(retired=retired):
+                self.assertNotIn(retired, production_declarations)
 
     def test_output_is_deterministic_for_same_bound_repository(self):
         _, markdown_a, json_a = self.register("a")

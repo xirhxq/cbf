@@ -95,8 +95,8 @@ DEVELOPMENT_VARIANTS = (
     "fresh_reference_qualification",
     "predictive_multistart",
 )
-PROTOCOL_SCHEMA_ID = "cbf2026-predictive-wnls-stage1-protocol-v2"
-PROTOCOL_ID = "cbf2026-predictive-wnls-stage1-v2"
+PROTOCOL_SCHEMA_ID = "cbf2026-predictive-wnls-stage1-protocol-v3"
+PROTOCOL_ID = "cbf2026-predictive-wnls-stage1-v3"
 HERMETIC_PROTOCOL_SCHEMA_ID = (
     "cbf2026-predictive-wnls-stage1-hermetic-protocol-v1"
 )
@@ -111,7 +111,7 @@ LEGACY_SOLVER_SHA256 = (
 )
 PRODUCTION_RANGE_NOISE_SEEDS = tuple(range(20260727, 20260747))
 PRODUCTION_PROTOCOL_TOKEN = (
-    "docs/diagnostics/2026-07-30-predictive-wnls-stage1-protocol.json"
+    "docs/diagnostics/2026-07-30-predictive-wnls-stage1-protocol-v3.json"
 )
 PRODUCTION_TRUTH_DATA_PATH = (
     "/private/tmp/cbf2026-results/mc-first-mechanism-250s/R/"
@@ -502,7 +502,7 @@ def canonical_analyzer_argv(
     expected_baseline_sha256: str,
     output_root: Path,
 ) -> list[str]:
-    """Return the token-for-token analyzer command bound by production v2."""
+    """Return the token-for-token analyzer command bound by production v3."""
     return [
         "conda",
         "run",
@@ -526,18 +526,18 @@ def canonical_analyzer_argv(
 def production_invocation_contract() -> dict[str, dict]:
     """Return the exact four-invocation registered Stage-1 contract."""
     registered_root = Path(
-        "/private/tmp/cbf2026-predictive-wnls-development/stage1-v2"
+        "/private/tmp/cbf2026-predictive-wnls-development/stage1-v3"
     )
     return {
         "smoke_a": {
             "kind": "unregistered_smoke",
-            "output_root": "/private/tmp/cbf2026-predictive-wnls-smoke-a",
+            "output_root": "/private/tmp/cbf2026-predictive-wnls-smoke-v3-a",
             "range_noise_seeds": [20260727],
             "max_frames": 2,
         },
         "smoke_b": {
             "kind": "unregistered_smoke",
-            "output_root": "/private/tmp/cbf2026-predictive-wnls-smoke-b",
+            "output_root": "/private/tmp/cbf2026-predictive-wnls-smoke-v3-b",
             "range_noise_seeds": [20260727],
             "max_frames": 2,
         },
@@ -554,7 +554,7 @@ def production_invocation_contract() -> dict[str, dict]:
             ),
             "output_root": (
                 "/private/tmp/cbf2026-predictive-wnls-development-analysis/"
-                "stage1-v2"
+                "stage1-v3"
             ),
             "expected_baseline_sha256": PRODUCTION_BASELINE_PROCESS_SHA256,
         },
