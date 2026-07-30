@@ -1322,6 +1322,8 @@ class HistoricalMechanismFixtureTests(unittest.TestCase):
 
     def test_frame177_stale_u8_cannot_create_fresh_catastrophic_cascade(self):
         result = run_stage0_fixture(FRAME177_PATH)
+        self.assertEqual(result["attempt_status"], "reference_unavailable")
+        self.assertEqual(result["output_status"], "unavailable")
         self.assertFalse(
             any(
                 reference["kind"] == "uav"
@@ -1338,10 +1340,24 @@ class HistoricalMechanismFixtureTests(unittest.TestCase):
                 for row in result["rows"]
             )
         )
+        uav8 = next(
+            row for row in result["rows"]
+            if row["frame_index"] == 177 and row["robot_id"] == 8
+        )
+        self.assertEqual(uav8["attempt_status"], "accepted")
+        self.assertEqual(uav8["output_status"], "fresh")
 
     def test_expiry_reacquires_only_on_three_consistent_ranges(self):
         result = run_stage0_fixture(REACQUISITION_PATH)
         self.assertEqual(
             [row["output_status"] for row in result["rows"]],
             ["unavailable", "fresh"],
+        )
+        self.assertEqual(
+            [row["attempt_status"] for row in result["rows"]],
+            ["rejected", "accepted"],
+        )
+        self.assertEqual(
+            [row["offline_error_norm"] for row in result["rows"]],
+            [None, 0.0],
         )

@@ -5,6 +5,7 @@ import gzip
 import hashlib
 import json
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -33,12 +34,42 @@ from scripts.diagnostics.replay_localization_calibration import (
 
 
 STAGE0_SCHEMA_ID = "cbf2026-predictive-wnls-stage0-fixtures-v2"
-LEGACY_REPLAY_SHA256 = "0123ed283917f6f9c6a005df4b8b7928e927d3aa4e098e5740816f272e24e4b8"
-FROZEN_INPUT_SHA256 = {
-    "truth_data": "3defc62d11bb5996301b21b95ab3902c998bb982640b0f9be7b9536005145527",
-    "input_manifest": "6731444b7a4cdaaaba010a6297b8b258500978e8856f239c04c157bc4878d6fb",
-    "baseline_process": "c964d415e68425e4b64e5acc9be925a237165a72c59a0b98342b9033734f2003",
+FROZEN_SOURCE_REGISTRY = {
+    "truth_data": {
+        "path": Path(
+            "/private/tmp/cbf2026-results/mc-first-mechanism-250s/R/"
+            "20260728T062752.357599Z_9cb3d4b121eb438c8688f0a121f01725/"
+            "2026-07-28_14-27-53_R_seed_20260727_250s/data.json"
+        ),
+        "sha256": "3defc62d11bb5996301b21b95ab3902c998bb982640b0f9be7b9536005145527",
+    },
+    "input_manifest": {
+        "path": Path(
+            "/private/tmp/cbf2026-results/mc-first-mechanism-250s/R/"
+            "20260728T062752.357599Z_9cb3d4b121eb438c8688f0a121f01725/"
+            "manifest.json"
+        ),
+        "sha256": "6731444b7a4cdaaaba010a6297b8b258500978e8856f239c04c157bc4878d6fb",
+    },
+    "baseline_process": {
+        "path": Path(
+            "/private/tmp/cbf2026-warm-start-recovery/warm-start-recovery/"
+            "20260729T112153.797813Z_54338549bff348a093dd71f29366d29b/"
+            "restart/localization-calibration/"
+            "20260729T112437.413270Z_efb8e7137776415c833f11204cf519d5/"
+            "calibration.jsonl.gz"
+        ),
+        "sha256": "c964d415e68425e4b64e5acc9be925a237165a72c59a0b98342b9033734f2003",
+    },
+    "legacy_replay": {
+        "path": Path(
+            "/private/tmp/cbf2026-diagnostic/scripts/diagnostics/"
+            "replay_localization_calibration.py"
+        ),
+        "sha256": "0123ed283917f6f9c6a005df4b8b7928e927d3aa4e098e5740816f272e24e4b8",
+    },
 }
+LEGACY_REPLAY_SHA256 = FROZEN_SOURCE_REGISTRY["legacy_replay"]["sha256"]
 HISTORICAL_CASES = (
     ("frame44_recovery", 20260736, 44, 14),
     ("frame177_cascade", 20260730, 177, 14),
@@ -70,21 +101,64 @@ def _write_json_exclusive(path: Path, value: object) -> str:
     return hashlib.sha256(payload + b"\n").hexdigest()
 
 
-def _read_json_verified(path: Path, expected_hash: str | None) -> tuple[dict, str]:
-    before = _sha256(path)
-    if expected_hash is not None and before != expected_hash:
+def _registered_source_identity(name: str, supplied_path: Path) -> dict:
+    entry = FROZEN_SOURCE_REGISTRY.get(name)
+    if not isinstance(entry, dict):
+        raise ValueError(f"unknown frozen source: {name}")
+    registered_path = entry.get("path")
+    expected_hash = entry.get("sha256")
+    if not isinstance(registered_path, Path) or not registered_path.is_absolute():
+        raise ValueError(f"invalid frozen path registry entry: {name}")
+    if not isinstance(expected_hash, str) or len(expected_hash) != 64:
+        raise ValueError(f"invalid frozen hash registry entry: {name}")
+    supplied = Path(supplied_path)
+    if not supplied.is_absolute() or supplied != registered_path:
+        raise ValueError(f"source path is not the exact registered spelling: {name}")
+    try:
+        resolved = supplied.resolve(strict=True)
+        metadata = os.stat(supplied, follow_symlinks=False)
+    except OSError as error:
+        raise ValueError(f"registered source is unavailable: {name}") from error
+    if resolved != registered_path:
+        raise ValueError(f"registered source path contains an alias or symlink: {name}")
+    return {
+        "path": str(registered_path),
+        "sha256": expected_hash,
+        "_path_state": (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_mode,
+            metadata.st_size,
+            metadata.st_mtime_ns,
+        ),
+    }
+
+
+def _verified_before(name: str, path: Path) -> dict:
+    identity = _registered_source_identity(name, path)
+    digest = _sha256(path)
+    if digest != identity["sha256"]:
         raise ValueError(f"source SHA-256 mismatch before read: {path}")
-    value = _strict_load(path)
-    after = _sha256(path)
-    if after != before:
+    return identity
+
+
+def _verify_after(name: str, path: Path, before: dict) -> dict:
+    after = _registered_source_identity(name, path)
+    digest = _sha256(path)
+    if after != before or digest != before["sha256"]:
         raise ValueError(f"source changed while read: {path}")
-    return value, before
+    return {"path": before["path"], "sha256": before["sha256"]}
 
 
-def _read_baseline_verified(path: Path, expected_hash: str | None) -> tuple[list[dict], str]:
-    before = _sha256(path)
-    if expected_hash is not None and before != expected_hash:
-        raise ValueError(f"source SHA-256 mismatch before read: {path}")
+def _read_registered_json(name: str, path: Path) -> tuple[dict, dict]:
+    before = _verified_before(name, path)
+    value = _strict_load(path)
+    identity = _verify_after(name, path, before)
+    return value, identity
+
+
+def _read_registered_baseline(name: str, path: Path) -> tuple[list[dict], dict]:
+    before = _verified_before(name, path)
     rows = []
     with gzip.open(path, "rt", encoding="utf-8") as source:
         for line in source:
@@ -93,34 +167,45 @@ def _read_baseline_verified(path: Path, expected_hash: str | None) -> tuple[list
                 if not isinstance(row, dict):
                     raise ValueError("baseline process row must be an object")
                 rows.append(row)
-    after = _sha256(path)
-    if after != before:
-        raise ValueError(f"source changed while read: {path}")
-    return rows, before
+    identity = _verify_after(name, path, before)
+    return rows, identity
 
 
-def _expected_hash(path: Path, frozen_name: str) -> str | None:
-    """Enforce identities for the exact registered inputs, permit tiny test data."""
-    known = {
-        "truth_data": "data.json",
-        "input_manifest": "manifest.json",
-        "baseline_process": "calibration.jsonl.gz",
-    }
-    return FROZEN_INPUT_SHA256[frozen_name] if path.name == known[frozen_name] and "/private/tmp/" in str(path) else None
-
-
-def _velocity(frame: dict, robot_id: int) -> list[float]:
-    robot = next((item for item in frame["robots"] if int(item["id"]) == robot_id), None)
-    if robot is None:
-        raise ValueError(f"missing robot {robot_id} for applied command")
-    try:
-        result = robot["opt"]["result"]
-        velocity = [float(result["vx"]), float(result["vy"])]
-    except (KeyError, TypeError, ValueError, OverflowError) as error:
-        raise ValueError("every transition must provide finite opt.result.vx/vy") from error
-    if not np.isfinite(np.asarray(velocity, dtype=float)).all():
-        raise ValueError("applied command must be finite")
-    return velocity
+def _validated_predecessor_commands(
+    frame: dict,
+    expected_ids: set[int],
+) -> dict[int, list[float]]:
+    if not isinstance(frame, dict) or not isinstance(frame.get("robots"), list):
+        raise ValueError("predecessor frame must contain a robots list")
+    commands = {}
+    for robot in frame["robots"]:
+        if not isinstance(robot, dict):
+            raise ValueError("predecessor robot records must be objects")
+        identifier = robot.get("id")
+        if (
+            isinstance(identifier, bool)
+            or not isinstance(identifier, int)
+            or identifier in commands
+        ):
+            raise ValueError("predecessor UAV IDs must be unique integers")
+        try:
+            opt = robot["opt"]
+            if opt["status"] != "success":
+                raise ValueError("predecessor optimizer status is not success")
+            result = opt["result"]
+            if isinstance(result["vx"], bool) or isinstance(result["vy"], bool):
+                raise ValueError("predecessor command components cannot be booleans")
+            velocity = [float(result["vx"]), float(result["vy"])]
+        except (KeyError, TypeError, ValueError, OverflowError) as error:
+            raise ValueError(
+                "every predecessor must provide successful finite opt.result.vx/vy"
+            ) from error
+        if not np.isfinite(np.asarray(velocity, dtype=float)).all():
+            raise ValueError("predecessor command must be finite")
+        commands[identifier] = velocity
+    if set(commands) != set(expected_ids):
+        raise ValueError("predecessor frame UAV IDs differ from configured IDs")
+    return {identifier: commands[identifier] for identifier in sorted(commands)}
 
 
 def _sensor_record(
@@ -164,6 +249,14 @@ def _runtime_prefix(data: dict, *, seed: int, target_frame: int) -> tuple[dict, 
     offline_truth = []
     for frame_index, source_frame in enumerate(frames[: target_frame + 1]):
         truth = _truth_positions(source_frame, expected_ids)
+        predecessor_commands = (
+            None
+            if frame_index == 0
+            else _validated_predecessor_commands(
+                frames[frame_index - 1],
+                expected_ids,
+            )
+        )
         entries = []
         for robot_id in range(1, number + 1):
             fixed = fixed_references(config, robot_id)
@@ -195,7 +288,7 @@ def _runtime_prefix(data: dict, *, seed: int, target_frame: int) -> tuple[dict, 
                 "transition_velocity": (
                     [0.0, 0.0]
                     if frame_index == 0
-                    else _velocity(frames[frame_index - 1], robot_id)
+                    else predecessor_commands[robot_id]
                 ),
                 "mandatory": fixed,
                 "optional_keys": [
@@ -232,11 +325,45 @@ def _comparison_row(rows: list[dict], *, seed: int, frame_index: int, robot_id: 
     if len(selected) != 1:
         raise ValueError("baseline target comparison row is not unique")
     row = selected[0]
+    output_fields = (
+        "status",
+        "estimate",
+        "covariance",
+        "epsilon",
+        "error_norm",
+        "finite",
+        "failure_reason",
+    )
+    attempt_fields = (
+        "status",
+        "estimate",
+        "covariance",
+        "epsilon",
+        "iterations",
+        "cost",
+        "stationarity_norm",
+        "phi_min_eigenvalue",
+        "phi_condition",
+        "failure_reason",
+    )
+    attempt_source = (
+        row["failure"]
+        if row.get("status") == "stale"
+        and isinstance(row.get("failure"), dict)
+        else row
+    )
+    attempt = {
+        field: attempt_source.get(field)
+        for field in attempt_fields
+    }
+    if attempt_source is row:
+        attempt["status"] = row.get("attempt_status", row.get("status"))
     return {
-        "status": row.get("status"),
-        "attempt_status": row.get("attempt_status"),
-        "error_norm": row.get("error_norm"),
-        "failure_reason": row.get("failure_reason"),
+        "baseline_output": {
+            field: row.get(field)
+            for field in output_fields
+        },
+        "baseline_attempt": attempt,
     }
 
 
@@ -305,26 +432,33 @@ def extract_stage0_fixtures(
     output_dir = Path(output_dir)
     if output_dir.exists():
         raise FileExistsError(f"fixture output directory already exists: {output_dir}")
-    data, truth_hash = _read_json_verified(
-        truth_data_path, _expected_hash(truth_data_path, "truth_data")
+    legacy_path = FROZEN_SOURCE_REGISTRY["legacy_replay"]["path"]
+    legacy_before = _verified_before("legacy_replay", legacy_path)
+    data, truth_identity = _read_registered_json(
+        "truth_data",
+        truth_data_path,
     )
-    _, manifest_hash = _read_json_verified(
-        input_manifest_path, _expected_hash(input_manifest_path, "input_manifest")
+    _, input_manifest_identity = _read_registered_json(
+        "input_manifest",
+        input_manifest_path,
     )
-    baseline_rows, baseline_hash = _read_baseline_verified(
-        baseline_process_path, _expected_hash(baseline_process_path, "baseline_process")
+    baseline_rows, baseline_identity = _read_registered_baseline(
+        "baseline_process",
+        baseline_process_path,
     )
-    legacy_path = Path(__file__).with_name("replay_localization_calibration.py")
-    if _sha256(legacy_path) != LEGACY_REPLAY_SHA256:
-        raise ValueError("immutable legacy replay source SHA-256 mismatch")
 
     output_dir.mkdir(parents=True)
     fixture_hashes = {}
     try:
         for name, seed, frame_index, robot_id in HISTORICAL_CASES:
             runtime, offline = _runtime_prefix(data, seed=seed, target_frame=frame_index)
-            offline["baseline_target_comparison"] = _comparison_row(
-                baseline_rows, seed=seed, frame_index=frame_index, robot_id=robot_id
+            offline.update(
+                _comparison_row(
+                    baseline_rows,
+                    seed=seed,
+                    frame_index=frame_index,
+                    robot_id=robot_id,
+                )
             )
             fixture_hashes[f"{name}.json"] = _write_json_exclusive(output_dir / f"{name}.json", {
                 "schema_id": STAGE0_SCHEMA_ID,
@@ -335,14 +469,21 @@ def extract_stage0_fixtures(
         fixture_hashes["reacquisition.json"] = _write_json_exclusive(
             output_dir / "reacquisition.json", _reacquisition_fixture()
         )
+        legacy_identity = _verify_after(
+            "legacy_replay",
+            legacy_path,
+            legacy_before,
+        )
+        source_identities = {
+            "truth_data": truth_identity,
+            "input_manifest": input_manifest_identity,
+            "baseline_process": baseline_identity,
+            "legacy_replay": legacy_identity,
+        }
         manifest = {
             "schema_id": STAGE0_SCHEMA_ID,
-            "legacy_replay_sha256": LEGACY_REPLAY_SHA256,
-            "sources": {
-                "truth_data_sha256": truth_hash,
-                "input_manifest_sha256": manifest_hash,
-                "baseline_process_sha256": baseline_hash,
-            },
+            "legacy_replay_sha256": legacy_identity["sha256"],
+            "sources": source_identities,
             "fixtures": fixture_hashes,
         }
         manifest_hash = _write_json_exclusive(output_dir / "manifest.json", manifest)
@@ -380,7 +521,6 @@ def _result_row(
     output: dict,
     attempt: dict,
     qualification: dict,
-    offline: dict,
     uav_outputs: dict[int, dict],
 ) -> dict:
     references = []
@@ -408,28 +548,21 @@ def _result_row(
             ),
             "reason": excluded["reason"],
         })
-    estimate = output.get("estimate")
-    truth = _offline_position(offline, frame_index, robot_id)
-    error = None
-    if estimate is not None and truth is not None:
-        point = np.asarray(estimate, dtype=float)
-        if point.shape == (2,) and np.isfinite(point).all():
-            error = float(np.linalg.norm(point - truth))
     selected = attempt.get("selected_candidate") if isinstance(attempt, dict) else None
     return {
         "frame_index": frame_index,
         "robot_id": robot_id,
         "attempt_status": output.get("attempt_status"),
         "output_status": output.get("output_status"),
+        "estimate": output.get("estimate"),
         "prediction_age": output.get("prediction_age"),
         "selected_candidate_source": None if selected is None else selected.get("source"),
         "candidate_diagnostics": attempt.get("candidates", []),
         "reference_freshness": references,
-        "offline_error_norm": error,
     }
 
 
-def _run_historical(runtime: dict, offline: dict) -> list[dict]:
+def _run_historical(runtime: dict) -> list[dict]:
     config = runtime["config"]
     number = int(config["num"])
     ranging_sigma = _parse_ranging_sigma(config)
@@ -500,14 +633,14 @@ def _run_historical(runtime: dict, offline: dict) -> list[dict]:
             )
             rows.append(_result_row(
                 frame_index=frame_index, robot_id=robot_id, output=output,
-                attempt=attempt, qualification=qualification, offline=offline,
+                attempt=attempt, qualification=qualification,
                 uav_outputs=current,
             ))
         outputs, private = current, current_private
     return rows
 
 
-def _run_reacquisition(runtime: dict, offline: dict) -> list[dict]:
+def _run_reacquisition(runtime: dict) -> list[dict]:
     output = runtime["initial_public_output"]
     private = runtime["initial_private_seed"]
     rows = []
@@ -540,10 +673,30 @@ def _run_reacquisition(runtime: dict, offline: dict) -> list[dict]:
         )
         rows.append(_result_row(
             frame_index=int(frame["frame_index"]), robot_id=1, output=output,
-            attempt=attempt, qualification=qualification, offline=offline,
+            attempt=attempt, qualification=qualification,
             uav_outputs={},
         ))
     return rows
+
+
+def _annotate_offline_rows(rows: list[dict], offline: dict) -> list[dict]:
+    annotated = []
+    for runtime_row in rows:
+        row = dict(runtime_row)
+        estimate = row.get("estimate")
+        truth = _offline_position(
+            offline,
+            row["frame_index"],
+            row["robot_id"],
+        )
+        error = None
+        if estimate is not None and truth is not None:
+            point = np.asarray(estimate, dtype=float)
+            if point.shape == (2,) and np.isfinite(point).all():
+                error = float(np.linalg.norm(point - truth))
+        row["offline_error_norm"] = error
+        annotated.append(row)
+    return annotated
 
 
 def run_stage0_fixture(path: Path) -> dict:
@@ -555,18 +708,32 @@ def run_stage0_fixture(path: Path) -> dict:
     offline = fixture.get("offline")
     if not isinstance(runtime, dict) or not isinstance(offline, dict):
         raise ValueError("fixture requires separate runtime and offline objects")
-    if runtime.get("kind") == "historical_prefix":
-        rows = _run_historical(runtime, offline)
-        target = runtime["target"]
-        selected = next(
-            row for row in rows
-            if row["frame_index"] == target["frame_index"] and row["robot_id"] == target["robot_id"]
+    kind = runtime.get("kind")
+    try:
+        if kind == "historical_prefix":
+            runtime_rows = _run_historical(runtime)
+            target = runtime["target"]
+        elif kind == "synthetic_reacquisition":
+            runtime_rows = _run_reacquisition(runtime)
+            target = {
+                "frame_index": runtime_rows[-1]["frame_index"],
+                "robot_id": runtime_rows[-1]["robot_id"],
+            }
+        else:
+            raise ValueError("unknown runtime fixture kind")
+    except (KeyError, TypeError, IndexError) as error:
+        label = (
+            "historical"
+            if kind == "historical_prefix"
+            else "reacquisition"
         )
-    elif runtime.get("kind") == "synthetic_reacquisition":
-        rows = _run_reacquisition(runtime, offline)
-        selected = rows[-1]
-    else:
-        raise ValueError("unknown runtime fixture kind")
+        raise ValueError(f"malformed {label} runtime") from error
+    rows = _annotate_offline_rows(runtime_rows, offline)
+    selected = next(
+        row for row in rows
+        if row["frame_index"] == target["frame_index"]
+        and row["robot_id"] == target["robot_id"]
+    )
     return {**selected, "rows": rows, "offline": fixture.get("offline", {})}
 
 
