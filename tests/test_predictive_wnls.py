@@ -6,11 +6,17 @@ from unittest import mock
 import numpy as np
 
 from scripts.diagnostics.predictive_wnls import (
+    algebraic_multilateration_candidate,
+    best_conditioned_pair,
     finalize_attempt,
+    initial_candidates,
     make_unavailable_output,
+    merge_base_anchor_provenance,
     output_is_fresh,
     propagate_estimator_prior,
+    qualify_active_references,
     reference_is_eligible,
+    two_circle_candidates,
 )
 
 
@@ -200,6 +206,143 @@ class FinalizeAttemptTests(unittest.TestCase):
 
                 self.assertEqual(result.get("attempt_status"), "invalid")
                 self.assertEqual(result["output_status"], "predicted")
+
+
+class ReferenceQualificationTests(unittest.TestCase):
+    def test_missing_mandatory_measurement_is_reference_unavailable(self):
+        result = qualify_active_references(
+            mandatory={"base_ids": [0], "uav_ids": [1]},
+            optional_keys=[("uav", 2)],
+            measurement_records={
+                ("base", 0): {"present": True, "noisy_range": 10.0},
+                ("uav", 2): {"present": True, "noisy_range": 12.0},
+            },
+            uav_outputs={
+                1: make_test_output(),
+                2: make_test_output(),
+            },
+            variant="predictive_multistart",
+        )
+        self.assertEqual(result["status"], "reference_unavailable")
+        self.assertEqual(result["missing_mandatory"], [("uav", 1)])
+
+    def test_qualification_filters_predicted_optional_without_truth(self):
+        result = qualify_active_references(
+            mandatory={"base_ids": [0], "uav_ids": [1]},
+            optional_keys=[("uav", 2), ("uav", 3)],
+            measurement_records={
+                ("base", 0): {"present": True, "noisy_range": 10.0},
+                ("uav", 1): {"present": True, "noisy_range": 11.0},
+                ("uav", 2): {"present": True, "noisy_range": 12.0},
+                ("uav", 3): {"present": True, "noisy_range": 13.0},
+            },
+            uav_outputs={
+                1: make_test_output(),
+                2: make_test_output(status="predicted", provenance=()),
+                3: make_test_output(provenance=(0, 2)),
+            },
+            variant="predictive_multistart",
+        )
+        self.assertEqual(
+            result["active_keys"],
+            [("base", 0), ("uav", 1), ("uav", 3)],
+        )
+        self.assertEqual(
+            result["excluded"],
+            [{"key": ("uav", 2), "reason": "not_current_frame_fresh"}],
+        )
+
+    def test_prediction_expiry_ablation_records_stale_anchor_violation(self):
+        result = qualify_active_references(
+            mandatory={"base_ids": [0], "uav_ids": [1]},
+            optional_keys=[("uav", 2)],
+            measurement_records={
+                ("base", 0): {"present": True, "noisy_range": 10.0},
+                ("uav", 1): {"present": True, "noisy_range": 11.0},
+                ("uav", 2): {"present": True, "noisy_range": 12.0},
+            },
+            uav_outputs={
+                1: make_test_output(),
+                2: make_test_output(status="predicted", provenance=()),
+            },
+            variant="prediction_expiry",
+        )
+        self.assertIn(("uav", 2), result["active_keys"])
+        self.assertEqual(
+            result["violations"],
+            [{"key": ("uav", 2), "reason": "stale_or_predicted_anchor_used"}],
+        )
+
+    def test_merge_provenance_uses_direct_bases_and_fresh_uav_roots(self):
+        self.assertEqual(
+            merge_base_anchor_provenance([3, 1], {7: make_test_output(provenance=(0, 2))}),
+            (0, 1, 2, 3),
+        )
+
+
+class CandidateGeometryTests(unittest.TestCase):
+    def test_two_circle_branches_have_fixed_orientation_order(self):
+        candidates = two_circle_candidates([0, 0], 5, [6, 0], 5)
+        np.testing.assert_allclose(candidates[0], [3, -4])
+        np.testing.assert_allclose(candidates[1], [3, 4])
+
+    def test_reacquisition_pair_uses_cosine_law_without_observer_center(self):
+        pair = best_conditioned_pair(
+            None,
+            [[0.0, 0.0], [6.0, 0.0], [0.0, 8.0]],
+            [5.0, 5.0, 5.0],
+            [("base", 0), ("base", 1), ("base", 2)],
+        )
+        self.assertEqual(pair, (0, 1))
+
+    def test_initial_candidates_are_unique_ordered_and_capped_at_four(self):
+        candidates = initial_candidates(
+            live_prediction={
+                "estimate": [3.0, 3.0],
+                "modeled_covariance": [[1.0, 0.0], [0.0, 1.0]],
+            },
+            private_seed=None,
+            reference_positions=[[0.0, 0.0], [6.0, 0.0], [0.0, 8.0]],
+            measured_ranges=[5.0, 5.0, 6.0],
+            reference_keys=[("base", 0), ("base", 1), ("base", 2)],
+        )
+        self.assertEqual(len(candidates), 4)
+        self.assertEqual(
+            [candidate["source"] for candidate in candidates],
+            ["prediction", "algebraic", "circle_negative", "circle_positive"],
+        )
+
+    def test_prediction_wins_deduplication_with_exact_geometry(self):
+        candidates = initial_candidates(
+            live_prediction={
+                "estimate": [3.0, 4.0],
+                "modeled_covariance": [[1.0, 0.0], [0.0, 1.0]],
+            },
+            private_seed=None,
+            reference_positions=[[0.0, 0.0], [6.0, 0.0], [0.0, 8.0]],
+            measured_ranges=[5.0, 5.0, 5.0],
+            reference_keys=[("base", 0), ("base", 1), ("base", 2)],
+        )
+        self.assertEqual(
+            [candidate["source"] for candidate in candidates],
+            ["prediction", "circle_negative"],
+        )
+
+
+class FinalizeAttemptRemainderTests(unittest.TestCase):
+    def setUp(self):
+        self.prediction = make_test_output(
+            status="predicted",
+            prediction_age=1,
+            provenance=(),
+        )
+        self.prior_bundle = {
+            "public_prediction": self.prediction,
+            "private_reacquisition_seed": {
+                "estimate": [10.0, 20.0],
+                "modeled_covariance": [[1.0, 0.0], [0.0, 4.0]],
+            },
+        }
 
     def test_nonaccepted_attempt_canonicalizes_finite_prediction(self):
         noncanonical = dict(self.prediction)
