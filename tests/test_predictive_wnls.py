@@ -965,6 +965,83 @@ class FiniteBudgetWnlsTests(unittest.TestCase):
 
 
 class CandidateAcceptanceTests(unittest.TestCase):
+    def test_two_reference_reacquisition_requires_explicit_option(self):
+        result = make_converged_candidate_result(cost=9.0)
+        default = candidate_acceptance(
+            result,
+            live_prediction=None,
+            active_reference_count=2,
+            base_anchor_provenance=[0, 1],
+        )
+        enabled = candidate_acceptance(
+            result,
+            live_prediction=None,
+            active_reference_count=2,
+            base_anchor_provenance=[0, 1],
+            allow_two_reference_reacquisition=True,
+        )
+        self.assertEqual(
+            default[1],
+            "reacquisition_requires_three_active_references",
+        )
+        self.assertTrue(enabled[0])
+
+    def test_two_reference_reacquisition_rejects_cost_above_nine_when_enabled(self):
+        result = make_converged_candidate_result(
+            cost=math.nextafter(9.0, math.inf),
+        )
+
+        accepted, reason, _ = candidate_acceptance(
+            result,
+            live_prediction=None,
+            active_reference_count=2,
+            base_anchor_provenance=[0, 1],
+            allow_two_reference_reacquisition=True,
+        )
+
+        self.assertFalse(accepted)
+        self.assertEqual(reason, "reacquisition_reduced_cost_exceeds_nine")
+
+    def test_two_reference_reacquisition_accepts_cost_below_nine_when_enabled(self):
+        result = make_converged_candidate_result(
+            cost=math.nextafter(9.0, -math.inf),
+        )
+
+        accepted, reason, _ = candidate_acceptance(
+            result,
+            live_prediction=None,
+            active_reference_count=2,
+            base_anchor_provenance=[0, 1],
+            allow_two_reference_reacquisition=True,
+        )
+
+        self.assertTrue(accepted)
+        self.assertEqual(reason, "accepted")
+
+    def test_two_reference_reacquisition_rejects_integer_option(self):
+        accepted, reason, _ = candidate_acceptance(
+            make_converged_candidate_result(cost=9.0),
+            live_prediction=None,
+            active_reference_count=2,
+            base_anchor_provenance=[0, 1],
+            allow_two_reference_reacquisition=1,
+        )
+
+        self.assertFalse(accepted)
+        self.assertEqual(reason, "invalid_two_reference_reacquisition_option")
+
+    def test_two_reference_reacquisition_rejects_string_option(self):
+        accepted, reason, _ = candidate_acceptance(
+            make_converged_candidate_result(cost=9.0),
+            live_prediction=None,
+            active_reference_count=2,
+            base_anchor_provenance=[0, 1],
+            allow_two_reference_reacquisition="true",
+        )
+
+        self.assertFalse(accepted)
+        self.assertEqual(reason, "invalid_two_reference_reacquisition_option")
+
     def test_mahalanobis_gate_uses_sum_of_prediction_and_range_covariance(self):
         result = normalized_innovation(
             [4.0, 0.0],

@@ -1,5 +1,11 @@
+import copy
+import math
 import unittest
+from unittest import mock
 
+import numpy as np
+
+import scripts.diagnostics.two_range_reacquisition as two_range
 from scripts.diagnostics.predictive_wnls import make_unavailable_output
 from scripts.diagnostics.two_range_reacquisition import (
     advance_two_range_prior,
@@ -7,6 +13,46 @@ from scripts.diagnostics.two_range_reacquisition import (
     propagate_private_state,
     reset_private_state,
 )
+
+
+def make_complete_converged_result(*, estimate=(1.0, 1.0), cost=0.0):
+    return {
+        "status": "converged",
+        "estimate": list(estimate),
+        "covariance": [[1.0, 0.0], [0.0, 1.0]],
+        "epsilon": 3.0,
+        "phi_min_eigenvalue": 1.0,
+        "phi_condition": 1.0,
+        "fim_valid": True,
+        "proposal_count": 0,
+        "iterations": 0,
+        "cost": cost,
+        "stationarity_norm": 0.0,
+        "failure_reason": None,
+        "proposal_trace": [],
+    }
+
+
+def valid_two_range_kwargs() -> dict:
+    return {
+        "robot_id": 12,
+        "reference_positions": [[0.0, 0.0], [2.0, 0.0]],
+        "reference_covariances": [
+            [[0.1, 0.0], [0.0, 0.1]],
+            [[0.1, 0.0], [0.0, 0.1]],
+        ],
+        "measurements": [math.sqrt(2.0), math.sqrt(2.0)],
+        "reference_keys": [("uav", 10), ("uav", 11)],
+        "private_prior": reset_private_state(
+            {
+                "estimate": [1.0, 1.75],
+                "modeled_covariance": [[0.2, 0.0], [0.0, 0.2]],
+            },
+            frame_index=20,
+        ),
+        "ranging_sigma": 0.5,
+        "base_anchor_provenance": [0, 1],
+    }
 
 
 class TaggedPrivateStateTests(unittest.TestCase):
@@ -219,3 +265,467 @@ class TaggedPrivateStateTests(unittest.TestCase):
             result["public_output"]["output_status"], "unavailable"
         )
         self.assertEqual(result["next_private_state"], incoming)
+
+
+class TwoRangeBranchSelectorTests(unittest.TestCase):
+    def test_branch_gate_uses_frozen_innovation_threshold(self):
+        q_star = 11.829007011943707
+
+        self.assertTrue(two_range.branch_gate_passes(q_star))
+        self.assertTrue(
+            two_range.branch_gate_passes(np.nextafter(q_star, -np.inf)),
+        )
+        self.assertFalse(
+            two_range.branch_gate_passes(np.nextafter(q_star, np.inf)),
+        )
+        self.assertFalse(two_range.branch_gate_passes(float("nan")))
+        self.assertFalse(two_range.branch_gate_passes(float("inf")))
+
+    def test_validate_solver_branches_rejects_merged_results(self):
+        result = make_complete_converged_result()
+
+        valid, reason = two_range.validate_solver_branches(
+            [
+                {"solver_result": copy.deepcopy(result)},
+                {"solver_result": copy.deepcopy(result)},
+            ],
+        )
+
+        self.assertFalse(valid)
+        self.assertEqual(reason, "two_range_solver_branches_merged")
+
+    def test_two_range_selects_only_the_positive_circle_branch(self):
+        attempt = two_range.solve_two_range_reacquisition(
+            **valid_two_range_kwargs(),
+        )
+
+        self.assertEqual(
+            [row["branch_id"] for row in attempt["branches"]],
+            ["circle_negative", "circle_positive"],
+        )
+        self.assertEqual(attempt["selected_branch_id"], "circle_positive")
+        self.assertTrue(
+            math.isclose(
+                attempt["branches"][0]["q_branch"],
+                13.750000000000005,
+                rel_tol=1e-12,
+                abs_tol=1e-12,
+            ),
+        )
+        self.assertTrue(
+            math.isclose(
+                attempt["branches"][1]["q_branch"],
+                1.0227272727272725,
+                rel_tol=1e-12,
+                abs_tol=1e-12,
+            ),
+        )
+        self.assertFalse(attempt["branches"][0]["passes_branch_gate"])
+        self.assertTrue(attempt["branches"][1]["passes_branch_gate"])
+        self.assertTrue(attempt["prior_used_for_branch_selection"])
+        self.assertFalse(attempt["prior_used_in_fim"])
+        self.assertFalse(attempt["prior_used_for_continuous_update"])
+
+    def test_two_range_rejects_when_no_branch_passes(self):
+        with mock.patch.object(
+            two_range,
+            "solve_finite_budget_wnls",
+            side_effect=[
+                make_complete_converged_result(estimate=(1.0, -1.0)),
+                make_complete_converged_result(estimate=(1.0, 1.0)),
+            ],
+        ), mock.patch.object(
+            two_range,
+            "normalized_innovation",
+            side_effect=[
+                {"valid": True, "q_innov": 12.0, "failure_reason": None},
+                {"valid": True, "q_innov": 13.0, "failure_reason": None},
+            ],
+        ):
+            attempt = two_range.solve_two_range_reacquisition(
+                **valid_two_range_kwargs(),
+            )
+
+        self.assertEqual(attempt["failure_reason"], "two_range_no_branch_passes")
+        self.assertTrue(attempt["prior_used_for_branch_selection"])
+
+    def test_two_range_rejects_when_multiple_branches_pass(self):
+        with mock.patch.object(
+            two_range,
+            "solve_finite_budget_wnls",
+            side_effect=[
+                make_complete_converged_result(estimate=(1.0, -1.0)),
+                make_complete_converged_result(estimate=(1.0, 1.0)),
+            ],
+        ), mock.patch.object(
+            two_range,
+            "normalized_innovation",
+            side_effect=[
+                {"valid": True, "q_innov": 1.0, "failure_reason": None},
+                {"valid": True, "q_innov": 2.0, "failure_reason": None},
+            ],
+        ):
+            attempt = two_range.solve_two_range_reacquisition(
+                **valid_two_range_kwargs(),
+            )
+
+        self.assertEqual(
+            attempt["failure_reason"],
+            "two_range_multiple_branches_pass",
+        )
+        self.assertTrue(attempt["prior_used_for_branch_selection"])
+
+    def test_two_range_rejects_tangent_circle_starts(self):
+        kwargs = valid_two_range_kwargs()
+        kwargs["measurements"] = [1.0, 1.0]
+
+        attempt = two_range.solve_two_range_reacquisition(**kwargs)
+
+        self.assertEqual(
+            attempt["failure_reason"],
+            "two_range_circle_starts_not_distinct",
+        )
+
+    def test_two_range_rejects_disjoint_circle_geometry(self):
+        kwargs = valid_two_range_kwargs()
+        kwargs["measurements"] = [0.5, 0.5]
+
+        attempt = two_range.solve_two_range_reacquisition(**kwargs)
+
+        self.assertEqual(
+            attempt["failure_reason"],
+            "two_range_circle_geometry_invalid",
+        )
+
+    def test_two_range_rejects_contained_circle_geometry(self):
+        kwargs = valid_two_range_kwargs()
+        kwargs["measurements"] = [3.0, 0.5]
+
+        attempt = two_range.solve_two_range_reacquisition(**kwargs)
+
+        self.assertEqual(
+            attempt["failure_reason"],
+            "two_range_circle_geometry_invalid",
+        )
+
+    def test_two_range_rejects_coincident_circle_centers(self):
+        kwargs = valid_two_range_kwargs()
+        kwargs["reference_positions"] = [[0.0, 0.0], [0.0, 0.0]]
+
+        attempt = two_range.solve_two_range_reacquisition(**kwargs)
+
+        self.assertEqual(
+            attempt["failure_reason"],
+            "two_range_circle_geometry_invalid",
+        )
+
+    def test_two_range_rejects_zero_range_input(self):
+        kwargs = valid_two_range_kwargs()
+        kwargs["measurements"] = [0.0, math.sqrt(2.0)]
+
+        attempt = two_range.solve_two_range_reacquisition(**kwargs)
+
+        self.assertEqual(attempt["failure_reason"], "two_range_input_invalid")
+
+    def test_two_range_rejects_invalid_private_covariance(self):
+        kwargs = valid_two_range_kwargs()
+        kwargs["private_prior"]["modeled_covariance"] = [
+            [1.0, 1.0],
+            [1.0, 1.0],
+        ]
+
+        attempt = two_range.solve_two_range_reacquisition(**kwargs)
+
+        self.assertEqual(
+            attempt["failure_reason"],
+            "two_range_private_prior_invalid",
+        )
+
+    def test_two_range_preserves_unscored_branches_when_innovation_is_nonfinite(self):
+        with mock.patch.object(
+            two_range,
+            "solve_finite_budget_wnls",
+            side_effect=[
+                make_complete_converged_result(estimate=(1.0, -1.0)),
+                make_complete_converged_result(estimate=(1.0, 1.0)),
+            ],
+        ), mock.patch.object(
+            two_range,
+            "normalized_innovation",
+            side_effect=[
+                {
+                    "valid": False,
+                    "q_innov": None,
+                    "failure_reason": "non-finite_normalized_innovation",
+                },
+                {"valid": True, "q_innov": 1.0, "failure_reason": None},
+            ],
+        ):
+            attempt = two_range.solve_two_range_reacquisition(
+                **valid_two_range_kwargs(),
+            )
+
+        self.assertEqual(
+            attempt["failure_reason"],
+            "non-finite_normalized_innovation",
+        )
+        self.assertEqual(
+            [branch["q_branch"] for branch in attempt["branches"]],
+            [None, None],
+        )
+        self.assertEqual(
+            [branch["passes_branch_gate"] for branch in attempt["branches"]],
+            [None, None],
+        )
+        self.assertFalse(attempt["prior_used_for_branch_selection"])
+
+    def test_two_range_rejects_one_failed_solver_branch(self):
+        failed = make_complete_converged_result(estimate=(1.0, -1.0))
+        failed["status"] = "invalid"
+        failed["failure_reason"] = "unsolvable"
+        with mock.patch.object(
+            two_range,
+            "solve_finite_budget_wnls",
+            side_effect=[
+                failed,
+                make_complete_converged_result(estimate=(1.0, 1.0)),
+            ],
+        ):
+            attempt = two_range.solve_two_range_reacquisition(
+                **valid_two_range_kwargs(),
+            )
+
+        self.assertEqual(
+            attempt["failure_reason"],
+            "two_range_branch_solver_invalid",
+        )
+
+    def test_two_range_rejects_non_spd_solver_branch(self):
+        non_spd = make_complete_converged_result(estimate=(1.0, -1.0))
+        non_spd["covariance"] = [[1.0, 0.0], [0.0, 0.0]]
+        with mock.patch.object(
+            two_range,
+            "solve_finite_budget_wnls",
+            side_effect=[
+                non_spd,
+                make_complete_converged_result(estimate=(1.0, 1.0)),
+            ],
+        ):
+            attempt = two_range.solve_two_range_reacquisition(
+                **valid_two_range_kwargs(),
+            )
+
+        self.assertEqual(
+            attempt["failure_reason"],
+            "two_range_branch_solver_invalid",
+        )
+
+    def test_two_range_rejects_merged_solver_results(self):
+        same_result = make_complete_converged_result(estimate=(1.0, 1.0))
+        with mock.patch.object(
+            two_range,
+            "solve_finite_budget_wnls",
+            side_effect=[same_result, same_result],
+        ):
+            attempt = two_range.solve_two_range_reacquisition(
+                **valid_two_range_kwargs(),
+            )
+
+        self.assertEqual(
+            attempt["failure_reason"],
+            "two_range_solver_branches_merged",
+        )
+
+    def test_two_range_rejects_same_robot_reference_key(self):
+        kwargs = valid_two_range_kwargs()
+        kwargs["reference_keys"] = [("uav", 12), ("uav", 11)]
+
+        attempt = two_range.solve_two_range_reacquisition(**kwargs)
+
+        self.assertEqual(
+            attempt["failure_reason"],
+            "two_range_reference_keys_invalid",
+        )
+
+    def test_two_range_rejects_future_robot_reference_key(self):
+        kwargs = valid_two_range_kwargs()
+        kwargs["reference_keys"] = [("uav", 13), ("uav", 11)]
+
+        attempt = two_range.solve_two_range_reacquisition(**kwargs)
+
+        self.assertEqual(
+            attempt["failure_reason"],
+            "two_range_reference_keys_invalid",
+        )
+
+    def test_two_range_canonicalizes_swapped_reference_order(self):
+        sorted_attempt = two_range.solve_two_range_reacquisition(
+            **valid_two_range_kwargs(),
+        )
+        swapped = valid_two_range_kwargs()
+        for field in (
+            "reference_positions",
+            "reference_covariances",
+            "measurements",
+            "reference_keys",
+        ):
+            swapped[field] = list(reversed(swapped[field]))
+        swapped_attempt = two_range.solve_two_range_reacquisition(**swapped)
+
+        self.assertEqual(
+            [branch["branch_id"] for branch in swapped_attempt["branches"]],
+            ["circle_negative", "circle_positive"],
+        )
+        self.assertEqual(
+            swapped_attempt["selected_branch_id"],
+            sorted_attempt["selected_branch_id"],
+        )
+        self.assertEqual(
+            swapped_attempt["candidate"]["estimate"],
+            sorted_attempt["candidate"]["estimate"],
+        )
+        self.assertEqual(
+            swapped_attempt["candidate"]["modeled_covariance"],
+            sorted_attempt["candidate"]["modeled_covariance"],
+        )
+        self.assertEqual(
+            swapped_attempt["candidate"]["epsilon"],
+            sorted_attempt["candidate"]["epsilon"],
+        )
+        self.assertEqual(
+            swapped_attempt["candidate"]["base_anchor_provenance"],
+            sorted_attempt["candidate"]["base_anchor_provenance"],
+        )
+
+    def test_two_range_rejects_invalid_base_anchor_provenance(self):
+        kwargs = valid_two_range_kwargs()
+        kwargs["base_anchor_provenance"] = [0, 0]
+
+        attempt = two_range.solve_two_range_reacquisition(**kwargs)
+
+        self.assertEqual(
+            attempt["failure_reason"],
+            "two_range_base_anchor_provenance_invalid",
+        )
+
+    def test_two_range_selects_negative_circle_for_negative_private_prior(self):
+        kwargs = valid_two_range_kwargs()
+        kwargs["private_prior"] = reset_private_state(
+            {
+                "estimate": [1.0, -1.75],
+                "modeled_covariance": [[0.2, 0.0], [0.0, 0.2]],
+            },
+            frame_index=20,
+        )
+
+        attempt = two_range.solve_two_range_reacquisition(**kwargs)
+
+        self.assertEqual(attempt["selected_branch_id"], "circle_negative")
+        self.assertTrue(attempt["prior_used_for_branch_selection"])
+        self.assertFalse(attempt["prior_used_in_fim"])
+        self.assertFalse(attempt["prior_used_for_continuous_update"])
+
+    def test_two_range_solver_starts_are_raw_circle_intersections(self):
+        original_solver = two_range.solve_finite_budget_wnls
+        with mock.patch.object(
+            two_range,
+            "solve_finite_budget_wnls",
+            wraps=original_solver,
+        ) as solver:
+            two_range.solve_two_range_reacquisition(
+                **valid_two_range_kwargs(),
+            )
+
+        starts = [
+            np.asarray(call.args[3], dtype=float)
+            for call in solver.call_args_list
+        ]
+        np.testing.assert_allclose(starts, [[1.0, -1.0], [1.0, 1.0]])
+        for start in starts:
+            self.assertFalse(np.array_equal(start, [1.0, 1.75]))
+
+    def test_two_range_branch_records_do_not_expose_other_candidate_sources(self):
+        attempt = two_range.solve_two_range_reacquisition(
+            **valid_two_range_kwargs(),
+        )
+
+        names = [branch["branch_id"] for branch in attempt["branches"]]
+        for name in names:
+            self.assertNotIn("private", name)
+            self.assertNotIn("algebraic", name)
+            self.assertNotIn("prediction", name)
+
+    def test_two_range_rejects_nearly_collinear_fim(self):
+        kwargs = valid_two_range_kwargs()
+        kwargs["measurements"] = [1.0000000000001, 1.0000000000001]
+
+        attempt = two_range.solve_two_range_reacquisition(**kwargs)
+
+        self.assertEqual(
+            attempt["failure_reason"],
+            "two_range_branch_solver_invalid",
+        )
+
+    def test_two_range_rejects_malformed_reference_positions(self):
+        kwargs = valid_two_range_kwargs()
+        kwargs["reference_positions"] = [[0.0, 0.0]]
+
+        attempt = two_range.solve_two_range_reacquisition(**kwargs)
+
+        self.assertEqual(attempt["failure_reason"], "two_range_input_invalid")
+
+    def test_two_range_rejects_invalid_robot_id(self):
+        kwargs = valid_two_range_kwargs()
+        kwargs["robot_id"] = 0
+
+        attempt = two_range.solve_two_range_reacquisition(**kwargs)
+
+        self.assertEqual(attempt["failure_reason"], "two_range_robot_id_invalid")
+
+    def test_two_range_rejects_invalid_reference_covariance(self):
+        kwargs = valid_two_range_kwargs()
+        kwargs["reference_covariances"][0] = [[1.0, 1.0], [1.0, 1.0]]
+
+        attempt = two_range.solve_two_range_reacquisition(**kwargs)
+
+        self.assertEqual(
+            attempt["failure_reason"],
+            "two_range_reference_covariance_invalid",
+        )
+
+    def test_two_range_rejects_failed_branch_prediction_covariance_solve(self):
+        with mock.patch.object(
+            two_range,
+            "solve_finite_budget_wnls",
+            side_effect=[
+                make_complete_converged_result(estimate=(1.0, -1.0)),
+                make_complete_converged_result(estimate=(1.0, 1.0)),
+            ],
+        ), mock.patch.object(
+            two_range,
+            "normalized_innovation",
+            side_effect=[
+                {
+                    "valid": False,
+                    "q_innov": None,
+                    "failure_reason": "innovation_covariance_invalid",
+                },
+                {"valid": True, "q_innov": 1.0, "failure_reason": None},
+            ],
+        ):
+            attempt = two_range.solve_two_range_reacquisition(
+                **valid_two_range_kwargs(),
+            )
+
+        self.assertEqual(
+            attempt["failure_reason"],
+            "innovation_covariance_invalid",
+        )
+
+    def test_two_range_rejects_uncoercible_input(self):
+        kwargs = valid_two_range_kwargs()
+        kwargs["reference_positions"] = "bad"
+
+        attempt = two_range.solve_two_range_reacquisition(**kwargs)
+
+        self.assertEqual(attempt["failure_reason"], "two_range_input_invalid")

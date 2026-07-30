@@ -1286,6 +1286,7 @@ def candidate_acceptance(
     live_prediction: dict | None,
     active_reference_count: int,
     base_anchor_provenance: object,
+    allow_two_reference_reacquisition: bool = False,
 ) -> tuple[bool, str, dict]:
     """Apply the frozen numerical, FIM, provenance, and online gates."""
     diagnostics: dict = {
@@ -1293,6 +1294,12 @@ def candidate_acceptance(
         "q_innov": None,
         "gate_outcome": "invalid",
     }
+    if not isinstance(allow_two_reference_reacquisition, bool):
+        return (
+            False,
+            "invalid_two_reference_reacquisition_option",
+            diagnostics,
+        )
     if not isinstance(candidate_result, Mapping):
         return False, "invalid_candidate_result", diagnostics
     if candidate_result.get("status") != "converged":
@@ -1328,7 +1335,9 @@ def candidate_acceptance(
         return True, "accepted", diagnostics
 
     diagnostics["innovation_gate"] = "not_applicable_reacquisition"
-    if active_count < 3:
+    if active_count < 3 and not (
+        allow_two_reference_reacquisition and active_count == 2
+    ):
         diagnostics["gate_outcome"] = "rejected"
         return False, "reacquisition_requires_three_active_references", diagnostics
     reduced_cost = cost / max(1, active_count - 2)
