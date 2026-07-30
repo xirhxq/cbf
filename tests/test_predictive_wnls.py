@@ -876,6 +876,36 @@ class CandidateAcceptanceTests(unittest.TestCase):
             )[0]
         )
 
+    def test_reacquisition_requires_condition_strictly_below_one_trillion(self):
+        exact_condition = 1e12
+        below_condition = math.nextafter(exact_condition, 0.0)
+
+        def coherent_result(condition):
+            result = make_converged_candidate_result(
+                covariance=((condition, 0.0), (0.0, 1.0)),
+            )
+            result["epsilon"] = 3.0 * math.sqrt(condition)
+            result["phi_min_eigenvalue"] = 1.0 / condition
+            result["phi_condition"] = condition
+            return result
+
+        exact = candidate_acceptance(
+            coherent_result(exact_condition),
+            live_prediction=None,
+            active_reference_count=3,
+            base_anchor_provenance=[0, 1],
+        )
+        below = candidate_acceptance(
+            coherent_result(below_condition),
+            live_prediction=None,
+            active_reference_count=3,
+            base_anchor_provenance=[0, 1],
+        )
+
+        self.assertFalse(exact[0])
+        self.assertEqual(exact[1], "invalid_candidate_output")
+        self.assertTrue(below[0])
+
     def test_multistart_ties_use_q_then_fixed_source_order(self):
         selected = select_candidate_result(
             [

@@ -1140,6 +1140,11 @@ def _complete_converged_solver_result(result: object) -> bool:
     ):
         return False
     covariance_eigenvalues = np.linalg.eigvalsh(covariance)
+    if (
+        covariance_eigenvalues[0]
+        <= RELATIVE_SPECTRAL_THRESHOLD * covariance_eigenvalues[-1]
+    ):
+        return False
     expected_epsilon = 3.0 * math.sqrt(float(covariance_eigenvalues[-1]))
     expected_phi_minimum = 1.0 / float(covariance_eigenvalues[-1])
     expected_phi_condition = float(
