@@ -1289,6 +1289,18 @@ independent trajectories.
 The analyzer independently implements the same protected-path validation,
 exclusive exact-root allocation, strict failed terminal manifest, finalizing
 probe, and atomic no-replace completed manifest as the replay.
+Its authorization is analyzer-specific:
+it validates the production protocol shape against the declared registered
+replay contract,
+then separately requires the analyzer CLI arguments to match
+`invocations.registered_analyzer` and the canonical analyzer command,
+and independently pins the protocol sources, development manifest, and raw
+process identities.
+The replay-only `_verify_protocol_and_sources` helper is not used as analyzer
+authority because its invocation selection is keyed to replay output roots.
+The replay hermetic protocol does not authorize an analyzer invocation;
+unit tests therefore exercise aggregation independently and use an explicitly
+analyzer-scoped temporary authorization fixture for lifecycle tests.
 Its successful exact root contains JSON, Markdown, and `manifest.json`;
 ordinary failure or interrupt after allocation contains only partial
 unpublished files plus a failed terminal manifest.
