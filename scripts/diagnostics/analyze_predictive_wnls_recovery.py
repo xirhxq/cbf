@@ -51,6 +51,12 @@ if __package__ in {None, ""}:
     )
 
 from scripts.diagnostics import replay_predictive_wnls_recovery as replay
+from scripts.diagnostics.predictive_wnls import (
+    candidate_acceptance,
+    canonical_spd_covariance,
+    reference_is_eligible,
+    select_candidate_result,
+)
 from scripts.diagnostics.run_diagnostic import (
     HARD_FLOOR_BYTES,
     START_BYTES,
@@ -60,7 +66,7 @@ from scripts.diagnostics.run_diagnostic import (
 )
 
 
-ANALYSIS_SCHEMA_ID = "cbf2026-predictive-wnls-development-analysis-v2"
+ANALYSIS_SCHEMA_ID = replay.ANALYSIS_SCHEMA["id"]
 OUTPUT_JSON_NAME = "predictive-wnls-development.json"
 OUTPUT_MARKDOWN_NAME = "predictive-wnls-development.md"
 ANALYZER_MANIFEST_NAME = "manifest.json"
@@ -76,6 +82,8 @@ _MECHANISM_KEYS = {
     "legacy_999m_stale": (20260736, 138, 14),
     "legacy_168m_fresh": (20260730, 177, 14),
 }
+_REFERENCE_KINDS = ("base", "uav")
+_REFERENCE_VIOLATION_REASONS = ("stale_or_predicted_anchor_used",)
 
 
 def _finite_number(value: object) -> bool:
@@ -125,6 +133,165 @@ def _baseline_key(row: Mapping) -> tuple[int, int, int]:
 
 def _development_key(row: Mapping) -> tuple[int, int, int]:
     return _baseline_key(row)
+
+
+def _reference_key_order(key: tuple[str, int]) -> tuple[int, int]:
+    return (_REFERENCE_KINDS.index(key[0]), key[1])
+
+
+def _measurement_is_valid(evidence: Mapping) -> bool:
+    present = evidence.get("measurement_present")
+    value = evidence.get("noisy_range")
+    return (
+        present is True
+        and _finite_number(value)
+        and float(value) >= 0.0
+    )
+
+
+def _public_output_from_row(row: Mapping) -> dict:
+    status = row["output_status"]
+    output = {
+        "output_status": status,
+        "prediction_age": row["prediction_age"],
+        "estimate": row["estimate"],
+        "base_anchor_provenance": list(row["base_anchor_provenance"]),
+    }
+    if status == "fresh":
+        output.update(
+            {
+                "modeled_covariance": row["fresh_modeled_covariance"],
+                "epsilon": row["fresh_epsilon"],
+            }
+        )
+    elif status == "predicted":
+        output.update(
+            {
+                "modeled_covariance": row["aged_modeled_covariance"],
+                "aged_modeled_radius": row["aged_modeled_radius"],
+            }
+        )
+    return output
+
+
+def _reconstruct_sensor_boundary(
+    *,
+    config: Mapping,
+    frame_truth: Mapping[int, np.ndarray],
+    seed: int,
+    frame_index: int,
+    robot_id: int,
+    ranging_sigma: float,
+) -> dict:
+    """Reconstruct one row's truth-bound sensor output without row evidence."""
+    try:
+        mandatory = replay.fixed_references(config, robot_id)
+        visible = replay.active_references(config, robot_id, frame_truth)
+    except (KeyError, IndexError, TypeError, ValueError) as error:
+        raise ValueError("protocol-bound sensor configuration is invalid") from error
+    mandatory_keys = {
+        ("base", identifier) for identifier in mandatory["base_ids"]
+    } | {
+        ("uav", identifier) for identifier in mandatory["uav_ids"]
+    }
+    visible_keys = {
+        ("base", identifier) for identifier in visible["base_ids"]
+    } | {
+        ("uav", identifier) for identifier in visible["uav_ids"]
+    }
+    optional = sorted(visible_keys - mandatory_keys, key=_reference_key_order)
+    records = {}
+    noise_seeds = {}
+    for kind, identifier in sorted(visible_keys, key=_reference_key_order):
+        try:
+            reference = (
+                np.asarray(config["bases"][identifier], dtype=float)
+                if kind == "base"
+                else np.asarray(frame_truth[identifier], dtype=float)
+            )
+            observer = np.asarray(frame_truth[robot_id], dtype=float)
+        except (KeyError, IndexError, TypeError, ValueError) as error:
+            raise ValueError(
+                "protocol-bound sensor reference is unavailable"
+            ) from error
+        noise_seed = replay.stable_measurement_seed(
+            seed,
+            frame_index,
+            robot_id,
+            kind,
+            identifier,
+        )
+        noisy_range = float(
+            np.linalg.norm(observer - reference)
+            + np.random.default_rng(noise_seed).normal(0.0, ranging_sigma)
+        )
+        records[(kind, identifier)] = {
+            "present": True,
+            "noisy_range": noisy_range,
+        }
+        noise_seeds[(kind, identifier)] = noise_seed
+    return {
+        "mandatory": mandatory,
+        "optional": optional,
+        "records": records,
+        "noise_seeds": noise_seeds,
+    }
+
+
+def _canonical_reason_records(records: object) -> list[list]:
+    if not isinstance(records, list):
+        raise ValueError("reconstructed reason records must be a list")
+    compact = []
+    for record in records:
+        if (
+            not isinstance(record, Mapping)
+            or set(record) != {"key", "reason"}
+            or not isinstance(record["key"], (list, tuple))
+            or len(record["key"]) != 2
+        ):
+            raise ValueError("reconstructed reason record is invalid")
+        kind, identifier = record["key"]
+        compact.append([kind, identifier, record["reason"]])
+    return sorted(
+        compact,
+        key=lambda item: (
+            _REFERENCE_KINDS.index(item[0]),
+            item[1],
+            item[2],
+        ),
+    )
+
+
+def _reconstruct_legacy_gate(
+    candidate: list,
+    *,
+    variant: str,
+    has_live_prediction: bool,
+    active_count: int,
+    provenance: list[int],
+) -> tuple[bool, str, list]:
+    gate = candidate[9]
+    accepted, reason, diagnostics = replay._legacy_gate(
+        {
+            "status": candidate[2],
+            "estimate": candidate[3],
+            "covariance": candidate[4],
+            "cost": candidate[5],
+            "failure_reason": gate[4],
+        },
+        variant=variant,
+        has_live_prediction=has_live_prediction,
+        active_count=active_count,
+        provenance=tuple(provenance),
+    )
+    return (
+        accepted,
+        reason,
+        [
+            diagnostics.get(field)
+            for field in replay.GATE_DIAGNOSTIC_FIELDS
+        ],
+    )
 
 
 def _map_baseline_row(row: Mapping) -> dict:
@@ -199,16 +366,19 @@ def _validate_row_schema(row: Mapping) -> None:
             raise ValueError("fresh row has inconsistent offline fields")
         estimate = np.asarray(row["estimate"], dtype=float)
         covariance = np.asarray(row["fresh_modeled_covariance"], dtype=float)
+        canonical_covariance = canonical_spd_covariance(covariance)
         epsilon = row["fresh_epsilon"]
+        if (
+            canonical_covariance is None
+            or not np.array_equal(covariance, covariance.T)
+            or not np.array_equal(covariance, canonical_covariance)
+        ):
+            raise ValueError("fresh public covariance is not canonical")
         if (
             estimate.shape != (2,)
             or not np.all(np.isfinite(estimate))
             or covariance.shape != (2, 2)
             or not np.all(np.isfinite(covariance))
-            or not np.allclose(
-                covariance, covariance.T, rtol=0.0, atol=1e-12
-            )
-            or float(np.min(np.linalg.eigvalsh(covariance))) <= 0.0
             or not _finite_number(epsilon)
             or epsilon <= 0
             or row["aged_modeled_covariance"] is not None
@@ -250,16 +420,19 @@ def _validate_row_schema(row: Mapping) -> None:
             raise ValueError("predicted row has inconsistent offline fields")
         estimate = np.asarray(row["estimate"], dtype=float)
         covariance = np.asarray(row["aged_modeled_covariance"], dtype=float)
+        canonical_covariance = canonical_spd_covariance(covariance)
         radius = row["aged_modeled_radius"]
+        if (
+            canonical_covariance is None
+            or not np.array_equal(covariance, covariance.T)
+            or not np.array_equal(covariance, canonical_covariance)
+        ):
+            raise ValueError("predicted public covariance is not canonical")
         if (
             estimate.shape != (2,)
             or not np.all(np.isfinite(estimate))
             or covariance.shape != (2, 2)
             or not np.all(np.isfinite(covariance))
-            or not np.allclose(
-                covariance, covariance.T, rtol=0.0, atol=1e-12
-            )
-            or float(np.min(np.linalg.eigvalsh(covariance))) <= 0.0
             or not _finite_number(radius)
             or radius <= 0
             or row["fresh_modeled_covariance"] is not None
@@ -381,9 +554,14 @@ def _candidate_records(
     candidates = row["candidates"]
     if not isinstance(candidates, list):
         raise ValueError("candidate records must be a list")
+    expected_fields = (
+        replay.MULTISTART_COMPACT_CANDIDATE_FIELDS
+        if row["variant"] == "predictive_multistart"
+        else replay.CANDIDATE_FIELDS
+    )
     for candidate in candidates:
         if not isinstance(candidate, list) or len(candidate) != len(
-            replay.CANDIDATE_FIELDS
+            expected_fields
         ):
             raise ValueError("candidate differs from compact exact schema")
         accepted = candidate[6]
@@ -419,6 +597,136 @@ def _candidate_records(
             None if q_innov is None else float(q_innov),
             error,
         )
+
+
+def _validate_multistart_selection(
+    row: Mapping,
+    *,
+    live_prediction: Mapping | None,
+    active_reference_count: int,
+) -> None:
+    """Rebuild every frozen candidate gate, selection, and attempt contract."""
+    if row["attempt_status"] == "reference_unavailable":
+        if (
+            row["candidates"]
+            or row["selected_candidate_source"] is not None
+            or row["attempt_failure_reason"] != "reference_unavailable"
+        ):
+            raise ValueError(
+                "reference-unavailable multistart attempt exposes candidates"
+            )
+        return
+    records = []
+    sources = set()
+    accepted_by_source = {}
+    provenance = row["attempt_base_anchor_provenance"]
+    for candidate in row["candidates"]:
+        compact = dict(
+            zip(replay.MULTISTART_COMPACT_CANDIDATE_FIELDS, candidate)
+        )
+        source = compact["source"]
+        if source in sources:
+            raise ValueError("multistart candidate sources must be unique")
+        sources.add(source)
+        result = {
+            field: compact[field]
+            for field in replay.SOLVER_RESULT_FIELDS
+            if field != "proposal_trace"
+        }
+        result["proposal_trace"] = [
+            dict(zip(replay.PROPOSAL_TRACE_FIELDS, proposal))
+            for proposal in compact["proposal_trace"]
+        ]
+        expected_accepted, expected_reason, diagnostics = (
+            candidate_acceptance(
+                result,
+                live_prediction=(
+                    None
+                    if live_prediction is None
+                    else dict(live_prediction)
+                ),
+                active_reference_count=active_reference_count,
+                base_anchor_provenance=provenance,
+            )
+        )
+        expected_gate = [
+            diagnostics.get(field)
+            for field in replay.GATE_DIAGNOSTIC_FIELDS
+        ]
+        if (
+            compact["accepted"] != expected_accepted
+            or compact["rejection_reason"]
+            != (None if expected_accepted else expected_reason)
+            or compact["q_innov"] != diagnostics.get("q_innov")
+            or compact["gate_diagnostics"] != expected_gate
+        ):
+            raise ValueError(
+                "multistart candidate gate differs from reconstructed result"
+            )
+        if expected_accepted:
+            estimate = np.asarray(compact["estimate"], dtype=float)
+            covariance = canonical_spd_covariance(compact["covariance"])
+            if covariance is None:
+                raise ValueError(
+                    "multistart accepted candidate covariance is invalid"
+                )
+            accepted_by_source[source] = (estimate, covariance)
+        records.append(
+            {
+                "source": source,
+                "accepted": expected_accepted,
+                "cost": compact["cost"],
+                "q_innov": compact["q_innov"],
+                "status": compact["status"],
+                "gate_outcome": diagnostics.get("gate_outcome"),
+            }
+        )
+    selected = select_candidate_result(
+        records,
+        has_live_prediction=live_prediction is not None,
+    )
+    expected_source = None if selected is None else selected["source"]
+    if row["selected_candidate_source"] != expected_source:
+        raise ValueError(
+            "selected candidate differs from frozen candidate selection"
+        )
+    if selected is not None:
+        expected_attempt_status = "accepted"
+    elif any(
+        record["gate_outcome"] == "rejected" for record in records
+    ):
+        expected_attempt_status = "rejected"
+    elif any(record["status"] == "failed" for record in records):
+        expected_attempt_status = "failed"
+    else:
+        expected_attempt_status = "invalid"
+    expected_failure = None if records else "no_valid_initial_candidates"
+    if (
+        row["attempt_status"] != expected_attempt_status
+        or row["attempt_failure_reason"] != expected_failure
+    ):
+        raise ValueError(
+            "multistart attempt differs from reconstructed candidate gates"
+        )
+    if expected_attempt_status == "accepted":
+        selected_payload = accepted_by_source.get(expected_source)
+        if selected_payload is None:
+            raise ValueError(
+                "accepted multistart attempt lacks reconstructed selected payload"
+            )
+        estimate, covariance = selected_payload
+        if (
+            not np.array_equal(
+                estimate, np.asarray(row["estimate"], dtype=float)
+            )
+            or not np.array_equal(
+                covariance,
+                np.asarray(row["fresh_modeled_covariance"], dtype=float),
+            )
+        ):
+            raise ValueError(
+                "multistart selected candidate differs from fresh publication"
+            )
 
 
 def _new_stratum() -> dict:
@@ -837,6 +1145,25 @@ def aggregate_predictive_recovery(
     truth_commands = input_audit.pop("_commands")
     truth_positions = input_audit.pop("_truth_positions")
     expected_predecessor_keys = input_audit.pop("_expected_predecessor_keys")
+    sensor_config = truth_data.get("config")
+    if not isinstance(sensor_config, dict):
+        raise ValueError("protocol-bound truth lacks its sensor configuration")
+    try:
+        ranging_sigma = float(
+            sensor_config["position_covariance"]["ranging_sigma"]
+        )
+    except (KeyError, TypeError, ValueError, OverflowError) as error:
+        raise ValueError("protocol-bound ranging sigma is invalid") from error
+    if not math.isfinite(ranging_sigma) or ranging_sigma <= 0.0:
+        raise ValueError("protocol-bound ranging sigma is invalid")
+    declared_sigma = protocol.get("experiment", {}).get("ranging_sigma_m")
+    if declared_sigma is not None and declared_sigma != ranging_sigma:
+        raise ValueError("truth ranging sigma differs from exact protocol")
+    truth_frames: dict[int, dict[int, np.ndarray]] = defaultdict(dict)
+    for (frame_index, robot_id), position in truth_positions.items():
+        truth_frames[frame_index][robot_id] = np.asarray(
+            position, dtype=float
+        )
     observed_predecessor_keys = set()
     baseline = {}
     baseline_counts = Counter()
@@ -883,7 +1210,6 @@ def aggregate_predictive_recovery(
             "mechanisms": {},
             "active_composition": Counter(),
             "reference_freshness": Counter(),
-            "seen_base_ids": set(),
             "integrity": {
                 "reference_violation_count": 0,
                 "reference_violation_reasons": Counter(),
@@ -901,6 +1227,22 @@ def aggregate_predictive_recovery(
         }
     expected_variant_index = 0
     key_index = 0
+    current_group: tuple[str, int, int] | None = None
+    current_public: dict[int, dict] = {}
+    current_numeric_provenance: dict[int, tuple[int, ...]] = {}
+    current_numeric_available: dict[int, bool] = {}
+    previous_numeric_provenance: dict[
+        tuple[str, int, int], tuple[int, ...]
+    ] = {}
+    previous_numeric_available: dict[tuple[str, int, int], bool] = {}
+    ever_numeric_finite: dict[tuple[str, int, int], bool] = {}
+    previous_public_lifecycle: dict[
+        tuple[str, int, int], tuple[int, str, int | None]
+    ] = {}
+    previous_public_outputs: dict[
+        tuple[str, int, int], tuple[int, dict]
+    ] = {}
+    previous_group_robot: int | None = None
     for row in development_rows:
         _validate_row_schema(row)
         variant = row["variant"]
@@ -922,6 +1264,21 @@ def aggregate_predictive_recovery(
             raise ValueError("offline truth differs from protocol-bound trajectory")
         if key_index >= len(expected_keys) or key != expected_keys[key_index]:
             raise ValueError("development exact keys are missing, extra, or out of order")
+        group = (variant, row["seed"], row["frame_index"])
+        if group != current_group:
+            current_group = group
+            current_public = {}
+            current_numeric_provenance = {}
+            current_numeric_available = {}
+            previous_group_robot = None
+        if (
+            previous_group_robot is not None
+            and row["robot_id"] <= previous_group_robot
+        ):
+            raise ValueError(
+                "robot ids must ascend within each variant-seed-frame group"
+            )
+        previous_group_robot = row["robot_id"]
         key_index += 1
         if key_index == len(expected_keys):
             expected_variant_index += 1
@@ -995,6 +1352,47 @@ def aggregate_predictive_recovery(
             raise ValueError("applied command does not match predecessor opt.result")
         if row["frame_index"] > 0:
             observed_predecessor_keys.add((row["frame_index"], row["robot_id"]))
+        sensor_boundary = _reconstruct_sensor_boundary(
+            config=sensor_config,
+            frame_truth=truth_frames[row["frame_index"]],
+            seed=row["seed"],
+            frame_index=row["frame_index"],
+            robot_id=row["robot_id"],
+            ranging_sigma=ranging_sigma,
+        )
+        expected_qualification = replay.qualify_active_references(
+            mandatory=sensor_boundary["mandatory"],
+            optional_keys=sensor_boundary["optional"],
+            measurement_records=sensor_boundary["records"],
+            uav_outputs=current_public,
+            variant=variant,
+        )
+        expected_active_keys = [
+            tuple(record["key"])
+            for record in expected_qualification["active_records"]
+        ]
+        expected_active_keys = sorted(
+            set(expected_active_keys),
+            key=_reference_key_order,
+        )
+        if variant == "prediction_expiry":
+            reference_states_available = all(
+                kind == "base"
+                or current_numeric_available.get(identifier, False)
+                for kind, identifier in expected_active_keys
+            )
+            arrays_available = (
+                len(expected_active_keys) >= 2
+                and reference_states_available
+            )
+        else:
+            arrays_available = (
+                expected_qualification["status"] == "ok"
+                and len(expected_active_keys) >= 2
+            )
+        expected_solver_used = (
+            set(expected_active_keys) if arrays_available else set()
+        )
         active = row["active_references"]
         if not isinstance(active, list):
             raise ValueError("active references must be a list")
@@ -1014,14 +1412,72 @@ def aggregate_predictive_recovery(
             if item[0] == "uav" and item[1] >= row["robot_id"]:
                 state["integrity"]["ascending_dag_violation_count"] += 1
                 raise ValueError("nonascending DAG reference use")
-        if len(active_keys) != len(set(active_keys)):
-            raise ValueError("active reference keys must be unique")
+        if (
+            len(active_keys) != len(set(active_keys))
+            or active_keys != sorted(active_keys, key=_reference_key_order)
+            or active_keys != expected_active_keys
+        ):
+            raise ValueError(
+                "active reference keys differ from exact sensor boundary"
+            )
         state["active_composition"][
             f"base={kinds['base']},uav={kinds['uav']}"
         ] += 1
         qualified = protocol["ablation_contracts"][variant][
             "fresh_reference_qualification"
         ]
+        mandatory = row["mandatory_references"]
+        if (
+            not isinstance(mandatory, dict)
+            or tuple(mandatory) != replay.MANDATORY_REFERENCE_FIELDS
+            or mandatory != sensor_boundary["mandatory"]
+        ):
+            raise ValueError(
+                "mandatory references differ from exact sensor boundary"
+            )
+        mandatory_keys = []
+        for kind, field in (("base", "base_ids"), ("uav", "uav_ids")):
+            identifiers = mandatory[field]
+            if not isinstance(identifiers, list):
+                raise ValueError("mandatory reference ids must be lists")
+            for identifier in identifiers:
+                if (
+                    isinstance(identifier, bool)
+                    or not isinstance(identifier, int)
+                    or identifier < (0 if kind == "base" else 1)
+                ):
+                    raise ValueError("mandatory reference id is invalid")
+                mandatory_keys.append((kind, identifier))
+        optional = row["optional_candidates"]
+        if not isinstance(optional, list):
+            raise ValueError("optional candidates must be a list")
+        optional_keys = []
+        for item in optional:
+            if (
+                not isinstance(item, list)
+                or len(item) != 2
+                or item[0] not in _REFERENCE_KINDS
+                or isinstance(item[1], bool)
+                or not isinstance(item[1], int)
+                or item[1] < (0 if item[0] == "base" else 1)
+            ):
+                raise ValueError("optional reference differs from exact key schema")
+            optional_keys.append((item[0], item[1]))
+        declared_keys = sorted(
+            [*mandatory_keys, *optional_keys],
+            key=_reference_key_order,
+        )
+        if (
+            len(declared_keys) != len(set(declared_keys))
+            or mandatory_keys
+            != sorted(mandatory_keys, key=_reference_key_order)
+            or optional_keys != sorted(optional_keys, key=_reference_key_order)
+            or not set(active_keys).issubset(declared_keys)
+            or optional_keys != sensor_boundary["optional"]
+        ):
+            raise ValueError(
+                "declared references differ from exact sensor boundary"
+            )
         evidence = row["reference_evidence"]
         if not isinstance(evidence, list):
             raise ValueError("reference evidence must be a list")
@@ -1036,10 +1492,19 @@ def aggregate_predictive_recovery(
             decoded_evidence.append(item)
             item_provenance = item["base_anchor_provenance"]
             if (
-                item["reference_kind"] not in {"base", "uav"}
+                item["reference_kind"] not in _REFERENCE_KINDS
                 or isinstance(item["reference_id"], bool)
                 or not isinstance(item["reference_id"], int)
+                or item["reference_id"]
+                < (0 if item["reference_kind"] == "base" else 1)
+                or item["role"] not in {"mandatory", "optional"}
+                or not isinstance(item["measurement_present"], bool)
+                or not isinstance(item["eligible"], bool)
                 or not isinstance(item["used"], bool)
+                or (
+                    item["exclusion_reason"] is not None
+                    and not isinstance(item["exclusion_reason"], str)
+                )
                 or not isinstance(item_provenance, list)
                 or any(
                     isinstance(value, bool) or not isinstance(value, int)
@@ -1048,20 +1513,153 @@ def aggregate_predictive_recovery(
                 or item_provenance != sorted(set(item_provenance))
             ):
                 raise ValueError("reference evidence value differs from exact schema")
-            state["reference_freshness"][str(item["current_freshness"])] += 1
-            if item["reference_kind"] == "base":
-                state["seen_base_ids"].add(item["reference_id"])
         evidence_keys = [
             (item["reference_kind"], item["reference_id"])
             for item in decoded_evidence
         ]
         if (
             len(evidence_keys) != len(set(evidence_keys))
-            or evidence_keys
-            != sorted(evidence_keys, key=lambda key: (key[0] == "uav", key[1]))
-            or not set(active_keys).issubset(evidence_keys)
+            or evidence_keys != declared_keys
         ):
-            raise ValueError("reference evidence keys/order differ from active contract")
+            raise ValueError(
+                "reference evidence keys/order differ from declared contract"
+            )
+        for kind, identifier in evidence_keys:
+            if kind != "uav":
+                continue
+            if identifier >= row["robot_id"]:
+                raise ValueError(
+                    "UAV evidence must reference a lower-index output"
+                )
+            if identifier not in current_public:
+                raise ValueError(
+                    "UAV evidence lacks a lower-index output in the same group"
+                )
+        mandatory_key_set = set(mandatory_keys)
+        qualification_exclusions = {
+            tuple(record["key"]): record["reason"]
+            for record in expected_qualification["excluded"]
+        }
+        for missing_key in expected_qualification["missing_mandatory"]:
+            qualification_exclusions[tuple(missing_key)] = (
+                "measurement_invalid_or_absent"
+                if not _measurement_is_valid(
+                    {
+                        "measurement_present": sensor_boundary[
+                            "records"
+                        ].get(tuple(missing_key), {}).get("present", False),
+                        "noisy_range": sensor_boundary["records"].get(
+                            tuple(missing_key), {}
+                        ).get("noisy_range"),
+                    }
+                )
+                else "not_current_frame_fresh"
+            )
+        qualification_failed = expected_qualification["status"] != "ok"
+        reconstructed_eligibility = {}
+        for item in decoded_evidence:
+            key = (item["reference_kind"], item["reference_id"])
+            expected_role = "mandatory" if key in mandatory_key_set else "optional"
+            measurement_valid = _measurement_is_valid(item)
+            expected_record = sensor_boundary["records"].get(key)
+            expected_noise_seed = sensor_boundary["noise_seeds"].get(key)
+            if (
+                expected_record is None
+                or item["measurement_present"]
+                is not expected_record["present"]
+                or item["noisy_range"] != expected_record["noisy_range"]
+                or item["noise_seed"] != expected_noise_seed
+            ):
+                raise ValueError(
+                    "reference measurement differs from exact sensor boundary"
+                )
+            if item["measurement_present"]:
+                noise_seed = item["noise_seed"]
+                if (
+                    isinstance(noise_seed, bool)
+                    or not isinstance(noise_seed, int)
+                ):
+                    raise ValueError("present measurement lacks its integer seed")
+            elif item["noisy_range"] is not None or item["noise_seed"] is not None:
+                raise ValueError("absent measurement exposes range or seed")
+            if key[0] == "base":
+                expected_freshness_value = "fresh"
+                expected_eligible = measurement_valid
+                expected_provenance = [key[1]]
+            else:
+                if key[1] >= row["robot_id"]:
+                    raise ValueError(
+                        "UAV evidence must reference a lower-index output"
+                    )
+                source_output = current_public.get(key[1])
+                if source_output is None:
+                    raise ValueError(
+                        "UAV evidence lacks a lower-index output in the same group"
+                    )
+                expected_freshness_value = source_output["output_status"]
+                expected_eligible = (
+                    measurement_valid
+                    and reference_is_eligible(source_output)
+                )
+                expected_provenance = list(
+                    source_output["base_anchor_provenance"]
+                )
+            if item["role"] != expected_role:
+                raise ValueError("reference evidence role differs from declaration")
+            expected_used = key in expected_solver_used
+            expected_exclusion_reason = qualification_exclusions.get(key)
+            if not expected_used and expected_exclusion_reason is None:
+                if not measurement_valid:
+                    expected_exclusion_reason = "measurement_invalid_or_absent"
+                elif qualification_failed:
+                    expected_exclusion_reason = (
+                        "not_evaluated_due_to_missing_mandatory"
+                    )
+                elif not arrays_available:
+                    expected_exclusion_reason = (
+                        "not_supplied_due_to_reference_state_unavailable"
+                    )
+            if item["used"] != expected_used:
+                raise ValueError(
+                    "solver-used evidence differs from exact sensor boundary"
+                )
+            if item["exclusion_reason"] != expected_exclusion_reason:
+                raise ValueError(
+                    "reference exclusion differs from exact sensor boundary"
+                )
+            if key in expected_active_keys and not measurement_valid:
+                raise ValueError(
+                    "active reference lacks a valid current measurement"
+                )
+            if item["current_freshness"] != expected_freshness_value:
+                raise ValueError(
+                    "reference freshness differs from reconstructed public output"
+                )
+            if item["eligible"] != expected_eligible:
+                raise ValueError(
+                    "serialized eligible differs from reconstructed eligibility"
+                )
+            if item["base_anchor_provenance"] != expected_provenance:
+                raise ValueError(
+                    "reference provenance differs from reconstructed public output"
+                )
+            reconstructed_eligibility[key] = expected_eligible
+            state["reference_freshness"][
+                str(expected_freshness_value)
+            ] += 1
+        expected_excluded_references = _canonical_reason_records(
+            expected_qualification["excluded"]
+        )
+        if row["excluded_references"] != expected_excluded_references:
+            raise ValueError(
+                "excluded references differ from exact sensor boundary"
+            )
+        if (
+            row["attempt_status"] == "reference_unavailable"
+        ) != (not arrays_available):
+            raise ValueError(
+                "reference-unavailable status differs from sensor boundary"
+            )
         freshness = row["reference_freshness"]
         expected_freshness = [
             [
@@ -1084,13 +1682,14 @@ def aggregate_predictive_recovery(
             ):
                 raise ValueError("reference violation differs from exact schema")
             violation = dict(zip(replay.VIOLATION_FIELDS, compact_violation))
-            if not isinstance(violation["reason"], str):
-                raise ValueError("reference violation reason must be a string")
+            if (
+                violation["reference_kind"] not in _REFERENCE_KINDS
+                or isinstance(violation["reference_id"], bool)
+                or not isinstance(violation["reference_id"], int)
+                or violation["reason"] not in _REFERENCE_VIOLATION_REASONS
+            ):
+                raise ValueError("reference violation contains an unknown fact")
             decoded_violations.append(violation)
-            state["integrity"]["reference_violation_count"] += 1
-            state["integrity"]["reference_violation_reasons"][
-                violation["reason"]
-            ] += 1
         evidence_by_key = {
             (item["reference_kind"], item["reference_id"]): item
             for item in decoded_evidence
@@ -1103,15 +1702,42 @@ def aggregate_predictive_recovery(
             }
             for kind, identifier in active_keys
             if kind == "uav"
-            and evidence_by_key[(kind, identifier)]["current_freshness"] != "fresh"
+            and not reconstructed_eligibility[(kind, identifier)]
         ]
-        if variant == "prediction_expiry":
-            if decoded_violations != expected_diagnostic_violations:
-                raise ValueError(
-                    "prediction-expiry violations differ from derived stale anchors"
-                )
-        elif decoded_violations:
-            raise ValueError("qualified variant contains reference violation")
+        canonical_violations = sorted(
+            decoded_violations,
+            key=lambda item: (
+                _REFERENCE_KINDS.index(item["reference_kind"]),
+                item["reference_id"],
+                item["reason"],
+            ),
+        )
+        if (
+            decoded_violations != canonical_violations
+            or len(
+                {
+                    (
+                        item["reference_kind"],
+                        item["reference_id"],
+                        item["reason"],
+                    )
+                    for item in decoded_violations
+                }
+            )
+            != len(decoded_violations)
+        ):
+            raise ValueError(
+                "reference violations must be unique and canonical"
+            )
+        if decoded_violations != expected_diagnostic_violations:
+            raise ValueError(
+                "reference violations differ from reconstructed active UAV facts"
+            )
+        for violation in decoded_violations:
+            state["integrity"]["reference_violation_count"] += 1
+            state["integrity"]["reference_violation_reasons"][
+                violation["reason"]
+            ] += 1
         state["integrity"]["nonfresh_anchor_use_count"] += len(
             expected_diagnostic_violations
         )
@@ -1130,6 +1756,26 @@ def aggregate_predictive_recovery(
             or attempted_provenance != sorted(set(attempted_provenance))
         ):
             raise ValueError("base-anchor provenance differs from exact schema")
+        if variant == "prediction_expiry":
+            expected_attempted_provenance = sorted(
+                {
+                    root
+                    for kind, identifier in expected_active_keys
+                    for root in (
+                        (identifier,)
+                        if kind == "base"
+                        else current_numeric_provenance.get(identifier, ())
+                    )
+                }
+            )
+        else:
+            expected_attempted_provenance = list(
+                expected_qualification["base_anchor_provenance"]
+            )
+        if attempted_provenance != expected_attempted_provenance:
+            raise ValueError(
+                "attempt provenance differs from reconstructed numeric provenance"
+            )
         used = {
             (item["reference_kind"], item["reference_id"])
             for item in decoded_evidence
@@ -1147,15 +1793,9 @@ def aggregate_predictive_recovery(
                 for root in evidence_by_key[key]["base_anchor_provenance"]
             }
         )
-        attempted_mismatch = attempted_provenance != derived_roots
-        if attempted_mismatch:
+        if attempted_provenance != derived_roots:
             state["integrity"]["provenance_mismatch_count"] += 1
-            diagnostic_exception = (
-                variant == "prediction_expiry"
-                and bool(expected_diagnostic_violations)
-                and set(attempted_provenance).issubset(state["seen_base_ids"])
-            )
-            if not diagnostic_exception:
+            if variant != "prediction_expiry":
                 raise ValueError(
                     "attempt provenance differs from current active chain"
                 )
@@ -1164,18 +1804,72 @@ def aggregate_predictive_recovery(
             if qualified:
                 raise ValueError("fresh output lacks two-base current provenance")
         if status == "fresh":
-            provenance_mismatch = (
-                used != set(active_keys)
-                or provenance != attempted_provenance
-            )
-            if provenance_mismatch:
+            if provenance != attempted_provenance:
                 state["integrity"]["provenance_mismatch_count"] += 1
-                if qualified:
-                    raise ValueError(
-                        "fresh publication provenance differs from current used chain"
-                    )
+                raise ValueError(
+                    "fresh publication provenance differs from reconstructed attempt"
+                )
         elif provenance:
             raise ValueError("nonfresh publication must not expose provenance")
+        numeric_state_key = (variant, row["seed"], row["robot_id"])
+        prior_numeric_available = previous_numeric_available.get(
+            numeric_state_key, False
+        )
+        prior_ever_numeric_finite = ever_numeric_finite.get(
+            numeric_state_key, False
+        )
+        prior_public = previous_public_lifecycle.get(numeric_state_key)
+        has_live_prediction = (
+            prior_public is not None
+            and prior_public[0] == row["frame_index"] - 1
+            and (
+                prior_public[1] == "fresh"
+                or (
+                    prior_public[1] == "predicted"
+                    and prior_public[2] == 1
+                )
+            )
+        )
+        prior_public_output = previous_public_outputs.get(numeric_state_key)
+        previous_output = None
+        if (
+            prior_public_output is not None
+            and prior_public_output[0] == row["frame_index"] - 1
+        ):
+            previous_output = prior_public_output[1]
+        propagated_public = replay._propagate_public(
+            previous_output,
+            None,
+            row["applied_command"],
+        )["public_prediction"]
+        live_prediction = (
+            propagated_public
+            if propagated_public.get("output_status") == "predicted"
+            else None
+        )
+        if has_live_prediction != (live_prediction is not None):
+            raise ValueError(
+                "reconstructed public prediction differs from lifecycle"
+            )
+        if row["attempt_status"] != "accepted":
+            if propagated_public["output_status"] == "predicted":
+                if (
+                    row["output_status"] != "predicted"
+                    or row["prediction_age"]
+                    != propagated_public["prediction_age"]
+                    or row["estimate"] != propagated_public["estimate"]
+                    or row["aged_modeled_covariance"]
+                    != propagated_public["modeled_covariance"]
+                    or row["aged_modeled_radius"]
+                    != propagated_public["aged_modeled_radius"]
+                ):
+                    raise ValueError(
+                        "nonaccepted publication differs from propagated public prediction"
+                    )
+            elif row["output_status"] != "unavailable":
+                raise ValueError(
+                    "nonaccepted publication differs from propagated public unavailability"
+                )
         candidate_records = list(_candidate_records(row))
         selected_source = row["selected_candidate_source"]
         accepted_candidates = [
@@ -1195,6 +1889,12 @@ def aggregate_predictive_recovery(
         elif selected_source is not None or accepted_candidates:
             raise ValueError(
                 "nonaccepted attempt exposes selected or accepted candidate"
+            )
+        if variant == "predictive_multistart":
+            _validate_multistart_selection(
+                row,
+                live_prediction=live_prediction,
+                active_reference_count=len(active_keys),
             )
         for _, accepted, q_innov, candidate_error in candidate_records:
             if q_innov is not None:
@@ -1219,6 +1919,206 @@ def aggregate_predictive_recovery(
                 stratum["fresh_errors"].append(error)
             if status in {"fresh", "predicted"}:
                 stratum["published_errors"].append(error)
+        if variant == "predictive_multistart":
+            expected_initial_source = None
+        elif row["frame_index"] == 0:
+            expected_initial_source = "deployment_frame_zero"
+        elif prior_numeric_available:
+            expected_initial_source = "previous_finite"
+        elif not prior_ever_numeric_finite:
+            expected_initial_source = (
+                "deployment_restart_before_first_finite"
+            )
+        else:
+            expected_initial_source = "strict_previous_missing"
+        if row["legacy_initial_estimate_source"] != expected_initial_source:
+            raise ValueError(
+                "legacy initial estimate source differs from reconstructed policy"
+            )
+        if not arrays_available:
+            if row["candidates"]:
+                raise ValueError(
+                    "reference-unavailable attempt exposes candidates"
+                )
+            if (
+                row["attempt_status"] != "reference_unavailable"
+                or row["selected_candidate_source"] is not None
+                or row["attempt_failure_reason"] != "reference_unavailable"
+            ):
+                raise ValueError(
+                    "reference-unavailable attempt differs from producer contract"
+                )
+            expected_legacy_status = (
+                "stale" if prior_numeric_available else "invalid"
+            )
+        elif variant == "predictive_multistart":
+            expected_legacy_status = None
+        else:
+            if len(row["candidates"]) != 1:
+                raise ValueError(
+                    "legacy attempt must expose exactly one candidate"
+                )
+            legacy_candidate = row["candidates"][0]
+            candidate_source = legacy_candidate[0]
+            candidate_status = legacy_candidate[2]
+            candidate_accepted = legacy_candidate[6]
+            candidate_rejection_reason = legacy_candidate[7]
+            if candidate_status not in {"converged", "failed", "invalid"}:
+                raise ValueError(
+                    "legacy candidate status differs from producer contract"
+                )
+            try:
+                candidate_estimate = np.asarray(
+                    legacy_candidate[3], dtype=float
+                )
+            except (TypeError, ValueError, OverflowError):
+                candidate_estimate = np.asarray([], dtype=float)
+            candidate_covariance = canonical_spd_covariance(
+                legacy_candidate[4]
+            )
+            candidate_cost = legacy_candidate[5]
+            finite_payload = (
+                candidate_estimate.shape == (2,)
+                and np.all(np.isfinite(candidate_estimate))
+                and candidate_covariance is not None
+                and _finite_number(candidate_cost)
+                and float(candidate_cost) >= 0.0
+                and legacy_candidate[9][4] is None
+            )
+            nonfinite_payload = (
+                legacy_candidate[3] is None
+                and legacy_candidate[4] is None
+                and (
+                    candidate_cost is None
+                    or _finite_number(candidate_cost)
+                )
+            )
+            if finite_payload:
+                derived_candidate_finite = True
+            elif nonfinite_payload:
+                derived_candidate_finite = False
+            else:
+                raise ValueError(
+                    "legacy candidate numeric payload differs from "
+                    "producer contract"
+                )
+            if derived_candidate_finite != (
+                candidate_status == "converged"
+            ):
+                raise ValueError(
+                    "legacy candidate status differs from derived finiteness"
+                )
+            (
+                expected_candidate_accepted,
+                expected_rejection_reason,
+                expected_gate,
+            ) = _reconstruct_legacy_gate(
+                legacy_candidate,
+                variant=variant,
+                has_live_prediction=has_live_prediction,
+                active_count=len(expected_active_keys),
+                provenance=expected_attempted_provenance,
+            )
+            if legacy_candidate[8] is not None:
+                raise ValueError(
+                    "legacy candidate q innovation must be null"
+                )
+            if (
+                candidate_accepted != expected_candidate_accepted
+                or candidate_rejection_reason
+                != (
+                    None
+                    if expected_candidate_accepted
+                    else expected_rejection_reason
+                )
+                or legacy_candidate[9] != expected_gate
+            ):
+                raise ValueError(
+                    "legacy candidate gate differs from reconstructed "
+                    "producer result"
+                )
+            expected_attempt_status = (
+                "accepted"
+                if expected_candidate_accepted
+                else {
+                    "converged": "rejected",
+                    "failed": "failed",
+                    "invalid": "invalid",
+                }[candidate_status]
+            )
+            expected_attempt_failure = (
+                None
+                if expected_candidate_accepted
+                else expected_rejection_reason
+            )
+            if (
+                row["attempt_status"] != expected_attempt_status
+                or row["attempt_failure_reason"]
+                != expected_attempt_failure
+            ):
+                raise ValueError(
+                    "legacy attempt differs from reconstructed gate result"
+                )
+            if candidate_source != expected_initial_source:
+                raise ValueError(
+                    "legacy candidate source differs from reconstructed "
+                    "initial estimate source"
+                )
+            if expected_candidate_accepted:
+                if row["estimate"] != legacy_candidate[3]:
+                    raise ValueError(
+                        "accepted legacy public estimate differs from candidate"
+                    )
+                if (
+                    row["fresh_modeled_covariance"]
+                    != candidate_covariance.tolist()
+                ):
+                    raise ValueError(
+                        "accepted legacy public covariance differs from candidate"
+                    )
+            if derived_candidate_finite:
+                expected_legacy_status = "converged"
+            elif prior_numeric_available:
+                expected_legacy_status = "stale"
+            else:
+                expected_legacy_status = candidate_status
+        if row["legacy_numeric_status"] != expected_legacy_status:
+            raise ValueError(
+                "legacy numeric status differs from reconstructed producer state"
+            )
+        if expected_legacy_status == "converged":
+            numeric_available = True
+            numeric_provenance = tuple(expected_attempted_provenance)
+        elif expected_legacy_status == "stale":
+            numeric_available = prior_numeric_available
+            numeric_provenance = previous_numeric_provenance.get(
+                numeric_state_key, ()
+            )
+            if not numeric_available:
+                raise ValueError(
+                    "stale legacy numeric status lacks a prior finite state"
+                )
+        else:
+            numeric_available = False
+            numeric_provenance = ()
+        current_numeric_available[row["robot_id"]] = numeric_available
+        current_numeric_provenance[row["robot_id"]] = numeric_provenance
+        previous_numeric_available[numeric_state_key] = numeric_available
+        previous_numeric_provenance[numeric_state_key] = numeric_provenance
+        ever_numeric_finite[numeric_state_key] = (
+            prior_ever_numeric_finite or numeric_available
+        )
+        previous_public_lifecycle[numeric_state_key] = (
+            row["frame_index"],
+            row["output_status"],
+            row["prediction_age"],
+        )
+        public_output = _public_output_from_row(row)
+        previous_public_outputs[numeric_state_key] = (
+            row["frame_index"],
+            public_output,
+        )
+        current_public[row["robot_id"]] = public_output
     expected_total = len(variants) * len(expected_keys)
     if sum(state["rows"] for state in states.values()) != expected_total:
         raise ValueError("development exact key set is incomplete")

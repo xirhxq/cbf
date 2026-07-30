@@ -135,19 +135,19 @@ class RegistrarTests(unittest.TestCase):
         self.assertEqual(payload["implementation_parent_commit"], head)
         self.assertEqual(
             payload["schema_id"],
-            "cbf2026-predictive-wnls-stage1-protocol-v3",
+            "cbf2026-predictive-wnls-stage1-protocol-v4",
         )
         self.assertEqual(
             payload["protocol_id"],
-            "cbf2026-predictive-wnls-stage1-v3",
+            "cbf2026-predictive-wnls-stage1-v4",
         )
         self.assertEqual(
             payload["raw_schema"]["id"],
-            "cbf2026-predictive-wnls-development-rows-v2",
+            "cbf2026-predictive-wnls-development-rows-v3",
         )
         self.assertEqual(
             payload["analysis_schema"]["id"],
-            "cbf2026-predictive-wnls-development-analysis-v2",
+            "cbf2026-predictive-wnls-development-analysis-v3",
         )
         self.assertEqual(
             set(payload),
@@ -231,6 +231,8 @@ class RegistrarTests(unittest.TestCase):
                 "representable_step_relative_threshold": 1e-12,
                 "candidate_dedup_m": 1e-9,
                 "relative_tie_tolerance": 1e-12,
+                "public_covariance_rtol": 1e-12,
+                "public_covariance_atol": 1e-12,
             },
         )
         self.assertEqual(
@@ -287,7 +289,7 @@ class RegistrarTests(unittest.TestCase):
             "--protocol-json",
             (
                 "docs/diagnostics/"
-                "2026-07-30-predictive-wnls-stage1-protocol-v3.json"
+                "2026-07-30-predictive-wnls-stage1-protocol-v4.json"
             ),
         ]
         self.assertEqual(
@@ -295,7 +297,7 @@ class RegistrarTests(unittest.TestCase):
             expected_prefix
             + [
                 "--output-root",
-                "/private/tmp/cbf2026-predictive-wnls-smoke-v3-a",
+                "/private/tmp/cbf2026-predictive-wnls-smoke-v4-a",
                 "--run-seeds",
                 "20260727",
                 "--max-frames",
@@ -307,7 +309,7 @@ class RegistrarTests(unittest.TestCase):
             expected_prefix
             + [
                 "--output-root",
-                "/private/tmp/cbf2026-predictive-wnls-smoke-v3-b",
+                "/private/tmp/cbf2026-predictive-wnls-smoke-v4-b",
                 "--run-seeds",
                 "20260727",
                 "--max-frames",
@@ -321,7 +323,7 @@ class RegistrarTests(unittest.TestCase):
                 "--output-root",
                 (
                     "/private/tmp/cbf2026-predictive-wnls-development/"
-                    "stage1-v3"
+                    "stage1-v4"
                 ),
                 "--run-seeds",
                 ",".join(str(seed) for seed in range(20260727, 20260747)),
@@ -341,19 +343,19 @@ class RegistrarTests(unittest.TestCase):
                 "--development-manifest-path",
                 (
                     "/private/tmp/cbf2026-predictive-wnls-development/"
-                    "stage1-v3/manifest.json"
+                    "stage1-v4/manifest.json"
                 ),
                 "--protocol-json",
                 (
                     "docs/diagnostics/"
-                    "2026-07-30-predictive-wnls-stage1-protocol-v3.json"
+                    "2026-07-30-predictive-wnls-stage1-protocol-v4.json"
                 ),
                 "--expected-baseline-sha256",
                 sha256(self.baseline),
                 "--output-root",
                 (
                     "/private/tmp/"
-                    "cbf2026-predictive-wnls-development-analysis/stage1-v3"
+                    "cbf2026-predictive-wnls-development-analysis/stage1-v4"
                 ),
             ],
         )
@@ -368,12 +370,24 @@ class RegistrarTests(unittest.TestCase):
         )
         for retired in (
             "docs/diagnostics/2026-07-30-predictive-wnls-stage1-protocol.json",
+            "docs/diagnostics/2026-07-30-predictive-wnls-stage1-protocol-v3.json",
+            "cbf2026-predictive-wnls-stage1-protocol-v2",
+            "cbf2026-predictive-wnls-stage1-protocol-v3",
+            "cbf2026-predictive-wnls-stage1-v2",
+            "cbf2026-predictive-wnls-stage1-v3",
             "/private/tmp/cbf2026-predictive-wnls-smoke-a",
             "/private/tmp/cbf2026-predictive-wnls-smoke-b",
+            "/private/tmp/cbf2026-predictive-wnls-smoke-v3-a",
+            "/private/tmp/cbf2026-predictive-wnls-smoke-v3-b",
             "/private/tmp/cbf2026-predictive-wnls-development/stage1-v2",
+            "/private/tmp/cbf2026-predictive-wnls-development/stage1-v3",
             (
                 "/private/tmp/"
                 "cbf2026-predictive-wnls-development-analysis/stage1-v2"
+            ),
+            (
+                "/private/tmp/"
+                "cbf2026-predictive-wnls-development-analysis/stage1-v3"
             ),
         ):
             with self.subTest(retired=retired):

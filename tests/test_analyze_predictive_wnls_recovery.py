@@ -14,7 +14,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import numpy as np
+
 from scripts.diagnostics import analyze_predictive_wnls_recovery as analyzer
+from scripts.diagnostics import predictive_wnls
 from scripts.diagnostics import replay_predictive_wnls_recovery as replay
 from scripts.diagnostics.run_diagnostic import START_BYTES, DiskSpaceError
 
@@ -62,7 +65,9 @@ def development_row(
             "squad_local_index": robot,
             "applied_command_source_frame": None if frame == 0 else frame - 1,
             "applied_command": None if frame == 0 else [1.0, 0.0],
-            "legacy_numeric_status": "converged",
+            "legacy_numeric_status": (
+                None if variant == "predictive_multistart" else "converged"
+            ),
             "legacy_initial_estimate_source": "test",
             "attempt_status": attempt,
             "attempt_failure_reason": None,
@@ -117,9 +122,45 @@ def development_row(
                         0.0,
                         True,
                         None,
-                        1.0,
-                        ["normalized", 1.0, "accepted", True, None, 0.0],
+                        (
+                            None
+                            if variant == "predictive_multistart"
+                            else 1.0
+                        ),
+                        (
+                            [
+                                "not_applicable_reacquisition",
+                                None,
+                                "accepted",
+                                True,
+                                None,
+                                0.0,
+                            ]
+                            if variant == "predictive_multistart"
+                            else [
+                                "normalized",
+                                1.0,
+                                "accepted",
+                                True,
+                                None,
+                                0.0,
+                            ]
+                        ),
                         [],
+                        *(
+                            [
+                                3.0,
+                                1.0,
+                                1.0,
+                                True,
+                                0,
+                                0,
+                                0.0,
+                                None,
+                            ]
+                            if variant == "predictive_multistart"
+                            else []
+                        ),
                     ]
                 ]
                 if attempt == "accepted"
@@ -158,12 +199,156 @@ def truth_data() -> dict:
         }
 
     return {
+        "config": sensor_config(2, separate_squads=True),
         "state": [
             {"frame_index": 0, "robots": [robot(1, 1.0), robot(2, 1.0)]},
             {"frame_index": 1, "robots": [robot(1, 30.0), robot(2, 1.0)]},
             {"frame_index": 2, "robots": [robot(1, 1.0), robot(2, 1.0)]},
         ]
     }
+
+
+def sensor_config(number: int, *, separate_squads: bool) -> dict:
+    parts = number if separate_squads else 1
+    return {
+        "num": number,
+        "bases": [
+            [100.0, 0.0],
+            [0.0, 100.0],
+            [-100.0, 0.0],
+        ],
+        "formation": {
+            "parts": parts,
+            "bases-id": [[0, 1, 2] for _ in range(parts)],
+        },
+        "cbfs": {
+            "without-slack": {
+                "comm-fixed": {
+                    "min-neighbour-id-offset": -2,
+                    "max-neighbour-id-offset": 0,
+                    "max-range": 1000.0,
+                }
+            }
+        },
+        "position_covariance": {"ranging_sigma": 0.5},
+    }
+
+
+def materialize_sensor_evidence(rows: list[dict], truth: dict) -> None:
+    """Populate exact producer sensor-boundary evidence for literal rows."""
+    config = truth["config"]
+    frames = {
+        frame["frame_index"]: {
+            robot["id"]: [
+                float(robot["state"]["x"]),
+                float(robot["state"]["y"]),
+            ]
+            for robot in frame["robots"]
+        }
+        for frame in truth["state"]
+    }
+    current_group = None
+    current_public = {}
+    current_numeric_available = {}
+    previous_numeric_available = {}
+    for row in rows:
+        group = (row["variant"], row["seed"], row["frame_index"])
+        if group != current_group:
+            current_group = group
+            current_public = {}
+            current_numeric_available = {}
+        mandatory, optional, records, noise_seeds = replay._sensor_records(
+            config,
+            row["robot_id"],
+            {
+                identifier: np.asarray(position, dtype=float)
+                for identifier, position in frames[row["frame_index"]].items()
+            },
+            row["seed"],
+            row["frame_index"],
+            config["position_covariance"]["ranging_sigma"],
+        )
+        qualification = replay.qualify_active_references(
+            mandatory=mandatory,
+            optional_keys=optional,
+            measurement_records=records,
+            uav_outputs=current_public,
+            variant=row["variant"],
+        )
+        active_records = replay._canonical_active_records(qualification)
+        active_keys = tuple(tuple(record["key"]) for record in active_records)
+        if row["variant"] == "prediction_expiry":
+            arrays_available = (
+                len(active_keys) >= 2
+                and all(
+                    kind == "base"
+                    or current_numeric_available.get(identifier, False)
+                    for kind, identifier in active_keys
+                )
+            )
+        else:
+            arrays_available = (
+                qualification["status"] == "ok"
+                and len(active_keys) >= 2
+            )
+        solver_used = (
+            active_keys
+            if arrays_available
+            else ()
+        )
+        evidence = replay._reference_evidence(
+            mandatory=mandatory,
+            optional=optional,
+            records=records,
+            noise_seeds=noise_seeds,
+            qualification=qualification,
+            current_public=current_public,
+            solver_used_keys=solver_used,
+            solver_exclusion_reason=(
+                None
+                if solver_used
+                else "not_supplied_due_to_reference_state_unavailable"
+            ),
+        )
+        row["mandatory_references"] = {
+            field: list(mandatory[field])
+            for field in replay.MANDATORY_REFERENCE_FIELDS
+        }
+        row["optional_candidates"] = [list(key) for key in optional]
+        row["active_references"] = [list(key) for key in active_keys]
+        row["reference_evidence"] = evidence
+        row["reference_freshness"] = replay._reference_freshness(evidence)
+        row["excluded_references"] = replay._normalize_reason_records(
+            qualification["excluded"],
+            fields=replay.EXCLUSION_FIELDS,
+        )
+        row["reference_violations"] = replay._normalize_reason_records(
+            qualification["violations"],
+            fields=replay.VIOLATION_FIELDS,
+        )
+        row["attempt_base_anchor_provenance"] = list(
+            qualification["base_anchor_provenance"]
+        )
+        if row["output_status"] == "fresh":
+            row["base_anchor_provenance"] = list(
+                row["attempt_base_anchor_provenance"]
+            )
+        numeric_state_key = (
+            row["variant"],
+            row["seed"],
+            row["robot_id"],
+        )
+        if row["legacy_numeric_status"] == "converged":
+            numeric_available = True
+        elif row["legacy_numeric_status"] == "stale":
+            numeric_available = previous_numeric_available.get(
+                numeric_state_key, False
+            )
+        else:
+            numeric_available = False
+        current_numeric_available[row["robot_id"]] = numeric_available
+        previous_numeric_available[numeric_state_key] = numeric_available
+        current_public[row["robot_id"]] = analyzer._public_output_from_row(row)
 
 
 def protocol() -> dict:
@@ -224,7 +409,7 @@ def paired_fixture() -> tuple[list[dict], list[dict]]:
                         else "fresh"
                     ),
                     attempt=(
-                        "reference_unavailable"
+                        "invalid"
                         if variant == "predictive_multistart"
                         else "accepted"
                     ),
@@ -245,6 +430,44 @@ def paired_fixture() -> tuple[list[dict], list[dict]]:
                 ),
             ]
         )
+    numeric_available = {}
+    for row in rows:
+        if row["variant"] == "predictive_multistart":
+            continue
+        state_key = (row["variant"], row["seed"], row["robot_id"])
+        attempt_status = row["attempt_status"]
+        if attempt_status == "accepted":
+            candidate_status = "converged"
+            legacy_status = "converged"
+        elif attempt_status == "rejected":
+            candidate_status = "invalid"
+            legacy_status = (
+                "stale"
+                if numeric_available.get(state_key, False)
+                else "invalid"
+            )
+        else:
+            candidate_status = attempt_status
+            legacy_status = (
+                "stale"
+                if numeric_available.get(state_key, False)
+                else candidate_status
+            )
+        set_legacy_candidate_contract(
+            row,
+            candidate_status=candidate_status,
+            attempt_status=attempt_status,
+            legacy_status=legacy_status,
+            rejection_reason=(
+                None
+                if attempt_status == "accepted"
+                else f"test_{attempt_status}"
+            ),
+        )
+        numeric_available[state_key] = legacy_status in {
+            "converged",
+            "stale",
+        }
     rejected = rows[-4]
     rejected["candidates"] = [
         [
@@ -253,12 +476,27 @@ def paired_fixture() -> tuple[list[dict], list[dict]]:
             "converged",
             [9.0, 0.0],
             [[1.0, 0.0], [0.0, 1.0]],
-            1.0,
+            10.0,
             False,
-            "innovation_gate",
-            12.0,
-            ["normalized", 12.0, "rejected", True, None, 1.0],
+            "reacquisition_reduced_cost_exceeds_nine",
+            None,
+            [
+                "not_applicable_reacquisition",
+                None,
+                "rejected",
+                None,
+                None,
+                10.0,
+            ],
             [],
+            3.0,
+            1.0,
+            1.0,
+            True,
+            0,
+            0,
+            0.0,
+            None,
         ]
     ]
     accepted = rows[-5]
@@ -272,16 +510,680 @@ def paired_fixture() -> tuple[list[dict], list[dict]]:
             0.1,
             True,
             None,
-            2.5,
-            ["normalized", 2.5, "accepted", True, None, 0.1],
+            None,
+            [
+                "not_applicable_reacquisition",
+                None,
+                "accepted",
+                None,
+                None,
+                0.1,
+            ],
             [],
+            3.0,
+            1.0,
+            1.0,
+            True,
+            0,
+            0,
+            0.0,
+            None,
         ]
     ]
     accepted["selected_candidate_source"] = "prediction"
     for row in rows:
+        if (
+            row["variant"] == "predictive_multistart"
+            and not row["candidates"]
+            and row["attempt_status"] != "reference_unavailable"
+        ):
+            row["attempt_status"] = "invalid"
+            row["attempt_failure_reason"] = "no_valid_initial_candidates"
+            row["selected_candidate_source"] = None
+        if (
+            row["variant"] == "prediction_expiry"
+            and row["attempt_status"] == "rejected"
+        ):
+            make_unavailable(row)
+            set_legacy_candidate_contract(
+                row,
+                candidate_status="invalid",
+                attempt_status="invalid",
+                legacy_status=(
+                    "stale"
+                    if row["frame_index"] > 0 and row["robot_id"] == 1
+                    else "invalid"
+                ),
+                rejection_reason="invalid_geometry",
+            )
         if row["frame_index"] == 2 and row["robot_id"] == 1:
             row["applied_command"] = [30.0, 0.0]
+    materialize_nonaccepted_public_lifecycle(rows)
+    materialize_legacy_initial_sources(rows)
+    materialize_sensor_evidence(rows, truth_data())
+    materialize_legacy_gate_contract(rows)
     return baseline, rows
+
+
+def semantic_fixture(
+    keys: list[tuple[int, int, int]],
+) -> tuple[list[dict], list[dict], dict]:
+    """Build a literal zero-truth cohort for reference-integrity tests."""
+    baseline = [
+        baseline_row(seed, frame, robot)
+        for seed, frame, robot in sorted(
+            keys, key=lambda key: (key[1], key[0], key[2])
+        )
+    ]
+    rows = [
+        development_row(variant, seed, frame, robot)
+        for variant in replay.DEVELOPMENT_VARIANTS
+        for seed, frame, robot in sorted(keys)
+    ]
+    maximum_frame = max(frame for _, frame, _ in keys)
+    robots = sorted({robot for _, _, robot in keys})
+    states = []
+    for frame in range(maximum_frame + 1):
+        states.append(
+            {
+                "frame_index": frame,
+                "robots": [
+                    {
+                        "id": robot,
+                        "state": {"x": 10.0 * robot, "y": 0.0},
+                        "opt": {"result": {"vx": 1.0, "vy": 0.0}},
+                    }
+                    for robot in robots
+                ],
+            }
+        )
+    truth = {
+        "config": sensor_config(max(robots), separate_squads=False),
+        "state": states,
+    }
+    for row in rows:
+        truth_x = 10.0 * row["robot_id"]
+        row["offline_truth_position"] = [truth_x, 0.0]
+        if row["output_status"] != "unavailable":
+            row["estimate"] = [
+                truth_x + float(row["offline_error_norm"]),
+                0.0,
+            ]
+            if (
+                row["variant"] == "predictive_multistart"
+                and row["attempt_status"] == "accepted"
+                and len(row["candidates"]) == 1
+            ):
+                row["candidates"][0][3] = copy.deepcopy(row["estimate"])
+                row["candidates"][0][4] = copy.deepcopy(
+                    row["fresh_modeled_covariance"]
+                )
+    materialize_legacy_initial_sources(rows)
+    materialize_nonaccepted_public_lifecycle(rows)
+    materialize_sensor_evidence(rows, truth)
+    materialize_legacy_gate_contract(rows)
+    return baseline, rows, truth
+
+
+def row_at(
+    rows: list[dict],
+    variant: str,
+    seed: int,
+    frame: int,
+    robot: int,
+) -> dict:
+    return next(
+        row
+        for row in rows
+        if (
+            row["variant"],
+            row["seed"],
+            row["frame_index"],
+            row["robot_id"],
+        )
+        == (variant, seed, frame, robot)
+    )
+
+
+def add_uav_evidence(
+    target: dict,
+    source: dict,
+    *,
+    active: bool = True,
+    serialized_eligible: bool | None = None,
+    serialized_freshness: str | None = None,
+) -> None:
+    """Attach a complete compact UAV reference using explicit public fields."""
+    identifier = source["robot_id"]
+    key = ["uav", identifier]
+    declared_mandatory = identifier in target["mandatory_references"]["uav_ids"]
+    if not declared_mandatory and key not in target["optional_candidates"]:
+        target["optional_candidates"].append(key)
+        target["optional_candidates"].sort(
+            key=lambda item: (item[0] == "uav", item[1])
+        )
+    if active:
+        if key not in target["active_references"]:
+            target["active_references"].append(key)
+            target["active_references"].sort(
+                key=lambda item: (item[0] == "uav", item[1])
+            )
+    elif key in target["active_references"]:
+        target["active_references"].remove(key)
+    freshness = (
+        source["output_status"]
+        if serialized_freshness is None
+        else serialized_freshness
+    )
+    eligible = source["output_status"] == "fresh"
+    if serialized_eligible is not None:
+        eligible = serialized_eligible
+    evidence = next(
+        (
+            item
+            for item in target["reference_evidence"]
+            if item[:2] == key
+        ),
+        None,
+    )
+    if evidence is None:
+        evidence = [
+            "uav",
+            identifier,
+            "mandatory" if declared_mandatory else "optional",
+            True,
+            1.0,
+            1000 + identifier,
+            freshness,
+            eligible,
+            active,
+            None,
+            list(source["base_anchor_provenance"]),
+        ]
+        target["reference_evidence"].append(evidence)
+    else:
+        evidence[6] = freshness
+        evidence[7] = eligible
+        evidence[8] = active
+        evidence[9] = None
+        evidence[10] = list(source["base_anchor_provenance"])
+    target["reference_evidence"].sort(
+        key=lambda item: (item[0] == "uav", item[1])
+    )
+    target["reference_freshness"] = [
+        [item[0], item[1], item[6]]
+        for item in target["reference_evidence"]
+    ]
+    violation = ["uav", identifier, "stale_or_predicted_anchor_used"]
+    target["reference_violations"] = [
+        item
+        for item in target["reference_violations"]
+        if item[:2] != key
+    ]
+    if active and source["output_status"] != "fresh":
+        target["reference_violations"].append(violation)
+    target["reference_violations"].sort(
+        key=lambda item: (item[0] == "uav", item[1], item[2])
+    )
+
+
+def make_predicted(row: dict, *, error: float = 1.0) -> None:
+    truth = row["offline_truth_position"]
+    row.update(
+        {
+            "attempt_status": "rejected",
+            "output_status": "predicted",
+            "prediction_age": 1,
+            "estimate": [float(truth[0]) + error, float(truth[1])],
+            "fresh_modeled_covariance": None,
+            "fresh_epsilon": None,
+            "aged_modeled_covariance": [[2.0, 0.0], [0.0, 2.0]],
+            "aged_modeled_radius": 3.0 * (2.0**0.5),
+            "base_anchor_provenance": [],
+            "candidates": [],
+            "selected_candidate_source": None,
+            "offline_error_norm": error,
+            "offline_fresh_containment": None,
+            "offline_aged_radius_containment": True,
+            "offline_fresh_q_error": None,
+            "offline_aged_q_error": error * error / 2.0,
+        }
+    )
+    if row["variant"] == "prediction_expiry":
+        set_legacy_candidate_contract(
+            row,
+            candidate_status="invalid",
+            attempt_status="invalid",
+            legacy_status="invalid",
+            rejection_reason="invalid_geometry",
+        )
+    elif row["variant"] != "predictive_multistart":
+        set_legacy_candidate_contract(
+            row,
+            candidate_status="converged",
+            attempt_status="rejected",
+            legacy_status="converged",
+            rejection_reason="reacquisition_reduced_cost_exceeds_nine",
+        )
+
+
+def make_unavailable(row: dict) -> None:
+    row.update(
+        {
+            "output_status": "unavailable",
+            "prediction_age": None,
+            "estimate": None,
+            "fresh_modeled_covariance": None,
+            "fresh_epsilon": None,
+            "aged_modeled_covariance": None,
+            "aged_modeled_radius": None,
+            "base_anchor_provenance": [],
+            "offline_error_norm": None,
+            "offline_fresh_containment": None,
+            "offline_aged_radius_containment": None,
+            "offline_fresh_q_error": None,
+            "offline_aged_q_error": None,
+        }
+    )
+
+
+def materialize_nonaccepted_public_lifecycle(rows: list[dict]) -> None:
+    """Apply the producer's exact prior-public publication policy to fixtures."""
+    previous_public = {}
+    for row in rows:
+        state_key = (row["variant"], row["seed"], row["robot_id"])
+        prior = previous_public.get(state_key)
+        previous_output = (
+            prior[1]
+            if prior and prior[0] == row["frame_index"] - 1
+            else None
+        )
+        propagated = replay._propagate_public(
+            previous_output,
+            None,
+            row["applied_command"],
+        )["public_prediction"]
+        if row["attempt_status"] != "accepted":
+            if propagated["output_status"] == "predicted":
+                covariance = np.asarray(
+                    propagated["modeled_covariance"], dtype=float
+                )
+                estimate = np.asarray(
+                    propagated["estimate"], dtype=float
+                )
+                truth = np.asarray(
+                    row["offline_truth_position"], dtype=float
+                )
+                residual = truth - estimate
+                error = float(np.linalg.norm(residual))
+                q_error = float(
+                    residual @ np.linalg.solve(covariance, residual)
+                )
+                row.update(
+                    {
+                        "output_status": "predicted",
+                        "prediction_age": propagated["prediction_age"],
+                        "estimate": propagated["estimate"],
+                        "fresh_modeled_covariance": None,
+                        "fresh_epsilon": None,
+                        "aged_modeled_covariance": propagated[
+                            "modeled_covariance"
+                        ],
+                        "aged_modeled_radius": propagated[
+                            "aged_modeled_radius"
+                        ],
+                        "base_anchor_provenance": [],
+                        "offline_error_norm": error,
+                        "offline_fresh_containment": None,
+                        "offline_aged_radius_containment": (
+                            error <= propagated["aged_modeled_radius"]
+                        ),
+                        "offline_fresh_q_error": None,
+                        "offline_aged_q_error": q_error,
+                    }
+                )
+            else:
+                make_unavailable(row)
+        previous_public[state_key] = (
+            row["frame_index"],
+            analyzer._public_output_from_row(row),
+        )
+
+
+def set_legacy_candidate_contract(
+    row: dict,
+    *,
+    candidate_status: str,
+    attempt_status: str,
+    legacy_status: str,
+    source: str | None = None,
+    rejection_reason: str | None = None,
+) -> None:
+    if source is None:
+        source = row["legacy_initial_estimate_source"]
+    accepted = attempt_status == "accepted"
+    row["legacy_numeric_status"] = legacy_status
+    row["legacy_initial_estimate_source"] = source
+    row["attempt_status"] = attempt_status
+    row["attempt_failure_reason"] = rejection_reason
+    row["candidates"] = [
+        [
+            source,
+            [0.0, 0.0],
+            candidate_status,
+            (
+                copy.deepcopy(row["estimate"])
+                if accepted
+                else [1.0, 0.0]
+                if candidate_status == "converged"
+                else None
+            ),
+            (
+                copy.deepcopy(row["fresh_modeled_covariance"])
+                if accepted
+                else [[1.0, 0.0], [0.0, 1.0]]
+                if candidate_status == "converged"
+                else None
+            ),
+            (
+                10.0
+                if candidate_status == "converged"
+                and attempt_status == "rejected"
+                else 1.0
+                if candidate_status == "converged"
+                else None
+            ),
+            accepted,
+            rejection_reason,
+            None,
+            [
+                "not_applied_legacy_solver",
+                None,
+                (
+                    "accepted"
+                    if accepted
+                    else "rejected"
+                    if candidate_status == "converged"
+                    else "invalid"
+                ),
+                candidate_status == "converged",
+                None if candidate_status == "converged" else rejection_reason,
+                (
+                    10.0
+                    if candidate_status == "converged"
+                    and attempt_status == "rejected"
+                    else None
+                ),
+            ],
+            [],
+        ]
+    ]
+    row["selected_candidate_source"] = source if accepted else None
+
+
+def materialize_legacy_initial_sources(rows: list[dict]) -> None:
+    previous_available = {}
+    ever_finite = {}
+    for row in rows:
+        state_key = (row["variant"], row["seed"], row["robot_id"])
+        if row["variant"] == "predictive_multistart":
+            row["legacy_initial_estimate_source"] = None
+        else:
+            if row["frame_index"] == 0:
+                expected_source = "deployment_frame_zero"
+            elif previous_available.get(state_key, False):
+                expected_source = "previous_finite"
+            elif not ever_finite.get(state_key, False):
+                expected_source = "deployment_restart_before_first_finite"
+            else:
+                expected_source = "strict_previous_missing"
+            row["legacy_initial_estimate_source"] = expected_source
+            if len(row["candidates"]) == 1:
+                candidate = row["candidates"][0]
+                candidate[0] = expected_source
+                candidate[8] = None
+                candidate[9] = [
+                    "not_applied_legacy_solver",
+                    None,
+                    (
+                        "accepted"
+                        if candidate[6]
+                        else "rejected"
+                        if candidate[2] == "converged"
+                        else "invalid"
+                    ),
+                    candidate[2] == "converged",
+                    None if candidate[2] == "converged" else candidate[7],
+                    None,
+                ]
+                if candidate[6]:
+                    candidate[3] = copy.deepcopy(row["estimate"])
+                    candidate[4] = copy.deepcopy(
+                        row["fresh_modeled_covariance"]
+                    )
+                    row["selected_candidate_source"] = expected_source
+        current_available = row["legacy_numeric_status"] in {
+            "converged",
+            "stale",
+        }
+        previous_available[state_key] = current_available
+        ever_finite[state_key] = (
+            ever_finite.get(state_key, False) or current_available
+        )
+
+
+def materialize_legacy_gate_contract(rows: list[dict]) -> None:
+    previous_public = {}
+    for row in rows:
+        state_key = (row["variant"], row["seed"], row["robot_id"])
+        prior = previous_public.get(state_key)
+        live_prediction = None
+        if prior and prior[0] == row["frame_index"] - 1:
+            propagated = replay._propagate_public(
+                prior[1],
+                None,
+                row["applied_command"],
+            )["public_prediction"]
+            if propagated["output_status"] == "predicted":
+                live_prediction = propagated
+        has_live_prediction = live_prediction is not None
+        if row["variant"] == "predictive_multistart":
+            for candidate in row["candidates"]:
+                compact = dict(
+                    zip(
+                        replay.MULTISTART_COMPACT_CANDIDATE_FIELDS,
+                        candidate,
+                    )
+                )
+                result = {
+                    field: compact[field]
+                    for field in replay.SOLVER_RESULT_FIELDS
+                    if field != "proposal_trace"
+                }
+                result["proposal_trace"] = [
+                    dict(zip(replay.PROPOSAL_TRACE_FIELDS, proposal))
+                    for proposal in compact["proposal_trace"]
+                ]
+                accepted, reason, diagnostics = (
+                    predictive_wnls.candidate_acceptance(
+                        result,
+                        live_prediction=live_prediction,
+                        active_reference_count=len(
+                            row["active_references"]
+                        ),
+                        base_anchor_provenance=row[
+                            "attempt_base_anchor_provenance"
+                        ],
+                    )
+                )
+                candidate[6] = accepted
+                candidate[7] = None if accepted else reason
+                candidate[8] = diagnostics.get("q_innov")
+                candidate[9] = [
+                    diagnostics.get(field)
+                    for field in replay.GATE_DIAGNOSTIC_FIELDS
+                ]
+        if (
+            row["variant"] != "predictive_multistart"
+            and len(row["candidates"]) == 1
+        ):
+            candidate = row["candidates"][0]
+            accepted, reason, diagnostics = replay._legacy_gate(
+                {
+                    "status": candidate[2],
+                    "estimate": candidate[3],
+                    "covariance": candidate[4],
+                    "cost": candidate[5],
+                    "failure_reason": candidate[9][4],
+                },
+                variant=row["variant"],
+                has_live_prediction=has_live_prediction,
+                active_count=len(row["active_references"]),
+                provenance=tuple(row["attempt_base_anchor_provenance"]),
+            )
+            candidate[6] = accepted
+            candidate[7] = None if accepted else reason
+            candidate[9] = [
+                diagnostics.get(field)
+                for field in replay.GATE_DIAGNOSTIC_FIELDS
+            ]
+            row["attempt_status"] = (
+                "accepted"
+                if accepted
+                else {
+                    "converged": "rejected",
+                    "failed": "failed",
+                    "invalid": "invalid",
+                }[candidate[2]]
+            )
+            row["attempt_failure_reason"] = None if accepted else reason
+            row["selected_candidate_source"] = (
+                candidate[0] if accepted else None
+            )
+        previous_public[state_key] = (
+            row["frame_index"],
+            analyzer._public_output_from_row(row),
+        )
+
+
+def set_reference_unavailable_contract(
+    row: dict,
+    *,
+    legacy_status: str,
+) -> None:
+    row["legacy_numeric_status"] = legacy_status
+    row["attempt_status"] = "reference_unavailable"
+    row["attempt_failure_reason"] = "reference_unavailable"
+    row["candidates"] = []
+    row["selected_candidate_source"] = None
+
+
+def coordinate_legacy_rejection(
+    row: dict,
+    *,
+    reason: str,
+    reduced_cost: float | None = None,
+) -> None:
+    make_unavailable(row)
+    candidate = row["candidates"][0]
+    if reduced_cost is not None:
+        candidate[5] = reduced_cost
+    candidate[6] = False
+    candidate[7] = reason
+    candidate[9] = [
+        "not_applied_legacy_solver",
+        None,
+        "rejected",
+        True,
+        None,
+        reduced_cost,
+    ]
+    row["legacy_numeric_status"] = "converged"
+    row["attempt_status"] = "rejected"
+    row["attempt_failure_reason"] = reason
+    row["selected_candidate_source"] = None
+
+
+def legacy_numeric_contract_fixture():
+    keys = [
+        (11, 0, 1),
+        (11, 0, 2),
+        (11, 1, 1),
+        (11, 1, 2),
+        (12, 0, 1),
+        (12, 0, 2),
+    ]
+    baseline, rows, truth = semantic_fixture(keys)
+    variant = "fresh_reference_qualification"
+
+    prior_source = row_at(rows, variant, 11, 0, 1)
+    prior_target = row_at(rows, variant, 11, 0, 2)
+    set_legacy_candidate_contract(
+        prior_source,
+        candidate_status="converged",
+        attempt_status="accepted",
+        legacy_status="converged",
+    )
+    set_legacy_candidate_contract(
+        prior_target,
+        candidate_status="converged",
+        attempt_status="accepted",
+        legacy_status="converged",
+    )
+
+    stale_source = row_at(rows, variant, 11, 1, 1)
+    make_predicted(stale_source)
+    set_legacy_candidate_contract(
+        stale_source,
+        candidate_status="invalid",
+        attempt_status="invalid",
+        legacy_status="stale",
+        rejection_reason="invalid_geometry",
+    )
+    stale_target = row_at(rows, variant, 11, 1, 2)
+    make_predicted(stale_target)
+    set_reference_unavailable_contract(stale_target, legacy_status="stale")
+
+    invalid_source = row_at(rows, variant, 12, 0, 1)
+    make_unavailable(invalid_source)
+    set_legacy_candidate_contract(
+        invalid_source,
+        candidate_status="invalid",
+        attempt_status="invalid",
+        legacy_status="invalid",
+        rejection_reason="invalid_geometry",
+    )
+    invalid_target = row_at(rows, variant, 12, 0, 2)
+    make_unavailable(invalid_target)
+    set_reference_unavailable_contract(invalid_target, legacy_status="invalid")
+
+    materialize_nonaccepted_public_lifecycle(rows)
+    materialize_sensor_evidence(rows, truth)
+    materialize_legacy_gate_contract(rows)
+    return baseline, rows, truth
+
+
+def prediction_expiry_stale_fixture(
+    robot_count: int,
+    *,
+    predicted_ids: tuple[int, ...],
+):
+    keys = [
+        (11, frame, robot)
+        for frame in (0, 1)
+        for robot in range(1, robot_count + 1)
+    ]
+    baseline, rows, truth = semantic_fixture(keys)
+    for robot_id in predicted_ids:
+        source = row_at(
+            rows, "prediction_expiry", 11, 1, robot_id
+        )
+        make_predicted(source)
+        source["legacy_numeric_status"] = "stale"
+    materialize_nonaccepted_public_lifecycle(rows)
+    materialize_sensor_evidence(rows, truth)
+    materialize_legacy_gate_contract(rows)
+    return baseline, rows, truth
 
 
 class PureAggregationTests(unittest.TestCase):
@@ -321,8 +1223,8 @@ class PureAggregationTests(unittest.TestCase):
             set(complete["errors"]["all_published"]),
             {"denominator", "p50", "p95", "p99", "maximum"},
         )
-        self.assertEqual(complete["errors"]["all_published"]["p50"], 3.0)
-        self.assertEqual(complete["errors"]["all_published"]["maximum"], 5.0)
+        self.assertEqual(complete["errors"]["all_published"]["p50"], 1.0)
+        self.assertEqual(complete["errors"]["all_published"]["maximum"], 16.0)
 
     def test_pair_audits_separate_attrition_downgrade_and_improvement(self):
         """Breaks if excluded rows are disguised as paired improvements."""
@@ -337,11 +1239,16 @@ class PureAggregationTests(unittest.TestCase):
         published = paired["baseline_published"]
         self.assertEqual(
             published["transition_counts"],
-            {"fresh": 1, "predicted": 2, "unavailable": 1},
+            {"fresh": 1, "predicted": 1, "unavailable": 2},
         )
-        self.assertEqual(published["newly_unavailable"]["count"], 1)
-        self.assertEqual(published["newly_unavailable"]["baseline_errors"]["maximum"], 4.0)
-        self.assertEqual(published["both_published_error_change"]["denominator"], 3)
+        self.assertEqual(published["newly_unavailable"]["count"], 2)
+        self.assertEqual(
+            published["newly_unavailable"]["baseline_errors"]["maximum"],
+            60.0,
+        )
+        self.assertEqual(
+            published["both_published_error_change"]["denominator"], 2
+        )
         fresh = paired["baseline_fresh"]
         self.assertEqual(
             fresh["transition_counts"],
@@ -379,8 +1286,8 @@ class PureAggregationTests(unittest.TestCase):
         self.assertEqual(calibration["aged_radius"]["denominator"], 2)
         self.assertEqual(calibration["aged_q_error"]["above_5_991464547107979"], 1)
         self.assertEqual(calibration["aged_q_error"]["above_9"], 1)
-        self.assertEqual(calibration["online_q_innovation"]["accepted"]["denominator"], 1)
-        self.assertEqual(calibration["online_q_innovation"]["rejected"]["denominator"], 1)
+        self.assertEqual(calibration["online_q_innovation"]["accepted"]["denominator"], 0)
+        self.assertEqual(calibration["online_q_innovation"]["rejected"]["denominator"], 0)
         rejected = complete["rejected_candidate_offline_errors"]
         self.assertEqual(rejected["denominator"], 1)
         self.assertEqual(rejected["maximum"], 9.0)
@@ -634,32 +1541,1080 @@ class PureAggregationTests(unittest.TestCase):
                         protocol=protocol(),
                     )
 
-    def test_prediction_expiry_retains_diagnostic_reference_violations(self):
-        """Breaks if the sole fresh-qualification ablation is rejected or hidden."""
+    def test_public_covariances_must_be_exact_canonical_matrices(self):
+        """Breaks if tolerance-valid but noncanonical public state is accepted."""
         baseline, rows = paired_fixture()
-        diagnostic = ["uav", 1, "stale_or_predicted_anchor_used"]
-        rows[1]["active_references"].append(["uav", 1])
-        rows[1]["reference_evidence"].append(
-            [
-                "uav",
-                1,
-                "optional",
-                True,
-                1.0,
-                12,
-                "predicted",
-                False,
-                True,
-                None,
-                [0, 1],
-            ]
+        fresh = copy.deepcopy(rows)
+        fresh[0]["fresh_modeled_covariance"] = [
+            [1.0, 5.0e-14],
+            [0.0, 1.0],
+        ]
+        predicted = copy.deepcopy(rows)
+        predicted_target = row_at(
+            predicted, "predictive_multistart", 11, 1, 1
         )
-        rows[1]["reference_freshness"].append(["uav", 1, "predicted"])
-        rows[1]["reference_violations"] = [diagnostic]
+        predicted_target["aged_modeled_covariance"] = [
+            [2.0, 5.0e-14],
+            [0.0, 2.0],
+        ]
+        for changed in (fresh, predicted):
+            with self.subTest():
+                with self.assertRaisesRegex(ValueError, "canonical"):
+                    analyzer.aggregate_predictive_recovery(
+                        baseline_rows=baseline,
+                        development_rows=changed,
+                        truth_data=truth_data(),
+                        protocol=protocol(),
+                    )
+
+    def test_uav_evidence_is_reconstructed_from_lower_index_public_output(self):
+        """Breaks if serialized freshness or eligibility is trusted as truth."""
+        baseline, rows, truth = semantic_fixture([(11, 0, 1), (11, 0, 2)])
+        expiry_source = row_at(rows, "prediction_expiry", 11, 0, 1)
+        expiry_target = row_at(rows, "prediction_expiry", 11, 0, 2)
+        add_uav_evidence(
+            expiry_target,
+            expiry_source,
+            serialized_eligible=False,
+            serialized_freshness="predicted",
+        )
+        expiry_target["reference_violations"] = [
+            ["uav", 1, "stale_or_predicted_anchor_used"]
+        ]
+        with self.assertRaisesRegex(ValueError, "reconstructed"):
+            analyzer.aggregate_predictive_recovery(
+                baseline_rows=baseline,
+                development_rows=rows,
+                truth_data=truth,
+                protocol=protocol(),
+            )
+
+    def test_serialized_eligible_cannot_override_reconstructed_ineligibility(self):
+        """Breaks if an ineligible predicted output can be marked eligible."""
+        baseline, rows, truth = prediction_expiry_stale_fixture(
+            2, predicted_ids=(1,)
+        )
+        source = row_at(rows, "prediction_expiry", 11, 1, 1)
+        target = row_at(rows, "prediction_expiry", 11, 1, 2)
+        add_uav_evidence(target, source, serialized_eligible=True)
+        with self.assertRaisesRegex(ValueError, "eligible"):
+            analyzer.aggregate_predictive_recovery(
+                baseline_rows=baseline,
+                development_rows=rows,
+                truth_data=truth,
+                protocol=protocol(),
+            )
+
+    def test_reference_state_resets_at_frame_boundary(self):
+        """Breaks if a prior frame's UAV output leaks into the current group."""
+        baseline, rows, truth = semantic_fixture([(11, 0, 1), (11, 1, 2)])
+        source = row_at(rows, "prediction_expiry", 11, 0, 1)
+        target = row_at(rows, "prediction_expiry", 11, 1, 2)
+        add_uav_evidence(target, source)
+        with self.assertRaisesRegex(ValueError, "same group"):
+            analyzer.aggregate_predictive_recovery(
+                baseline_rows=baseline,
+                development_rows=rows,
+                truth_data=truth,
+                protocol=protocol(),
+            )
+
+    def test_reference_state_resets_at_seed_boundary(self):
+        """Breaks if a prior seed's UAV output leaks into the current group."""
+        baseline, rows, truth = semantic_fixture([(11, 0, 1), (12, 0, 2)])
+        source = row_at(rows, "prediction_expiry", 11, 0, 1)
+        target = row_at(rows, "prediction_expiry", 12, 0, 2)
+        add_uav_evidence(target, source)
+        with self.assertRaisesRegex(ValueError, "same group"):
+            analyzer.aggregate_predictive_recovery(
+                baseline_rows=baseline,
+                development_rows=rows,
+                truth_data=truth,
+                protocol=protocol(),
+            )
+
+    def test_nonactive_same_or_future_uav_evidence_fails_closed(self):
+        """Breaks if same/future UAVs bypass the DAG check as optional evidence."""
+        for reference_id in (2, 3):
+            with self.subTest(reference_id=reference_id):
+                baseline, rows, truth = semantic_fixture(
+                    [(11, 0, 1), (11, 0, 2), (11, 0, 3)]
+                )
+                target = row_at(rows, "prediction_expiry", 11, 0, 2)
+                source = row_at(rows, "prediction_expiry", 11, 0, reference_id)
+                add_uav_evidence(target, source, active=False)
+                with self.assertRaisesRegex(
+                    ValueError, "sensor boundary|lower-index"
+                ):
+                    analyzer.aggregate_predictive_recovery(
+                        baseline_rows=baseline,
+                        development_rows=rows,
+                        truth_data=truth,
+                        protocol=protocol(),
+                    )
+
+    def test_reference_evidence_must_exactly_match_declared_candidates(self):
+        """Breaks if duplicate, missing, or undeclared evidence is accepted."""
+        baseline, rows, truth = semantic_fixture([(11, 0, 1), (11, 0, 2)])
+        source = row_at(rows, "prediction_expiry", 11, 0, 1)
+        target = row_at(rows, "prediction_expiry", 11, 0, 2)
+        add_uav_evidence(target, source, active=False)
+        mutations = []
+        duplicate = copy.deepcopy(rows)
+        duplicate_target = row_at(duplicate, "prediction_expiry", 11, 0, 2)
+        duplicate_target["reference_evidence"].append(
+            copy.deepcopy(duplicate_target["reference_evidence"][-1])
+        )
+        duplicate_target["reference_freshness"].append(
+            copy.deepcopy(duplicate_target["reference_freshness"][-1])
+        )
+        mutations.append(duplicate)
+        missing = copy.deepcopy(rows)
+        missing_target = row_at(missing, "prediction_expiry", 11, 0, 2)
+        missing_target["reference_evidence"].pop()
+        missing_target["reference_freshness"].pop()
+        mutations.append(missing)
+        extra = copy.deepcopy(rows)
+        extra_target = row_at(extra, "prediction_expiry", 11, 0, 2)
+        extra_target["optional_candidates"] = []
+        mutations.append(extra)
+        for changed in mutations:
+            with self.subTest():
+                with self.assertRaises(ValueError):
+                    analyzer.aggregate_predictive_recovery(
+                        baseline_rows=baseline,
+                        development_rows=changed,
+                        truth_data=truth,
+                        protocol=protocol(),
+                    )
+
+    def test_reconstructed_evidence_rejects_measurement_and_provenance_tampering(self):
+        """Breaks if active measurements or lower-output provenance are unaudited."""
+        baseline, rows, truth = semantic_fixture([(11, 0, 1), (11, 0, 2)])
+        source = row_at(rows, "prediction_expiry", 11, 0, 1)
+        target = row_at(rows, "prediction_expiry", 11, 0, 2)
+        add_uav_evidence(target, source)
+        measurement = copy.deepcopy(rows)
+        measurement_target = row_at(
+            measurement, "prediction_expiry", 11, 0, 2
+        )
+        measurement_evidence = measurement_target["reference_evidence"][-1]
+        measurement_evidence[3] = False
+        measurement_evidence[4] = None
+        measurement_evidence[5] = None
+        measurement_evidence[7] = False
+        measurement_target["reference_violations"] = [
+            ["uav", 1, "stale_or_predicted_anchor_used"]
+        ]
+        provenance = copy.deepcopy(rows)
+        provenance_target = row_at(
+            provenance, "prediction_expiry", 11, 0, 2
+        )
+        provenance_target["reference_evidence"][-1][10] = [99]
+        for changed in (measurement, provenance):
+            with self.subTest():
+                with self.assertRaises(ValueError):
+                    analyzer.aggregate_predictive_recovery(
+                        baseline_rows=baseline,
+                        development_rows=changed,
+                        truth_data=truth,
+                        protocol=protocol(),
+                    )
+
+    def test_sensor_boundary_rejects_coordinated_reference_deletion_and_relabel(self):
+        """Breaks if declarations can redefine the protocol-bound sensor graph."""
+        keys = [(11, 0, robot) for robot in range(1, 5)]
+        baseline, rows, truth = semantic_fixture(keys)
+        deletion = copy.deepcopy(rows)
+        deletion_target = row_at(
+            deletion, "predictive_multistart", 11, 0, 4
+        )
+        deletion_target["optional_candidates"].remove(["uav", 1])
+        deletion_target["active_references"].remove(["uav", 1])
+        deletion_target["reference_evidence"] = [
+            item
+            for item in deletion_target["reference_evidence"]
+            if item[:2] != ["uav", 1]
+        ]
+        deletion_target["reference_freshness"] = [
+            item
+            for item in deletion_target["reference_freshness"]
+            if item[:2] != ["uav", 1]
+        ]
+
+        relabel = copy.deepcopy(rows)
+        relabel_target = row_at(
+            relabel, "predictive_multistart", 11, 0, 4
+        )
+        relabel_target["optional_candidates"].remove(["uav", 1])
+        relabel_target["mandatory_references"]["uav_ids"].append(1)
+        relabel_target["mandatory_references"]["uav_ids"].sort()
+        next(
+            item
+            for item in relabel_target["reference_evidence"]
+            if item[:2] == ["uav", 1]
+        )[2] = "mandatory"
+
+        for changed in (deletion, relabel):
+            with self.subTest():
+                with self.assertRaisesRegex(ValueError, "sensor boundary"):
+                    analyzer.aggregate_predictive_recovery(
+                        baseline_rows=baseline,
+                        development_rows=changed,
+                        truth_data=truth,
+                        protocol=protocol(),
+                    )
+
+    def test_sensor_boundary_rejects_coordinated_measurement_and_exclusion_tamper(self):
+        """Breaks if mutually consistent serialized sensor lies are accepted."""
+        keys = [(11, 0, robot) for robot in range(1, 5)]
+        baseline, rows, truth = semantic_fixture(keys)
+        measurement = copy.deepcopy(rows)
+        measurement_target = row_at(
+            measurement, "predictive_multistart", 11, 0, 4
+        )
+        evidence = next(
+            item
+            for item in measurement_target["reference_evidence"]
+            if item[:2] == ["uav", 1]
+        )
+        evidence[3:10] = [
+            False,
+            None,
+            None,
+            "fresh",
+            False,
+            False,
+            "measurement_not_present",
+        ]
+        measurement_target["active_references"].remove(["uav", 1])
+        measurement_target["excluded_references"].append(
+            ["uav", 1, "measurement_not_present"]
+        )
+        measurement_target["excluded_references"].sort(
+            key=lambda item: (item[0] == "uav", item[1], item[2])
+        )
+
+        exclusion = copy.deepcopy(rows)
+        exclusion_target = row_at(
+            exclusion, "predictive_multistart", 11, 0, 4
+        )
+        exclusion_evidence = next(
+            item
+            for item in exclusion_target["reference_evidence"]
+            if item[:2] == ["uav", 1]
+        )
+        exclusion_evidence[9] = "not_current_frame_fresh"
+        exclusion_target["excluded_references"].append(
+            ["uav", 1, "not_current_frame_fresh"]
+        )
+
+        for changed in (measurement, exclusion):
+            with self.subTest():
+                with self.assertRaisesRegex(ValueError, "sensor boundary"):
+                    analyzer.aggregate_predictive_recovery(
+                        baseline_rows=baseline,
+                        development_rows=changed,
+                        truth_data=truth,
+                        protocol=protocol(),
+                    )
+
+    def test_prediction_expiry_attempted_provenance_is_reconstructed_exactly(self):
+        """Breaks if historical base ids can excuse current provenance drift."""
+        baseline, rows, truth = prediction_expiry_stale_fixture(
+            4, predicted_ids=(3,)
+        )
+        source = row_at(rows, "prediction_expiry", 11, 1, 3)
+        target = row_at(rows, "prediction_expiry", 11, 1, 4)
+        add_uav_evidence(target, source)
+        target["attempt_base_anchor_provenance"] = [0]
+
+        with self.assertRaisesRegex(ValueError, "numeric provenance"):
+            analyzer.aggregate_predictive_recovery(
+                baseline_rows=baseline,
+                development_rows=rows,
+                truth_data=truth,
+                protocol=protocol(),
+            )
+
+    def test_prediction_expiry_accepted_fresh_provenance_matches_attempt(self):
+        """Breaks if the diagnostic ablation may forge published provenance."""
+        baseline, rows, truth = semantic_fixture([(11, 0, 1)])
+        materialize_sensor_evidence(rows, truth)
+        materialize_legacy_gate_contract(rows)
+        target = row_at(rows, "prediction_expiry", 11, 0, 1)
+        target["base_anchor_provenance"] = [0, 2]
+
+        with self.assertRaisesRegex(ValueError, "publication provenance"):
+            analyzer.aggregate_predictive_recovery(
+                baseline_rows=baseline,
+                development_rows=rows,
+                truth_data=truth,
+                protocol=protocol(),
+            )
+
+    def test_multistart_accepted_candidate_requires_finite_converged_payload(self):
+        """Breaks if an accepted null solver result can publish fresh evidence."""
+        baseline, rows, truth = semantic_fixture([(11, 0, 1)])
+        target = row_at(rows, "predictive_multistart", 11, 0, 1)
+        candidate = target["candidates"][0]
+        candidate[2:6] = ["failed", None, None, None]
+
+        with self.assertRaisesRegex(
+            ValueError, "multistart candidate gate"
+        ):
+            analyzer.aggregate_predictive_recovery(
+                baseline_rows=baseline,
+                development_rows=rows,
+                truth_data=truth,
+                protocol=protocol(),
+            )
+
+    def test_multistart_selected_candidate_matches_frozen_tie_break(self):
+        """Breaks if a higher-cost accepted start can claim selection."""
+        baseline, rows, truth = semantic_fixture([(11, 0, 1)])
+        target = row_at(rows, "predictive_multistart", 11, 0, 1)
+        target["candidates"][0][5] = 2.0
+        target["candidates"][0][9][5] = 2.0
+        lower_cost = copy.deepcopy(target["candidates"][0])
+        lower_cost[0] = "algebraic"
+        lower_cost[5] = 1.0
+        lower_cost[9][5] = 1.0
+        target["candidates"].append(lower_cost)
+
+        with self.assertRaisesRegex(ValueError, "frozen candidate selection"):
+            analyzer.aggregate_predictive_recovery(
+                baseline_rows=baseline,
+                development_rows=rows,
+                truth_data=truth,
+                protocol=protocol(),
+            )
+
+    def test_multistart_selected_candidate_binds_fresh_publication(self):
+        """Breaks if fresh evidence can differ from its selected solver result."""
+        baseline, rows, truth = semantic_fixture([(11, 0, 1)])
+        target = row_at(rows, "predictive_multistart", 11, 0, 1)
+        target["candidates"][0][3] = [
+            target["estimate"][0] + 5.0,
+            target["estimate"][1],
+        ]
+
+        with self.assertRaisesRegex(ValueError, "fresh publication"):
+            analyzer.aggregate_predictive_recovery(
+                baseline_rows=baseline,
+                development_rows=rows,
+                truth_data=truth,
+                protocol=protocol(),
+            )
+
+    def test_multistart_live_gate_recomputes_normalized_innovation(self):
+        """Breaks if candidate and gate may coordinate a forged live q value."""
+        baseline, rows, truth = semantic_fixture(
+            [(11, 0, 1), (11, 1, 1)]
+        )
+        target = row_at(rows, "predictive_multistart", 11, 1, 1)
+        candidate = target["candidates"][0]
+        forged_q = candidate[8] + 1.0
+        candidate[8] = forged_q
+        candidate[9][1] = forged_q
+
+        with self.assertRaisesRegex(ValueError, "multistart candidate gate"):
+            analyzer.aggregate_predictive_recovery(
+                baseline_rows=baseline,
+                development_rows=rows,
+                truth_data=truth,
+                protocol=protocol(),
+            )
+
+    def test_multistart_real_reacquisition_compact_gate_is_accepted(self):
+        """Binds analyzer semantics to producer-to-compact reacquisition bytes."""
+        attempt = predictive_wnls.solve_predictive_multistart(
+            reference_positions=np.asarray(
+                [[0.0, 0.0], [6.0, 0.0], [0.0, 8.0]]
+            ),
+            reference_covariances=np.zeros((3, 2, 2)),
+            measurements=np.asarray([5.0, 5.0, 5.0]),
+            reference_keys=(
+                ("base", 0),
+                ("base", 1),
+                ("base", 2),
+            ),
+            live_prediction=None,
+            private_seed=None,
+            ranging_sigma=0.5,
+            base_anchor_provenance=(0, 1, 2),
+        )
+        compact = replay._compact_candidates(attempt["candidates"])
+        selected = attempt["selected_candidate"]
+        selected_compact = next(
+            candidate
+            for candidate in compact
+            if candidate[0] == selected["source"]
+        )
+        self.assertIsNone(selected_compact[9][3])
+        row = {
+            "attempt_base_anchor_provenance": [0, 1, 2],
+            "candidates": compact,
+            "selected_candidate_source": selected["source"],
+            "attempt_status": "accepted",
+            "attempt_failure_reason": None,
+            "estimate": selected["estimate"],
+            "fresh_modeled_covariance": selected["covariance"],
+        }
+
+        analyzer._validate_multistart_selection(
+            row,
+            live_prediction=None,
+            active_reference_count=3,
+        )
+
+    def test_multistart_cannot_suppress_the_true_selected_candidate(self):
+        """Breaks if a valid lower-cost candidate can be relabelled rejected."""
+        baseline, rows, truth = semantic_fixture([(11, 0, 1)])
+        target = row_at(rows, "predictive_multistart", 11, 0, 1)
+        target["candidates"][0][5] = 2.0
+        target["candidates"][0][9][5] = 2.0
+        suppressed = copy.deepcopy(target["candidates"][0])
+        suppressed[0] = "algebraic"
+        suppressed[5] = 1.0
+        suppressed[6] = False
+        suppressed[7] = "forged_rejection"
+        suppressed[9][5] = 1.0
+        target["candidates"].append(suppressed)
+
+        with self.assertRaisesRegex(ValueError, "candidate gate"):
+            analyzer.aggregate_predictive_recovery(
+                baseline_rows=baseline,
+                development_rows=rows,
+                truth_data=truth,
+                protocol=protocol(),
+            )
+
+    def test_nonaccepted_publication_equals_reconstructed_propagation(self):
+        """Breaks if nonaccepted rows can rewrite availability or prediction."""
+        baseline, rows, truth = semantic_fixture(
+            [(11, 0, 1), (11, 1, 1)]
+        )
+        mutations = []
+        unavailable = copy.deepcopy(rows)
+        unavailable_target = row_at(
+            unavailable, "predictive_multistart", 11, 1, 1
+        )
+        make_unavailable(unavailable_target)
+        unavailable_target["attempt_status"] = "invalid"
+        unavailable_target["attempt_failure_reason"] = (
+            "no_valid_initial_candidates"
+        )
+        unavailable_target["candidates"] = []
+        unavailable_target["selected_candidate_source"] = None
+        mutations.append(unavailable)
+
+        substituted = copy.deepcopy(rows)
+        substituted_target = row_at(
+            substituted, "predictive_multistart", 11, 1, 1
+        )
+        make_predicted(substituted_target, error=2.0)
+        substituted_target["attempt_status"] = "invalid"
+        substituted_target["attempt_failure_reason"] = (
+            "no_valid_initial_candidates"
+        )
+        substituted_target["candidates"] = []
+        substituted_target["selected_candidate_source"] = None
+        mutations.append(substituted)
+
+        for changed in mutations:
+            with self.subTest(
+                status=row_at(
+                    changed, "predictive_multistart", 11, 1, 1
+                )["output_status"]
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "propagated public"
+                ):
+                    analyzer.aggregate_predictive_recovery(
+                        baseline_rows=baseline,
+                        development_rows=changed,
+                        truth_data=truth,
+                        protocol=protocol(),
+                    )
+
+    def test_unavailable_arrays_derive_stale_or_invalid_numeric_status(self):
+        """Breaks if unavailable attempts can forge retained numeric state."""
+        baseline, rows, truth = legacy_numeric_contract_fixture()
+        mutations = [
+            (11, 1, 2, "invalid"),
+            (12, 0, 2, "converged"),
+        ]
+        for seed, frame, robot, forged_status in mutations:
+            with self.subTest(
+                seed=seed,
+                frame=frame,
+                forged_status=forged_status,
+            ):
+                changed = copy.deepcopy(rows)
+                row_at(
+                    changed,
+                    "fresh_reference_qualification",
+                    seed,
+                    frame,
+                    robot,
+                )["legacy_numeric_status"] = forged_status
+                with self.assertRaisesRegex(
+                    ValueError, "legacy numeric|reference-unavailable"
+                ):
+                    analyzer.aggregate_predictive_recovery(
+                        baseline_rows=baseline,
+                        development_rows=changed,
+                        truth_data=truth,
+                        protocol=protocol(),
+                    )
+
+    def test_converged_candidate_cannot_forge_invalid_numeric_status(self):
+        """Breaks if a converged legacy result can erase numeric availability."""
+        baseline, rows, truth = semantic_fixture([(11, 0, 1)])
+        target = row_at(
+            rows, "fresh_reference_qualification", 11, 0, 1
+        )
+        target["legacy_numeric_status"] = "invalid"
+        with self.assertRaisesRegex(ValueError, "legacy numeric"):
+            analyzer.aggregate_predictive_recovery(
+                baseline_rows=baseline,
+                development_rows=rows,
+                truth_data=truth,
+                protocol=protocol(),
+            )
+
+    def test_nonconverged_candidate_cannot_forge_converged_numeric_status(self):
+        """Breaks if a failed legacy result can invent finite numeric state."""
+        baseline, rows, truth = semantic_fixture([(11, 0, 1)])
+        target = row_at(
+            rows, "fresh_reference_qualification", 11, 0, 1
+        )
+        make_unavailable(target)
+        set_legacy_candidate_contract(
+            target,
+            candidate_status="invalid",
+            attempt_status="invalid",
+            legacy_status="converged",
+            rejection_reason="invalid_geometry",
+        )
+        materialize_sensor_evidence(rows, truth)
+        with self.assertRaisesRegex(ValueError, "legacy numeric"):
+            analyzer.aggregate_predictive_recovery(
+                baseline_rows=baseline,
+                development_rows=rows,
+                truth_data=truth,
+                protocol=protocol(),
+            )
+
+    def test_multistart_cannot_serialize_legacy_numeric_status(self):
+        """Breaks if multistart rows can inject legacy numeric state."""
+        baseline, rows, truth = semantic_fixture([(11, 0, 1)])
+        row_at(
+            rows, "predictive_multistart", 11, 0, 1
+        )["legacy_numeric_status"] = "converged"
+        with self.assertRaisesRegex(ValueError, "legacy numeric"):
+            analyzer.aggregate_predictive_recovery(
+                baseline_rows=baseline,
+                development_rows=rows,
+                truth_data=truth,
+                protocol=protocol(),
+            )
+
+    def test_legacy_candidate_source_and_failure_must_match_attempt(self):
+        """Breaks if a legacy candidate can be rebound to forged attempt fields."""
+        baseline, rows, truth = semantic_fixture([(11, 0, 1)])
+        source_mismatch = copy.deepcopy(rows)
+        row_at(
+            source_mismatch,
+            "fresh_reference_qualification",
+            11,
+            0,
+            1,
+        )["legacy_initial_estimate_source"] = "forged_source"
+
+        failure_mismatch = copy.deepcopy(rows)
+        failure_target = row_at(
+            failure_mismatch,
+            "fresh_reference_qualification",
+            11,
+            0,
+            1,
+        )
+        make_unavailable(failure_target)
+        set_legacy_candidate_contract(
+            failure_target,
+            candidate_status="converged",
+            attempt_status="rejected",
+            legacy_status="converged",
+            rejection_reason="innovation_gate",
+        )
+        failure_target["attempt_failure_reason"] = "forged_failure"
+        materialize_sensor_evidence(failure_mismatch, truth)
+
+        for field, changed in (
+            ("source", source_mismatch),
+            ("failure", failure_mismatch),
+        ):
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "initial estimate source|failure reason|gate",
+                ):
+                    analyzer.aggregate_predictive_recovery(
+                        baseline_rows=baseline,
+                        development_rows=changed,
+                        truth_data=truth,
+                        protocol=protocol(),
+                    )
+
+    def test_null_numeric_payload_cannot_be_relabelled_as_converged(self):
+        """Breaks if coordinated status edits can invent a finite candidate."""
+        baseline, rows, truth = semantic_fixture([(11, 0, 1)])
+        target = row_at(
+            rows, "fresh_reference_qualification", 11, 0, 1
+        )
+        make_unavailable(target)
+        set_legacy_candidate_contract(
+            target,
+            candidate_status="invalid",
+            attempt_status="invalid",
+            legacy_status="invalid",
+            rejection_reason="invalid_geometry",
+        )
+        candidate = target["candidates"][0]
+        candidate[2] = "converged"
+        candidate[5] = 1.0
+        candidate[7] = "innovation_gate"
+        candidate[9][2] = "rejected"
+        candidate[9][3] = True
+        candidate[9][4] = None
+        target["attempt_status"] = "rejected"
+        target["attempt_failure_reason"] = "innovation_gate"
+        target["legacy_numeric_status"] = "converged"
+        materialize_sensor_evidence(rows, truth)
+
+        with self.assertRaisesRegex(ValueError, "finite|converged"):
+            analyzer.aggregate_predictive_recovery(
+                baseline_rows=baseline,
+                development_rows=rows,
+                truth_data=truth,
+                protocol=protocol(),
+            )
+
+    def test_coordinated_legacy_source_relabel_is_rejected(self):
+        """Breaks if matching source strings can replace initialization policy."""
+        baseline, rows, truth = semantic_fixture([(11, 0, 1)])
+        target = row_at(
+            rows, "fresh_reference_qualification", 11, 0, 1
+        )
+        target["legacy_initial_estimate_source"] = "arbitrary_source"
+        target["candidates"][0][0] = "arbitrary_source"
+        target["selected_candidate_source"] = "arbitrary_source"
+
+        with self.assertRaisesRegex(ValueError, "initial estimate source"):
+            analyzer.aggregate_predictive_recovery(
+                baseline_rows=baseline,
+                development_rows=rows,
+                truth_data=truth,
+                protocol=protocol(),
+            )
+
+    def test_converged_legacy_candidate_requires_finite_spd_gate_payload(self):
+        """Breaks if status alone authenticates a converged numeric result."""
+        baseline, rows, truth = semantic_fixture([(11, 0, 1)])
+        mutations = []
+        singular = copy.deepcopy(rows)
+        row_at(
+            singular, "fresh_reference_qualification", 11, 0, 1
+        )["candidates"][0][4] = [[1.0, 0.0], [0.0, 0.0]]
+        mutations.append(("singular_covariance", singular))
+        nonfinite = copy.deepcopy(rows)
+        row_at(
+            nonfinite, "fresh_reference_qualification", 11, 0, 1
+        )["candidates"][0][4] = [[float("inf"), 0.0], [0.0, 1.0]]
+        mutations.append(("nonfinite_covariance", nonfinite))
+        negative_cost = copy.deepcopy(rows)
+        row_at(
+            negative_cost, "fresh_reference_qualification", 11, 0, 1
+        )["candidates"][0][5] = -1.0
+        mutations.append(("negative_cost", negative_cost))
+        nonfinite_cost = copy.deepcopy(rows)
+        row_at(
+            nonfinite_cost, "fresh_reference_qualification", 11, 0, 1
+        )["candidates"][0][5] = float("inf")
+        mutations.append(("nonfinite_cost", nonfinite_cost))
+        gate = copy.deepcopy(rows)
+        gate_candidate = row_at(
+            gate, "fresh_reference_qualification", 11, 0, 1
+        )["candidates"][0]
+        gate_candidate[9][0] = "normalized"
+        gate_candidate[9][2] = "invalid"
+        gate_candidate[9][3] = False
+        mutations.append(("gate", gate))
+
+        for field, changed in mutations:
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(
+                    ValueError, "candidate|covariance|cost|gate"
+                ):
+                    analyzer.aggregate_predictive_recovery(
+                        baseline_rows=baseline,
+                        development_rows=changed,
+                        truth_data=truth,
+                        protocol=protocol(),
+                    )
+
+    def test_nonconverged_legacy_candidate_rejects_finite_or_false_gate_payload(self):
+        """Breaks if invalid status can carry contradictory numeric evidence."""
+        baseline, rows, truth = semantic_fixture([(11, 0, 1)])
+        target = row_at(
+            rows, "fresh_reference_qualification", 11, 0, 1
+        )
+        make_unavailable(target)
+        set_legacy_candidate_contract(
+            target,
+            candidate_status="invalid",
+            attempt_status="invalid",
+            legacy_status="invalid",
+            rejection_reason="invalid_geometry",
+        )
+        materialize_sensor_evidence(rows, truth)
+
+        mutations = []
+        finite_payload = copy.deepcopy(rows)
+        finite_candidate = row_at(
+            finite_payload,
+            "fresh_reference_qualification",
+            11,
+            0,
+            1,
+        )["candidates"][0]
+        finite_candidate[3] = [1.0, 0.0]
+        finite_candidate[4] = [[1.0, 0.0], [0.0, 1.0]]
+        mutations.append(("finite_payload", finite_payload))
+        nonfinite_cost = copy.deepcopy(rows)
+        row_at(
+            nonfinite_cost,
+            "fresh_reference_qualification",
+            11,
+            0,
+            1,
+        )["candidates"][0][5] = float("inf")
+        mutations.append(("nonfinite_cost", nonfinite_cost))
+        gate = copy.deepcopy(rows)
+        gate_candidate = row_at(
+            gate, "fresh_reference_qualification", 11, 0, 1
+        )["candidates"][0]
+        gate_candidate[9][2] = "accepted"
+        gate_candidate[9][3] = True
+        mutations.append(("gate", gate))
+        gate_failure = copy.deepcopy(rows)
+        row_at(
+            gate_failure,
+            "fresh_reference_qualification",
+            11,
+            0,
+            1,
+        )["candidates"][0][9][4] = "different_failure"
+        mutations.append(("gate_failure", gate_failure))
+
+        for field, changed in mutations:
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(
+                    ValueError, "candidate|cost|gate|failure"
+                ):
+                    analyzer.aggregate_predictive_recovery(
+                        baseline_rows=baseline,
+                        development_rows=changed,
+                        truth_data=truth,
+                        protocol=protocol(),
+                    )
+
+    def test_rejected_converged_legacy_candidate_remains_numeric_finite(self):
+        """Breaks if gate rejection is mistaken for numeric solver failure."""
+        baseline, rows, truth = semantic_fixture([(11, 0, 1)])
+        target = row_at(
+            rows, "fresh_reference_qualification", 11, 0, 1
+        )
+        make_unavailable(target)
+        set_legacy_candidate_contract(
+            target,
+            candidate_status="converged",
+            attempt_status="rejected",
+            legacy_status="converged",
+            rejection_reason="reacquisition_reduced_cost_exceeds_nine",
+        )
+        materialize_sensor_evidence(rows, truth)
+
         result = analyzer.aggregate_predictive_recovery(
             baseline_rows=baseline,
             development_rows=rows,
-            truth_data=truth_data(),
+            truth_data=truth,
+            protocol=protocol(),
+        )
+        self.assertEqual(
+            result["variants"]["fresh_reference_qualification"][
+                "attempt_counts"
+            ]["rejected"],
+            1,
+        )
+
+    def test_prediction_expiry_converged_candidate_cannot_fake_rejection(self):
+        """Breaks if expiry bypass semantics are replaced by serialized gates."""
+        baseline, rows, truth = semantic_fixture([(11, 0, 1)])
+        target = row_at(rows, "prediction_expiry", 11, 0, 1)
+        coordinate_legacy_rejection(
+            target,
+            reason="reacquisition_reduced_cost_exceeds_nine",
+            reduced_cost=10.0,
+        )
+        materialize_sensor_evidence(rows, truth)
+
+        with self.assertRaisesRegex(ValueError, "gate|attempt"):
+            analyzer.aggregate_predictive_recovery(
+                baseline_rows=baseline,
+                development_rows=rows,
+                truth_data=truth,
+                protocol=protocol(),
+            )
+
+    def test_qualified_gate_reconstructs_provenance_and_reacquisition_context(self):
+        """Breaks if a context-consistent-looking rejection reason is trusted."""
+        baseline, rows, truth = semantic_fixture([(11, 0, 1)])
+        target = row_at(
+            rows, "fresh_reference_qualification", 11, 0, 1
+        )
+        coordinate_legacy_rejection(
+            target,
+            reason="insufficient_base_anchor_provenance",
+        )
+        materialize_sensor_evidence(rows, truth)
+
+        with self.assertRaisesRegex(ValueError, "gate|reason"):
+            analyzer.aggregate_predictive_recovery(
+                baseline_rows=baseline,
+                development_rows=rows,
+                truth_data=truth,
+                protocol=protocol(),
+            )
+
+    def test_legacy_gate_rejects_failure_and_reduced_cost_rewrites(self):
+        """Breaks if unused serialized gate fields can be rewritten freely."""
+        baseline, rows, truth = semantic_fixture([(11, 0, 1)])
+        target = row_at(
+            rows, "fresh_reference_qualification", 11, 0, 1
+        )
+        coordinate_legacy_rejection(
+            target,
+            reason="reacquisition_reduced_cost_exceeds_nine",
+            reduced_cost=10.0,
+        )
+        materialize_sensor_evidence(rows, truth)
+
+        failure = copy.deepcopy(rows)
+        row_at(
+            failure, "fresh_reference_qualification", 11, 0, 1
+        )["candidates"][0][9][4] = "rewritten_gate_failure"
+        reduced = copy.deepcopy(rows)
+        row_at(
+            reduced, "fresh_reference_qualification", 11, 0, 1
+        )["candidates"][0][9][5] = 999.0
+        for field, changed in (("failure", failure), ("reduced", reduced)):
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(ValueError, "gate|payload"):
+                    analyzer.aggregate_predictive_recovery(
+                        baseline_rows=baseline,
+                        development_rows=changed,
+                        truth_data=truth,
+                        protocol=protocol(),
+                    )
+
+    def test_legacy_gate_uses_previous_public_prediction_lifecycle(self):
+        """Breaks if reacquisition checks ignore a live propagated prediction."""
+        baseline, rows, truth = semantic_fixture(
+            [(11, 0, 1), (11, 1, 1)]
+        )
+        target = row_at(
+            rows, "fresh_reference_qualification", 11, 1, 1
+        )
+        coordinate_legacy_rejection(
+            target,
+            reason="reacquisition_requires_three_active_references",
+        )
+        materialize_sensor_evidence(rows, truth)
+
+        with self.assertRaisesRegex(ValueError, "gate|attempt"):
+            analyzer.aggregate_predictive_recovery(
+                baseline_rows=baseline,
+                development_rows=rows,
+                truth_data=truth,
+                protocol=protocol(),
+            )
+
+    def test_accepted_legacy_candidate_is_bound_to_public_state(self):
+        """Breaks if valid candidate/public substitutions can diverge silently."""
+        baseline, rows, truth = semantic_fixture([(11, 0, 1)])
+        mutations = []
+
+        candidate_estimate = copy.deepcopy(rows)
+        row_at(
+            candidate_estimate,
+            "fresh_reference_qualification",
+            11,
+            0,
+            1,
+        )["candidates"][0][3] = [12.0, 0.0]
+        mutations.append(("candidate_estimate", candidate_estimate))
+
+        candidate_covariance = copy.deepcopy(rows)
+        row_at(
+            candidate_covariance,
+            "fresh_reference_qualification",
+            11,
+            0,
+            1,
+        )["candidates"][0][4] = [[2.0, 0.0], [0.0, 2.0]]
+        mutations.append(("candidate_covariance", candidate_covariance))
+
+        public_estimate = copy.deepcopy(rows)
+        estimate_target = row_at(
+            public_estimate,
+            "fresh_reference_qualification",
+            11,
+            0,
+            1,
+        )
+        estimate_target["estimate"] = [12.0, 0.0]
+        estimate_target["offline_error_norm"] = 2.0
+        estimate_target["offline_fresh_q_error"] = 4.0
+        mutations.append(("public_estimate", public_estimate))
+
+        public_covariance = copy.deepcopy(rows)
+        covariance_target = row_at(
+            public_covariance,
+            "fresh_reference_qualification",
+            11,
+            0,
+            1,
+        )
+        covariance_target["fresh_modeled_covariance"] = [
+            [2.0, 0.0],
+            [0.0, 2.0],
+        ]
+        covariance_target["fresh_epsilon"] = 3.0 * (2.0**0.5)
+        covariance_target["offline_fresh_q_error"] = 0.5
+        mutations.append(("public_covariance", public_covariance))
+
+        for field, changed in mutations:
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(
+                    ValueError, "candidate|public|estimate|covariance"
+                ):
+                    analyzer.aggregate_predictive_recovery(
+                        baseline_rows=baseline,
+                        development_rows=changed,
+                        truth_data=truth,
+                        protocol=protocol(),
+                    )
+
+    def test_reference_state_resets_at_variant_boundary(self):
+        """Breaks if a prior variant's current-frame output can be reused."""
+        baseline, rows, truth = prediction_expiry_stale_fixture(
+            2, predicted_ids=(1,)
+        )
+        expiry_source = row_at(rows, "prediction_expiry", 11, 1, 1)
+        target = row_at(
+            rows, "fresh_reference_qualification", 11, 1, 2
+        )
+        add_uav_evidence(
+            target,
+            expiry_source,
+            serialized_eligible=False,
+            serialized_freshness="predicted",
+        )
+
+        with self.assertRaisesRegex(ValueError, "reconstructed"):
+            analyzer.aggregate_predictive_recovery(
+                baseline_rows=baseline,
+                development_rows=rows,
+                truth_data=truth,
+                protocol=protocol(),
+            )
+
+    def test_reference_violations_reject_duplicate_missing_and_extra_facts(self):
+        """Breaks if violation records do not exactly match reconstructed facts."""
+        baseline, rows, truth = semantic_fixture([(11, 0, 1), (11, 0, 2)])
+        source = row_at(rows, "prediction_expiry", 11, 0, 1)
+        make_predicted(source)
+        target = row_at(rows, "prediction_expiry", 11, 0, 2)
+        add_uav_evidence(target, source)
+        duplicate = copy.deepcopy(rows)
+        duplicate_target = row_at(
+            duplicate, "prediction_expiry", 11, 0, 2
+        )
+        duplicate_target["reference_violations"].append(
+            copy.deepcopy(duplicate_target["reference_violations"][0])
+        )
+        missing = copy.deepcopy(rows)
+        row_at(
+            missing, "prediction_expiry", 11, 0, 2
+        )["reference_violations"] = []
+        extra = copy.deepcopy(rows)
+        row_at(
+            extra, "prediction_expiry", 11, 0, 2
+        )["reference_violations"].append(
+            ["base", 0, "stale_or_predicted_anchor_used"]
+        )
+        for changed in (duplicate, missing, extra):
+            with self.subTest():
+                with self.assertRaises(ValueError):
+                    analyzer.aggregate_predictive_recovery(
+                        baseline_rows=baseline,
+                        development_rows=changed,
+                        truth_data=truth,
+                        protocol=protocol(),
+                    )
+
+    def test_prediction_expiry_violations_use_reconstructed_active_uavs(self):
+        """Breaks if violation facts follow serialized eligible or noncanonical order."""
+        baseline, rows, truth = prediction_expiry_stale_fixture(
+            4, predicted_ids=(1, 2)
+        )
+        accepted = analyzer.aggregate_predictive_recovery(
+            baseline_rows=baseline,
+            development_rows=rows,
+            truth_data=truth,
+            protocol=protocol(),
+        )
+        self.assertEqual(
+            accepted["variants"]["prediction_expiry"]["integrity"][
+                "reference_violation_count"
+            ],
+            5,
+        )
+        reversed_rows = copy.deepcopy(rows)
+        reversed_target = row_at(
+            reversed_rows, "prediction_expiry", 11, 1, 4
+        )
+        reversed_target["reference_violations"].reverse()
+        with self.assertRaisesRegex(ValueError, "canonical"):
+            analyzer.aggregate_predictive_recovery(
+                baseline_rows=baseline,
+                development_rows=reversed_rows,
+                truth_data=truth,
+                protocol=protocol(),
+            )
+
+    def test_prediction_expiry_retains_diagnostic_reference_violations(self):
+        """Breaks if the sole fresh-qualification ablation is rejected or hidden."""
+        baseline, rows, truth = prediction_expiry_stale_fixture(
+            2, predicted_ids=(1,)
+        )
+        result = analyzer.aggregate_predictive_recovery(
+            baseline_rows=baseline,
+            development_rows=rows,
+            truth_data=truth,
             protocol=protocol(),
         )
         integrity = result["variants"]["prediction_expiry"]["integrity"]
@@ -669,42 +2624,31 @@ class PureAggregationTests(unittest.TestCase):
             {"stale_or_predicted_anchor_used": 1},
         )
         qualified = copy.deepcopy(rows)
-        qualified[1]["active_references"].pop()
-        qualified[1]["reference_evidence"].pop()
-        qualified[1]["reference_freshness"].pop()
-        qualified[1]["reference_violations"] = []
-        qualified[6]["active_references"].append(["uav", 1])
-        qualified[6]["reference_evidence"].append(
-            [
-                "uav",
-                1,
-                "optional",
-                True,
-                1.0,
-                12,
-                "predicted",
-                False,
-                True,
-                None,
-                [0, 1],
-            ]
+        qualified_source = row_at(
+            qualified, "fresh_reference_qualification", 11, 0, 1
         )
-        qualified[6]["reference_freshness"].append(["uav", 1, "predicted"])
-        qualified[6]["reference_violations"] = [diagnostic]
+        make_predicted(qualified_source)
+        qualified_target = row_at(
+            qualified, "fresh_reference_qualification", 11, 0, 2
+        )
+        add_uav_evidence(qualified_target, qualified_source)
         with self.assertRaises(ValueError):
             analyzer.aggregate_predictive_recovery(
                 baseline_rows=baseline,
                 development_rows=qualified,
-                truth_data=truth_data(),
+                truth_data=truth,
                 protocol=protocol(),
             )
         arbitrary = copy.deepcopy(rows)
-        arbitrary[1]["reference_violations"][0][2] = "arbitrary_reason"
+        arbitrary_target = row_at(
+            arbitrary, "prediction_expiry", 11, 1, 2
+        )
+        arbitrary_target["reference_violations"][0][2] = "arbitrary_reason"
         with self.assertRaises(ValueError):
             analyzer.aggregate_predictive_recovery(
                 baseline_rows=baseline,
                 development_rows=arbitrary,
-                truth_data=truth_data(),
+                truth_data=truth,
                 protocol=protocol(),
             )
 
@@ -844,6 +2788,15 @@ def sha256(path: Path) -> str:
 
 
 class AnalyzerLifecycleTests(unittest.TestCase):
+    V3_RAW_MANIFEST = Path(
+        "/private/tmp/cbf2026-predictive-wnls-development/"
+        "stage1-v3/manifest.json"
+    )
+    V3_FAILED_ANALYZER_MANIFEST = Path(
+        "/private/tmp/cbf2026-predictive-wnls-development-analysis/"
+        "stage1-v3/manifest.json"
+    )
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name).resolve()
@@ -938,6 +2891,91 @@ class AnalyzerLifecycleTests(unittest.TestCase):
             protocol_path=bundle["protocol"],
             expected_baseline_sha256=sha256(bundle["baseline"]),
             output_root=self.output,
+        )
+
+    def test_v4_analyzer_rejects_retired_v3_protocol_before_rebinding(self):
+        """Breaks if the retired v3 protocol can authorize the v4 analyzer."""
+        bundle = self.build_bundle()
+        protocol_value = json.loads(bundle["protocol"].read_text())
+        protocol_value["schema_id"] = (
+            "cbf2026-predictive-wnls-stage1-protocol-v3"
+        )
+        protocol_value["protocol_id"] = "cbf2026-predictive-wnls-stage1-v3"
+        bundle["protocol"].write_text(
+            json.dumps(protocol_value, sort_keys=True)
+        )
+        with self.assertRaisesRegex(
+            ValueError, "protocol does not authorize analyzer execution"
+        ):
+            self.execute(bundle)
+        self.assertFalse(self.output.exists())
+
+    def test_v4_analyzer_rejects_retired_raw_v2_forensic_manifest(self):
+        """Breaks if raw-schema-v2 evidence can be rebound to v4 analysis."""
+        bundle = self.build_bundle()
+        retired_schema = copy.deepcopy(replay.RAW_SCHEMA_DECLARATION)
+        retired_schema["id"] = (
+            "cbf2026-predictive-wnls-development-rows-v2"
+        )
+        manifest = json.loads(bundle["manifest"].read_text())
+        manifest["schema_id"] = retired_schema["id"]
+        manifest["raw_schema"] = retired_schema
+        bundle["manifest"].write_text(json.dumps(manifest, sort_keys=True))
+        with self.assertRaisesRegex(
+            ValueError, "development replay manifest is not complete and exact"
+        ):
+            self.execute(bundle)
+        self.assertFalse(self.output.exists())
+
+    def _bind_actual_forensic_manifest(self, bundle, manifest_path):
+        protocol_value = json.loads(bundle["protocol"].read_text())
+        protocol_value["invocations"]["analyzer_test"][
+            "development_manifest_path"
+        ] = str(manifest_path)
+        bundle["protocol"].write_text(
+            json.dumps(protocol_value, sort_keys=True)
+        )
+        bundle["manifest"] = manifest_path
+
+    @unittest.skipUnless(
+        V3_RAW_MANIFEST.exists(),
+        "preserved v3 raw manifest is unavailable",
+    )
+    def test_actual_v3_raw_forensic_bundle_cannot_rebind_to_v4_analyzer(self):
+        """Breaks if the preserved successful v3 raw root can be rebound."""
+        bundle = self.build_bundle()
+        self._bind_actual_forensic_manifest(bundle, self.V3_RAW_MANIFEST)
+        with self.assertRaisesRegex(
+            ValueError, "development replay manifest is not complete and exact"
+        ):
+            self.execute(bundle)
+        self.assertFalse(self.output.exists())
+
+    @unittest.skipUnless(
+        V3_FAILED_ANALYZER_MANIFEST.exists(),
+        "preserved v3 failed analyzer manifest is unavailable",
+    )
+    def test_actual_v3_failed_analyzer_manifest_cannot_rebind_as_raw(self):
+        """Breaks if the preserved failed v3 terminal can authorize analysis."""
+        bundle = self.build_bundle()
+        self._bind_actual_forensic_manifest(
+            bundle, self.V3_FAILED_ANALYZER_MANIFEST
+        )
+        with self.assertRaisesRegex(
+            ValueError, "development replay manifest is not complete and exact"
+        ):
+            self.execute(bundle)
+        self.assertFalse(self.output.exists())
+
+    def test_v4_analysis_schema_is_pinned(self):
+        """Breaks if compact outputs can silently retain the v2 schema."""
+        self.assertEqual(
+            analyzer.ANALYSIS_SCHEMA_ID,
+            "cbf2026-predictive-wnls-development-analysis-v3",
+        )
+        self.assertEqual(
+            replay.ANALYSIS_SCHEMA["id"],
+            analyzer.ANALYSIS_SCHEMA_ID,
         )
 
     def test_exclusive_root_success_cap_and_terminal_manifest(self):

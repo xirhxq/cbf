@@ -252,29 +252,69 @@ class ProtocolAndPreflightTests(ReplayHarness):
         self.assertFalse(marker.exists())
         self.assertIn("usage:", result.stdout)
 
-    def test_production_v3_contract_is_exact_and_exports_canonical_argv(self):
+    def test_production_v4_contract_is_exact_and_exports_canonical_argv(self):
         self.assertEqual(
             replay.PROTOCOL_SCHEMA_ID,
-            "cbf2026-predictive-wnls-stage1-protocol-v3",
+            "cbf2026-predictive-wnls-stage1-protocol-v4",
         )
         self.assertEqual(
             replay.PROTOCOL_ID,
-            "cbf2026-predictive-wnls-stage1-v3",
+            "cbf2026-predictive-wnls-stage1-v4",
         )
         self.assertEqual(
             replay.PRODUCTION_PROTOCOL_TOKEN,
             (
                 "docs/diagnostics/"
-                "2026-07-30-predictive-wnls-stage1-protocol-v3.json"
+                "2026-07-30-predictive-wnls-stage1-protocol-v4.json"
             ),
         )
         self.assertEqual(
             replay.RAW_SCHEMA_ID,
-            "cbf2026-predictive-wnls-development-rows-v2",
+            "cbf2026-predictive-wnls-development-rows-v3",
         )
         self.assertEqual(
             replay.ANALYSIS_SCHEMA["id"],
-            "cbf2026-predictive-wnls-development-analysis-v2",
+            "cbf2026-predictive-wnls-development-analysis-v3",
+        )
+        self.assertEqual(estimator.PUBLIC_COVARIANCE_RTOL, 1e-12)
+        self.assertEqual(estimator.PUBLIC_COVARIANCE_ATOL, 1e-12)
+        self.assertEqual(
+            replay.ESTIMATOR_CONSTANTS["public_covariance_rtol"],
+            estimator.PUBLIC_COVARIANCE_RTOL,
+        )
+        self.assertEqual(
+            replay.ESTIMATOR_CONSTANTS["public_covariance_atol"],
+            estimator.PUBLIC_COVARIANCE_ATOL,
+        )
+        self.assertEqual(
+            replay.RAW_SCHEMA_DECLARATION["public_covariance_contract"],
+            {
+                "shape": [2, 2],
+                "finite": True,
+                "positive_definite": True,
+                "symmetry_acceptance": {
+                    "comparison": "numpy.allclose",
+                    "rtol": 1e-12,
+                    "atol": 1e-12,
+                },
+                "canonicalization": "0.5*(Sigma+Sigma.T)",
+                "published_exactly_symmetric": True,
+                "published_equals_canonicalizer_output": True,
+                "applies_to": [
+                    "fresh_modeled_covariance",
+                    "aged_modeled_covariance",
+                ],
+            },
+        )
+        self.assertEqual(
+            replay.RAW_SCHEMA_DECLARATION["violation_order_contract"],
+            {
+                "outer_canonical_order": "(base<uav,id,reason)",
+                "reference_id_order": "ascending_numeric",
+                "reason_order": "lexicographic",
+                "allowed_reasons": ["stale_or_predicted_anchor_used"],
+                "duplicates_allowed": False,
+            },
         )
         self.assertEqual(
             replay.HERMETIC_PROTOCOL_SCHEMA_ID,
@@ -298,7 +338,7 @@ class ProtocolAndPreflightTests(ReplayHarness):
             {
                 "kind": "unregistered_smoke",
                 "output_root": (
-                    "/private/tmp/cbf2026-predictive-wnls-smoke-v3-a"
+                    "/private/tmp/cbf2026-predictive-wnls-smoke-v4-a"
                 ),
                 "range_noise_seeds": [20260727],
                 "max_frames": 2,
@@ -309,7 +349,7 @@ class ProtocolAndPreflightTests(ReplayHarness):
             {
                 "kind": "unregistered_smoke",
                 "output_root": (
-                    "/private/tmp/cbf2026-predictive-wnls-smoke-v3-b"
+                    "/private/tmp/cbf2026-predictive-wnls-smoke-v4-b"
                 ),
                 "range_noise_seeds": [20260727],
                 "max_frames": 2,
@@ -319,7 +359,7 @@ class ProtocolAndPreflightTests(ReplayHarness):
             invocations["registered_replay"]["output_root"],
             (
                 "/private/tmp/cbf2026-predictive-wnls-development/"
-                "stage1-v3"
+                "stage1-v4"
             ),
         )
         self.assertEqual(
@@ -331,14 +371,14 @@ class ProtocolAndPreflightTests(ReplayHarness):
             invocations["registered_analyzer"]["development_manifest_path"],
             (
                 "/private/tmp/cbf2026-predictive-wnls-development/"
-                "stage1-v3/manifest.json"
+                "stage1-v4/manifest.json"
             ),
         )
         self.assertEqual(
             invocations["registered_analyzer"]["output_root"],
             (
                 "/private/tmp/"
-                "cbf2026-predictive-wnls-development-analysis/stage1-v3"
+                "cbf2026-predictive-wnls-development-analysis/stage1-v4"
             ),
         )
         production_declarations = json.dumps(
@@ -363,12 +403,24 @@ class ProtocolAndPreflightTests(ReplayHarness):
         )
         for retired in (
             "docs/diagnostics/2026-07-30-predictive-wnls-stage1-protocol.json",
+            "docs/diagnostics/2026-07-30-predictive-wnls-stage1-protocol-v3.json",
+            "cbf2026-predictive-wnls-stage1-protocol-v2",
+            "cbf2026-predictive-wnls-stage1-protocol-v3",
+            "cbf2026-predictive-wnls-stage1-v2",
+            "cbf2026-predictive-wnls-stage1-v3",
             "/private/tmp/cbf2026-predictive-wnls-smoke-a",
             "/private/tmp/cbf2026-predictive-wnls-smoke-b",
+            "/private/tmp/cbf2026-predictive-wnls-smoke-v3-a",
+            "/private/tmp/cbf2026-predictive-wnls-smoke-v3-b",
             "/private/tmp/cbf2026-predictive-wnls-development/stage1-v2",
+            "/private/tmp/cbf2026-predictive-wnls-development/stage1-v3",
             (
                 "/private/tmp/"
                 "cbf2026-predictive-wnls-development-analysis/stage1-v2"
+            ),
+            (
+                "/private/tmp/"
+                "cbf2026-predictive-wnls-development-analysis/stage1-v3"
             ),
         ):
             with self.subTest(retired=retired):
@@ -464,7 +516,7 @@ class ProtocolAndPreflightTests(ReplayHarness):
             protocol,
             protocol_path=protocol_path,
             output_root=Path(
-                "/private/tmp/cbf2026-predictive-wnls-smoke-v3-a"
+                "/private/tmp/cbf2026-predictive-wnls-smoke-v4-a"
             ),
             run_seeds=(20260727,),
             max_frames=2,
@@ -492,7 +544,7 @@ class ProtocolAndPreflightTests(ReplayHarness):
                         protocol_path=protocol_path,
                         output_root=Path(
                             "/private/tmp/"
-                            "cbf2026-predictive-wnls-smoke-v3-a"
+                            "cbf2026-predictive-wnls-smoke-v4-a"
                         ),
                         run_seeds=(20260727,),
                         max_frames=2,
@@ -647,6 +699,169 @@ class ProtocolAndPreflightTests(ReplayHarness):
 
 
 class EvidenceAndAblationTests(ReplayHarness):
+    def test_finalize_public_canonicalizes_before_public_private_and_serialization(self):
+        attempt = {
+            "attempt_status": "accepted",
+            "candidate": {
+                "estimate": [3.0, 4.0],
+                "modeled_covariance": [
+                    [2.0, 0.1],
+                    [0.10000000000000002, 1.0],
+                ],
+                "epsilon": 999.0,
+                "base_anchor_provenance": [0, 1],
+            },
+        }
+
+        output, private = replay._finalize_public(attempt, {})
+
+        expected = [
+            [2.0, 0.1],
+            [0.1, 1.0],
+        ]
+        self.assertEqual(output["modeled_covariance"], expected)
+        self.assertEqual(private["modeled_covariance"], expected)
+        self.assertIsNot(
+            output["modeled_covariance"],
+            private["modeled_covariance"],
+        )
+        expected_epsilon = 3.0 * math.sqrt(
+            float(np.linalg.eigvalsh(np.asarray(expected))[-1])
+        )
+        self.assertEqual(output["epsilon"], expected_epsilon)
+        self.assertNotEqual(
+            output["epsilon"],
+            attempt["candidate"]["epsilon"],
+        )
+
+    def test_finalize_public_rejects_materially_asymmetric_candidate(self):
+        attempt = {
+            "attempt_status": "accepted",
+            "candidate": {
+                "estimate": [3.0, 4.0],
+                "modeled_covariance": [
+                    [2.0, 0.1],
+                    [0.100001, 1.0],
+                ],
+                "epsilon": 3.0,
+                "base_anchor_provenance": [0, 1],
+            },
+        }
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "accepted candidate covariance",
+        ):
+            replay._finalize_public(attempt, {})
+
+    def test_replay_serializes_fresh_radius_from_canonical_covariance(self):
+        accepted_attempt = {
+            "attempt_status": "accepted",
+            "candidate": {
+                "estimate": [3.0, 4.0],
+                "modeled_covariance": [
+                    [2.0, 0.1],
+                    [0.10000000000000002, 1.0],
+                ],
+                "epsilon": 999.0,
+                "base_anchor_provenance": [0, 1],
+            },
+            "candidates": [],
+            "selected_candidate": None,
+            "failure_reason": None,
+        }
+        self.write_protocol(self.default_output, (11,), 1)
+
+        with mock.patch.object(
+            replay,
+            "solve_predictive_multistart",
+            return_value=accepted_attempt,
+        ):
+            self.execute(seeds=(11,), max_frames=1)
+
+        row = next(
+            item
+            for item in self.rows()
+            if item["variant"] == "predictive_multistart"
+            and item["output_status"] == "fresh"
+        )
+        expected_covariance = np.array(
+            [[2.0, 0.1], [0.1, 1.0]],
+        )
+        serialized_covariance = np.asarray(
+            row["fresh_modeled_covariance"],
+        )
+        canonical = estimator.canonical_spd_covariance(
+            accepted_attempt["candidate"]["modeled_covariance"]
+        )
+        expected_epsilon = 3.0 * math.sqrt(
+            float(np.linalg.eigvalsh(expected_covariance)[-1])
+        )
+
+        self.assertTrue(
+            np.array_equal(
+                serialized_covariance,
+                serialized_covariance.T,
+            )
+        )
+        np.testing.assert_array_equal(
+            serialized_covariance,
+            expected_covariance,
+        )
+        np.testing.assert_array_equal(serialized_covariance, canonical)
+        self.assertEqual(row["fresh_epsilon"], expected_epsilon)
+        np.testing.assert_array_equal(
+            np.asarray(
+                row["private_reacquisition_seed"]["modeled_covariance"]
+            ),
+            expected_covariance,
+        )
+
+    def test_public_propagation_uses_canonical_public_and_private_covariance(self):
+        asymmetric = {
+            "output_status": "fresh",
+            "prediction_age": 0,
+            "estimate": [3.0, 4.0],
+            "modeled_covariance": [
+                [2.0, 0.1],
+                [0.10000000000000002, 1.0],
+            ],
+            "epsilon": 3.0,
+            "aged_modeled_radius": None,
+            "base_anchor_provenance": [0, 1],
+        }
+
+        prior = replay._propagate_public(
+            asymmetric,
+            None,
+            [0.0, 0.0],
+        )
+
+        expected = [
+            [2.25, 0.1],
+            [0.1, 1.25],
+        ]
+        self.assertEqual(
+            prior["public_prediction"]["modeled_covariance"],
+            expected,
+        )
+        self.assertEqual(
+            prior["private_reacquisition_seed"]["modeled_covariance"],
+            expected,
+        )
+
+    def test_violation_serialization_rejects_unknown_kind_and_reason(self):
+        invalid_records = (
+            [{"key": ("truth", 1), "reason": "stale_or_predicted_anchor_used"}],
+            [{"key": ("uav", 1), "reason": "arbitrary_reason"}],
+        )
+        for records in invalid_records:
+            with self.subTest(records=records), self.assertRaises(ValueError):
+                replay._normalize_reason_records(
+                    records,
+                    fields=replay.VIOLATION_FIELDS,
+                )
+
     def test_truth_stops_at_sensor_boundary_and_noise_seed_is_stable(self):
         calls = []
         original_qualify = replay.qualify_active_references
@@ -786,8 +1001,13 @@ class EvidenceAndAblationTests(ReplayHarness):
                 self.assertIsInstance(evidence, list)
                 self.assertEqual(len(evidence), len(replay.REFERENCE_EVIDENCE_FIELDS))
             for candidate in row["candidates"]:
-                self.assertEqual(len(candidate), len(replay.CANDIDATE_FIELDS))
-                decoded = dict(zip(replay.CANDIDATE_FIELDS, candidate))
+                candidate_fields = (
+                    replay.MULTISTART_COMPACT_CANDIDATE_FIELDS
+                    if row["variant"] == "predictive_multistart"
+                    else replay.CANDIDATE_FIELDS
+                )
+                self.assertEqual(len(candidate), len(candidate_fields))
+                decoded = dict(zip(candidate_fields, candidate))
                 self.assertEqual(
                     len(decoded["gate_diagnostics"]),
                     len(replay.GATE_DIAGNOSTIC_FIELDS),

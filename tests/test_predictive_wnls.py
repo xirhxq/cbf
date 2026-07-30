@@ -5,6 +5,7 @@ from unittest import mock
 
 import numpy as np
 
+import scripts.diagnostics.predictive_wnls as predictive_wnls
 from scripts.diagnostics.predictive_wnls import (
     algebraic_multilateration_candidate,
     best_conditioned_pair,
@@ -98,6 +99,47 @@ def make_proposal_row(
 
 
 class PredictiveLifecycleTests(unittest.TestCase):
+    def test_covariance_canonicalizer_accepts_roundoff_and_rejects_material_asymmetry(self):
+        canonicalizer = getattr(
+            predictive_wnls,
+            "canonical_spd_covariance",
+            None,
+        )
+        self.assertIsNotNone(canonicalizer)
+        roundoff = np.array(
+            [[2.0, 0.1], [0.10000000000000002, 1.0]],
+        )
+
+        canonical = canonicalizer(roundoff)
+
+        self.assertIsNotNone(canonical)
+        self.assertTrue(np.array_equal(canonical, canonical.T))
+        self.assertEqual(canonical[0, 1], 0.1)
+        self.assertIsNone(
+            canonicalizer([[2.0, 0.1], [0.100001, 1.0]])
+        )
+
+    def test_roundoff_asymmetric_fresh_output_is_eligible_and_propagates_canonical_covariance(self):
+        previous = make_test_output(
+            covariance=((2.0, 0.1), (0.10000000000000002, 1.0)),
+        )
+
+        self.assertTrue(reference_is_eligible(previous))
+        bundle = propagate_estimator_prior(previous, None, [0.0, 0.0])
+        predicted = np.asarray(
+            bundle["public_prediction"]["modeled_covariance"],
+        )
+        private = np.asarray(
+            bundle["private_reacquisition_seed"]["modeled_covariance"],
+        )
+        expected = np.array(
+            [[2.25, 0.1], [0.1, 1.25]],
+        )
+        self.assertTrue(np.array_equal(predicted, predicted.T))
+        self.assertTrue(np.array_equal(private, private.T))
+        np.testing.assert_array_equal(predicted, expected)
+        np.testing.assert_array_equal(private, expected)
+
     def test_command_prediction_ages_covariance_and_public_status(self):
         bundle = propagate_estimator_prior(
             make_test_output(),
@@ -251,6 +293,44 @@ class FinalizeAttemptTests(unittest.TestCase):
         self.assertEqual(result["base_anchor_provenance"], [0, 2])
         self.assertTrue(output_is_fresh(result))
 
+    def test_accepted_candidate_publishes_exactly_symmetric_covariance(self):
+        candidate = make_test_output(
+            covariance=((2.0, 0.1), (0.10000000000000002, 1.0)),
+            provenance=(0, 2),
+        )
+        candidate["epsilon"] = 999.0
+
+        result = finalize_attempt(
+            {"attempt_status": "accepted", "candidate": candidate},
+            self.prior_bundle,
+            frame_index=4,
+        )
+
+        covariance = np.asarray(result["modeled_covariance"])
+        expected_epsilon = 3.0 * math.sqrt(
+            float(np.linalg.eigvalsh(covariance)[-1])
+        )
+        self.assertEqual(result["output_status"], "fresh")
+        self.assertTrue(np.array_equal(covariance, covariance.T))
+        self.assertEqual(covariance[0, 1], 0.1)
+        self.assertEqual(result["epsilon"], expected_epsilon)
+        self.assertNotEqual(result["epsilon"], candidate["epsilon"])
+
+    def test_materially_asymmetric_accepted_candidate_fails_closed(self):
+        candidate = make_test_output(
+            covariance=((2.0, 0.1), (0.100001, 1.0)),
+            provenance=(0, 2),
+        )
+
+        result = finalize_attempt(
+            {"attempt_status": "accepted", "candidate": candidate},
+            self.prior_bundle,
+            frame_index=4,
+        )
+
+        self.assertEqual(result["attempt_status"], "invalid")
+        self.assertEqual(result["output_status"], "predicted")
+
     def test_accepted_candidate_requires_distinct_nonnegative_integer_roots(self):
         for provenance in ((0,), (0, 0), (-1, 0), (False, 1), (0, "1")):
             with self.subTest(provenance=provenance):
@@ -268,6 +348,62 @@ class FinalizeAttemptTests(unittest.TestCase):
 
 
 class ReferenceQualificationTests(unittest.TestCase):
+    def test_legacy_roundoff_fresh_reference_remains_qualified(self):
+        result = qualify_active_references(
+            mandatory={"base_ids": [0], "uav_ids": [4]},
+            optional_keys=[],
+            measurement_records={
+                ("base", 0): {"present": True, "noisy_range": 10.0},
+                ("uav", 4): {"present": True, "noisy_range": 11.0},
+            },
+            uav_outputs={
+                4: make_test_output(
+                    covariance=(
+                        (2.0, 0.1),
+                        (0.10000000000000002, 1.0),
+                    ),
+                ),
+            },
+            variant="fresh_reference_qualification",
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["active_keys"], [("base", 0), ("uav", 4)])
+
+    def test_prediction_expiry_violations_merge_before_canonical_sort(self):
+        outputs = {
+            identifier: make_test_output(
+                status="predicted",
+                prediction_age=1,
+                provenance=(),
+            )
+            for identifier in (3, 4, 5)
+        }
+        result = qualify_active_references(
+            mandatory={"base_ids": [], "uav_ids": [4, 5]},
+            optional_keys=[("uav", 3)],
+            measurement_records={
+                ("uav", identifier): {
+                    "present": True,
+                    "noisy_range": 10.0 + identifier,
+                }
+                for identifier in (3, 4, 5)
+            },
+            uav_outputs=outputs,
+            variant="prediction_expiry",
+        )
+
+        self.assertEqual(
+            result["violations"],
+            [
+                {
+                    "key": ("uav", identifier),
+                    "reason": "stale_or_predicted_anchor_used",
+                }
+                for identifier in (3, 4, 5)
+            ],
+        )
+
     def test_malformed_mandatory_specifications_are_invalid(self):
         cases = (
             None,

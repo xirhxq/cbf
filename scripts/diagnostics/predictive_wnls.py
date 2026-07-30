@@ -17,6 +17,8 @@ FRAME_DT_SECONDS = 0.5
 MAX_PUBLIC_PREDICTION_AGE = 2
 CANDIDATE_DEDUP_M = 1e-9
 RELATIVE_TIE_TOLERANCE = 1e-12
+PUBLIC_COVARIANCE_RTOL = 1e-12
+PUBLIC_COVARIANCE_ATOL = 1e-12
 QUALIFICATION_VARIANTS = (
     "prediction_expiry",
     "fresh_reference_qualification",
@@ -72,7 +74,8 @@ def _finite_vector(value: object) -> np.ndarray | None:
     return vector
 
 
-def _finite_spd_covariance(value: object) -> np.ndarray | None:
+def canonical_spd_covariance(value: object) -> np.ndarray | None:
+    """Return the exact symmetric SPD representative of a finite covariance."""
     try:
         covariance = np.asarray(value, dtype=float)
     except (TypeError, ValueError, OverflowError):
@@ -80,16 +83,26 @@ def _finite_spd_covariance(value: object) -> np.ndarray | None:
     if (
         covariance.shape != (2, 2)
         or not np.isfinite(covariance).all()
-        or not np.array_equal(covariance, covariance.T)
+        or not np.allclose(
+            covariance,
+            covariance.T,
+            rtol=PUBLIC_COVARIANCE_RTOL,
+            atol=PUBLIC_COVARIANCE_ATOL,
+        )
     ):
         return None
+    canonical = 0.5 * (covariance + covariance.T)
     try:
-        eigenvalues = np.linalg.eigvalsh(covariance)
+        eigenvalues = np.linalg.eigvalsh(canonical)
     except np.linalg.LinAlgError:
         return None
     if not np.isfinite(eigenvalues).all() or np.any(eigenvalues <= 0.0):
         return None
-    return covariance
+    return canonical
+
+
+def _finite_spd_covariance(value: object) -> np.ndarray | None:
+    return canonical_spd_covariance(value)
 
 
 def _finite_estimate_and_covariance(source: object) -> tuple[np.ndarray, np.ndarray] | None:
@@ -328,17 +341,11 @@ def finalize_attempt(
                 candidate.get("base_anchor_provenance")
             )
         )
-        try:
-            epsilon = float(candidate.get("epsilon"))
-        except (AttributeError, TypeError, ValueError, OverflowError):
-            epsilon = math.nan
-        if (
-            state is not None
-            and provenance is not None
-            and math.isfinite(epsilon)
-            and epsilon >= 0.0
-        ):
+        if state is not None and provenance is not None:
             estimate, covariance = state
+            epsilon = 3.0 * math.sqrt(
+                float(np.linalg.eigvalsh(covariance)[-1])
+            )
             return {
                 "attempt_status": "accepted",
                 "output_status": "fresh",
@@ -529,6 +536,12 @@ def qualify_active_references(
         for key in active_keys
         if key[0] == "uav" and key[1] in outputs
     }
+    violations.sort(
+        key=lambda record: (
+            _reference_key_order(record["key"]),
+            record["reason"],
+        )
+    )
     return {
         "status": "ok",
         "active_keys": active_keys,

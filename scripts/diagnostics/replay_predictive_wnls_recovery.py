@@ -59,11 +59,14 @@ from scripts.diagnostics.predictive_wnls import (
     MAX_WNLS_PROPOSALS as MAX_PROPOSALS_PER_CANDIDATE,
     MIN_WNLS_DAMPING as MIN_DAMPING,
     OUTPUT_STATUSES,
+    PUBLIC_COVARIANCE_ATOL,
+    PUBLIC_COVARIANCE_RTOL,
     RELATIVE_SPECTRAL_THRESHOLD,
     RELATIVE_TIE_TOLERANCE,
     REPRESENTABLE_STEP_SCALE as REPRESENTABLE_STEP_RELATIVE_THRESHOLD,
     STATIONARITY_SCALE as SCALE_AWARE_STATIONARITY,
     WNLS_DAMPING_FACTOR as DAMPING_FACTOR,
+    canonical_spd_covariance,
     qualify_active_references,
     reference_is_eligible,
     solve_predictive_multistart,
@@ -95,13 +98,13 @@ DEVELOPMENT_VARIANTS = (
     "fresh_reference_qualification",
     "predictive_multistart",
 )
-PROTOCOL_SCHEMA_ID = "cbf2026-predictive-wnls-stage1-protocol-v3"
-PROTOCOL_ID = "cbf2026-predictive-wnls-stage1-v3"
+PROTOCOL_SCHEMA_ID = "cbf2026-predictive-wnls-stage1-protocol-v4"
+PROTOCOL_ID = "cbf2026-predictive-wnls-stage1-v4"
 HERMETIC_PROTOCOL_SCHEMA_ID = (
     "cbf2026-predictive-wnls-stage1-hermetic-protocol-v1"
 )
 HERMETIC_PROTOCOL_ID = "cbf2026-predictive-wnls-stage1-hermetic-v1"
-RAW_SCHEMA_ID = "cbf2026-predictive-wnls-development-rows-v2"
+RAW_SCHEMA_ID = "cbf2026-predictive-wnls-development-rows-v3"
 RAW_PROCESS_NAME = "predictive-wnls-development.jsonl.gz"
 TERMINAL_MANIFEST_NAME = "manifest.json"
 RAW_BUNDLE_CAP_BYTES = 2_000_000_000
@@ -111,7 +114,7 @@ LEGACY_SOLVER_SHA256 = (
 )
 PRODUCTION_RANGE_NOISE_SEEDS = tuple(range(20260727, 20260747))
 PRODUCTION_PROTOCOL_TOKEN = (
-    "docs/diagnostics/2026-07-30-predictive-wnls-stage1-protocol-v3.json"
+    "docs/diagnostics/2026-07-30-predictive-wnls-stage1-protocol-v4.json"
 )
 PRODUCTION_TRUTH_DATA_PATH = (
     "/private/tmp/cbf2026-results/mc-first-mechanism-250s/R/"
@@ -151,6 +154,20 @@ CANDIDATE_FIELDS = (
     "q_innov",
     "gate_diagnostics",
     "proposal_trace",
+)
+MULTISTART_COMPACT_RESULT_FIELDS = (
+    "epsilon",
+    "phi_min_eigenvalue",
+    "phi_condition",
+    "fim_valid",
+    "proposal_count",
+    "iterations",
+    "stationarity_norm",
+    "failure_reason",
+)
+MULTISTART_COMPACT_CANDIDATE_FIELDS = (
+    *CANDIDATE_FIELDS,
+    *MULTISTART_COMPACT_RESULT_FIELDS,
 )
 MULTISTART_CANDIDATE_RECORD_FIELDS = (
     "source",
@@ -312,6 +329,8 @@ ESTIMATOR_CONSTANTS = {
     ),
     "candidate_dedup_m": CANDIDATE_DEDUP_M,
     "relative_tie_tolerance": RELATIVE_TIE_TOLERANCE,
+    "public_covariance_rtol": PUBLIC_COVARIANCE_RTOL,
+    "public_covariance_atol": PUBLIC_COVARIANCE_ATOL,
 }
 STATUS_CONTRACT = {
     "output_statuses": list(OUTPUT_STATUSES),
@@ -375,6 +394,9 @@ RAW_SCHEMA_DECLARATION = {
     "process_name": RAW_PROCESS_NAME,
     "row_fields": list(ROW_FIELDS),
     "candidate_fields": list(CANDIDATE_FIELDS),
+    "multistart_compact_candidate_fields": list(
+        MULTISTART_COMPACT_CANDIDATE_FIELDS
+    ),
     "legacy_candidate_record_fields": list(CANDIDATE_FIELDS),
     "multistart_candidate_record_fields": list(
         MULTISTART_CANDIDATE_RECORD_FIELDS
@@ -390,9 +412,33 @@ RAW_SCHEMA_DECLARATION = {
     "violation_fields": list(VIOLATION_FIELDS),
     "private_state_fields": list(PRIVATE_STATE_FIELDS),
     "public_state_fields": list(PUBLIC_STATE_FIELDS),
+    "public_covariance_contract": {
+        "shape": [2, 2],
+        "finite": True,
+        "positive_definite": True,
+        "symmetry_acceptance": {
+            "comparison": "numpy.allclose",
+            "rtol": PUBLIC_COVARIANCE_RTOL,
+            "atol": PUBLIC_COVARIANCE_ATOL,
+        },
+        "canonicalization": "0.5*(Sigma+Sigma.T)",
+        "published_exactly_symmetric": True,
+        "published_equals_canonicalizer_output": True,
+        "applies_to": [
+            "fresh_modeled_covariance",
+            "aged_modeled_covariance",
+        ],
+    },
+    "violation_order_contract": {
+        "outer_canonical_order": "(base<uav,id,reason)",
+        "reference_id_order": "ascending_numeric",
+        "reason_order": "lexicographic",
+        "allowed_reasons": ["stale_or_predicted_anchor_used"],
+        "duplicates_allowed": False,
+    },
 }
 ANALYSIS_SCHEMA = {
-    "id": "cbf2026-predictive-wnls-development-analysis-v2",
+    "id": "cbf2026-predictive-wnls-development-analysis-v3",
     "json_name": "predictive-wnls-development.json",
     "markdown_name": "predictive-wnls-development.md",
 }
@@ -502,7 +548,7 @@ def canonical_analyzer_argv(
     expected_baseline_sha256: str,
     output_root: Path,
 ) -> list[str]:
-    """Return the token-for-token analyzer command bound by production v3."""
+    """Return the token-for-token analyzer command bound by production v4."""
     return [
         "conda",
         "run",
@@ -526,18 +572,18 @@ def canonical_analyzer_argv(
 def production_invocation_contract() -> dict[str, dict]:
     """Return the exact four-invocation registered Stage-1 contract."""
     registered_root = Path(
-        "/private/tmp/cbf2026-predictive-wnls-development/stage1-v3"
+        "/private/tmp/cbf2026-predictive-wnls-development/stage1-v4"
     )
     return {
         "smoke_a": {
             "kind": "unregistered_smoke",
-            "output_root": "/private/tmp/cbf2026-predictive-wnls-smoke-v3-a",
+            "output_root": "/private/tmp/cbf2026-predictive-wnls-smoke-v4-a",
             "range_noise_seeds": [20260727],
             "max_frames": 2,
         },
         "smoke_b": {
             "kind": "unregistered_smoke",
-            "output_root": "/private/tmp/cbf2026-predictive-wnls-smoke-v3-b",
+            "output_root": "/private/tmp/cbf2026-predictive-wnls-smoke-v4-b",
             "range_noise_seeds": [20260727],
             "max_frames": 2,
         },
@@ -554,7 +600,7 @@ def production_invocation_contract() -> dict[str, dict]:
             ),
             "output_root": (
                 "/private/tmp/cbf2026-predictive-wnls-development-analysis/"
-                "stage1-v3"
+                "stage1-v4"
             ),
             "expected_baseline_sha256": PRODUCTION_BASELINE_PROCESS_SHA256,
         },
@@ -1532,14 +1578,13 @@ def _finite_public_state(output: object):
         return None
     try:
         estimate = np.asarray(output["estimate"], dtype=float)
-        covariance = np.asarray(output["modeled_covariance"], dtype=float)
     except (KeyError, TypeError, ValueError, OverflowError):
         return None
+    covariance = canonical_spd_covariance(output.get("modeled_covariance"))
     if (
         estimate.shape != (2,)
-        or covariance.shape != (2, 2)
         or not np.isfinite(estimate).all()
-        or not np.isfinite(covariance).all()
+        or covariance is None
     ):
         return None
     return estimate, covariance
@@ -1550,14 +1595,13 @@ def _finite_private_state(private: object):
         return None
     try:
         estimate = np.asarray(private["estimate"], dtype=float)
-        covariance = np.asarray(private["modeled_covariance"], dtype=float)
     except (KeyError, TypeError, ValueError, OverflowError):
         return None
+    covariance = canonical_spd_covariance(private.get("modeled_covariance"))
     if (
         estimate.shape != (2,)
-        or covariance.shape != (2, 2)
         or not np.isfinite(estimate).all()
-        or not np.isfinite(covariance).all()
+        or covariance is None
     ):
         return None
     return estimate, covariance
@@ -1587,7 +1631,14 @@ def _propagate_public(
         }
     estimate, covariance = source
     next_estimate = estimate + FRAME_DT_SECONDS * command_array
-    next_covariance = covariance + MOTION_SIGMA_M_PER_FRAME**2 * np.eye(2)
+    next_covariance = canonical_spd_covariance(
+        covariance + MOTION_SIGMA_M_PER_FRAME**2 * np.eye(2)
+    )
+    if next_covariance is None:
+        return {
+            "public_prediction": _unavailable("invalid_propagated_covariance"),
+            "private_reacquisition_seed": None,
+        }
     private = {
         "estimate": next_estimate.tolist(),
         "modeled_covariance": next_covariance.tolist(),
@@ -1744,19 +1795,30 @@ def _finalize_public(
 ) -> tuple[dict, dict | None]:
     if attempt.get("attempt_status") == "accepted":
         candidate = attempt["candidate"]
+        covariance = canonical_spd_covariance(
+            candidate.get("modeled_covariance")
+        )
+        if covariance is None:
+            raise ValueError(
+                "accepted candidate covariance is not finite symmetric SPD"
+            )
+        covariance_value = covariance.tolist()
+        epsilon = 3.0 * math.sqrt(
+            float(np.linalg.eigvalsh(covariance)[-1])
+        )
         output = {
             "attempt_status": "accepted",
             "output_status": "fresh",
             "estimate": candidate["estimate"],
-            "modeled_covariance": candidate["modeled_covariance"],
-            "epsilon": candidate["epsilon"],
+            "modeled_covariance": covariance_value,
+            "epsilon": epsilon,
             "prediction_age": 0,
             "aged_modeled_radius": None,
             "base_anchor_provenance": candidate["base_anchor_provenance"],
         }
         private = {
             "estimate": list(candidate["estimate"]),
-            "modeled_covariance": candidate["modeled_covariance"],
+            "modeled_covariance": covariance.tolist(),
         }
         return output, private
     prediction = dict(prior["public_prediction"])
@@ -1823,6 +1885,11 @@ def _compact_candidates(candidates: object) -> list[list]:
                 candidate["q_innov"],
                 _compact_gate(candidate["gate_diagnostics"]),
                 compact_trace,
+                *(
+                    [nested[field] for field in MULTISTART_COMPACT_RESULT_FIELDS]
+                    if "result" in candidate
+                    else []
+                ),
             ]
         )
     return result
@@ -1938,10 +2005,31 @@ def _normalize_reason_records(
         ):
             raise ValueError("reference reason record differs from exact schema")
         kind, identifier = record["key"]
-        normalized.append([kind, identifier, record["reason"]])
+        reason = record["reason"]
+        if (
+            kind not in ("base", "uav")
+            or isinstance(identifier, bool)
+            or not isinstance(identifier, int)
+            or identifier < 0
+            or not isinstance(reason, str)
+        ):
+            raise ValueError("reference reason record contains invalid values")
+        if (
+            fields == VIOLATION_FIELDS
+            and reason != "stale_or_predicted_anchor_used"
+        ):
+            raise ValueError("reference violation reason is not declared")
+        normalized.append([kind, identifier, reason])
     if len(fields) != 3:
         raise RuntimeError("internal reason-field declaration is invalid")
-    return normalized
+    return sorted(
+        normalized,
+        key=lambda record: (
+            0 if record[0] == "base" else 1,
+            record[1],
+            record[2],
+        ),
+    )
 
 
 def _offline_metrics(output: dict, truth: np.ndarray) -> dict:
