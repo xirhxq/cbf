@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -463,6 +464,89 @@ class RegistrarTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertTrue((self.repository / markdown).is_file())
         self.assertTrue((self.repository / output_json).is_file())
+
+    def test_direct_script_cli_runs_from_repository_root(self):
+        implementation_root = Path(registrar.__file__).resolve().parents[2]
+        for relative in REPOSITORY_SOURCES.values():
+            (self.repository / relative).write_bytes(
+                (implementation_root / relative).read_bytes()
+            )
+        self._git("add", ".")
+        self._git("commit", "-qm", "bind real implementation sources")
+        markdown = Path("docs/diagnostics/direct.md")
+        output_json = Path("docs/diagnostics/direct.json")
+        hermetic_sources = {
+            "truth_data": {
+                "path": str(self.truth),
+                "sha256": self.truth_sha256,
+            },
+            "input_manifest": {
+                "path": str(self.input_manifest),
+                "sha256": self.input_manifest_sha256,
+            },
+            "baseline_process": {
+                "path": str(self.baseline),
+                "sha256": self.baseline_sha256,
+            },
+        }
+        environment = os.environ.copy()
+        environment["CBF2026_REGISTRAR_HERMETIC_SOURCE_PINS"] = json.dumps(
+            hermetic_sources,
+            sort_keys=True,
+        )
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "scripts/diagnostics/register_predictive_wnls_stage1.py",
+                "--repository-root",
+                str(self.repository),
+                "--output-markdown",
+                str(markdown),
+                "--output-json",
+                str(output_json),
+            ],
+            cwd=implementation_root,
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertTrue((self.repository / markdown).is_file())
+        self.assertTrue((self.repository / output_json).is_file())
+
+    def test_direct_script_cli_cannot_import_preceding_shadow_package(self):
+        implementation_root = Path(registrar.__file__).resolve().parents[2]
+        shadow_root = self.root / "shadow-pythonpath"
+        shadow_diagnostics = shadow_root / "scripts" / "diagnostics"
+        shadow_diagnostics.mkdir(parents=True)
+        (shadow_root / "scripts" / "__init__.py").write_text("")
+        (shadow_diagnostics / "__init__.py").write_text("")
+        marker = self.root / "shadow-imported"
+        (shadow_diagnostics / "replay_predictive_wnls_recovery.py").write_text(
+            "import os\n"
+            "from pathlib import Path\n"
+            "Path(os.environ['CBF2026_SHADOW_MARKER']).write_text('shadow')\n"
+            "raise RuntimeError('shadow replay imported')\n"
+        )
+        environment = os.environ.copy()
+        environment["CBF2026_SHADOW_MARKER"] = str(marker)
+        environment["PYTHONPATH"] = os.pathsep.join(
+            (str(shadow_root), str(implementation_root))
+        )
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "scripts/diagnostics/register_predictive_wnls_stage1.py",
+                "--help",
+            ],
+            cwd=implementation_root,
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("--repository-root", completed.stdout)
+        self.assertFalse(marker.exists())
 
     def test_probe_error_survives_transient_cleanup_faults_for_both_layouts(self):
         for same_parent in (True, False):

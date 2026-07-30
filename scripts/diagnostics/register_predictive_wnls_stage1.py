@@ -5,18 +5,54 @@ from __future__ import annotations
 import argparse
 import copy
 import hashlib
+import importlib.machinery
+import importlib.util
 import json
 import os
 import re
 import shlex
 import stat
 import subprocess
+import sys
 from pathlib import Path
 from typing import Mapping
+
+if __package__ in {None, ""}:
+    _SCRIPT_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+
+    def _is_script_repository_path(entry: object) -> bool:
+        if not isinstance(entry, str):
+            return False
+        candidate = Path.cwd() if entry == "" else Path(entry)
+        try:
+            return candidate.resolve() == _SCRIPT_REPOSITORY_ROOT
+        except (OSError, RuntimeError):
+            return False
+
+    sys.path[:] = [
+        entry for entry in sys.path if not _is_script_repository_path(entry)
+    ]
+    sys.path.insert(0, str(_SCRIPT_REPOSITORY_ROOT))
+    for _module_name in tuple(sys.modules):
+        if _module_name == "scripts" or _module_name.startswith("scripts."):
+            del sys.modules[_module_name]
+    _SCRIPT_PACKAGE_SPEC = importlib.machinery.PathFinder.find_spec(
+        "scripts",
+        [str(_SCRIPT_REPOSITORY_ROOT)],
+    )
+    if (
+        _SCRIPT_PACKAGE_SPEC is None
+        or _SCRIPT_PACKAGE_SPEC.submodule_search_locations is None
+    ):
+        raise ImportError("implementation-root scripts package is unavailable")
+    sys.modules["scripts"] = importlib.util.module_from_spec(
+        _SCRIPT_PACKAGE_SPEC
+    )
 
 from scripts.diagnostics import replay_predictive_wnls_recovery as replay
 
 
+HERMETIC_SOURCE_PINS_ENV = "CBF2026_REGISTRAR_HERMETIC_SOURCE_PINS"
 REPOSITORY_SOURCE_PATHS = {
     "replay_source": Path(
         "scripts/diagnostics/replay_predictive_wnls_recovery.py"
@@ -237,7 +273,45 @@ def _verify_repository_sources(
             )
 
 
-def _external_source_declarations() -> dict[str, tuple[Path, str]]:
+def _external_source_declarations(
+    repository_root: Path,
+) -> dict[str, tuple[Path, str]]:
+    hermetic_payload = os.environ.get(HERMETIC_SOURCE_PINS_ENV)
+    if hermetic_payload is not None:
+        implementation_root = Path(__file__).resolve().parents[2]
+        if repository_root == implementation_root:
+            raise ValueError(
+                "hermetic source pins are forbidden for the implementation "
+                "repository"
+            )
+        try:
+            declarations = json.loads(hermetic_payload)
+        except json.JSONDecodeError as error:
+            raise ValueError("hermetic source pins must be strict JSON") from error
+        expected_names = {
+            "truth_data",
+            "input_manifest",
+            "baseline_process",
+        }
+        if not isinstance(declarations, dict) or set(declarations) != expected_names:
+            raise ValueError("hermetic source pins have unexpected names")
+        result = {}
+        for name, declaration in declarations.items():
+            if (
+                not isinstance(declaration, dict)
+                or set(declaration) != {"path", "sha256"}
+                or not isinstance(declaration["path"], str)
+                or not isinstance(declaration["sha256"], str)
+                or re.fullmatch(r"[0-9a-f]{64}", declaration["sha256"]) is None
+            ):
+                raise ValueError(
+                    f"invalid hermetic source declaration: {name}"
+                )
+            result[name] = (
+                _absolute(Path(declaration["path"])),
+                declaration["sha256"],
+            )
+        return result
     return {
         "truth_data": (
             Path(replay.PRODUCTION_TRUTH_DATA_PATH),
@@ -272,7 +346,9 @@ def _source_contract(
             "path": identity["path"],
             "sha256": identity["sha256"],
         }
-    for name, (path, expected_sha256) in _external_source_declarations().items():
+    for name, (path, expected_sha256) in _external_source_declarations(
+        repository_root
+    ).items():
         path = _absolute(path)
         identity = _read_bound_source(path, expected_sha256=expected_sha256)
         identities[name] = identity
