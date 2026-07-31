@@ -1,4 +1,5 @@
 import copy
+from contextlib import nullcontext
 import errno
 import gzip
 import hashlib
@@ -861,6 +862,250 @@ class RowAndKeyMutationTests(unittest.TestCase):
 class ProducerLifecycleTests(unittest.TestCase):
     class RegisteredStop(RuntimeError):
         pass
+
+    def _full_protocol_sources(self, *, data_path, input_manifest_path):
+        """Build independent full identities; never reuse replay snapshots.
+
+        Mutation caught: changing nonregistered source validation back to
+        ``tuple(declared_sources) == tuple(observed_sources)`` makes the
+        serialized smoke protocol fail before root allocation.
+        """
+        project = Path(replay.__file__).resolve().parents[2]
+        paths = {
+            "implementation_plan": (
+                project / "docs/superpowers/plans/"
+                "2026-07-31-cbf2026-two-range-smoke-v2-recovery.md"
+            ),
+            "two_range_reacquisition_source": (
+                project / "scripts/diagnostics/two_range_reacquisition.py"
+            ),
+            "predictive_wnls_source": (
+                project / "scripts/diagnostics/predictive_wnls.py"
+            ),
+            "fixture_extractor_source": (
+                project
+                / "scripts/diagnostics/extract_two_range_reacquisition_fixture.py"
+            ),
+            "replay_source": (
+                project / "scripts/diagnostics/"
+                "replay_two_range_reacquisition.py"
+            ),
+            "analyzer_source": (
+                project / "scripts/diagnostics/analyze_two_range_reacquisition.py"
+            ),
+            "registrar_source": (
+                project / "scripts/diagnostics/register_two_range_reacquisition.py"
+            ),
+            "mechanism_fixture": (
+                project / "tests/fixtures/cbf2026_two_range_reacquisition/"
+                "mechanism_20260727_180_12.json"
+            ),
+            "mechanism_fixture_manifest": (
+                project / "tests/fixtures/cbf2026_two_range_reacquisition/"
+                "manifest.json"
+            ),
+            "truth_data": Path(data_path),
+            "input_manifest": Path(input_manifest_path),
+        }
+
+        def identity(path):
+            metadata = path.stat()
+            return {
+                "path": str(path),
+                "device": metadata.st_dev,
+                "inode": metadata.st_ino,
+                "size": metadata.st_size,
+                "mtime_ns": metadata.st_mtime_ns,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+
+        self.assertEqual(
+            tuple(paths),
+            replay.REGISTERED_PROTOCOL_SOURCE_NAMES,
+        )
+        self.assertTrue(all(path.is_file() for path in paths.values()))
+        return {
+            name: identity(paths[name])
+            for name in replay.REGISTERED_PROTOCOL_SOURCE_NAMES
+        }
+
+    def _write_serialized_full_protocol(
+        self,
+        *,
+        root,
+        sources,
+    ):
+        protocol_path = root / "full-protocol.json"
+        protocol_path.write_text(
+            json.dumps({
+                "protocol_id": "hermetic-two-range-smoke-v1",
+                "disk_contract": {
+                    "launch_minimum_free_bytes": 0,
+                    "live_minimum_free_bytes": 0,
+                    "raw_bundle_max_allocated_bytes": 100_000_000,
+                },
+                "sources": sources,
+            }),
+            encoding="utf-8",
+        )
+        reloaded = json.loads(protocol_path.read_bytes())
+        protocol_path.write_text(json.dumps(reloaded), encoding="utf-8")
+        return protocol_path
+
+    def test_serialized_full_protocol_smoke_accepts_exact_local_source_subset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_path = (
+                FIXTURE_ROOT / "mechanism_20260727_180_12.json"
+            ).resolve()
+            input_manifest_path = (FIXTURE_ROOT / "manifest.json").resolve()
+            protocol_path = self._write_serialized_full_protocol(
+                root=root,
+                sources=self._full_protocol_sources(
+                    data_path=data_path,
+                    input_manifest_path=input_manifest_path,
+                ),
+            )
+            output = root / "smoke-a"
+
+            result = replay.replay_two_range_reacquisition(
+                protocol_path=protocol_path,
+                data_path=data_path,
+                input_manifest_path=input_manifest_path,
+                output_root=output,
+                run_seeds=(),
+                max_frames=0,
+                invocation_name="smoke_a",
+            )
+
+            manifest = json.loads((result / "manifest.json").read_bytes())
+            self.assertEqual(manifest["status"], "completed")
+            self.assertEqual(manifest["observed_rows"], 18)
+            self.assertEqual(
+                tuple(manifest["source_identities"]),
+                replay.RAW_SOURCE_MEMBER_NAMES["smoke_a"],
+            )
+
+    def test_serialized_protocol_source_binding_mutations_fail_before_root(self):
+        data_path = (
+            FIXTURE_ROOT / "mechanism_20260727_180_12.json"
+        ).resolve()
+        input_manifest_path = (FIXTURE_ROOT / "manifest.json").resolve()
+        local_names = replay.RAW_SOURCE_MEMBER_NAMES["smoke_a"]
+
+        def missing_global(sources, observed):
+            del sources["implementation_plan"]
+
+        def extra_global(sources, observed):
+            sources["extra_global"] = copy.deepcopy(
+                sources["implementation_plan"],
+            )
+
+        def reordered_global(sources, observed):
+            names = list(sources)
+            names[0], names[1] = names[1], names[0]
+            sources_copy = copy.deepcopy(sources)
+            sources.clear()
+            sources.update({name: sources_copy[name] for name in names})
+
+        def changed_local_path(sources, observed):
+            sources[local_names[0]]["path"] = "/tmp/substituted-source.py"
+
+        def changed_local_sha256(sources, observed):
+            sources[local_names[0]]["sha256"] = "0" * 64
+
+        def missing_identity_field(sources, observed):
+            identity = sources["implementation_plan"]
+            sources["implementation_plan"] = {
+                field: identity[field]
+                for field in replay.FILE_IDENTITY_FIELDS
+                if field != "sha256"
+            }
+
+        def reordered_identity_fields(sources, observed):
+            identity = sources["implementation_plan"]
+            sources["implementation_plan"] = {
+                "sha256": identity["sha256"],
+                **{
+                    field: identity[field]
+                    for field in replay.FILE_IDENTITY_FIELDS
+                    if field != "sha256"
+                },
+            }
+
+        def observed_missing(sources, observed):
+            del observed[local_names[0]]
+
+        def observed_extra(sources, observed):
+            observed["extra_local"] = copy.deepcopy(
+                sources[local_names[0]],
+            )
+
+        def observed_reordered(sources, observed):
+            names = list(observed)
+            names[0], names[1] = names[1], names[0]
+            observed_copy = copy.deepcopy(observed)
+            observed.clear()
+            observed.update({name: observed_copy[name] for name in names})
+
+        cases = (
+            ("missing global declaration", missing_global,
+             "protocol source members differ from contract", False),
+            ("extra global declaration", extra_global,
+             "protocol source members differ from contract", False),
+            ("reordered global declarations", reordered_global,
+             "protocol source members differ from contract", False),
+            ("changed required local path", changed_local_path,
+             "protocol source identity differs: two_range_reacquisition_source", False),
+            ("changed required local sha256", changed_local_sha256,
+             "protocol source identity differs: two_range_reacquisition_source", False),
+            ("missing global identity field", missing_identity_field,
+             "protocol source identity differs: implementation_plan", False),
+            ("reordered global identity fields", reordered_identity_fields,
+             "protocol source identity differs: implementation_plan", False),
+            ("observed local member missing", observed_missing,
+             "runtime source members differ from invocation", True),
+            ("observed local member extra", observed_extra,
+             "runtime source members differ from invocation", True),
+            ("observed local members reordered", observed_reordered,
+             "runtime source members differ from invocation", True),
+        )
+        for name, mutate, message, patch_snapshots in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                sources = self._full_protocol_sources(
+                    data_path=data_path,
+                    input_manifest_path=input_manifest_path,
+                )
+                observed = {
+                    source_name: copy.deepcopy(sources[source_name])
+                    for source_name in local_names
+                }
+                mutate(sources, observed)
+                protocol_path = self._write_serialized_full_protocol(
+                    root=root,
+                    sources=sources,
+                )
+                output = root / "rejected-smoke-a"
+                snapshots = (
+                    mock.patch.object(
+                        replay,
+                        "_source_snapshots",
+                        return_value=(observed, {}),
+                    )
+                    if patch_snapshots else nullcontext()
+                )
+                with snapshots, self.assertRaisesRegex(ValueError, message):
+                    replay.replay_two_range_reacquisition(
+                        protocol_path=protocol_path,
+                        data_path=data_path,
+                        input_manifest_path=input_manifest_path,
+                        output_root=output,
+                        run_seeds=(),
+                        max_frames=0,
+                        invocation_name="smoke_a",
+                    )
+                self.assertFalse(output.exists())
 
     def _protocol(
         self,

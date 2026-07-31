@@ -2635,6 +2635,29 @@ def _source_snapshots(
     return identities, json_payloads
 
 
+def _validate_protocol_source_binding(
+    *,
+    declared_sources: Mapping,
+    observed_sources: Mapping,
+    invocation_name: str,
+) -> None:
+    if not isinstance(declared_sources, Mapping):
+        raise ValueError("protocol source members differ from contract")
+    if tuple(declared_sources) != REGISTERED_PROTOCOL_SOURCE_NAMES:
+        raise ValueError("protocol source members differ from contract")
+    if tuple(observed_sources) != RAW_SOURCE_MEMBER_NAMES[invocation_name]:
+        raise ValueError("runtime source members differ from invocation")
+    for name, declaration in declared_sources.items():
+        if (
+            not isinstance(declaration, Mapping)
+            or tuple(declaration) != FILE_IDENTITY_FIELDS
+        ):
+            raise ValueError(f"protocol source identity differs: {name}")
+    for name, observed_identity in observed_sources.items():
+        if declared_sources[name] != observed_identity:
+            raise ValueError(f"protocol source identity differs: {name}")
+
+
 def _git_resolve_commit(project_root: Path, commit: str) -> str:
     if not _lower_hex(commit, 40):
         raise ValueError("declared Git commit is not a full lowercase OID")
@@ -3898,55 +3921,22 @@ def replay_two_range_reacquisition(
             "registered protocol lacks frozen schema, sources, or declaration",
         )
     if declared_sources is not None:
-        expected_declared_names = (
-            REGISTERED_PROTOCOL_SOURCE_NAMES
-            if invocation_name == "registered_replay"
-            else tuple(sources)
+        _validate_protocol_source_binding(
+            declared_sources=declared_sources,
+            observed_sources=sources,
+            invocation_name=invocation_name,
         )
-        if (
-            not isinstance(declared_sources, Mapping)
-            or tuple(declared_sources) != expected_declared_names
-        ):
-            raise ValueError("protocol source members differ from contract")
         if invocation_name == "registered_replay":
             for name, declaration in declared_sources.items():
-                if (
-                    not isinstance(declaration, Mapping)
-                    or tuple(declaration) != FILE_IDENTITY_FIELDS
-                ):
-                    raise ValueError(
-                        f"protocol source identity differs: {name}",
-                    )
-                observed_identity = sources.get(name)
-                if observed_identity is None:
-                    _, observed = _read_trusted_bytes(
-                        Path(declaration["path"]),
-                        capture_payload=False,
-                    )
-                    observed_identity = _canonical_file_identity(observed)
+                _, observed = _read_trusted_bytes(
+                    Path(declaration["path"]),
+                    capture_payload=False,
+                )
+                observed_identity = _canonical_file_identity(observed)
                 if declaration != observed_identity:
                     raise ValueError(
                         f"protocol source identity differs: {name}",
                     )
-        for name, identity in sources.items():
-            declaration = declared_sources[name]
-            if not isinstance(declaration, Mapping):
-                raise ValueError(f"protocol source is not an object: {name}")
-            if invocation_name == "registered_replay":
-                matches = (
-                    tuple(declaration) == FILE_IDENTITY_FIELDS
-                    and declaration == identity
-                )
-            else:
-                matches = (
-                    tuple(declaration) == ("path", "sha256")
-                    and declaration["path"] == identity["path"]
-                    and declaration["sha256"] == identity["sha256"]
-                )
-            if not matches:
-                raise ValueError(
-                    f"protocol source identity differs: {name}"
-                )
     authorization_identity = None
     authorization_payload = None
     authorization = None
