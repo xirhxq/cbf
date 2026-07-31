@@ -58,9 +58,9 @@ from scripts.diagnostics import replay_two_range_reacquisition as replay
 from scripts.diagnostics import two_range_reacquisition as method
 
 
-PROTOCOL_SCHEMA_ID = "cbf2026-two-range-reacquisition-protocol-v1"
-REGISTRATION_SCHEMA_ID = "cbf2026-two-range-reacquisition-registration-v1"
-PROTOCOL_ID = "cbf2026-two-range-reacquisition-v1"
+PROTOCOL_SCHEMA_ID = "cbf2026-two-range-reacquisition-protocol-v2"
+REGISTRATION_SCHEMA_ID = "cbf2026-two-range-reacquisition-registration-v2"
+PROTOCOL_ID = "cbf2026-two-range-reacquisition-v2"
 RAW_SCHEMA_ID = replay.RAW_SCHEMA_ID
 ANALYSIS_SCHEMA_ID = analyzer.ANALYSIS_SCHEMA_ID
 METHOD_ID = method.METHOD_ID
@@ -300,31 +300,41 @@ EXPECTED_COMPARATOR_BINDINGS = {
 _BOUND_COMPARATOR_ITEMS = tuple(EXPECTED_COMPARATOR_BINDINGS.items())
 
 ROOTS = {
-    "smoke_a": "/private/tmp/cbf2026-two-range-reacquisition-smoke-v1-a",
-    "smoke_b": "/private/tmp/cbf2026-two-range-reacquisition-smoke-v1-b",
+    "smoke_a": "/private/tmp/cbf2026-two-range-reacquisition-smoke-v2-a",
+    "smoke_b": "/private/tmp/cbf2026-two-range-reacquisition-smoke-v2-b",
     "smoke_analyzer_a": (
-        "/private/tmp/cbf2026-two-range-reacquisition-smoke-analysis-v1-a"
+        "/private/tmp/cbf2026-two-range-reacquisition-smoke-analysis-v2-a"
     ),
     "smoke_analyzer_b": (
-        "/private/tmp/cbf2026-two-range-reacquisition-smoke-analysis-v1-b"
+        "/private/tmp/cbf2026-two-range-reacquisition-smoke-analysis-v2-b"
     ),
     "registered_replay": (
-        "/private/tmp/cbf2026-two-range-reacquisition-development/v1"
+        "/private/tmp/cbf2026-two-range-reacquisition-development/v2"
     ),
     "registered_analyzer": (
-        "/private/tmp/cbf2026-two-range-reacquisition-analysis/v1"
+        "/private/tmp/cbf2026-two-range-reacquisition-analysis/v2"
     ),
 }
 _BOUND_ROOT_ITEMS = tuple(ROOTS.items())
 
+RETIRED_ROOTS = (
+    "/private/tmp/cbf2026-two-range-reacquisition-smoke-v1-a",
+    "/private/tmp/cbf2026-two-range-reacquisition-smoke-v1-b",
+    "/private/tmp/cbf2026-two-range-reacquisition-smoke-analysis-v1-a",
+    "/private/tmp/cbf2026-two-range-reacquisition-smoke-analysis-v1-b",
+    "/private/tmp/cbf2026-two-range-reacquisition-development/v1",
+    "/private/tmp/cbf2026-two-range-reacquisition-analysis/v1",
+)
+_BOUND_RETIRED_ROOTS = RETIRED_ROOTS
+
 GENERATED_PROTOCOL_PATHS = (
     (
         "docs/diagnostics/"
-        "2026-07-30-cbf2026-two-range-reacquisition-protocol-v1.md"
+        "2026-07-31-cbf2026-two-range-reacquisition-protocol-v2.md"
     ),
     (
         "docs/diagnostics/"
-        "2026-07-30-cbf2026-two-range-reacquisition-protocol-v1.json"
+        "2026-07-31-cbf2026-two-range-reacquisition-protocol-v2.json"
     ),
 )
 
@@ -419,12 +429,12 @@ def production_invocation_contract() -> dict:
 
 PROTOCOL_RELATIVE_PATH = (
     "docs/diagnostics/"
-    "2026-07-30-cbf2026-two-range-reacquisition-protocol-v1.json"
+    "2026-07-31-cbf2026-two-range-reacquisition-protocol-v2.json"
 )
 AUTHORIZATION_RELATIVE_PATH = (
     "docs/diagnostics/reviews/"
-    "2026-07-30-cbf2026-two-range-reacquisition-"
-    "registered-authorization.json"
+    "2026-07-31-cbf2026-two-range-reacquisition-"
+    "registered-v2-authorization.json"
 )
 
 
@@ -1293,11 +1303,11 @@ def _validate_schema_ids(protocol: Mapping) -> None:
     expected = (
         (
             protocol["schema_id"],
-            "cbf2026-two-range-reacquisition-protocol-v1",
+            "cbf2026-two-range-reacquisition-protocol-v2",
         ),
         (
             protocol["registration_schema_id"],
-            "cbf2026-two-range-reacquisition-registration-v1",
+            "cbf2026-two-range-reacquisition-registration-v2",
         ),
         (
             protocol["raw_schema"]["schema_id"],
@@ -1310,7 +1320,7 @@ def _validate_schema_ids(protocol: Mapping) -> None:
     )
     if any(observed != required for observed, required in expected):
         raise ValueError("protocol schema declaration differs")
-    if protocol["protocol_id"] != "cbf2026-two-range-reacquisition-v1":
+    if protocol["protocol_id"] != "cbf2026-two-range-reacquisition-v2":
         raise ValueError("protocol schema stable ID differs")
     if (
         protocol["experiment"]["method"]
@@ -1660,7 +1670,7 @@ def _validate_protocol(protocol: object) -> None:
 REPOSITORY_SOURCE_PATHS = {
     "implementation_plan": Path(
         "docs/superpowers/plans/"
-        "2026-07-30-cbf2026-two-range-reacquisition-implementation.md"
+        "2026-07-31-cbf2026-two-range-smoke-v2-recovery.md"
     ),
     "two_range_reacquisition_source": Path(
         "scripts/diagnostics/two_range_reacquisition.py"
@@ -2366,9 +2376,16 @@ def _validate_binding_files(repository_root: Path) -> None:
 def _assert_registered_roots_absent() -> None:
     if tuple(ROOTS.items()) != _BOUND_ROOT_ITEMS:
         raise ValueError(
-            "root contract changed; retired v2/v3/v4 roots are forbidden"
+            "current v2 root contract changed"
         )
-    for name, root in ROOTS.items():
+    if RETIRED_ROOTS != _BOUND_RETIRED_ROOTS:
+        raise ValueError("retired v1 root contract changed")
+    guarded_roots = (
+        *ROOTS.items(),
+        *((f"retired_v1_{index}", root)
+          for index, root in enumerate(RETIRED_ROOTS)),
+    )
+    for name, root in guarded_roots:
         path = Path(root)
         if path.is_symlink():
             raise ValueError(

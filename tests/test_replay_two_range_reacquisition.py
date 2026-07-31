@@ -52,6 +52,55 @@ class DirectCliBootstrapTests(unittest.TestCase):
         self.assertIn("--protocol-path", completed.stdout)
         self.assertIn("--output-root", completed.stdout)
 
+    def test_registered_namespace_is_exact_v2_while_raw_schema_remains_v1(self):
+        self.assertEqual(
+            (
+                replay.REGISTERED_PROTOCOL_SCHEMA_ID,
+                replay.REGISTERED_AUTHORIZATION_SCHEMA_ID,
+                replay.REGISTERED_PROTOCOL_ID,
+                replay.RAW_SCHEMA_ID,
+            ),
+            (
+                "cbf2026-two-range-reacquisition-protocol-v2",
+                "cbf2026-two-range-reacquisition-registration-v2",
+                "cbf2026-two-range-reacquisition-v2",
+                "cbf2026-two-range-reacquisition-raw-v1",
+            ),
+        )
+        self.assertEqual(
+            (
+                replay.REGISTERED_REPLAY_ROOT,
+                replay.REGISTERED_ANALYZER_ROOT,
+                replay.REGISTERED_PROTOCOL_RELATIVE_PATH,
+                replay.REGISTERED_AUTHORIZATION_RELATIVE_PATH,
+                replay.REGISTERED_PREFLIGHT_REVIEW_RELATIVE_PATH,
+                replay.REGISTERED_SMOKE_REPORT_RELATIVE_PATH,
+            ),
+            (
+                "/private/tmp/cbf2026-two-range-reacquisition-development/v2",
+                "/private/tmp/cbf2026-two-range-reacquisition-analysis/v2",
+                (
+                    "docs/diagnostics/"
+                    "2026-07-31-cbf2026-two-range-reacquisition-"
+                    "protocol-v2.json"
+                ),
+                (
+                    "docs/diagnostics/reviews/"
+                    "2026-07-31-cbf2026-two-range-reacquisition-"
+                    "registered-v2-authorization.json"
+                ),
+                (
+                    "docs/diagnostics/reviews/"
+                    "2026-07-31-cbf2026-two-range-reacquisition-"
+                    "protocol-v2-review.md"
+                ),
+                (
+                    "docs/diagnostics/"
+                    "2026-07-31-cbf2026-two-range-reacquisition-smoke-v2.md"
+                ),
+            ),
+        )
+
 
 class OrderedStrictJsonTests(unittest.TestCase):
     def test_declared_non_alphabetical_order_is_preserved(self):
@@ -1473,7 +1522,7 @@ class ProducerLifecycleTests(unittest.TestCase):
             protocol = root / "protocol.json"
             protocol.write_text(
                 json.dumps({
-                    "schema_id": "cbf2026-two-range-reacquisition-protocol-v1",
+                    "schema_id": "cbf2026-two-range-reacquisition-protocol-v3",
                     "protocol_id": "arbitrary",
                     "disk_contract": {
                         "raw_bundle_max_allocated_bytes": 100_000_000,

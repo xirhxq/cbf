@@ -377,12 +377,12 @@ def canonical_registered_result(result):
     paths = {
         "protocol": (
             "/tmp/docs/diagnostics/"
-            "2026-07-30-cbf2026-two-range-reacquisition-protocol-v1.json"
+            "2026-07-31-cbf2026-two-range-reacquisition-protocol-v2.json"
         ),
         "authorization": (
             "/tmp/docs/diagnostics/reviews/"
-            "2026-07-30-cbf2026-two-range-reacquisition-"
-            "registered-authorization.json"
+            "2026-07-31-cbf2026-two-range-reacquisition-"
+            "registered-v2-authorization.json"
         ),
         "raw_manifest": "/tmp/raw/manifest.json",
         "raw_compressed_process": (
@@ -4151,14 +4151,14 @@ def valid_analysis_manifest(
     )
     protocol_path = (
         "/tmp/docs/diagnostics/"
-        "2026-07-30-cbf2026-two-range-reacquisition-protocol-v1.json"
+        "2026-07-31-cbf2026-two-range-reacquisition-protocol-v2.json"
         if invocation == "registered_analyzer"
         else "/tmp/protocol.json"
     )
     authorization_path = (
         "/tmp/docs/diagnostics/reviews/"
-        "2026-07-30-cbf2026-two-range-reacquisition-"
-        "registered-authorization.json"
+        "2026-07-31-cbf2026-two-range-reacquisition-"
+        "registered-v2-authorization.json"
     )
     return analyzer._analysis_manifest(
         protocol_id="protocol-v1",

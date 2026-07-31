@@ -409,27 +409,27 @@ class ProtocolSchemaTests(unittest.TestCase):
             {
                 "smoke_a": (
                     "/private/tmp/"
-                    "cbf2026-two-range-reacquisition-smoke-v1-a"
+                    "cbf2026-two-range-reacquisition-smoke-v2-a"
                 ),
                 "smoke_b": (
                     "/private/tmp/"
-                    "cbf2026-two-range-reacquisition-smoke-v1-b"
+                    "cbf2026-two-range-reacquisition-smoke-v2-b"
                 ),
                 "smoke_analyzer_a": (
                     "/private/tmp/"
-                    "cbf2026-two-range-reacquisition-smoke-analysis-v1-a"
+                    "cbf2026-two-range-reacquisition-smoke-analysis-v2-a"
                 ),
                 "smoke_analyzer_b": (
                     "/private/tmp/"
-                    "cbf2026-two-range-reacquisition-smoke-analysis-v1-b"
+                    "cbf2026-two-range-reacquisition-smoke-analysis-v2-b"
                 ),
                 "registered_replay": (
                     "/private/tmp/"
-                    "cbf2026-two-range-reacquisition-development/v1"
+                    "cbf2026-two-range-reacquisition-development/v2"
                 ),
                 "registered_analyzer": (
                     "/private/tmp/"
-                    "cbf2026-two-range-reacquisition-analysis/v1"
+                    "cbf2026-two-range-reacquisition-analysis/v2"
                 ),
             },
         )
@@ -444,13 +444,139 @@ class ProtocolSchemaTests(unittest.TestCase):
                 registrar.METHOD_ID,
             ),
             (
-                "cbf2026-two-range-reacquisition-protocol-v1",
-                "cbf2026-two-range-reacquisition-registration-v1",
+                "cbf2026-two-range-reacquisition-protocol-v2",
+                "cbf2026-two-range-reacquisition-registration-v2",
                 "cbf2026-two-range-reacquisition-raw-v1",
                 "cbf2026-two-range-reacquisition-analysis-v1",
                 "two_range_private_branch_reacquisition",
             ),
         )
+        self.assertEqual(
+            registrar.PROTOCOL_ID,
+            "cbf2026-two-range-reacquisition-v2",
+        )
+
+    def test_v2_document_paths_and_recovery_plan_are_exact(self):
+        self.assertEqual(
+            registrar.GENERATED_PROTOCOL_PATHS,
+            (
+                (
+                    "docs/diagnostics/"
+                    "2026-07-31-cbf2026-two-range-reacquisition-"
+                    "protocol-v2.md"
+                ),
+                (
+                    "docs/diagnostics/"
+                    "2026-07-31-cbf2026-two-range-reacquisition-"
+                    "protocol-v2.json"
+                ),
+            ),
+        )
+        self.assertEqual(
+            registrar.PROTOCOL_RELATIVE_PATH,
+            (
+                "docs/diagnostics/"
+                "2026-07-31-cbf2026-two-range-reacquisition-"
+                "protocol-v2.json"
+            ),
+        )
+        self.assertEqual(
+            registrar.AUTHORIZATION_RELATIVE_PATH,
+            (
+                "docs/diagnostics/reviews/"
+                "2026-07-31-cbf2026-two-range-reacquisition-"
+                "registered-v2-authorization.json"
+            ),
+        )
+        self.assertEqual(
+            registrar.replay.REGISTERED_PREFLIGHT_REVIEW_RELATIVE_PATH,
+            (
+                "docs/diagnostics/reviews/"
+                "2026-07-31-cbf2026-two-range-reacquisition-"
+                "protocol-v2-review.md"
+            ),
+        )
+        self.assertEqual(
+            registrar.replay.REGISTERED_SMOKE_REPORT_RELATIVE_PATH,
+            (
+                "docs/diagnostics/"
+                "2026-07-31-cbf2026-two-range-reacquisition-smoke-v2.md"
+            ),
+        )
+        self.assertEqual(
+            registrar.REPOSITORY_SOURCE_PATHS["implementation_plan"],
+            Path(
+                "docs/superpowers/plans/"
+                "2026-07-31-cbf2026-two-range-smoke-v2-recovery.md"
+            ),
+        )
+
+    def test_retired_v1_roots_are_an_immutable_ordered_tuple(self):
+        self.assertTrue(
+            hasattr(registrar, "RETIRED_ROOTS"),
+            "production must declare RETIRED_ROOTS",
+        )
+        self.assertIs(type(registrar.RETIRED_ROOTS), tuple)
+        self.assertEqual(
+            registrar.RETIRED_ROOTS,
+            (
+                "/private/tmp/cbf2026-two-range-reacquisition-smoke-v1-a",
+                "/private/tmp/cbf2026-two-range-reacquisition-smoke-v1-b",
+                (
+                    "/private/tmp/"
+                    "cbf2026-two-range-reacquisition-smoke-analysis-v1-a"
+                ),
+                (
+                    "/private/tmp/"
+                    "cbf2026-two-range-reacquisition-smoke-analysis-v1-b"
+                ),
+                "/private/tmp/cbf2026-two-range-reacquisition-development/v1",
+                "/private/tmp/cbf2026-two-range-reacquisition-analysis/v1",
+            ),
+        )
+
+    def test_current_declarations_and_commands_exclude_retired_v1_namespace(self):
+        self.assertTrue(
+            hasattr(registrar, "RETIRED_ROOTS"),
+            "production must declare RETIRED_ROOTS",
+        )
+        sources = {
+            "truth_data": {"path": "/private/tmp/frozen/truth/data.json"},
+            "input_manifest": {
+                "path": "/private/tmp/frozen/truth/manifest.json"
+            },
+        }
+        current_namespace = json.dumps(
+            {
+                "protocol_schema": registrar.PROTOCOL_SCHEMA_ID,
+                "registration_schema": registrar.REGISTRATION_SCHEMA_ID,
+                "protocol_id": registrar.PROTOCOL_ID,
+                "roots": registrar.ROOTS,
+                "generated_protocol_paths": registrar.GENERATED_PROTOCOL_PATHS,
+                "protocol_path": registrar.PROTOCOL_RELATIVE_PATH,
+                "authorization_path": registrar.AUTHORIZATION_RELATIVE_PATH,
+                "commands": registrar.production_command_contract(sources),
+            },
+            sort_keys=True,
+        )
+        forbidden = (
+            "cbf2026-two-range-reacquisition-protocol-v1",
+            "cbf2026-two-range-reacquisition-registration-v1",
+            "cbf2026-two-range-reacquisition-v1",
+            (
+                "docs/diagnostics/"
+                "2026-07-30-cbf2026-two-range-reacquisition-protocol-v1"
+            ),
+            (
+                "docs/diagnostics/reviews/"
+                "2026-07-30-cbf2026-two-range-reacquisition-"
+                "registered-authorization.json"
+            ),
+            *registrar.RETIRED_ROOTS,
+        )
+        for retired_literal in forbidden:
+            with self.subTest(retired_literal=retired_literal):
+                self.assertNotIn(retired_literal, current_namespace)
 
     def test_invocation_contract_freezes_smoke_and_registered_cardinality(self):
         expected = {
@@ -461,7 +587,7 @@ class ProtocolSchemaTests(unittest.TestCase):
                 ),
                 "output_root": (
                     "/private/tmp/"
-                    "cbf2026-two-range-reacquisition-smoke-v1-a"
+                    "cbf2026-two-range-reacquisition-smoke-v2-a"
                 ),
                 "expected_rows": 18,
                 "authorization_required": False,
@@ -474,7 +600,7 @@ class ProtocolSchemaTests(unittest.TestCase):
                 ),
                 "output_root": (
                     "/private/tmp/"
-                    "cbf2026-two-range-reacquisition-smoke-v1-b"
+                    "cbf2026-two-range-reacquisition-smoke-v2-b"
                 ),
                 "expected_rows": 18,
                 "authorization_required": False,
@@ -484,11 +610,11 @@ class ProtocolSchemaTests(unittest.TestCase):
                 "invocation_name": "smoke_analyzer_a",
                 "input_root": (
                     "/private/tmp/"
-                    "cbf2026-two-range-reacquisition-smoke-v1-a"
+                    "cbf2026-two-range-reacquisition-smoke-v2-a"
                 ),
                 "output_root": (
                     "/private/tmp/"
-                    "cbf2026-two-range-reacquisition-smoke-analysis-v1-a"
+                    "cbf2026-two-range-reacquisition-smoke-analysis-v2-a"
                 ),
                 "expected_rows": 18,
                 "authorization_required": False,
@@ -498,11 +624,11 @@ class ProtocolSchemaTests(unittest.TestCase):
                 "invocation_name": "smoke_analyzer_b",
                 "input_root": (
                     "/private/tmp/"
-                    "cbf2026-two-range-reacquisition-smoke-v1-b"
+                    "cbf2026-two-range-reacquisition-smoke-v2-b"
                 ),
                 "output_root": (
                     "/private/tmp/"
-                    "cbf2026-two-range-reacquisition-smoke-analysis-v1-b"
+                    "cbf2026-two-range-reacquisition-smoke-analysis-v2-b"
                 ),
                 "expected_rows": 18,
                 "authorization_required": False,
@@ -517,7 +643,7 @@ class ProtocolSchemaTests(unittest.TestCase):
                 ),
                 "output_root": (
                     "/private/tmp/"
-                    "cbf2026-two-range-reacquisition-development/v1"
+                    "cbf2026-two-range-reacquisition-development/v2"
                 ),
                 "expected_rows": 140000,
                 "authorization_required": True,
@@ -527,11 +653,11 @@ class ProtocolSchemaTests(unittest.TestCase):
                 "invocation_name": "registered_analyzer",
                 "input_root": (
                     "/private/tmp/"
-                    "cbf2026-two-range-reacquisition-development/v1"
+                    "cbf2026-two-range-reacquisition-development/v2"
                 ),
                 "output_root": (
                     "/private/tmp/"
-                    "cbf2026-two-range-reacquisition-analysis/v1"
+                    "cbf2026-two-range-reacquisition-analysis/v2"
                 ),
                 "expected_rows": 140000,
                 "authorization_required": True,
@@ -565,7 +691,7 @@ class ProtocolSchemaTests(unittest.TestCase):
         }
         protocol_path = (
             "docs/diagnostics/"
-            "2026-07-30-cbf2026-two-range-reacquisition-protocol-v1.json"
+            "2026-07-31-cbf2026-two-range-reacquisition-protocol-v2.json"
         )
         replay_prefix = [
             "conda",
@@ -593,14 +719,14 @@ class ProtocolSchemaTests(unittest.TestCase):
         ]
         authorization = (
             "docs/diagnostics/reviews/"
-            "2026-07-30-cbf2026-two-range-reacquisition-"
-            "registered-authorization.json"
+            "2026-07-31-cbf2026-two-range-reacquisition-"
+            "registered-v2-authorization.json"
         )
         expected = {
             "smoke_a": replay_prefix
             + [
                 "--output-root",
-                "/private/tmp/cbf2026-two-range-reacquisition-smoke-v1-a",
+                "/private/tmp/cbf2026-two-range-reacquisition-smoke-v2-a",
                 "--run-seeds",
                 "--max-frames",
                 "0",
@@ -610,7 +736,7 @@ class ProtocolSchemaTests(unittest.TestCase):
             "smoke_b": replay_prefix
             + [
                 "--output-root",
-                "/private/tmp/cbf2026-two-range-reacquisition-smoke-v1-b",
+                "/private/tmp/cbf2026-two-range-reacquisition-smoke-v2-b",
                 "--run-seeds",
                 "--max-frames",
                 "0",
@@ -620,11 +746,11 @@ class ProtocolSchemaTests(unittest.TestCase):
             "smoke_analyzer_a": analyzer_prefix
             + [
                 "--raw-root",
-                "/private/tmp/cbf2026-two-range-reacquisition-smoke-v1-a",
+                "/private/tmp/cbf2026-two-range-reacquisition-smoke-v2-a",
                 "--output-root",
                 (
                     "/private/tmp/"
-                    "cbf2026-two-range-reacquisition-smoke-analysis-v1-a"
+                    "cbf2026-two-range-reacquisition-smoke-analysis-v2-a"
                 ),
                 "--invocation-name",
                 "smoke_analyzer_a",
@@ -632,11 +758,11 @@ class ProtocolSchemaTests(unittest.TestCase):
             "smoke_analyzer_b": analyzer_prefix
             + [
                 "--raw-root",
-                "/private/tmp/cbf2026-two-range-reacquisition-smoke-v1-b",
+                "/private/tmp/cbf2026-two-range-reacquisition-smoke-v2-b",
                 "--output-root",
                 (
                     "/private/tmp/"
-                    "cbf2026-two-range-reacquisition-smoke-analysis-v1-b"
+                    "cbf2026-two-range-reacquisition-smoke-analysis-v2-b"
                 ),
                 "--invocation-name",
                 "smoke_analyzer_b",
@@ -646,7 +772,7 @@ class ProtocolSchemaTests(unittest.TestCase):
                 "--output-root",
                 (
                     "/private/tmp/"
-                    "cbf2026-two-range-reacquisition-development/v1"
+                    "cbf2026-two-range-reacquisition-development/v2"
                 ),
                 "--run-seeds",
                 "20260727",
@@ -681,12 +807,12 @@ class ProtocolSchemaTests(unittest.TestCase):
                 "--raw-root",
                 (
                     "/private/tmp/"
-                    "cbf2026-two-range-reacquisition-development/v1"
+                    "cbf2026-two-range-reacquisition-development/v2"
                 ),
                 "--output-root",
                 (
                     "/private/tmp/"
-                    "cbf2026-two-range-reacquisition-analysis/v1"
+                    "cbf2026-two-range-reacquisition-analysis/v2"
                 ),
                 "--invocation-name",
                 "registered_analyzer",
@@ -903,12 +1029,12 @@ class ProtocolSchemaTests(unittest.TestCase):
                     "pending_external_record"
                 ),
                 "authorization_record_schema": (
-                    "cbf2026-two-range-reacquisition-registration-v1"
+                    "cbf2026-two-range-reacquisition-registration-v2"
                 ),
                 "authorization_record_path": (
                     "docs/diagnostics/reviews/"
-                    "2026-07-30-cbf2026-two-range-reacquisition-"
-                    "registered-authorization.json"
+                    "2026-07-31-cbf2026-two-range-reacquisition-"
+                    "registered-v2-authorization.json"
                 ),
             },
         )
@@ -1172,7 +1298,7 @@ class ProtocolSchemaTests(unittest.TestCase):
         mutations = (
             (
                 "authorization_record_schema",
-                "cbf2026-two-range-reacquisition-registration-v2",
+                "cbf2026-two-range-reacquisition-registration-v3",
             ),
             (
                 "authorization_record_path",
@@ -1581,13 +1707,24 @@ class RegistrationTests(unittest.TestCase):
                 )
 
     def test_preexisting_registered_root_rejects_before_outputs(self):
-        root = Path(registrar.ROOTS["smoke_a"])
-        self.assertFalse(root.exists())
-        self.assertFalse(root.is_symlink())
+        analogue_roots = {
+            name: str(self.root / "current-root-analogues" / name)
+            for name in registrar.INVOCATION_MEMBER_NAMES
+        }
+        root = Path(analogue_roots["smoke_a"])
+        root.parent.mkdir()
         root.mkdir()
         markdown = self.docs / "preexisting.md"
         output_json = self.docs / "preexisting.json"
-        try:
+        with mock.patch.object(
+            registrar,
+            "ROOTS",
+            analogue_roots,
+        ), mock.patch.object(
+            registrar,
+            "_BOUND_ROOT_ITEMS",
+            tuple(analogue_roots.items()),
+        ):
             with self.assertRaisesRegex(FileExistsError, "root"):
                 registrar.register_two_range_protocol(
                     repository_root=self.repository,
@@ -1596,17 +1733,31 @@ class RegistrationTests(unittest.TestCase):
                 )
             self.assertFalse(markdown.exists())
             self.assertFalse(output_json.exists())
-        finally:
-            root.rmdir()
 
-    def test_broken_symlink_registered_root_rejects_before_outputs(self):
-        root = Path(registrar.ROOTS["smoke_b"])
-        self.assertFalse(root.exists())
-        self.assertFalse(root.is_symlink())
+    def test_broken_symlink_retired_root_rejects_before_outputs(self):
+        self.assertTrue(
+            hasattr(registrar, "RETIRED_ROOTS")
+            and hasattr(registrar, "_BOUND_RETIRED_ROOTS"),
+            "production must bind retired roots",
+        )
+        retired_analogues = tuple(
+            str(self.root / "retired-root-analogues" / f"retired-{index}")
+            for index in range(6)
+        )
+        root = Path(retired_analogues[1])
+        root.parent.mkdir()
         root.symlink_to(self.root / "missing-target", target_is_directory=True)
         markdown = self.docs / "root-symlink.md"
         output_json = self.docs / "root-symlink.json"
-        try:
+        with mock.patch.object(
+            registrar,
+            "RETIRED_ROOTS",
+            retired_analogues,
+        ), mock.patch.object(
+            registrar,
+            "_BOUND_RETIRED_ROOTS",
+            retired_analogues,
+        ):
             with self.assertRaisesRegex(ValueError, "symbolic-link"):
                 registrar.register_two_range_protocol(
                     repository_root=self.repository,
@@ -1615,8 +1766,6 @@ class RegistrationTests(unittest.TestCase):
                 )
             self.assertFalse(markdown.exists())
             self.assertFalse(output_json.exists())
-        finally:
-            root.unlink()
 
     def test_retired_v2_v3_v4_roots_reject_for_each_invocation(self):
         legacy_roots = (
@@ -1658,32 +1807,80 @@ class RegistrationTests(unittest.TestCase):
                         ):
                             registrar._assert_registered_roots_absent()
 
-    def test_all_six_exact_registered_roots_are_guarded(self):
+    def test_all_current_and_retired_roots_are_guarded_by_real_filesystem_state(self):
+        self.assertTrue(
+            hasattr(registrar, "RETIRED_ROOTS")
+            and hasattr(registrar, "_BOUND_RETIRED_ROOTS"),
+            "production must bind retired roots",
+        )
         self.assertEqual(
             tuple(registrar.ROOTS),
             registrar.INVOCATION_MEMBER_NAMES,
         )
-        for invocation_name, root_string in registrar.ROOTS.items():
-            root = Path(root_string)
-            missing_parents = []
-            parent = root.parent
-            while not parent.exists():
-                missing_parents.append(parent)
-                parent = parent.parent
-            for missing_parent in reversed(missing_parents):
-                missing_parent.mkdir()
-            root.mkdir()
-            try:
-                with self.subTest(invocation_name=invocation_name):
-                    with self.assertRaisesRegex(
-                        FileExistsError,
-                        invocation_name,
-                    ):
-                        registrar._assert_registered_roots_absent()
-            finally:
-                root.rmdir()
-                for missing_parent in missing_parents:
-                    missing_parent.rmdir()
+        analogue_roots = {
+            name: str(self.root / "root-guard" / "current" / name)
+            for name in registrar.INVOCATION_MEMBER_NAMES
+        }
+        retired_analogues = tuple(
+            str(self.root / "root-guard" / "retired" / f"v1-{index}")
+            for index in range(6)
+        )
+        with mock.patch.object(
+            registrar,
+            "ROOTS",
+            analogue_roots,
+        ), mock.patch.object(
+            registrar,
+            "_BOUND_ROOT_ITEMS",
+            tuple(analogue_roots.items()),
+        ), mock.patch.object(
+            registrar,
+            "RETIRED_ROOTS",
+            retired_analogues,
+        ), mock.patch.object(
+            registrar,
+            "_BOUND_RETIRED_ROOTS",
+            retired_analogues,
+        ):
+            guarded = (
+                *(("current", name, path) for name, path in analogue_roots.items()),
+                *(("retired", f"v1-{index}", path)
+                  for index, path in enumerate(retired_analogues)),
+            )
+            for namespace, name, root_string in guarded:
+                root = Path(root_string)
+                root.parent.mkdir(parents=True, exist_ok=True)
+                with self.subTest(
+                    namespace=namespace,
+                    name=name,
+                    filesystem_entry="directory",
+                ):
+                    root.mkdir()
+                    try:
+                        with self.assertRaisesRegex(
+                            FileExistsError,
+                            "root",
+                        ):
+                            registrar._assert_registered_roots_absent()
+                    finally:
+                        root.rmdir()
+                with self.subTest(
+                    namespace=namespace,
+                    name=name,
+                    filesystem_entry="broken_symlink",
+                ):
+                    root.symlink_to(
+                        self.root / "missing-target",
+                        target_is_directory=True,
+                    )
+                    try:
+                        with self.assertRaisesRegex(
+                            ValueError,
+                            "symbolic-link",
+                        ):
+                            registrar._assert_registered_roots_absent()
+                    finally:
+                        root.unlink()
 
     def test_non_ancestor_implementation_parent_rejects_before_outputs(self):
         tree = subprocess.run(
@@ -1753,7 +1950,7 @@ class RegistrationTests(unittest.TestCase):
     def test_circular_protocol_parent_rejects_before_outputs(self):
         generated_protocol = self.repository / (
             "docs/diagnostics/"
-            "2026-07-30-cbf2026-two-range-reacquisition-protocol-v1.json"
+            "2026-07-31-cbf2026-two-range-reacquisition-protocol-v2.json"
         )
         generated_protocol.write_text("{}\n")
         subprocess.run(

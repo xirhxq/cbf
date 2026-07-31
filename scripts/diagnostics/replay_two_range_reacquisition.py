@@ -501,10 +501,10 @@ MECHANISM_FIXTURE_SHA256 = (
 )
 APPROVED_DESIGN_COMMIT = "20a61aad96af35ee7e16434fab0a5edaaea38ef0"
 REGISTERED_PROTOCOL_SCHEMA_ID = (
-    "cbf2026-two-range-reacquisition-protocol-v1"
+    "cbf2026-two-range-reacquisition-protocol-v2"
 )
 REGISTERED_AUTHORIZATION_SCHEMA_ID = (
-    "cbf2026-two-range-reacquisition-registration-v1"
+    "cbf2026-two-range-reacquisition-registration-v2"
 )
 REGISTERED_AUTHORIZATION_FIELDS = (
     "schema_id", "protocol_id", "protocol_sha256", "protocol_commit",
@@ -517,29 +517,29 @@ REGISTERED_AUTHORIZATION_FIELDS = (
     "user_authorization_text_sha256", "registered_replay_root",
     "registered_analyzer_root", "registered_retry_allowed",
 )
-REGISTERED_PROTOCOL_ID = "cbf2026-two-range-reacquisition-v1"
+REGISTERED_PROTOCOL_ID = "cbf2026-two-range-reacquisition-v2"
 REGISTERED_REPLAY_ROOT = (
-    "/private/tmp/cbf2026-two-range-reacquisition-development/v1"
+    "/private/tmp/cbf2026-two-range-reacquisition-development/v2"
 )
 REGISTERED_ANALYZER_ROOT = (
-    "/private/tmp/cbf2026-two-range-reacquisition-analysis/v1"
+    "/private/tmp/cbf2026-two-range-reacquisition-analysis/v2"
 )
 REGISTERED_PROTOCOL_RELATIVE_PATH = (
     "docs/diagnostics/"
-    "2026-07-30-cbf2026-two-range-reacquisition-protocol-v1.json"
+    "2026-07-31-cbf2026-two-range-reacquisition-protocol-v2.json"
 )
 REGISTERED_AUTHORIZATION_RELATIVE_PATH = (
     "docs/diagnostics/reviews/"
-    "2026-07-30-cbf2026-two-range-reacquisition-"
-    "registered-authorization.json"
+    "2026-07-31-cbf2026-two-range-reacquisition-"
+    "registered-v2-authorization.json"
 )
 REGISTERED_PREFLIGHT_REVIEW_RELATIVE_PATH = (
     "docs/diagnostics/reviews/"
-    "2026-07-30-cbf2026-two-range-reacquisition-protocol-v1-review.md"
+    "2026-07-31-cbf2026-two-range-reacquisition-protocol-v2-review.md"
 )
 REGISTERED_SMOKE_REPORT_RELATIVE_PATH = (
     "docs/diagnostics/"
-    "2026-07-30-cbf2026-two-range-reacquisition-smoke.md"
+    "2026-07-31-cbf2026-two-range-reacquisition-smoke-v2.md"
 )
 REGISTERED_PROTOCOL_SOURCE_NAMES = (
     "implementation_plan", "two_range_reacquisition_source",
