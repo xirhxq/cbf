@@ -115,6 +115,14 @@ def solve_two_range_reacquisition(
         or robot_id < 1
     ):
         return _rejected_attempt("two_range_robot_id_invalid")
+    if isinstance(ranging_sigma, bool) or not isinstance(ranging_sigma, Real):
+        return _rejected_attempt("two_range_input_invalid")
+    try:
+        sigma = float(ranging_sigma)
+    except (TypeError, ValueError, OverflowError):
+        return _rejected_attempt("two_range_input_invalid")
+    if not np.isfinite(sigma) or sigma <= 0.0:
+        return _rejected_attempt("two_range_input_invalid")
     try:
         positions = np.asarray(reference_positions, dtype=float)
         ranges = np.asarray(measurements, dtype=float)
@@ -189,7 +197,7 @@ def solve_two_range_reacquisition(
             covariances,
             ranges,
             start,
-            ranging_sigma,
+            sigma,
         )
         branches.append(
             {

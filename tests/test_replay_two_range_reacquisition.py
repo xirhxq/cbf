@@ -1,8 +1,12 @@
 import copy
+import errno
 import gzip
 import hashlib
 import json
 import math
+import os
+import subprocess
+import sys
 import tempfile
 import types
 import unittest
@@ -18,6 +22,34 @@ from scripts.diagnostics.two_range_reacquisition import reset_private_state
 FIXTURE_ROOT = Path(
     "tests/fixtures/cbf2026_two_range_reacquisition"
 )
+
+
+class DirectCliBootstrapTests(unittest.TestCase):
+    def test_direct_script_cli_cannot_import_preceding_shadow_package(self):
+        repository_script = Path(replay.__file__).resolve()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shadow_package = root / "scripts"
+            shadow_package.mkdir()
+            (shadow_package / "__init__.py").write_text(
+                'raise RuntimeError("shadow scripts package imported")\n',
+                encoding="utf-8",
+            )
+            environment = os.environ.copy()
+            environment["PYTHONPATH"] = str(root)
+
+            completed = subprocess.run(
+                [sys.executable, str(repository_script), "--help"],
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("--protocol-path", completed.stdout)
+        self.assertIn("--output-root", completed.stdout)
 
 
 class OrderedStrictJsonTests(unittest.TestCase):
@@ -862,6 +894,80 @@ class ProducerLifecycleTests(unittest.TestCase):
             max_frames=0,
             invocation_name="smoke_a",
         )
+
+    def _smoke_preflight_records(self, root):
+        roots = {
+            name: root / name
+            for name in (
+                "smoke_a",
+                "smoke_b",
+                "smoke_analyzer_a",
+                "smoke_analyzer_b",
+            )
+        }
+        protocol_record = {
+            "protocol_id": "hermetic-two-range-smoke-v1",
+            "disk_contract": {
+                "launch_minimum_free_bytes": 0,
+                "live_minimum_free_bytes": 0,
+                "raw_bundle_max_allocated_bytes": 100_000_000,
+            },
+            "invocations": {
+                name: {"output_root": str(path)}
+                for name, path in roots.items()
+            },
+        }
+        protocol_path = root / "protocol.json"
+        protocol_path.write_text(
+            json.dumps(protocol_record, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        for invocation in ("smoke_a", "smoke_b"):
+            replay.replay_two_range_reacquisition(
+                protocol_path=protocol_path,
+                data_path=FIXTURE_ROOT / "mechanism_20260727_180_12.json",
+                input_manifest_path=FIXTURE_ROOT / "manifest.json",
+                output_root=roots[invocation],
+                run_seeds=(),
+                max_frames=0,
+                invocation_name=invocation,
+            )
+        manifests = {
+            invocation: json.loads(
+                (roots[invocation] / "manifest.json").read_bytes(),
+            )
+            for invocation in ("smoke_a", "smoke_b")
+        }
+        validation_protocol = {
+            **protocol_record,
+            "sources": manifests["smoke_a"]["source_identities"],
+        }
+        authorization = {
+            field: "0" * 64
+            for field in (
+                "smoke_a_compressed_sha256",
+                "smoke_a_decompressed_sha256",
+                "smoke_b_compressed_sha256",
+                "smoke_b_decompressed_sha256",
+                "smoke_analyzer_a_json_sha256",
+                "smoke_analyzer_a_markdown_sha256",
+                "smoke_analyzer_b_json_sha256",
+                "smoke_analyzer_b_markdown_sha256",
+                "smoke_semantic_payload_sha256",
+            )
+        }
+        authorization["protocol_sha256"] = manifests[
+            "smoke_a"
+        ]["protocol_identity"]["sha256"]
+        for invocation in ("smoke_a", "smoke_b"):
+            process = manifests[invocation]["process_identity"]
+            authorization[
+                f"{invocation}_compressed_sha256"
+            ] = process["compressed_sha256"]
+            authorization[
+                f"{invocation}_decompressed_sha256"
+            ] = process["decompressed_sha256"]
+        return validation_protocol, authorization, roots, manifests
 
     def _registered_records(self, root):
         protocol_path = root / "protocol.json"
@@ -1749,6 +1855,163 @@ class ProducerLifecycleTests(unittest.TestCase):
             with self.assertRaises((FileNotFoundError, ValueError)):
                 verifier(protocol, authorization)
 
+    def test_smoke_preflight_rejects_wrong_raw_manifest_schema(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(str(directory).replace("/var/", "/private/var/", 1))
+            protocol, authorization, roots, manifests = (
+                self._smoke_preflight_records(root)
+            )
+            manifest = manifests["smoke_a"]
+            manifest["schema_id"] = "forged-raw-schema"
+            (roots["smoke_a"] / "manifest.json").write_text(
+                json.dumps(manifest, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "smoke_a.*manifest|raw manifest",
+            ):
+                replay._validate_smoke_evidence_binding(
+                    protocol,
+                    authorization,
+                )
+
+    def test_smoke_preflight_rejects_forged_process_descriptor_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(str(directory).replace("/var/", "/private/var/", 1))
+            protocol, authorization, roots, manifests = (
+                self._smoke_preflight_records(root)
+            )
+            manifest = manifests["smoke_a"]
+            manifest["process_identity"]["device"] += 1
+            (roots["smoke_a"] / "manifest.json").write_text(
+                json.dumps(manifest, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "smoke_a.*process identity",
+            ):
+                replay._validate_smoke_evidence_binding(
+                    protocol,
+                    authorization,
+                )
+
+    def test_smoke_preflight_rejects_hash_matching_relocated_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(str(directory).replace("/var/", "/private/var/", 1))
+            protocol, authorization, roots, manifests = (
+                self._smoke_preflight_records(root)
+            )
+            manifest = manifests["smoke_a"]
+            original = roots["smoke_a"] / replay.RAW_PROCESS_NAME
+            relocated = roots["smoke_a"] / "relocated-smoke.jsonl.gz"
+            relocated.write_bytes(original.read_bytes())
+            metadata = relocated.stat()
+            process = manifest["process_identity"]
+            process.update({
+                "path": str(relocated),
+                "device": metadata.st_dev,
+                "inode": metadata.st_ino,
+                "size": metadata.st_size,
+                "allocated_bytes": metadata.st_blocks * 512,
+                "mtime_ns": metadata.st_mtime_ns,
+            })
+            (roots["smoke_a"] / "manifest.json").write_text(
+                json.dumps(manifest, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "smoke_a.*process path",
+            ):
+                replay._validate_smoke_evidence_binding(
+                    protocol,
+                    authorization,
+                )
+
+    def test_smoke_preflight_rejects_protocol_and_source_identity_mismatch(self):
+        mutations = {
+            "protocol": lambda manifest: manifest[
+                "protocol_identity"
+            ].__setitem__(
+                "device",
+                manifest["protocol_identity"]["device"] + 1,
+            ),
+            "source": lambda manifest: next(
+                iter(manifest["source_identities"].values()),
+            ).__setitem__(
+                "device",
+                next(
+                    iter(manifest["source_identities"].values()),
+                )["device"] + 1,
+            ),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                root = Path(
+                    str(directory).replace("/var/", "/private/var/", 1),
+                )
+                protocol, authorization, roots, manifests = (
+                    self._smoke_preflight_records(root)
+                )
+                manifest = manifests["smoke_a"]
+                mutate(manifest)
+                (roots["smoke_a"] / "manifest.json").write_text(
+                    json.dumps(manifest, separators=(",", ":")) + "\n",
+                    encoding="utf-8",
+                )
+
+                with self.assertRaisesRegex(
+                    ValueError,
+                    f"smoke_a.*{label} identity",
+                ):
+                    replay._validate_smoke_evidence_binding(
+                        protocol,
+                        authorization,
+                    )
+
+    def test_smoke_preflight_revalidates_manifest_after_process_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(str(directory).replace("/var/", "/private/var/", 1))
+            protocol, authorization, roots, manifests = (
+                self._smoke_preflight_records(root)
+            )
+            manifest_path = roots["smoke_a"] / "manifest.json"
+            real_hashes = replay._pinned_gzip_hashes
+            mutated = False
+
+            def hash_then_mutate(path, *, identity_sink=None):
+                nonlocal mutated
+                hashes = real_hashes(path, identity_sink=identity_sink)
+                if not mutated:
+                    manifest = manifests["smoke_a"]
+                    manifest["process_identity"]["device"] += 1
+                    manifest_path.write_text(
+                        json.dumps(manifest, separators=(",", ":")) + "\n",
+                        encoding="utf-8",
+                    )
+                    mutated = True
+                return hashes
+
+            with mock.patch.object(
+                replay,
+                "_pinned_gzip_hashes",
+                side_effect=hash_then_mutate,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "smoke_a.*manifest identity changed",
+                ):
+                    replay._validate_smoke_evidence_binding(
+                        protocol,
+                        authorization,
+                    )
+            self.assertTrue(mutated)
+
     def test_live_floor_is_rechecked_inside_row_loop(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1781,20 +2044,293 @@ class ProducerLifecycleTests(unittest.TestCase):
                     self._run(protocol, output)
             self._assert_forensic_not_completed(output)
 
-    def test_post_completed_rename_failure_retracts_visible_completed_manifest(self):
+    def test_quarantine_swap_after_identity_check_is_never_unlinked(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(str(directory).replace("/var/", "/private/var/", 1))
+            output = root / "quarantine-swap"
+            transaction = replay._create_exact_root(output)
+            manifest = output / "manifest.json"
+            foreign = output / "foreign-manifest.json"
+            owned_preserved = output / "owned-preserved.json"
+            manifest.write_bytes(b"owned manifest\n")
+            foreign_payload = b"foreign quarantine inode must survive\n"
+            foreign.write_bytes(foreign_payload)
+            expected_metadata = manifest.stat()
+            expected_identity = (
+                expected_metadata.st_dev,
+                expected_metadata.st_ino,
+            )
+            real_stat = replay.os.stat
+            real_rename = replay.os.rename
+            injected = False
+
+            def swap_after_quarantine_identity(
+                path,
+                *,
+                dir_fd=None,
+                follow_symlinks=True,
+            ):
+                nonlocal injected
+                metadata = real_stat(
+                    path,
+                    dir_fd=dir_fd,
+                    follow_symlinks=follow_symlinks,
+                )
+                if (
+                    str(path).startswith(
+                        ".manifest.json.quarantine.",
+                    )
+                    and not injected
+                ):
+                    real_rename(
+                        path,
+                        owned_preserved.name,
+                        src_dir_fd=dir_fd,
+                        dst_dir_fd=dir_fd,
+                    )
+                    real_rename(
+                        foreign.name,
+                        path,
+                        src_dir_fd=dir_fd,
+                        dst_dir_fd=dir_fd,
+                    )
+                    injected = True
+                return metadata
+
+            try:
+                with mock.patch.object(
+                    replay.os,
+                    "stat",
+                    side_effect=swap_after_quarantine_identity,
+                ):
+                    removed, quarantine_name = (
+                        replay._retract_manifest_identity(
+                            transaction,
+                            expected_identity,
+                        )
+                    )
+
+                quarantines = list(
+                    output.glob(".manifest.json.quarantine.*"),
+                )
+                self.assertEqual(
+                    (
+                        injected,
+                        removed,
+                        quarantine_name,
+                        manifest.exists(),
+                        [path.read_bytes() for path in quarantines],
+                        owned_preserved.read_bytes(),
+                    ),
+                    (
+                        True,
+                        True,
+                        quarantines[0].name,
+                        False,
+                        [foreign_payload],
+                        b"owned manifest\n",
+                    ),
+                )
+            finally:
+                replay._close_output_transaction(transaction)
+
+    def test_quarantine_destination_collision_preserves_both_entries(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            protocol = self._protocol(root)
+            output = root / "quarantine-destination-collision"
+            quarantine_token = "d" * 32
+            quarantine_name = (
+                f".manifest.json.quarantine.{quarantine_token}"
+            )
+            foreign_payload = b"foreign quarantine destination\n"
+            real_publish = replay._publish_manifest
+            real_assert_root = replay._assert_registered_root
+            real_rename = replay.os.rename
+            real_noreplace = getattr(replay, "_rename_noreplace", None)
+            real_token_hex = replay.secrets.token_hex
+            publications = []
+            emergency_publications = []
+            root_checks = 0
+            collision_installed = False
+
+            def token_hex(length):
+                if length == 16:
+                    return quarantine_token
+                return real_token_hex(length)
+
+            def install_collision(root_descriptor):
+                nonlocal collision_installed
+                descriptor = os.open(
+                    quarantine_name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                    dir_fd=root_descriptor,
+                )
+                try:
+                    os.write(descriptor, foreign_payload)
+                finally:
+                    os.close(descriptor)
+                collision_installed = True
+
+            def collide_before_ordinary_rename(
+                source,
+                destination,
+                *,
+                src_dir_fd=None,
+                dst_dir_fd=None,
+            ):
+                if (
+                    source == "manifest.json"
+                    and destination == quarantine_name
+                    and not collision_installed
+                ):
+                    install_collision(dst_dir_fd)
+                return real_rename(
+                    source,
+                    destination,
+                    src_dir_fd=src_dir_fd,
+                    dst_dir_fd=dst_dir_fd,
+                )
+
+            def collide_before_noreplace(
+                source,
+                destination,
+                *,
+                src_dir_fd,
+                dst_dir_fd,
+            ):
+                if not collision_installed:
+                    install_collision(dst_dir_fd)
+                if real_noreplace is None:
+                    raise AssertionError("_rename_noreplace was not available")
+                return real_noreplace(
+                    source,
+                    destination,
+                    src_dir_fd=src_dir_fd,
+                    dst_dir_fd=dst_dir_fd,
+                )
+
+            def assert_root_then_fail(transaction):
+                nonlocal root_checks
+                real_assert_root(transaction)
+                root_checks += 1
+                if root_checks == 2:
+                    raise ValueError("injected terminal boundary failure")
+
+            def publish(transaction, manifest):
+                publications.append(manifest["status"])
+                if manifest["status"] == "failed":
+                    raise OSError("failed publication must be suppressed")
+                return real_publish(transaction, manifest)
+
+            with mock.patch.object(
+                replay.secrets,
+                "token_hex",
+                side_effect=token_hex,
+            ), mock.patch.object(
+                replay.os,
+                "rename",
+                side_effect=collide_before_ordinary_rename,
+            ), mock.patch.object(
+                replay,
+                "_rename_noreplace",
+                create=True,
+                side_effect=collide_before_noreplace,
+            ), mock.patch.object(
+                replay,
+                "_assert_registered_root",
+                side_effect=assert_root_then_fail,
+            ), mock.patch.object(
+                replay,
+                "_publish_manifest",
+                side_effect=publish,
+            ), mock.patch.object(
+                replay,
+                "_emergency_manifest",
+                side_effect=lambda *args, **kwargs: (
+                    emergency_publications.append("emergency")
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "terminal boundary",
+                ) as raised:
+                    self._run(protocol, output)
+
+            manifest = output / "manifest.json"
+            quarantine = output / quarantine_name
+            self.assertEqual(
+                (
+                    publications,
+                    emergency_publications,
+                    (
+                        json.loads(manifest.read_bytes())["status"]
+                        if manifest.exists() else None
+                    ),
+                    (
+                        quarantine.read_bytes()
+                        if quarantine.exists() else None
+                    ),
+                    any(
+                        f"[Errno {errno.EEXIST}]" in note
+                        for note in getattr(
+                            raised.exception,
+                            "__notes__",
+                            (),
+                        )
+                    ),
+                ),
+                (
+                    ["creating", "completed"],
+                    [],
+                    "completed",
+                    foreign_payload,
+                    True,
+                ),
+            )
+
+    def test_retraction_fsync_failure_suppresses_forensic_publication(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             protocol = self._protocol(root)
             output = root / "post-rename"
             real_publish = replay._publish_manifest
+            events = []
+            completed_identity = None
 
             def publish(transaction, manifest):
+                nonlocal completed_identity
                 if manifest["status"] == "completed":
                     real_fsync = replay.os.fsync
+                    root_calls = 0
 
                     def fail_root_fsync(descriptor):
+                        nonlocal completed_identity, root_calls
                         if descriptor == transaction["root_fd"]:
+                            root_calls += 1
+                            if root_calls == 1:
+                                linked = os.stat(
+                                    "manifest.json",
+                                    dir_fd=transaction["root_fd"],
+                                    follow_symlinks=False,
+                                )
+                                completed_identity = (
+                                    linked.st_dev,
+                                    linked.st_ino,
+                                )
+                            events.append(
+                                "completed-root-fsync-failed"
+                                if root_calls == 1
+                                else "retraction-root-fsync-failed",
+                            )
                             raise OSError("injected post-rename fsync failure")
+                        if descriptor == transaction["parent_fd"]:
+                            events.append("retraction-parent-fsync")
                         return real_fsync(descriptor)
 
                     with mock.patch.object(
@@ -1804,7 +2340,107 @@ class ProducerLifecycleTests(unittest.TestCase):
                     ):
                         return real_publish(transaction, manifest)
                 if manifest["status"] == "failed":
+                    events.append("failed-publication")
                     raise OSError("injected failed replacement failure")
+                return real_publish(transaction, manifest)
+
+            def emergency(*args, **kwargs):
+                events.append("emergency-publication")
+
+            with mock.patch.object(
+                replay,
+                "_publish_manifest",
+                side_effect=publish,
+            ), mock.patch.object(
+                replay,
+                "_emergency_manifest",
+                side_effect=emergency,
+            ):
+                with self.assertRaisesRegex(
+                    OSError,
+                    "post-rename",
+                ) as raised:
+                    self._run(protocol, output)
+            quarantines = list(
+                output.glob(".manifest.json.quarantine.*"),
+            )
+            quarantined = json.loads(quarantines[0].read_bytes())
+            metadata = quarantines[0].stat()
+            self.assertEqual(
+                (
+                    events,
+                    (output / "manifest.json").exists(),
+                    tuple(quarantined),
+                    quarantined["schema_id"],
+                    quarantined["status"],
+                    (metadata.st_dev, metadata.st_ino),
+                    any(
+                        quarantines[0].name in note
+                        for note in getattr(
+                            raised.exception,
+                            "__notes__",
+                            (),
+                        )
+                    ),
+                ),
+                (
+                    [
+                        "completed-root-fsync-failed",
+                        "retraction-root-fsync-failed",
+                        "retraction-parent-fsync",
+                    ],
+                    False,
+                    replay.RAW_MANIFEST_FIELDS,
+                    replay.RAW_SCHEMA_ID,
+                    "completed",
+                    completed_identity,
+                    True,
+                ),
+            )
+
+    def test_post_rename_fsync_failure_durably_retracts_before_failed_publish(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            protocol = self._protocol(root)
+            output = root / "durable-post-rename-retraction"
+            real_publish = replay._publish_manifest
+            events = []
+            visible_at_failed_publish = None
+
+            def publish(transaction, manifest):
+                nonlocal visible_at_failed_publish
+                if manifest["status"] == "completed":
+                    real_fsync = replay.os.fsync
+                    root_failure_injected = False
+
+                    def fail_first_root_fsync(descriptor):
+                        nonlocal root_failure_injected
+                        if descriptor == transaction["root_fd"]:
+                            if not root_failure_injected:
+                                root_failure_injected = True
+                                events.append("completed-root-fsync-failed")
+                                raise OSError(
+                                    "injected completed root fsync failure",
+                                )
+                            events.append("cleanup-root-fsync")
+                        elif descriptor == transaction["parent_fd"]:
+                            events.append("cleanup-parent-fsync")
+                        return real_fsync(descriptor)
+
+                    with mock.patch.object(
+                        replay.os,
+                        "fsync",
+                        side_effect=fail_first_root_fsync,
+                    ):
+                        return real_publish(transaction, manifest)
+                if manifest["status"] == "failed":
+                    visible_at_failed_publish = (
+                        output / "manifest.json"
+                    ).exists()
+                    events.append("failed-publication")
+                    raise OSError("injected failed manifest publication")
                 return real_publish(transaction, manifest)
 
             with mock.patch.object(
@@ -1812,15 +2448,105 @@ class ProducerLifecycleTests(unittest.TestCase):
                 "_publish_manifest",
                 side_effect=publish,
             ):
-                with self.assertRaisesRegex(OSError, "post-rename"):
+                with self.assertRaisesRegex(
+                    OSError,
+                    "completed root fsync",
+                ):
                     self._run(protocol, output)
-            visible = output / "manifest.json"
-            if visible.exists():
-                self.assertNotEqual(
-                    json.loads(visible.read_bytes())["status"],
-                    "completed",
-                )
+
+            self.assertFalse(visible_at_failed_publish)
+            self.assertEqual(
+                events,
+                [
+                    "completed-root-fsync-failed",
+                    "cleanup-root-fsync",
+                    "cleanup-parent-fsync",
+                    "failed-publication",
+                ],
+            )
             self._assert_forensic_not_completed(output)
+
+    def test_output_root_name_swap_at_terminal_delivery_rejects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            protocol = self._protocol(root)
+            output = root / "root-swap"
+            detached = root / "detached-root"
+            real_publish = replay._publish_manifest
+            swapped = False
+
+            def publish(transaction, manifest):
+                nonlocal swapped
+                result = real_publish(transaction, manifest)
+                if manifest["status"] == "completed" and not swapped:
+                    output.rename(detached)
+                    output.mkdir()
+                    swapped = True
+                return result
+
+            with mock.patch.object(
+                replay,
+                "_publish_manifest",
+                side_effect=publish,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "output root identity changed",
+                ):
+                    self._run(protocol, output)
+
+            self.assertTrue(swapped)
+            self.assertFalse((output / "manifest.json").exists())
+            detached_manifest = json.loads(
+                (detached / "manifest.json").read_bytes(),
+            )
+            self.assertNotEqual(detached_manifest["status"], "completed")
+
+    def test_root_swap_and_failed_terminal_publish_retracts_owned_completed_manifest(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            protocol = self._protocol(root)
+            output = root / "combined-terminal-failure"
+            detached = root / "detached-owned-root"
+            foreign_marker = "foreign replacement remains owned elsewhere"
+            real_publish = replay._publish_manifest
+            swapped = False
+
+            def publish(transaction, manifest):
+                nonlocal swapped
+                if manifest["status"] == "failed":
+                    raise OSError("injected failed manifest publication")
+                result = real_publish(transaction, manifest)
+                if manifest["status"] == "completed" and not swapped:
+                    output.rename(detached)
+                    output.mkdir()
+                    (output / "foreign.txt").write_text(
+                        foreign_marker,
+                        encoding="utf-8",
+                    )
+                    swapped = True
+                return result
+
+            with mock.patch.object(
+                replay,
+                "_publish_manifest",
+                side_effect=publish,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "output root identity changed",
+                ):
+                    self._run(protocol, output)
+
+            self.assertTrue(swapped)
+            self.assertEqual(
+                (output / "foreign.txt").read_text(encoding="utf-8"),
+                foreign_marker,
+            )
+            self.assertFalse((output / "manifest.json").exists())
+            self._assert_forensic_not_completed(detached)
 
     def test_start_space_failure_retains_failed_forensic_manifest(self):
         with tempfile.TemporaryDirectory() as directory:

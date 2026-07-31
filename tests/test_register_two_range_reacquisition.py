@@ -2,6 +2,7 @@ import copy
 import gzip
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -1819,6 +1820,39 @@ class RegistrationTests(unittest.TestCase):
                         output_markdown=markdown,
                         output_json=output_json,
                     )
+            self.assertFalse(markdown.exists())
+            self.assertFalse(output_json.exists())
+        finally:
+            markdown.unlink(missing_ok=True)
+            output_json.unlink(missing_ok=True)
+
+    def test_in_place_json_mutation_after_final_probe_is_rejected(self):
+        markdown = self.docs / "in-place-mutation.md"
+        output_json = self.docs / "in-place-mutation.json"
+        markdown_payload = b"owned markdown\n"
+        json_payload = b'{"owned":true}\n'
+
+        def mutate_json_in_place():
+            with output_json.open("r+b") as stream:
+                mutated = stream.read().replace(b"true", b"null")
+                self.assertEqual(len(mutated), len(json_payload))
+                stream.seek(0)
+                stream.write(mutated)
+                stream.flush()
+                os.fsync(stream.fileno())
+
+        try:
+            with self.assertRaisesRegex(
+                ValueError,
+                "content|payload|bytes|changed",
+            ):
+                registrar._write_paired_outputs(
+                    output_markdown=markdown,
+                    output_json=output_json,
+                    markdown_payload=markdown_payload,
+                    json_payload=json_payload,
+                    final_probe=mutate_json_in_place,
+                )
             self.assertFalse(markdown.exists())
             self.assertFalse(output_json.exists())
         finally:

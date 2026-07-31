@@ -427,6 +427,35 @@ class TwoRangeBranchSelectorTests(unittest.TestCase):
 
         self.assertEqual(attempt["failure_reason"], "two_range_input_invalid")
 
+    def test_two_range_rejects_invalid_ranging_sigma_as_input_invalid(self):
+        invalid_values = (
+            True,
+            False,
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+            0.0,
+            -0.5,
+            [0.5],
+            np.asarray(0.5),
+            "0.5",
+        )
+        for ranging_sigma in invalid_values:
+            with self.subTest(ranging_sigma=repr(ranging_sigma)):
+                kwargs = valid_two_range_kwargs()
+                kwargs["ranging_sigma"] = ranging_sigma
+
+                attempt = two_range.solve_two_range_reacquisition(**kwargs)
+
+                self.assertEqual(attempt["attempt_status"], "rejected")
+                self.assertEqual(
+                    attempt["failure_reason"],
+                    "two_range_input_invalid",
+                )
+                self.assertEqual(attempt["branches"], [])
+                self.assertIsNone(attempt["candidate"])
+                self.assertFalse(attempt["prior_used_for_branch_selection"])
+
     def test_two_range_rejects_invalid_private_covariance(self):
         kwargs = valid_two_range_kwargs()
         kwargs["private_prior"]["modeled_covariance"] = [

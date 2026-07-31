@@ -2539,6 +2539,39 @@ def _path_matches_descriptor(
     )
 
 
+def _descriptor_matches_payload(descriptor: int, payload: bytes) -> bool:
+    before = os.fstat(descriptor)
+    if not stat.S_ISREG(before.st_mode):
+        return False
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    captured = bytearray()
+    while True:
+        chunk = os.read(descriptor, 1024 * 1024)
+        if not chunk:
+            break
+        captured.extend(chunk)
+    after = os.fstat(descriptor)
+    stable_metadata = (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    ) == (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    )
+    return (
+        stable_metadata
+        and after.st_size == len(payload)
+        and hashlib.sha256(captured).digest()
+        == hashlib.sha256(payload).digest()
+    )
+
+
 def _rollback_owned_entry(
     *,
     parent_descriptor: int,
@@ -2684,7 +2717,7 @@ def _write_paired_outputs(
     markdown_descriptor = json_descriptor = None
     markdown_identity = json_identity = None
     flags = (
-        os.O_WRONLY
+        os.O_RDWR
         | os.O_CREAT
         | os.O_EXCL
         | getattr(os, "O_CLOEXEC", 0)
@@ -2734,6 +2767,16 @@ def _write_paired_outputs(
                 descriptor=descriptor,
             ):
                 raise ValueError(f"protocol target identity changed: {path}")
+            expected_payload = (
+                markdown_payload
+                if path == output_markdown
+                else json_payload
+            )
+            if not _descriptor_matches_payload(
+                descriptor,
+                expected_payload,
+            ):
+                raise ValueError(f"protocol target content changed: {path}")
     except BaseException as primary_error:
         cleanup_faults = []
         if markdown_parent is not None and markdown_descriptor is not None:

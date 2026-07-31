@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import gzip
 import hashlib
+import importlib.machinery
+import importlib.util
 import json
 import os
 import stat
@@ -12,12 +14,24 @@ import sys
 from pathlib import Path
 
 if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    _SCRIPT_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+    sys.path.insert(0, str(_SCRIPT_REPOSITORY_ROOT))
+    _SCRIPT_PACKAGE_SPEC = importlib.machinery.PathFinder.find_spec(
+        "scripts",
+        [str(_SCRIPT_REPOSITORY_ROOT)],
+    )
+    if (
+        _SCRIPT_PACKAGE_SPEC is None
+        or _SCRIPT_PACKAGE_SPEC.submodule_search_locations is None
+    ):
+        raise ImportError("implementation-root scripts package is unavailable")
+    sys.modules["scripts"] = importlib.util.module_from_spec(
+        _SCRIPT_PACKAGE_SPEC
+    )
 
 from scripts.diagnostics.replay_predictive_wnls_recovery import (
     _file_identity,
     _lstat_components,
-    _read_trusted_bytes,
 )
 from scripts.diagnostics.two_range_reacquisition import (
     propagate_private_state,
@@ -55,28 +69,156 @@ FIXTURE_ID = "mechanism_20260727_180_12"
 V4_PROCESS_NAME = "predictive-wnls-development.jsonl.gz"
 
 
+def _stable_file_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+    )
+
+
+def _open_v4_child(
+    root_descriptor: int,
+    child_name: str,
+    *,
+    description: str,
+) -> tuple[int, tuple[int, ...]]:
+    if (
+        not child_name
+        or child_name in {".", ".."}
+        or Path(child_name).name != child_name
+    ):
+        raise ValueError(f"{description} child name is invalid")
+    descriptor = os.open(
+        child_name,
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+        dir_fd=root_descriptor,
+    )
+    try:
+        metadata = os.fstat(descriptor)
+        linked = os.stat(
+            child_name,
+            dir_fd=root_descriptor,
+            follow_symlinks=False,
+        )
+        identity = _stable_file_identity(metadata)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or not stat.S_ISREG(linked.st_mode)
+            or _stable_file_identity(linked) != identity
+        ):
+            raise ValueError(f"{description} identity is invalid")
+        return descriptor, identity
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _assert_v4_child_identity(
+    root_descriptor: int,
+    child_name: str,
+    descriptor: int,
+    identity: tuple[int, ...],
+    *,
+    description: str,
+) -> None:
+    try:
+        metadata = os.fstat(descriptor)
+        linked = os.stat(
+            child_name,
+            dir_fd=root_descriptor,
+            follow_symlinks=False,
+        )
+    except (FileNotFoundError, OSError) as error:
+        raise ValueError(f"{description} identity changed") from error
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or not stat.S_ISREG(linked.st_mode)
+        or _stable_file_identity(metadata) != identity
+        or _stable_file_identity(linked) != identity
+    ):
+        raise ValueError(f"{description} identity changed")
+
+
+def _source_identity(
+    path: Path,
+    metadata: os.stat_result,
+    sha256: str,
+) -> dict:
+    return {
+        "path": str(path),
+        "sha256": sha256,
+        "device": metadata.st_dev,
+        "inode": metadata.st_ino,
+        "size": metadata.st_size,
+        "mtime_ns": metadata.st_mtime_ns,
+    }
+
+
 def _read_pinned_gzip_lines(
     path: Path,
     *,
     expected_compressed_sha256: str,
     expected_decompressed_sha256: str,
     identity_sink: dict | None = None,
+    descriptor: int | None = None,
+    root_descriptor: int | None = None,
+    child_name: str | None = None,
+    child_identity: tuple[int, ...] | None = None,
 ):
     """Yield decompressed lines from the descriptor whose bytes were hashed."""
     process_path = Path(path)
     if process_path.parts[:2] == ("/", "var"):
         process_path = Path("/private").joinpath(*process_path.parts[1:])
-    _lstat_components(process_path, leaf_required=True)
-    descriptor = os.open(
-        process_path,
-        os.O_RDONLY
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0),
-    )
+    owns_descriptor = descriptor is None
+    owns_root_descriptor = descriptor is None
+    if owns_descriptor:
+        if any(
+            value is not None
+            for value in (root_descriptor, child_name, child_identity)
+        ):
+            raise ValueError("v4 process descriptor binding is incomplete")
+        _lstat_components(process_path.parent, leaf_required=False)
+        root_descriptor = os.open(
+            process_path.parent,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            child_name = process_path.name
+            descriptor, child_identity = _open_v4_child(
+                root_descriptor,
+                child_name,
+                description="v4 process",
+            )
+        except BaseException:
+            os.close(root_descriptor)
+            raise
+    elif (
+        root_descriptor is None
+        or child_name is None
+        or child_identity is None
+    ):
+        raise ValueError("v4 process descriptor binding is incomplete")
+    if descriptor is None:
+        raise RuntimeError("v4 process descriptor was not opened")
     try:
         before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode):
             raise ValueError("v4 process must be a regular file")
+        _assert_v4_child_identity(
+            root_descriptor,
+            child_name,
+            descriptor,
+            child_identity,
+            description="v4 process",
+        )
         compressed_digest = hashlib.sha256()
         offset = 0
         while offset < before.st_size:
@@ -92,14 +234,11 @@ def _read_pinned_gzip_lines(
         compressed_sha256 = compressed_digest.hexdigest()
         if compressed_sha256 != expected_compressed_sha256:
             raise ValueError("v4 compressed process hash mismatch")
-        identity = {
-            "path": str(process_path),
-            "sha256": compressed_sha256,
-            "device": before.st_dev,
-            "inode": before.st_ino,
-            "size": before.st_size,
-            "mtime_ns": before.st_mtime_ns,
-        }
+        identity = _source_identity(
+            process_path,
+            before,
+            compressed_sha256,
+        )
         if identity_sink is not None:
             identity_sink.clear()
             identity_sink.update(identity)
@@ -113,45 +252,173 @@ def _read_pinned_gzip_lines(
         if decompressed_digest.hexdigest() != expected_decompressed_sha256:
             raise ValueError("v4 decompressed process hash mismatch")
         after = os.fstat(descriptor)
-        linked = os.stat(process_path, follow_symlinks=False)
-        expected_identity = (
-            before.st_dev,
-            before.st_ino,
-            before.st_size,
-            before.st_mtime_ns,
-        )
-        if (
-            (
-                after.st_dev,
-                after.st_ino,
-                after.st_size,
-                after.st_mtime_ns,
-            )
-            != expected_identity
-            or (
-                linked.st_dev,
-                linked.st_ino,
-                linked.st_size,
-                linked.st_mtime_ns,
-            )
-            != expected_identity
-        ):
+        if _stable_file_identity(after) != child_identity:
             raise ValueError("v4 process identity changed during extraction")
+        _assert_v4_child_identity(
+            root_descriptor,
+            child_name,
+            descriptor,
+            child_identity,
+            description="v4 process",
+        )
     finally:
-        os.close(descriptor)
+        if owns_descriptor:
+            os.close(descriptor)
+        if owns_root_descriptor:
+            os.close(root_descriptor)
 
 
-def read_v4_manifest(v4_root: Path) -> tuple[dict, dict]:
-    payload, identity = _read_trusted_bytes(
-        Path(v4_root) / "manifest.json",
-        expected_sha256=V4_MANIFEST_SHA256,
+def _normalize_v4_root(v4_root: Path) -> Path:
+    root = Path(v4_root)
+    if root.parts[:2] == ("/", "var"):
+        root = Path("/private").joinpath(*root.parts[1:])
+    if not root.is_absolute() or ".." in root.parts:
+        raise ValueError("v4 root must be normalized and absolute")
+    return root
+
+
+def _open_v4_root(v4_root: Path) -> tuple[int, tuple[int, int]]:
+    _lstat_components(v4_root, leaf_required=False)
+    descriptor = os.open(
+        v4_root,
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
     )
-    if payload is None:
-        raise RuntimeError("v4 manifest payload was not captured")
-    manifest = json.loads(payload)
-    if not isinstance(manifest, dict):
-        raise ValueError("v4 manifest must be a JSON object")
-    return manifest, identity
+    try:
+        metadata = os.fstat(descriptor)
+        linked = v4_root.lstat()
+        identity = (metadata.st_dev, metadata.st_ino)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or not stat.S_ISDIR(linked.st_mode)
+            or (linked.st_dev, linked.st_ino) != identity
+        ):
+            raise ValueError("v4 root identity is invalid")
+        return descriptor, identity
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _assert_v4_root_identity(
+    v4_root: Path,
+    descriptor: int,
+    identity: tuple[int, int],
+) -> None:
+    try:
+        _lstat_components(v4_root, leaf_required=False)
+        metadata = os.fstat(descriptor)
+        linked = v4_root.lstat()
+    except (FileNotFoundError, OSError) as error:
+        raise ValueError("v4 root identity changed") from error
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or not stat.S_ISDIR(linked.st_mode)
+        or (metadata.st_dev, metadata.st_ino) != identity
+        or (linked.st_dev, linked.st_ino) != identity
+    ):
+        raise ValueError("v4 root identity changed")
+
+
+def _read_descriptor_bytes(
+    descriptor: int,
+    size: int,
+    *,
+    description: str,
+) -> bytes:
+    chunks = []
+    offset = 0
+    while offset < size:
+        chunk = os.pread(
+            descriptor,
+            min(1024 * 1024, size - offset),
+            offset,
+        )
+        if not chunk:
+            raise ValueError(f"{description} short read")
+        chunks.append(chunk)
+        offset += len(chunk)
+    return b"".join(chunks)
+
+
+def _read_bound_v4_manifest(
+    v4_root: Path,
+    root_descriptor: int,
+    root_identity: tuple[int, int],
+) -> tuple[dict, dict, int, tuple[int, ...]]:
+    _assert_v4_root_identity(v4_root, root_descriptor, root_identity)
+    descriptor, child_identity = _open_v4_child(
+        root_descriptor,
+        "manifest.json",
+        description="v4 manifest",
+    )
+    try:
+        metadata = os.fstat(descriptor)
+        payload = _read_descriptor_bytes(
+            descriptor,
+            metadata.st_size,
+            description="v4 manifest",
+        )
+        sha256 = hashlib.sha256(payload).hexdigest()
+        if sha256 != V4_MANIFEST_SHA256:
+            raise ValueError("v4 manifest hash mismatch")
+        _assert_v4_child_identity(
+            root_descriptor,
+            "manifest.json",
+            descriptor,
+            child_identity,
+            description="v4 manifest",
+        )
+        _assert_v4_root_identity(v4_root, root_descriptor, root_identity)
+        manifest = json.loads(payload)
+        if not isinstance(manifest, dict):
+            raise ValueError("v4 manifest must be a JSON object")
+        if manifest.get("output_root") != str(v4_root):
+            raise ValueError(
+                "v4 manifest output_root differs from requested root",
+            )
+        return (
+            manifest,
+            _source_identity(
+                v4_root / "manifest.json",
+                metadata,
+                sha256,
+            ),
+            descriptor,
+            child_identity,
+        )
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def read_v4_manifest(
+    v4_root: Path,
+    *,
+    root_descriptor: int | None = None,
+    root_identity: tuple[int, int] | None = None,
+) -> tuple[dict, dict]:
+    v4_root = _normalize_v4_root(v4_root)
+    owns_descriptor = root_descriptor is None
+    if owns_descriptor:
+        root_descriptor, root_identity = _open_v4_root(v4_root)
+    if root_descriptor is None or root_identity is None:
+        raise ValueError("v4 root descriptor binding is incomplete")
+    try:
+        manifest, identity, descriptor, _ = _read_bound_v4_manifest(
+            v4_root,
+            root_descriptor,
+            root_identity,
+        )
+        try:
+            return manifest, identity
+        finally:
+            os.close(descriptor)
+    finally:
+        if owns_descriptor:
+            os.close(root_descriptor)
 
 
 def _public_output(row: dict) -> dict:
@@ -169,6 +436,10 @@ def _public_output(row: dict) -> dict:
 
 def _stream_approved_rows(
     process_path: Path,
+    *,
+    process_descriptor: int | None = None,
+    root_descriptor: int | None = None,
+    process_child_identity: tuple[int, ...] | None = None,
 ) -> tuple[dict, dict[int, dict], dict, dict, int, str, dict]:
     digest = hashlib.sha256()
     decompressed_size = 0
@@ -182,6 +453,12 @@ def _stream_approved_rows(
         expected_compressed_sha256=V4_COMPRESSED_SHA256,
         expected_decompressed_sha256=V4_DECOMPRESSED_SHA256,
         identity_sink=process_identity,
+        descriptor=process_descriptor,
+        root_descriptor=root_descriptor,
+        child_name=(
+            V4_PROCESS_NAME if process_descriptor is not None else None
+        ),
+        child_identity=process_child_identity,
     ):
         digest.update(line)
         decompressed_size += len(line)
@@ -260,21 +537,74 @@ def _strict_fixture_bytes(value: dict) -> bytes:
     ).encode("utf-8") + b"\n"
 
 
-def extract_mechanism_fixture(*, v4_root: Path, output: Path) -> Path:
-    v4_root = Path(v4_root)
-    if not v4_root.is_absolute() or ".." in v4_root.parts:
-        raise ValueError("v4 root must be normalized and absolute")
-    manifest, manifest_identity = read_v4_manifest(v4_root)
-    if (
-        manifest.get("status") != "completed"
-        or manifest.get("schema_id")
-        != "cbf2026-predictive-wnls-development-rows-v3"
-        or manifest.get("selected_invocation") != "registered_replay"
-        or manifest.get("compressed_process_sha256") != V4_COMPRESSED_SHA256
-        or manifest.get("decompressed_process_sha256")
-        != V4_DECOMPRESSED_SHA256
-    ):
-        raise ValueError("v4 manifest differs from approved source contract")
+def _extract_mechanism_fixture_from_root(
+    *,
+    v4_root: Path,
+    output: Path,
+    root_descriptor: int,
+    root_identity: tuple[int, int],
+) -> Path:
+    (
+        manifest,
+        manifest_identity,
+        manifest_descriptor,
+        manifest_child_identity,
+    ) = _read_bound_v4_manifest(
+        v4_root,
+        root_descriptor,
+        root_identity,
+    )
+    process_descriptor = None
+    try:
+        if (
+            manifest.get("status") != "completed"
+            or manifest.get("schema_id")
+            != "cbf2026-predictive-wnls-development-rows-v3"
+            or manifest.get("selected_invocation") != "registered_replay"
+            or manifest.get("compressed_process_sha256")
+            != V4_COMPRESSED_SHA256
+            or manifest.get("decompressed_process_sha256")
+            != V4_DECOMPRESSED_SHA256
+        ):
+            raise ValueError(
+                "v4 manifest differs from approved source contract",
+            )
+        process_descriptor, process_child_identity = _open_v4_child(
+            root_descriptor,
+            V4_PROCESS_NAME,
+            description="v4 process",
+        )
+        return _extract_mechanism_fixture_from_bound_sources(
+            v4_root=v4_root,
+            output=output,
+            root_descriptor=root_descriptor,
+            root_identity=root_identity,
+            manifest=manifest,
+            manifest_identity=manifest_identity,
+            manifest_descriptor=manifest_descriptor,
+            manifest_child_identity=manifest_child_identity,
+            process_descriptor=process_descriptor,
+            process_child_identity=process_child_identity,
+        )
+    finally:
+        if process_descriptor is not None:
+            os.close(process_descriptor)
+        os.close(manifest_descriptor)
+
+
+def _extract_mechanism_fixture_from_bound_sources(
+    *,
+    v4_root: Path,
+    output: Path,
+    root_descriptor: int,
+    root_identity: tuple[int, int],
+    manifest: dict,
+    manifest_identity: dict,
+    manifest_descriptor: int,
+    manifest_child_identity: tuple[int, ...],
+    process_descriptor: int,
+    process_child_identity: tuple[int, ...],
+) -> Path:
     process_path = v4_root / V4_PROCESS_NAME
     (
         mechanism,
@@ -284,7 +614,27 @@ def extract_mechanism_fixture(*, v4_root: Path, output: Path) -> Path:
         decompressed_size,
         decompressed_sha,
         process_identity,
-    ) = _stream_approved_rows(process_path)
+    ) = _stream_approved_rows(
+        process_path,
+        process_descriptor=process_descriptor,
+        root_descriptor=root_descriptor,
+        process_child_identity=process_child_identity,
+    )
+    _assert_v4_root_identity(v4_root, root_descriptor, root_identity)
+    _assert_v4_child_identity(
+        root_descriptor,
+        "manifest.json",
+        manifest_descriptor,
+        manifest_child_identity,
+        description="v4 manifest",
+    )
+    _assert_v4_child_identity(
+        root_descriptor,
+        V4_PROCESS_NAME,
+        process_descriptor,
+        process_child_identity,
+        description="v4 process",
+    )
     if (
         mechanism["mandatory_references"]
         != {"base_ids": [], "uav_ids": [10, 11]}
@@ -372,6 +722,21 @@ def extract_mechanism_fixture(*, v4_root: Path, output: Path) -> Path:
         },
     }
     payload = _strict_fixture_bytes(fixture)
+    _assert_v4_root_identity(v4_root, root_descriptor, root_identity)
+    _assert_v4_child_identity(
+        root_descriptor,
+        "manifest.json",
+        manifest_descriptor,
+        manifest_child_identity,
+        description="v4 manifest",
+    )
+    _assert_v4_child_identity(
+        root_descriptor,
+        V4_PROCESS_NAME,
+        process_descriptor,
+        process_child_identity,
+        description="v4 process",
+    )
     output = Path(output)
     if not output.is_absolute():
         output = Path.cwd() / output
@@ -397,7 +762,36 @@ def extract_mechanism_fixture(*, v4_root: Path, output: Path) -> Path:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+    _assert_v4_root_identity(v4_root, root_descriptor, root_identity)
+    _assert_v4_child_identity(
+        root_descriptor,
+        "manifest.json",
+        manifest_descriptor,
+        manifest_child_identity,
+        description="v4 manifest",
+    )
+    _assert_v4_child_identity(
+        root_descriptor,
+        V4_PROCESS_NAME,
+        process_descriptor,
+        process_child_identity,
+        description="v4 process",
+    )
     return output
+
+
+def extract_mechanism_fixture(*, v4_root: Path, output: Path) -> Path:
+    v4_root = _normalize_v4_root(v4_root)
+    root_descriptor, root_identity = _open_v4_root(v4_root)
+    try:
+        return _extract_mechanism_fixture_from_root(
+            v4_root=v4_root,
+            output=output,
+            root_descriptor=root_descriptor,
+            root_identity=root_identity,
+        )
+    finally:
+        os.close(root_descriptor)
 
 
 def main(argv: list[str] | None = None) -> int:

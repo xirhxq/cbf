@@ -2,6 +2,9 @@ import gzip
 import hashlib
 import json
 import os
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -23,6 +26,32 @@ V4_ROOT = Path("/private/tmp/cbf2026-predictive-wnls-development/stage1-v4")
 
 
 class FixtureIdentityTests(unittest.TestCase):
+    def test_direct_script_cli_cannot_import_preceding_shadow_package(self):
+        repository_script = Path(extractor.__file__).resolve()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shadow_package = root / "scripts"
+            shadow_package.mkdir()
+            (shadow_package / "__init__.py").write_text(
+                'raise RuntimeError("shadow scripts package imported")\n',
+                encoding="utf-8",
+            )
+            environment = os.environ.copy()
+            environment["PYTHONPATH"] = str(root)
+
+            completed = subprocess.run(
+                [sys.executable, str(repository_script), "--help"],
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("--v4-root", completed.stdout)
+        self.assertIn("--output", completed.stdout)
+
     def test_v4_manifest_identity(self):
         manifest, identity = read_v4_manifest(V4_ROOT)
 
@@ -192,6 +221,134 @@ class FixtureIdentityTests(unittest.TestCase):
                         expected_compressed_sha256=compressed_sha,
                         expected_decompressed_sha256=decompressed_sha,
                     ))
+
+    def test_hash_matching_relocated_v4_root_rejects(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+            relocated = Path(directory) / "relocated-v4"
+            relocated.mkdir()
+            (relocated / "manifest.json").write_bytes(
+                (V4_ROOT / "manifest.json").read_bytes(),
+            )
+            os.link(
+                V4_ROOT / extractor.V4_PROCESS_NAME,
+                relocated / extractor.V4_PROCESS_NAME,
+            )
+
+            with self.assertRaisesRegex(ValueError, "output_root"):
+                extract_mechanism_fixture(
+                    v4_root=relocated,
+                    output=Path(directory) / "fixture.json",
+                )
+
+    def test_v4_root_swap_between_manifest_and_process_read_rejects(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+            base = Path(directory)
+            v4_root = base / "v4"
+            detached = base / "detached-v4"
+            v4_root.mkdir()
+            manifest = json.loads((V4_ROOT / "manifest.json").read_bytes())
+            manifest["output_root"] = str(v4_root)
+            manifest_payload = (
+                json.dumps(manifest, separators=(",", ":")).encode() + b"\n"
+            )
+            (v4_root / "manifest.json").write_bytes(manifest_payload)
+            source_process = V4_ROOT / extractor.V4_PROCESS_NAME
+            os.link(source_process, v4_root / extractor.V4_PROCESS_NAME)
+            real_stream = extractor._stream_approved_rows
+            swapped = False
+
+            def swap_then_stream(process_path, *args, **kwargs):
+                nonlocal swapped
+                v4_root.rename(detached)
+                v4_root.mkdir()
+                os.link(
+                    source_process,
+                    v4_root / extractor.V4_PROCESS_NAME,
+                )
+                swapped = True
+                return real_stream(process_path, *args, **kwargs)
+
+            with mock.patch.object(
+                extractor,
+                "V4_MANIFEST_SHA256",
+                hashlib.sha256(manifest_payload).hexdigest(),
+            ), mock.patch.object(
+                extractor,
+                "_stream_approved_rows",
+                side_effect=swap_then_stream,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "v4 root identity changed",
+                ):
+                    extract_mechanism_fixture(
+                        v4_root=v4_root,
+                        output=base / "fixture.json",
+                    )
+
+            self.assertTrue(swapped)
+            self.assertFalse((base / "fixture.json").exists())
+
+    def test_v4_root_aba_during_process_read_keeps_original_child_inode(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+            base = Path(directory)
+            v4_root = base / "v4"
+            detached = base / "detached-v4"
+            replacement = base / "replacement-v4"
+            used_replacement = base / "used-replacement-v4"
+            v4_root.mkdir()
+            replacement.mkdir()
+            manifest = json.loads((V4_ROOT / "manifest.json").read_bytes())
+            manifest["output_root"] = str(v4_root)
+            manifest_payload = (
+                json.dumps(manifest, separators=(",", ":")).encode() + b"\n"
+            )
+            (v4_root / "manifest.json").write_bytes(manifest_payload)
+            source_process = V4_ROOT / extractor.V4_PROCESS_NAME
+            original_process = v4_root / extractor.V4_PROCESS_NAME
+            replacement_process = replacement / extractor.V4_PROCESS_NAME
+            os.link(source_process, original_process)
+            shutil.copyfile(source_process, replacement_process)
+            original_inode = original_process.stat().st_ino
+            replacement_inode = replacement_process.stat().st_ino
+            self.assertNotEqual(original_inode, replacement_inode)
+            real_stream = extractor._stream_approved_rows
+            swapped = False
+
+            def aba_swap_then_stream(process_path, *args, **kwargs):
+                nonlocal swapped
+                v4_root.rename(detached)
+                replacement.rename(v4_root)
+                swapped = True
+                try:
+                    return real_stream(process_path, *args, **kwargs)
+                finally:
+                    v4_root.rename(used_replacement)
+                    detached.rename(v4_root)
+
+            output = base / "fixture.json"
+            with mock.patch.object(
+                extractor,
+                "V4_MANIFEST_SHA256",
+                hashlib.sha256(manifest_payload).hexdigest(),
+            ), mock.patch.object(
+                extractor,
+                "_stream_approved_rows",
+                side_effect=aba_swap_then_stream,
+            ):
+                extract_mechanism_fixture(
+                    v4_root=v4_root,
+                    output=output,
+                )
+
+            self.assertTrue(swapped)
+            fixture = json.loads(output.read_bytes())
+            self.assertEqual(
+                fixture["source_identities"]["v4_compressed_process"][
+                    "inode"
+                ],
+                original_inode,
+            )
 
 
 if __name__ == "__main__":

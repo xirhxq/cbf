@@ -7,7 +7,8 @@ import gzip
 import hashlib
 import json
 import os
-import pickle
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,6 +21,34 @@ from scripts.diagnostics import replay_two_range_reacquisition as replay
 
 
 FIXTURE_ROOT = Path("tests/fixtures/cbf2026_two_range_reacquisition")
+
+
+class DirectCliBootstrapTests(unittest.TestCase):
+    def test_direct_script_cli_cannot_import_preceding_shadow_package(self):
+        repository_script = Path(analyzer.__file__).resolve()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shadow_package = root / "scripts"
+            shadow_package.mkdir()
+            (shadow_package / "__init__.py").write_text(
+                'raise RuntimeError("shadow scripts package imported")\n',
+                encoding="utf-8",
+            )
+            environment = os.environ.copy()
+            environment["PYTHONPATH"] = str(root)
+
+            completed = subprocess.run(
+                [sys.executable, str(repository_script), "--help"],
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("--protocol-path", completed.stdout)
+        self.assertIn("--raw-root", completed.stdout)
 
 
 def valid_smoke_row(case_id: str = "select_positive") -> dict:
@@ -1143,19 +1172,89 @@ class RawOriginBindingTests(unittest.TestCase):
                 result=result,
             )
 
-    def test_binding_cannot_cross_identical_aggregations(self):
+    def test_aggregate_closure_cannot_mint_candidate_derived_projection(self):
+        result, projection = canonical_registered_fixture_with_projection()
+        closure = (
+            getattr(
+                analyzer._aggregate_two_range_reacquisition_with_projection,
+                "__closure__",
+                None,
+            )
+            or ()
+        )
+        minters = [
+            cell.cell_contents
+            for cell in closure
+            if callable(cell.cell_contents)
+            and getattr(cell.cell_contents, "__name__", None) == "mint"
+        ]
+        forged_binding = None
+        try:
+            if minters:
+                forged_binding = minters[0](
+                    projection,
+                    result=result,
+                    invocation_name="registered_analyzer",
+                    protocol_id="test-protocol",
+                    protocol_identity_commitment=(
+                        TEST_PROTOCOL_IDENTITY_COMMITMENT
+                    ),
+                    raw_identity_commitment=(
+                        TEST_RAW_IDENTITY_COMMITMENT
+                    ),
+                )
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "raw-origin binding",
+                ):
+                    validate_raw_binding(result, forged_binding)
+            self.assertEqual(minters, [])
+        finally:
+            analyzer._revoke_raw_origin_binding(forged_binding)
+
+    def test_base_object_access_cannot_authorize_candidate_projection(self):
+        result, projection = canonical_registered_fixture_with_projection()
+        aggregator = analyzer._aggregate_two_range_reacquisition_with_projection
+        forged_binding = None
+        try:
+            try:
+                minter = object.__getattribute__(
+                    aggregator,
+                    "_RawOriginMinterWrapper__minter",
+                )
+            except AttributeError:
+                minter = None
+            if minter is not None:
+                forged_binding = minter(
+                    projection,
+                    result=result,
+                    invocation_name="registered_analyzer",
+                    protocol_id="test-protocol",
+                    protocol_identity_commitment=(
+                        TEST_PROTOCOL_IDENTITY_COMMITMENT
+                    ),
+                    raw_identity_commitment=(
+                        TEST_RAW_IDENTITY_COMMITMENT
+                    ),
+                )
+            candidate_evidence = (
+                projection if forged_binding is None else forged_binding
+            )
+            with self.assertRaisesRegex(
+                ValueError,
+                "raw.*evidence|raw-origin binding",
+            ):
+                validate_raw_binding(result, candidate_evidence)
+        finally:
+            analyzer._revoke_raw_origin_binding(forged_binding)
+
+    def test_equivalent_raw_evidence_recomputes_identical_aggregation(self):
         first_result, first_binding = raw_registered_fixture_with_binding()
         second_result, second_binding = raw_registered_fixture_with_binding()
-        try:
-            self.assertEqual(first_result, second_result)
-            self.assertIsNot(first_result, second_result)
-            with self.assertRaisesRegex(
-                ValueError, "aggregation|result|binding"
-            ):
-                validate_raw_binding(second_result, first_binding)
-        finally:
-            analyzer._revoke_raw_origin_binding(first_binding)
-            analyzer._revoke_raw_origin_binding(second_binding)
+        self.assertEqual(first_result, second_result)
+        self.assertIsNot(first_result, second_result)
+        validate_raw_binding(second_result, first_binding)
+        validate_raw_binding(first_result, second_binding)
 
     def test_binding_rejects_nonprojection_result_mutation(self):
         result, source_binding = raw_registered_fixture_with_binding()
@@ -1166,14 +1265,10 @@ class RawOriginBindingTests(unittest.TestCase):
         ):
             validate_raw_binding(result, source_binding)
 
-    def test_minted_binding_is_single_use(self):
+    def test_raw_evidence_is_independently_recomputed_each_time(self):
         result, source_binding = raw_registered_fixture_with_binding()
         validate_raw_binding(result, source_binding)
-
-        with self.assertRaisesRegex(
-            ValueError, "revoked|already consumed"
-        ):
-            validate_raw_binding(result, source_binding)
+        validate_raw_binding(result, source_binding)
 
     def test_missing_binding_fails_closed(self):
         baseline, v4, new = comparison_rows()
@@ -1189,7 +1284,7 @@ class RawOriginBindingTests(unittest.TestCase):
             branch_representatives=comparison_branch_representatives(),
         )
 
-        with self.assertRaisesRegex(ValueError, "raw-origin binding"):
+        with self.assertRaisesRegex(ValueError, "raw evidence"):
             validate_raw_binding(result, None)
 
     def test_registered_binding_requires_pinned_identity_commitments(self):
@@ -1220,7 +1315,7 @@ class RawOriginBindingTests(unittest.TestCase):
     def test_binding_cannot_cross_invocation(self):
         result, source_binding = raw_registered_fixture_with_binding()
 
-        with self.assertRaisesRegex(ValueError, "raw-origin context"):
+        with self.assertRaisesRegex(ValueError, "raw evidence context"):
             validate_raw_binding(
                 result,
                 source_binding,
@@ -1230,7 +1325,7 @@ class RawOriginBindingTests(unittest.TestCase):
     def test_binding_cannot_cross_protocol_id(self):
         result, source_binding = raw_registered_fixture_with_binding()
 
-        with self.assertRaisesRegex(ValueError, "raw-origin context"):
+        with self.assertRaisesRegex(ValueError, "raw evidence context"):
             validate_raw_binding(
                 result,
                 source_binding,
@@ -1241,7 +1336,7 @@ class RawOriginBindingTests(unittest.TestCase):
         result, source_binding = raw_registered_fixture_with_binding()
 
         with self.assertRaisesRegex(
-            ValueError, "capability or context"
+            ValueError, "recomputation context"
         ):
             validate_raw_binding(
                 result,
@@ -1255,7 +1350,7 @@ class RawOriginBindingTests(unittest.TestCase):
         result, source_binding = raw_registered_fixture_with_binding()
 
         with self.assertRaisesRegex(
-            ValueError, "capability or context"
+            ValueError, "recomputation context"
         ):
             validate_raw_binding(
                 result,
@@ -1265,46 +1360,22 @@ class RawOriginBindingTests(unittest.TestCase):
                 ).hexdigest(),
             )
 
-    def test_binding_cannot_be_copied_or_serialized(self):
-        _, source_binding = raw_registered_fixture_with_binding()
-        try:
-            with self.assertRaisesRegex(TypeError, "cannot be copied"):
-                copy.copy(source_binding)
-            with self.assertRaisesRegex(TypeError, "cannot be copied"):
-                copy.deepcopy(source_binding)
-            with self.assertRaisesRegex(TypeError, "cannot be serialized"):
-                pickle.dumps(source_binding)
-        finally:
-            analyzer._revoke_raw_origin_binding(source_binding)
+    def test_raw_evidence_contains_inputs_without_secret_capability(self):
+        _, raw_evidence = raw_registered_fixture_with_binding()
+        self.assertEqual(tuple(raw_evidence), analyzer.RAW_RECOMPUTATION_FIELDS)
+        self.assertNotIn("capability", raw_evidence)
+        self.assertNotIn("authority", raw_evidence)
+        self.assertNotIn("nonce", raw_evidence)
+        self.assertEqual(copy.copy(raw_evidence), raw_evidence)
 
-    def test_binding_hides_projection_and_capability_attributes(self):
-        _, source_binding = raw_registered_fixture_with_binding()
-        try:
-            for attribute in (
-                "_RawOriginBinding__projection_bytes",
-                "_RawOriginBinding__projection_sha256",
-                "_RawOriginBinding__capability",
-            ):
-                with self.subTest(attribute=attribute):
-                    with self.assertRaisesRegex(
-                        AttributeError, "opaque"
-                    ):
-                        getattr(source_binding, attribute)
-        finally:
-            analyzer._revoke_raw_origin_binding(source_binding)
-
-    def test_explicit_revoke_restores_registry_cardinality(self):
+    def test_compatibility_revoke_has_no_registry_state(self):
         before = raw_origin_binding_count()
         _, source_binding = raw_registered_fixture_with_binding()
-        self.assertEqual(
-            raw_origin_binding_count(), before + 1
-        )
+        self.assertEqual(raw_origin_binding_count(), before)
 
         analyzer._revoke_raw_origin_binding(source_binding)
 
-        self.assertEqual(
-            raw_origin_binding_count(), before
-        )
+        self.assertEqual(raw_origin_binding_count(), before)
 
 
 class AggregateGateTests(unittest.TestCase):
@@ -1501,7 +1572,7 @@ class AggregateGateTests(unittest.TestCase):
             analyzer.SOURCE_PROJECTION_FIELDS,
         )
 
-        with self.assertRaisesRegex(ValueError, "raw-origin binding"):
+        with self.assertRaisesRegex(ValueError, "raw evidence"):
             analyzer._validate_analysis_result(
                 result,
                 source_projection=rewritten_projection,
@@ -1513,7 +1584,7 @@ class AggregateGateTests(unittest.TestCase):
         )
         copied_projection = bytes(bytearray(source_projection))
 
-        with self.assertRaisesRegex(ValueError, "raw-origin binding"):
+        with self.assertRaisesRegex(ValueError, "raw evidence"):
             analyzer._validate_analysis_result(
                 result,
                 source_projection=copied_projection,
@@ -1536,9 +1607,7 @@ class AggregateGateTests(unittest.TestCase):
                 ),
             )
         )
-        with self.assertRaisesRegex(
-            ValueError, "raw-derived source projection"
-        ):
+        with self.assertRaisesRegex(ValueError, "raw evidence"):
             analyzer._validate_analysis_result(result)
 
     def test_transition_subcounts_cannot_exceed_global_populations(self):
@@ -1628,9 +1697,7 @@ class AggregateGateTests(unittest.TestCase):
         result["semantic_payload_sha256"] = analyzer._semantic_sha256(
             result
         )
-        with self.assertRaisesRegex(
-            ValueError, "raw-derived source projection"
-        ):
+        with self.assertRaisesRegex(ValueError, "raw evidence"):
             validate_raw_binding(result, source_binding)
 
     def test_binding_binds_all_nine_and_fourteen_gate_records(self):
@@ -1645,7 +1712,7 @@ class AggregateGateTests(unittest.TestCase):
                 result[container][index]["denominator"] += 1
                 with self.subTest(container=container, gate_id=gate_id):
                     with self.assertRaisesRegex(
-                        ValueError, "raw-derived source projection"
+                        ValueError, "raw evidence"
                     ):
                         validate_raw_binding(result, source_binding)
 
@@ -1658,9 +1725,7 @@ class AggregateGateTests(unittest.TestCase):
             result, source_binding = raw_registered_fixture_with_binding()
             result["scientific_gates"][gate_index]["value"] += increment
             with self.subTest(gate_index=gate_index):
-                with self.assertRaisesRegex(
-                    ValueError, "raw-derived source projection"
-                ):
+                with self.assertRaisesRegex(ValueError, "raw evidence"):
                     validate_raw_binding(result, source_binding)
 
     def test_tail_partition_maximum_cannot_rewrite_error_gates(self):
@@ -2432,6 +2497,89 @@ class InvocationSplitTests(unittest.TestCase):
                     binding_count,
                 )
                 self.assertFalse(self.analysis_a.exists())
+
+    def test_no_wrapper_closure_exposes_lower_callable(self):
+        self.produce("smoke_a")
+        public_analyzer = analyzer.analyze_two_range_reacquisition
+        bypasses = [
+            cell.cell_contents
+            for cell in (
+                getattr(public_analyzer, "__closure__", None) or ()
+            )
+            if callable(cell.cell_contents)
+            and cell.cell_contents is not public_analyzer
+            and getattr(cell.cell_contents, "__name__", None)
+            == public_analyzer.__name__
+        ]
+        binding_count = raw_origin_binding_count()
+        self.assertEqual(bypasses, [])
+        self.assertEqual(raw_origin_binding_count(), binding_count)
+        self.assertFalse(self.analysis_a.exists())
+
+    def test_base_object_lower_callable_cannot_bypass_cleanup(self):
+        self.produce("smoke_a")
+        public_analyzer = analyzer.analyze_two_range_reacquisition
+        try:
+            lower_callable = object.__getattribute__(
+                public_analyzer,
+                "_RawOriginAnalysisScopeWrapper__function",
+            )
+        except AttributeError:
+            lower_callable = public_analyzer
+        registry = next(
+            (
+                cell.cell_contents
+                for cell in (
+                    getattr(
+                        analyzer._raw_origin_binding_cardinality,
+                        "__closure__",
+                        None,
+                    )
+                    or ()
+                )
+                if isinstance(cell.cell_contents, dict)
+            ),
+            None,
+        )
+        original_registry = None if registry is None else dict(registry)
+        binding_count = raw_origin_binding_count()
+        injected = (
+            {
+                "_refresh_raw_origin_binding": (
+                    lambda binding, result: None
+                )
+            }
+            if lower_callable is not public_analyzer
+            else {}
+        )
+        try:
+            with mock.patch.object(
+                analyzer,
+                "_utc_now",
+                side_effect=RuntimeError(
+                    "injected base-object timestamp failure"
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "injected base-object timestamp failure",
+                ):
+                    lower_callable(
+                        protocol_path=self.protocol_path,
+                        raw_root=self.raw_a,
+                        output_root=self.analysis_a,
+                        invocation_name="smoke_analyzer_a",
+                        **injected,
+                    )
+            self.assertEqual(
+                raw_origin_binding_count(),
+                binding_count,
+            )
+        finally:
+            if registry is not None:
+                registry.clear()
+                registry.update(original_registry)
+        self.assertFalse(self.analysis_a.exists())
 
     def test_creating_manifest_failure_after_mint_immediately_revokes_binding(
         self,

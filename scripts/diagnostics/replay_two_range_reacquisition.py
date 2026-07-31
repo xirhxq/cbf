@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import argparse
 import copy
+import ctypes
+import errno
 import gzip
 import hashlib
+import importlib.machinery
+import importlib.util
 import json
 import math
 import os
 import secrets
+import stat
 import subprocess
 import sys
 from collections.abc import Mapping
@@ -19,7 +24,20 @@ from pathlib import Path
 import numpy as np
 
 if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    _SCRIPT_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+    sys.path.insert(0, str(_SCRIPT_REPOSITORY_ROOT))
+    _SCRIPT_PACKAGE_SPEC = importlib.machinery.PathFinder.find_spec(
+        "scripts",
+        [str(_SCRIPT_REPOSITORY_ROOT)],
+    )
+    if (
+        _SCRIPT_PACKAGE_SPEC is None
+        or _SCRIPT_PACKAGE_SPEC.submodule_search_locations is None
+    ):
+        raise ImportError("implementation-root scripts package is unavailable")
+    sys.modules["scripts"] = importlib.util.module_from_spec(
+        _SCRIPT_PACKAGE_SPEC
+    )
 
 from scripts.diagnostics.predictive_wnls import (
     ATTEMPT_STATUSES,
@@ -41,6 +59,7 @@ from scripts.diagnostics.replay_predictive_wnls_recovery import (
     _close_output_transaction,
     _create_exact_root,
     _file_identity,
+    _assert_registered_root,
     _lstat_components,
     _offline_metrics,
     _preflight_frames,
@@ -2655,7 +2674,11 @@ def _git_blob_at(
     return result.stdout
 
 
-def _pinned_gzip_hashes(path: Path) -> tuple[str, str]:
+def _pinned_gzip_hashes(
+    path: Path,
+    *,
+    identity_sink: dict | None = None,
+) -> tuple[str, str]:
     path = Path(path)
     _lstat_components(path, leaf_required=True)
     flags = (
@@ -2684,6 +2707,8 @@ def _pinned_gzip_hashes(path: Path) -> tuple[str, str]:
             with gzip.GzipFile(fileobj=raw, mode="rb") as stream:
                 for line in stream:
                     decompressed_digest.update(line)
+        compressed_sha256 = compressed_digest.hexdigest()
+        decompressed_sha256 = decompressed_digest.hexdigest()
         after = os.fstat(descriptor)
         linked = os.stat(path, follow_symlinks=False)
         expected = (
@@ -2701,18 +2726,78 @@ def _pinned_gzip_hashes(path: Path) -> tuple[str, str]:
             != expected
         ):
             raise ValueError("smoke process identity changed while hashing")
-        return compressed_digest.hexdigest(), decompressed_digest.hexdigest()
+        if identity_sink is not None:
+            identity_sink.clear()
+            identity_sink.update({
+                "path": str(path),
+                "device": before.st_dev,
+                "inode": before.st_ino,
+                "size": before.st_size,
+                "allocated_bytes": before.st_blocks * 512,
+                "mtime_ns": before.st_mtime_ns,
+                "compressed_sha256": compressed_sha256,
+                "decompressed_sha256": decompressed_sha256,
+            })
+        return compressed_sha256, decompressed_sha256
     finally:
         os.close(descriptor)
+
+
+def _revalidate_smoke_raw_record(record: Mapping) -> None:
+    invocation = record["invocation"]
+    manifest_path = record["manifest_path"]
+    manifest_payload = record["manifest_payload"]
+    manifest_identity = record["manifest_identity"]
+    try:
+        payload, observed_manifest = _read_trusted_bytes(
+            manifest_path,
+            expected_sha256=manifest_identity["sha256"],
+        )
+    except ValueError as error:
+        raise ValueError(
+            f"{invocation} manifest identity changed",
+        ) from error
+    if (
+        payload != manifest_payload
+        or _canonical_file_identity(observed_manifest) != manifest_identity
+    ):
+        raise ValueError(f"{invocation} manifest identity changed")
+    for label, expected in (
+        ("protocol", record["protocol_identity"]),
+        *(
+            (f"source {name}", identity)
+            for name, identity in record["source_identities"].items()
+        ),
+    ):
+        _, observed = _read_trusted_bytes(
+            Path(expected["path"]),
+            expected_sha256=expected["sha256"],
+            capture_payload=False,
+        )
+        if _canonical_file_identity(observed) != expected:
+            raise ValueError(f"{invocation} {label} identity changed")
+    observed_process = {}
+    _pinned_gzip_hashes(
+        record["process_path"],
+        identity_sink=observed_process,
+    )
+    if observed_process != record["process_identity"]:
+        raise ValueError(f"{invocation} process identity changed")
 
 
 def _validate_smoke_evidence_binding(
     protocol: Mapping,
     authorization: Mapping,
+    *,
+    expected_protocol_identity: Mapping | None = None,
 ) -> None:
     invocations = protocol.get("invocations")
     if not isinstance(invocations, Mapping):
         raise ValueError("protocol lacks smoke invocation bindings")
+    declared_sources = protocol.get("sources")
+    if not isinstance(declared_sources, Mapping):
+        raise ValueError("protocol lacks registered source bindings")
+    raw_records = []
     raw_fields = {
         "smoke_a": (
             "smoke_a_compressed_sha256",
@@ -2727,16 +2812,67 @@ def _validate_smoke_evidence_binding(
         declaration = invocations.get(invocation)
         if not isinstance(declaration, Mapping):
             raise ValueError(f"protocol lacks {invocation}")
-        manifest, _, _ = _read_pinned_json(
-            Path(declaration["output_root"]) / "manifest.json",
+        root = Path(declaration["output_root"])
+        manifest_path = root / "manifest.json"
+        manifest, manifest_payload, manifest_identity = _read_pinned_json(
+            manifest_path,
         )
+        try:
+            _validate_manifest(manifest)
+        except ValueError as error:
+            raise ValueError(
+                f"{invocation} raw manifest differs from exact contract",
+            ) from error
         process = manifest.get("process_identity")
         if not isinstance(process, Mapping):
             raise ValueError(f"{invocation} process identity is absent")
-        observed_hashes = _pinned_gzip_hashes(Path(process["path"]))
+        process_path = root / RAW_PROCESS_NAME
+        if (
+            manifest["protocol_id"] != protocol.get("protocol_id")
+            or manifest["output_root"] != str(root)
+            or process["path"] != str(process_path)
+        ):
+            raise ValueError(f"{invocation} process path or protocol differs")
+        protocol_identity = manifest["protocol_identity"]
+        if (
+            expected_protocol_identity is not None
+            and protocol_identity != expected_protocol_identity
+        ):
+            raise ValueError(f"{invocation} protocol identity differs")
+        if protocol_identity["sha256"] != authorization["protocol_sha256"]:
+            raise ValueError(f"{invocation} protocol identity differs")
+        _, observed_protocol = _read_trusted_bytes(
+            Path(protocol_identity["path"]),
+            expected_sha256=protocol_identity["sha256"],
+            capture_payload=False,
+        )
+        if _canonical_file_identity(observed_protocol) != protocol_identity:
+            raise ValueError(f"{invocation} protocol identity differs")
+        source_identities = manifest["source_identities"]
+        for name, source_identity in source_identities.items():
+            if declared_sources.get(name) != source_identity:
+                raise ValueError(f"{invocation} source identity differs")
+            _, observed_source = _read_trusted_bytes(
+                Path(source_identity["path"]),
+                expected_sha256=source_identity["sha256"],
+                capture_payload=False,
+            )
+            if (
+                _canonical_file_identity(observed_source)
+                != source_identity
+            ):
+                raise ValueError(f"{invocation} source identity differs")
+        observed_process = {}
+        observed_hashes = _pinned_gzip_hashes(
+            process_path,
+            identity_sink=observed_process,
+        )
+        if observed_process != process:
+            raise ValueError(f"{invocation} process identity differs")
         if (
             manifest.get("status") != "completed"
             or manifest.get("invocation_name") != invocation
+            or manifest.get("expected_rows") != 18
             or manifest.get("observed_rows") != 18
             or process.get("compressed_sha256") != authorization[fields[0]]
             or process.get("decompressed_sha256") != authorization[fields[1]]
@@ -2747,6 +2883,18 @@ def _validate_smoke_evidence_binding(
             )
         ):
             raise ValueError(f"{invocation} evidence differs from authorization")
+        record = {
+            "invocation": invocation,
+            "manifest_path": manifest_path,
+            "manifest_payload": manifest_payload,
+            "manifest_identity": manifest_identity,
+            "protocol_identity": protocol_identity,
+            "source_identities": source_identities,
+            "process_path": process_path,
+            "process_identity": process,
+        }
+        _revalidate_smoke_raw_record(record)
+        raw_records.append(record)
     analyzer_fields = {
         "smoke_analyzer_a": (
             "smoke_analyzer_a_json_sha256",
@@ -2810,6 +2958,8 @@ def _validate_smoke_evidence_binding(
         != [authorization["smoke_semantic_payload_sha256"]] * 2
     ):
         raise ValueError("smoke semantic payload differs from authorization")
+    for record in raw_records:
+        _revalidate_smoke_raw_record(record)
 
 
 def _validate_committed_registered_state(
@@ -2919,7 +3069,11 @@ def _validate_committed_registered_state(
     ):
         if authorization[field].encode("ascii") not in smoke_payload:
             raise ValueError(f"smoke report does not bind {field}")
-    _validate_smoke_evidence_binding(protocol, authorization)
+    _validate_smoke_evidence_binding(
+        protocol,
+        authorization,
+        expected_protocol_identity=protocol_identity,
+    )
 
 
 def _utc_now() -> str:
@@ -2935,7 +3089,198 @@ def _write_all(descriptor: int, payload: bytes) -> None:
         view = view[written:]
 
 
-def _publish_manifest(transaction: Mapping, manifest: Mapping) -> None:
+def _manifest_inode(metadata: os.stat_result) -> tuple[int, int]:
+    return metadata.st_dev, metadata.st_ino
+
+
+def _rename_noreplace(
+    source: str,
+    destination: str,
+    *,
+    src_dir_fd: int,
+    dst_dir_fd: int,
+) -> None:
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+    except BaseException as error:
+        raise OSError(
+            errno.ENOSYS,
+            "atomic no-replace rename libc is unavailable",
+        ) from error
+    if sys.platform == "darwin":
+        symbol_name = "renameatx_np"
+        flags = 0x4
+    elif sys.platform.startswith("linux"):
+        symbol_name = "renameat2"
+        flags = 0x1
+    else:
+        raise OSError(
+            errno.ENOSYS,
+            f"atomic no-replace rename is unsupported on {sys.platform}",
+        )
+    try:
+        primitive = getattr(libc, symbol_name)
+    except AttributeError as error:
+        raise OSError(
+            errno.ENOSYS,
+            f"libc symbol {symbol_name} is unavailable",
+        ) from error
+    primitive.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    primitive.restype = ctypes.c_int
+    ctypes.set_errno(0)
+    result = primitive(
+        src_dir_fd,
+        os.fsencode(source),
+        dst_dir_fd,
+        os.fsencode(destination),
+        flags,
+    )
+    if result != 0:
+        error_number = ctypes.get_errno() or errno.EIO
+        raise OSError(
+            error_number,
+            f"{os.strerror(error_number)}: "
+            f"{source!r} -> {destination!r}",
+        )
+
+
+def _fsync_manifest_removal(
+    transaction: Mapping,
+    quarantine: str,
+) -> None:
+    failures = []
+    for label, descriptor in (
+        ("root", transaction["root_fd"]),
+        ("parent", transaction["parent_fd"]),
+    ):
+        try:
+            os.fsync(descriptor)
+        except BaseException as error:
+            failures.append((label, error))
+    if failures:
+        transaction["manifest_retraction_indeterminate"] = True
+        durability_error = OSError(
+            "manifest retraction durability is indeterminate; "
+            f"forensic quarantine: {quarantine}",
+        )
+        for label, error in failures:
+            durability_error.add_note(
+                f"{label} fsync failed: "
+                f"{type(error).__name__}: {error}",
+            )
+        raise durability_error from failures[0][1]
+
+
+def _remove_manifest_identity(
+    transaction: Mapping,
+    name: str,
+    expected_identity: tuple[int, int],
+) -> tuple[bool, str | None]:
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=transaction["root_fd"],
+        )
+    except FileNotFoundError:
+        return False, None
+    try:
+        held = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(held.st_mode)
+            or _manifest_inode(held) != expected_identity
+        ):
+            return False, None
+        quarantine = f".{name}.quarantine.{secrets.token_hex(16)}"
+        try:
+            _rename_noreplace(
+                name,
+                quarantine,
+                src_dir_fd=transaction["root_fd"],
+                dst_dir_fd=transaction["root_fd"],
+            )
+        except BaseException:
+            transaction["manifest_publication_blocked"] = True
+            raise
+        try:
+            moved = os.stat(
+                quarantine,
+                dir_fd=transaction["root_fd"],
+                follow_symlinks=False,
+            )
+            held_after = os.fstat(descriptor)
+        except BaseException as identity_error:
+            try:
+                _fsync_manifest_removal(transaction, quarantine)
+            except BaseException as sync_error:
+                identity_error.add_note(
+                    "manifest quarantine identity fsync failed: "
+                    f"{type(sync_error).__name__}: {sync_error}",
+                )
+            identity_error.add_note(
+                f"forensic quarantine preserved: {quarantine}",
+            )
+            raise
+        owned = (
+            stat.S_ISREG(moved.st_mode)
+            and stat.S_ISREG(held_after.st_mode)
+            and _manifest_inode(moved) == expected_identity
+            and _manifest_inode(held_after) == expected_identity
+        )
+        if owned:
+            _fsync_manifest_removal(transaction, quarantine)
+            return True, quarantine
+        try:
+            os.link(
+                quarantine,
+                name,
+                src_dir_fd=transaction["root_fd"],
+                dst_dir_fd=transaction["root_fd"],
+                follow_symlinks=False,
+            )
+        except FileExistsError as restore_error:
+            conflict = RuntimeError(
+                "foreign manifest preserved in quarantine: "
+                f"{quarantine}",
+            )
+            try:
+                _fsync_manifest_removal(transaction, quarantine)
+            except BaseException as sync_error:
+                conflict.add_note(
+                    "foreign manifest preservation fsync failed: "
+                    f"{type(sync_error).__name__}: {sync_error}",
+                )
+            raise conflict from restore_error
+        except BaseException as restore_error:
+            try:
+                _fsync_manifest_removal(transaction, quarantine)
+            except BaseException as sync_error:
+                restore_error.add_note(
+                    "manifest quarantine restore fsync failed: "
+                    f"{type(sync_error).__name__}: {sync_error}",
+                )
+            restore_error.add_note(
+                f"foreign manifest preserved in quarantine: {quarantine}",
+            )
+            raise
+        _fsync_manifest_removal(transaction, quarantine)
+        return False, quarantine
+    finally:
+        os.close(descriptor)
+
+
+def _publish_manifest(
+    transaction: Mapping,
+    manifest: Mapping,
+) -> tuple[int, int]:
     _validate_manifest(manifest)
     payload = ordered_strict_json_bytes(manifest, RAW_MANIFEST_FIELDS) + b"\n"
     name = f".manifest.{os.getpid()}.{secrets.token_hex(8)}"
@@ -2968,22 +3313,45 @@ def _publish_manifest(transaction: Mapping, manifest: Mapping) -> None:
         renamed = True
         os.fsync(transaction["root_fd"])
         os.fsync(transaction["parent_fd"])
-    except BaseException:
+    except BaseException as error:
         target = "manifest.json" if renamed else name
         try:
-            linked = os.stat(
+            removed, quarantine = _remove_manifest_identity(
+                transaction,
                 target,
-                dir_fd=transaction["root_fd"],
-                follow_symlinks=False,
+                staged_identity,
             )
-            if (
-                not renamed
-                or staged_identity == (linked.st_dev, linked.st_ino)
-            ):
-                os.unlink(target, dir_fd=transaction["root_fd"])
-        except FileNotFoundError:
-            pass
+            if quarantine is not None:
+                error.add_note(
+                    f"manifest forensic quarantine: {quarantine}",
+                )
+            if not removed:
+                transaction["manifest_publication_blocked"] = True
+                error.add_note(
+                    "manifest cleanup preserved a non-owned entry: "
+                    f"{target}",
+                )
+        except BaseException as cleanup_error:
+            transaction["manifest_publication_blocked"] = True
+            error.add_note(
+                "manifest cleanup failed: "
+                f"{type(cleanup_error).__name__}: {cleanup_error}",
+            )
         raise
+    if staged_identity is None:
+        raise RuntimeError("published manifest identity was not captured")
+    return staged_identity
+
+
+def _retract_manifest_identity(
+    transaction: Mapping,
+    expected_identity: tuple[int, int],
+) -> tuple[bool, str | None]:
+    return _remove_manifest_identity(
+        transaction,
+        "manifest.json",
+        expected_identity,
+    )
 
 
 def _emergency_manifest(
@@ -3679,6 +4047,7 @@ def replay_two_range_reacquisition(
     )
     transaction = None
     fixture = None
+    completed_manifest_identity = None
     try:
         if invocation_name != "registered_replay":
             fixture = _load_fixture()
@@ -3849,9 +4218,44 @@ def replay_two_range_reacquisition(
             completed_at=_utc_now(),
             error=None,
         )
-        _publish_manifest(transaction, completed)
+        _assert_registered_root(transaction)
+        completed_manifest_identity = _publish_manifest(
+            transaction,
+            completed,
+        )
+        _assert_registered_root(transaction)
         return output_root
     except BaseException as error:
+        failed_publication_allowed = True
+        if completed_manifest_identity is not None:
+            try:
+                removed, quarantine = _retract_manifest_identity(
+                    transaction,
+                    completed_manifest_identity,
+                )
+                failed_publication_allowed = removed
+                if quarantine is not None:
+                    error.add_note(
+                        f"completed manifest forensic quarantine: "
+                        f"{quarantine}",
+                    )
+                if not removed:
+                    error.add_note(
+                        "completed manifest retraction preserved a "
+                        "non-owned entry",
+                    )
+            except BaseException as cleanup_error:
+                failed_publication_allowed = False
+                error.add_note(
+                    "completed manifest retraction failed: "
+                    f"{type(cleanup_error).__name__}: {cleanup_error}",
+                )
+        if (
+            transaction.get("manifest_retraction_indeterminate", False)
+            or transaction.get("manifest_publication_blocked", False)
+            or not failed_publication_allowed
+        ):
+            raise
         failed = {
             **manifest,
             "status": "failed",
