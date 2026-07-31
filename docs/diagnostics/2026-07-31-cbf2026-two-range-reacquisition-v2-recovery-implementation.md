@@ -232,8 +232,8 @@ docs/diagnostics/reviews/2026-07-31-cbf2026-two-range-reacquisition-registered-v
 ```
 
 No protocol command was executed in this recovery closure.  No registered v2
-protocol, authorization, preflight-review, or smoke-report document was
-created; these five declared v2 artifacts remain absent:
+protocol, authorization, preflight-review, smoke-report, or smoke-review
+document was created; these six declared v2 artifacts remain absent:
 
 ```text
 docs/diagnostics/2026-07-31-cbf2026-two-range-reacquisition-protocol-v2.json
@@ -241,6 +241,7 @@ docs/diagnostics/2026-07-31-cbf2026-two-range-reacquisition-protocol-v2.md
 docs/diagnostics/reviews/2026-07-31-cbf2026-two-range-reacquisition-registered-v2-authorization.json
 docs/diagnostics/reviews/2026-07-31-cbf2026-two-range-reacquisition-protocol-v2-review.md
 docs/diagnostics/2026-07-31-cbf2026-two-range-reacquisition-smoke-v2.md
+docs/diagnostics/reviews/2026-07-31-cbf2026-two-range-reacquisition-smoke-v2-review.md
 ```
 
 The focused unit test uses an automatically removed `TemporaryDirectory` JSON

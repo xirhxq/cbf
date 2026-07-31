@@ -346,3 +346,57 @@ This approval closes only the implementation-recovery parent and permits the
 separately gated protocol-v2 generation task to begin.
 It does not approve any smoke command, registered command, authorization
 record, DRA append, paper edit, or paper claim.
+
+## Fix round 2 scoped re-review
+
+Scope: only the two open findings concerning the six-path gated-v2 artifact
+inventory and the incomplete round 1 re-review were examined.
+No new broad implementation review was performed.
+
+The round 1 approval was incomplete because it checked only the protocol JSON
+and Markdown paths and did not verify the required smoke-review path.
+Its approval sentence is retained above solely as error history and carries
+no authority.
+This round 2 section supersedes the entire round 1 disposition.
+
+### Finding dispositions
+
+1. **Author inventory omitted the smoke-v2 review path — ADDRESSED.**
+   The author report now says `six` and contains exactly these ordered paths,
+   with no missing or extra member:
+
+   ```text
+   docs/diagnostics/2026-07-31-cbf2026-two-range-reacquisition-protocol-v2.json
+   docs/diagnostics/2026-07-31-cbf2026-two-range-reacquisition-protocol-v2.md
+   docs/diagnostics/reviews/2026-07-31-cbf2026-two-range-reacquisition-registered-v2-authorization.json
+   docs/diagnostics/reviews/2026-07-31-cbf2026-two-range-reacquisition-protocol-v2-review.md
+   docs/diagnostics/2026-07-31-cbf2026-two-range-reacquisition-smoke-v2.md
+   docs/diagnostics/reviews/2026-07-31-cbf2026-two-range-reacquisition-smoke-v2-review.md
+   ```
+
+2. **Round 1 marked I1 addressed without checking all six paths —
+   ADDRESSED.**
+   This reviewer performed an independent lstat-aware check of every path
+   above.
+   For each path, both `-e` and `-L` were false, so all six are absent and
+   none is a broken symlink.
+
+### New breakage
+
+None within the scoped round 2 fix.
+
+### Final counts
+
+| Severity | Final count |
+| --- | ---: |
+| Critical | `0` |
+| Important | `0` |
+| Minor | `0` |
+
+APPROVED FOR V2 PROTOCOL GENERATION; EXECUTION GATES CLOSED
+
+This round 2 approval closes only the implementation-recovery parent and
+permits the separately gated protocol-v2 generation task to begin.
+It does not approve protocol execution, deterministic smoke, registered
+replay or analysis, an authorization record, DRA changes, paper edits, or
+paper claims.
