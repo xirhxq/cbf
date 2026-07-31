@@ -1,0 +1,23 @@
+{
+  "schema_id": "cbf2026-two-range-reacquisition-registration-v2",
+  "protocol_id": "cbf2026-two-range-reacquisition-v2",
+  "protocol_sha256": "9a0985e00e1b6bd801f7b46c3811c2e135c29f86f75b5045e7aff1ad71206bb2",
+  "protocol_commit": "5241d6a4d3ab8144ec065dc2f92c4c454a1d3760",
+  "preflight_commit": "84aa6851bfa61468f3e0a6555d081fe124fb2395",
+  "smoke_commit": "01e1b93384587a6443384fe3a35f4cf22e5ffd94",
+  "smoke_a_compressed_sha256": "8073457c8e7a21a5ec7c6d85baaec4c77a549ea66422e474ad927f323160677c",
+  "smoke_a_decompressed_sha256": "cdbde96b17219f69cf0c00f403718048d8d0d04b4943ce53d3580978f240d435",
+  "smoke_b_compressed_sha256": "8073457c8e7a21a5ec7c6d85baaec4c77a549ea66422e474ad927f323160677c",
+  "smoke_b_decompressed_sha256": "cdbde96b17219f69cf0c00f403718048d8d0d04b4943ce53d3580978f240d435",
+  "smoke_analyzer_a_json_sha256": "26753574fa3e9217f18180a2bf0c51a34d30b763134913e483a2dbbe9e378c0d",
+  "smoke_analyzer_a_markdown_sha256": "3f49d592cfd127ef751d638838975b5f2a55655a88944290b5eaf2a4a485b526",
+  "smoke_analyzer_b_json_sha256": "0679640eb15f77a66ad3c8b2ecbcf9f8d6e6290b1d8821ce4869d789d73f2c3c",
+  "smoke_analyzer_b_markdown_sha256": "80d68acd68cf84d7f90bb072b0496743fad51856aee45954cc7d5063440fb13e",
+  "smoke_semantic_payload_sha256": "55c636e41c121e60eaa2341d0524ff5c08838374969343eec1e9f916a1758247",
+  "user_authorization_date": "2026-08-01",
+  "user_authorization_text": "继续",
+  "user_authorization_text_sha256": "7c9691192f1b73408bbe4c0cb6d00db94375ca9d8fce0a0d5985e7a5178f083f",
+  "registered_replay_root": "/private/tmp/cbf2026-two-range-reacquisition-development/v2",
+  "registered_analyzer_root": "/private/tmp/cbf2026-two-range-reacquisition-analysis/v2",
+  "registered_retry_allowed": false
+}
