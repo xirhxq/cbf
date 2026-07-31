@@ -465,6 +465,10 @@ TEST_RAW_IDENTITY_COMMITMENT = hashlib.sha256(
 ).hexdigest()
 
 
+def raw_origin_binding_count():
+    return analyzer._raw_origin_binding_cardinality()
+
+
 def attacker_projection_bytes_from_compact(result):
     registered = result["invocation_name"] == "registered_analyzer"
     v4 = result["v4_descriptive_comparison"]
@@ -1118,18 +1122,49 @@ class LinearPercentileTests(unittest.TestCase):
 
 
 class RawOriginBindingTests(unittest.TestCase):
-    def test_mint_rejects_caller_without_internal_authority(self):
-        with self.assertRaisesRegex(TypeError, "minted internally"):
-            analyzer._mint_raw_origin_binding(
-                object(),
-                b"{}",
-                invocation_name="registered_analyzer",
-                protocol_id="test-protocol",
-                protocol_identity_commitment=(
-                    TEST_PROTOCOL_IDENTITY_COMMITMENT
-                ),
-                raw_identity_commitment=TEST_RAW_IDENTITY_COMMITMENT,
+    def test_module_cannot_mint_candidate_derived_projection(self):
+        result, projection = canonical_registered_fixture_with_projection()
+
+        for attribute in (
+            "_RAW_ORIGIN_MINT_AUTHORITY",
+            "_RAW_ORIGIN_PROCESS_CAPABILITY",
+            "_RAW_ORIGIN_BINDING_REGISTRY",
+            "_mint_raw_origin_binding",
+            "_refresh_raw_origin_binding",
+            "_with_raw_origin_minter",
+            "_with_raw_origin_analysis_scope",
+            "_build_raw_origin_binding_lifecycle",
+        ):
+            with self.subTest(attribute=attribute):
+                self.assertFalse(hasattr(analyzer, attribute))
+        with self.assertRaises(AttributeError):
+            getattr(analyzer, "_mint_raw_origin_binding")(
+                projection,
+                result=result,
             )
+
+    def test_binding_cannot_cross_identical_aggregations(self):
+        first_result, first_binding = raw_registered_fixture_with_binding()
+        second_result, second_binding = raw_registered_fixture_with_binding()
+        try:
+            self.assertEqual(first_result, second_result)
+            self.assertIsNot(first_result, second_result)
+            with self.assertRaisesRegex(
+                ValueError, "aggregation|result|binding"
+            ):
+                validate_raw_binding(second_result, first_binding)
+        finally:
+            analyzer._revoke_raw_origin_binding(first_binding)
+            analyzer._revoke_raw_origin_binding(second_binding)
+
+    def test_binding_rejects_nonprojection_result_mutation(self):
+        result, source_binding = raw_registered_fixture_with_binding()
+        result["limitations"][0] = "candidate-derived-limitation"
+
+        with self.assertRaisesRegex(
+            ValueError, "aggregation|result|binding"
+        ):
+            validate_raw_binding(result, source_binding)
 
     def test_minted_binding_is_single_use(self):
         result, source_binding = raw_registered_fixture_with_binding()
@@ -1259,16 +1294,16 @@ class RawOriginBindingTests(unittest.TestCase):
             analyzer._revoke_raw_origin_binding(source_binding)
 
     def test_explicit_revoke_restores_registry_cardinality(self):
-        before = len(analyzer._RAW_ORIGIN_BINDING_REGISTRY)
+        before = raw_origin_binding_count()
         _, source_binding = raw_registered_fixture_with_binding()
         self.assertEqual(
-            len(analyzer._RAW_ORIGIN_BINDING_REGISTRY), before + 1
+            raw_origin_binding_count(), before + 1
         )
 
         analyzer._revoke_raw_origin_binding(source_binding)
 
         self.assertEqual(
-            len(analyzer._RAW_ORIGIN_BINDING_REGISTRY), before
+            raw_origin_binding_count(), before
         )
 
 
@@ -2278,7 +2313,7 @@ class InvocationSplitTests(unittest.TestCase):
 
     def test_smoke_a_accepts_only_its_exact_eighteen_row_root(self):
         self.produce("smoke_a")
-        binding_count = len(analyzer._RAW_ORIGIN_BINDING_REGISTRY)
+        binding_count = raw_origin_binding_count()
         completed = analyzer.analyze_two_range_reacquisition(
             protocol_path=self.protocol_path,
             raw_root=self.raw_a,
@@ -2309,7 +2344,7 @@ class InvocationSplitTests(unittest.TestCase):
             )
         )
         self.assertEqual(
-            len(analyzer._RAW_ORIGIN_BINDING_REGISTRY),
+            raw_origin_binding_count(),
             binding_count,
         )
 
@@ -2326,6 +2361,37 @@ class InvocationSplitTests(unittest.TestCase):
         )
         self.assertEqual(result["invocation_name"], "smoke_analyzer_b")
         self.assertEqual(result["decision"], "smoke_pass")
+
+    def _assert_pre_root_fault_revokes_binding(self, target):
+        self.produce("smoke_a")
+        binding_count = raw_origin_binding_count()
+
+        def fail_after_mint(*args, **kwargs):
+            del args, kwargs
+            raise RuntimeError(f"injected {target} failure")
+
+        with mock.patch.object(
+            analyzer, target, side_effect=fail_after_mint
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError, f"injected {target} failure"
+            ):
+                analyzer.analyze_two_range_reacquisition(
+                    protocol_path=self.protocol_path,
+                    raw_root=self.raw_a,
+                    output_root=self.analysis_a,
+                    invocation_name="smoke_analyzer_a",
+                )
+        self.assertEqual(raw_origin_binding_count(), binding_count)
+        self.assertFalse(self.analysis_a.exists())
+
+    def test_timestamp_failure_after_mint_immediately_revokes_binding(self):
+        self._assert_pre_root_fault_revokes_binding("_utc_now")
+
+    def test_creating_manifest_failure_after_mint_immediately_revokes_binding(
+        self,
+    ):
+        self._assert_pre_root_fault_revokes_binding("_analysis_manifest")
 
     def test_cross_invocation_raw_root_substitution_rejects(self):
         self.produce("smoke_a")
@@ -2828,7 +2894,7 @@ class InvocationSplitTests(unittest.TestCase):
     def test_preexisting_output_root_retains_failed_forensic_manifest(self):
         self.produce("smoke_a")
         self.analysis_a.mkdir()
-        binding_count = len(analyzer._RAW_ORIGIN_BINDING_REGISTRY)
+        binding_count = raw_origin_binding_count()
         with self.assertRaises(FileExistsError):
             analyzer.analyze_two_range_reacquisition(
                 protocol_path=self.protocol_path,
@@ -2845,7 +2911,7 @@ class InvocationSplitTests(unittest.TestCase):
             all(value is None for value in terminal["output_identities"].values())
         )
         self.assertEqual(
-            len(analyzer._RAW_ORIGIN_BINDING_REGISTRY),
+            raw_origin_binding_count(),
             binding_count,
         )
 
@@ -3491,7 +3557,7 @@ class InvocationSplitTests(unittest.TestCase):
 
     def test_analyzer_crash_after_root_creation_retains_failed_manifest(self):
         self.produce("smoke_a")
-        binding_count = len(analyzer._RAW_ORIGIN_BINDING_REGISTRY)
+        binding_count = raw_origin_binding_count()
         real_stage = analyzer._stage_output
 
         def crash_output(*args, **kwargs):
@@ -3513,7 +3579,7 @@ class InvocationSplitTests(unittest.TestCase):
                 )
         self.assert_failed_analysis(self.analysis_a)
         self.assertEqual(
-            len(analyzer._RAW_ORIGIN_BINDING_REGISTRY),
+            raw_origin_binding_count(),
             binding_count,
         )
 
