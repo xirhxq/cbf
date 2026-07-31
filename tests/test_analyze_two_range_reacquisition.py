@@ -2388,6 +2388,51 @@ class InvocationSplitTests(unittest.TestCase):
     def test_timestamp_failure_after_mint_immediately_revokes_binding(self):
         self._assert_pre_root_fault_revokes_binding("_utc_now")
 
+    def test_standard_unwrap_path_cannot_bypass_post_mint_cleanup(self):
+        self.produce("smoke_a")
+        public_analyzer = analyzer.analyze_two_range_reacquisition
+        callable_paths = [("public", public_analyzer, {})]
+        unwrapped = getattr(public_analyzer, "__wrapped__", None)
+        if callable(unwrapped):
+            callable_paths.append(
+                (
+                    "__wrapped__",
+                    unwrapped,
+                    {
+                        "_refresh_raw_origin_binding": (
+                            lambda binding, result: None
+                        )
+                    },
+                )
+            )
+
+        for path_name, callable_path, injected in callable_paths:
+            with self.subTest(path=path_name):
+                binding_count = raw_origin_binding_count()
+                with mock.patch.object(
+                    analyzer,
+                    "_utc_now",
+                    side_effect=RuntimeError(
+                        "injected post-mint timestamp failure"
+                    ),
+                ):
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "injected post-mint timestamp failure",
+                    ):
+                        callable_path(
+                            protocol_path=self.protocol_path,
+                            raw_root=self.raw_a,
+                            output_root=self.analysis_a,
+                            invocation_name="smoke_analyzer_a",
+                            **injected,
+                        )
+                self.assertEqual(
+                    raw_origin_binding_count(),
+                    binding_count,
+                )
+                self.assertFalse(self.analysis_a.exists())
+
     def test_creating_manifest_failure_after_mint_immediately_revokes_binding(
         self,
     ):

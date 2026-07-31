@@ -707,7 +707,6 @@ def _build_raw_origin_binding_lifecycle():
         return wrapped
 
     def with_analysis_scope(function):
-        @wraps(function)
         def wrapped(*args, **kwargs):
             if "_refresh_raw_origin_binding" in kwargs:
                 raise TypeError(
@@ -726,6 +725,11 @@ def _build_raw_origin_binding_lifecycle():
                     revoke(binding)
                 active_analysis_bindings.reset(token)
 
+        wrapped.__name__ = function.__name__
+        wrapped.__qualname__ = function.__qualname__
+        wrapped.__doc__ = function.__doc__
+        wrapped.__module__ = function.__module__
+        wrapped.__annotations__ = function.__annotations__.copy()
         wrapped.__signature__ = inspect.signature(function).replace(
             parameters=tuple(
                 parameter
