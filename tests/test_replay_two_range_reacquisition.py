@@ -907,7 +907,9 @@ class ProducerLifecycleTests(unittest.TestCase):
             "disk_contract": copy.deepcopy(
                 replay.REGISTERED_DISK_CONTRACT,
             ),
-            "ranging_sigma": 0.5,
+            "experiment": {
+                "ranging_sigma_m": 0.5,
+            },
         }
         authorization_payload = b'{"registered":"authorization"}\n'
         authorization_identity = identity(authorization_path, 3)
@@ -951,6 +953,107 @@ class ProducerLifecycleTests(unittest.TestCase):
             "declared_sources": declared_sources,
             "raw_sources": raw_sources,
         }
+
+    def _run_registered_to_rows(self, records, rows_boundary):
+        transaction = {
+            "root_fd": 10,
+            "parent_fd": 11,
+            "resource_fds": set(),
+        }
+        pinned_records = {
+            records["protocol_path"]: (
+                records["protocol"],
+                records["protocol_payload"],
+                records["protocol_identity"],
+            ),
+            records["authorization_path"]: (
+                records["authorization"],
+                records["authorization_payload"],
+                records["authorization_identity"],
+            ),
+        }
+        identity_by_path = {
+            Path(identity["path"]): identity
+            for identity in records["declared_sources"].values()
+        }
+
+        def trusted_read(path, *, capture_payload=True):
+            self.assertFalse(capture_payload)
+            return None, identity_by_path[Path(path)]
+
+        filesystem = types.SimpleNamespace(
+            f_bavail=100_000_000,
+            f_frsize=4096,
+        )
+        with mock.patch.object(
+            replay,
+            "REGISTERED_PROTOCOL_RELATIVE_PATH",
+            str(records["protocol_path"]),
+        ), mock.patch.object(
+            replay,
+            "REGISTERED_AUTHORIZATION_RELATIVE_PATH",
+            str(records["authorization_path"]),
+        ), mock.patch.object(
+            replay,
+            "REGISTERED_REPLAY_ROOT",
+            str(records["output_root"]),
+        ), mock.patch.object(
+            replay,
+            "_read_pinned_json",
+            side_effect=lambda path: pinned_records[Path(path)],
+        ), mock.patch.object(
+            replay,
+            "_source_snapshots",
+            return_value=(
+                records["raw_sources"],
+                {"truth_data": {}},
+            ),
+        ), mock.patch.object(
+            replay,
+            "_read_trusted_bytes",
+            side_effect=trusted_read,
+        ), mock.patch.object(
+            replay,
+            "_validate_committed_registered_state",
+        ), mock.patch.object(
+            replay.os,
+            "statvfs",
+            return_value=filesystem,
+        ), mock.patch.object(
+            replay.os,
+            "fstatvfs",
+            return_value=filesystem,
+        ), mock.patch.object(
+            replay,
+            "_create_exact_root",
+            return_value=transaction,
+        ), mock.patch.object(
+            replay,
+            "_publish_manifest",
+        ), mock.patch.object(
+            replay,
+            "_open_process",
+            return_value=12,
+        ), mock.patch.object(
+            replay,
+            "_registered_rows",
+            side_effect=rows_boundary,
+        ), mock.patch.object(
+            replay,
+            "_close_output_transaction",
+        ):
+            return replay.replay_two_range_reacquisition(
+                protocol_path=records["protocol_path"],
+                data_path=records["protocol_path"].parent / "truth.json",
+                input_manifest_path=(
+                    records["protocol_path"].parent / "manifest.json"
+                ),
+                output_root=records["output_root"],
+                run_seeds=tuple(range(20260727, 20260747)),
+                max_frames=500,
+                invocation_name="registered_replay",
+                authorization_json=records["authorization_path"],
+            )
 
     def _assert_forensic_not_completed(self, output):
         normalized = Path(str(output).replace("/var/", "/private/var/", 1))
@@ -1550,6 +1653,52 @@ class ProducerLifecycleTests(unittest.TestCase):
                     )
             fixture_loader.assert_not_called()
             self.assertEqual(events, ["allocate", "registered_rows"])
+
+    def test_registered_replay_consumes_exact_nested_ranging_sigma(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(str(directory).replace("/var/", "/private/var/", 1))
+            records = self._registered_records(root)
+            observed = []
+
+            def capture_rows_boundary(**kwargs):
+                observed.append(kwargs["ranging_sigma"])
+                raise self.RegisteredStop("controlled registered stop")
+
+            with self.assertRaises(self.RegisteredStop):
+                self._run_registered_to_rows(records, capture_rows_boundary)
+            self.assertEqual(observed, [0.5])
+
+            invalid_protocols = {
+                "missing_experiment": {},
+                "missing_nested_field": {"experiment": {}},
+                "boolean": {
+                    "experiment": {"ranging_sigma_m": False},
+                },
+                "nan": {
+                    "experiment": {"ranging_sigma_m": math.nan},
+                },
+                "infinity": {
+                    "experiment": {"ranging_sigma_m": math.inf},
+                },
+                "mismatch": {
+                    "experiment": {"ranging_sigma_m": 0.75},
+                },
+            }
+            for label, replacement in invalid_protocols.items():
+                with self.subTest(label=label):
+                    records = self._registered_records(root)
+                    records["protocol"].pop("experiment")
+                    records["protocol"].update(replacement)
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "experiment.ranging_sigma_m",
+                    ):
+                        self._run_registered_to_rows(
+                            records,
+                            lambda **_kwargs: self.fail(
+                                "invalid sigma reached registered rows",
+                            ),
+                        )
 
     def test_smoke_fixture_validation_precedes_root_allocation(self):
         with tempfile.TemporaryDirectory() as directory:

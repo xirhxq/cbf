@@ -964,6 +964,31 @@ class ProtocolSchemaTests(unittest.TestCase):
         ):
             self.assertNotIn(symbolic_name, serialized_contracts)
 
+    def test_analysis_schema_literals_distinguish_registered_and_smoke(self):
+        analysis_schema = canonical_protocol()["analysis_schema"]
+
+        self.assertEqual(
+            analysis_schema["value_contracts"]["decision"],
+            (
+                "registered_enum:pass,fail;"
+                "smoke_enum:smoke_pass,smoke_fail"
+            ),
+        )
+        self.assertEqual(
+            analysis_schema["value_contracts"]["scientific_gates"],
+            (
+                "registered_ordered_list:exactly_nine_gate_records;"
+                "smoke_ordered_list:empty"
+            ),
+        )
+        list_contract = analysis_schema["list_order_and_cardinality"]
+        self.assertEqual(
+            list_contract["registered_scientific_gate_count"],
+            9,
+        )
+        self.assertEqual(list_contract["smoke_scientific_gate_count"], 0)
+        self.assertNotIn("scientific_gate_count", list_contract)
+
     def test_strict_validator_rejects_reordered_top_level_or_section(self):
         protocol = canonical_protocol()
         registrar._validate_protocol(protocol)
@@ -1227,6 +1252,19 @@ class ProtocolSchemaTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "exact protocol"):
                     registrar._validate_protocol(protocol)
 
+    def test_nested_false_cannot_replace_zero_integrity_threshold(self):
+        protocol = canonical_protocol()
+        first_gate = protocol["gates"]["integrity_gate_order"][0]
+        protocol["gates"]["integrity_gate_records"][first_gate][
+            "threshold"
+        ] = False
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "non-Boolean|exact protocol",
+        ):
+            registrar._validate_protocol(protocol)
+
 
 class RegistrationTests(unittest.TestCase):
     def setUp(self):
@@ -1424,6 +1462,46 @@ class RegistrationTests(unittest.TestCase):
 
         self.assertFalse(markdown.exists())
         self.assertFalse(output_json.exists())
+
+    def test_same_name_identical_inode_swap_before_open_rejects(self):
+        source = self.repository / (
+            "scripts/diagnostics/two_range_reacquisition.py"
+        )
+        payload = source.read_bytes()
+        replacement = source.with_name("identical-replacement.py")
+        replacement.write_bytes(payload)
+        original_inode = source.stat().st_ino
+        replacement_inode = replacement.stat().st_ino
+        self.assertNotEqual(original_inode, replacement_inode)
+        real_open = registrar.os.open
+        swapped = False
+
+        def swap_between_observation_and_open(
+            candidate,
+            flags,
+            *args,
+            **kwargs,
+        ):
+            nonlocal swapped
+            if not swapped and Path(candidate).name == source.name:
+                replacement.replace(source)
+                swapped = True
+            return real_open(candidate, flags, *args, **kwargs)
+
+        with mock.patch.object(
+            registrar.os,
+            "open",
+            side_effect=swap_between_observation_and_open,
+        ):
+            with self.assertRaisesRegex(ValueError, "identity changed"):
+                registrar._read_bound_source(
+                    source,
+                    expected_sha256=hashlib.sha256(payload).hexdigest(),
+                )
+
+        self.assertTrue(swapped)
+        self.assertEqual(source.stat().st_ino, replacement_inode)
+        self.assertEqual(source.read_bytes(), payload)
 
     def test_comparator_relocation_symlink_and_hash_copy_cannot_rebind(self):
         expected = registrar.EXPECTED_COMPARATOR_BINDINGS
@@ -1746,6 +1824,76 @@ class RegistrationTests(unittest.TestCase):
         finally:
             markdown.unlink(missing_ok=True)
             output_json.unlink(missing_ok=True)
+
+    def test_cleanup_preserves_foreign_inode_swapped_after_ownership_check(self):
+        markdown = self.docs / "cleanup-race.md"
+        output_json = self.docs / "cleanup-race.json"
+        foreign_staging = self.docs / "foreign-cleanup-race.md"
+        foreign_payload = b"foreign inode must survive cleanup\n"
+        foreign_staging.write_bytes(foreign_payload)
+        foreign_inode = foreign_staging.stat().st_ino
+        real_matches = registrar._path_matches_descriptor
+        real_fsync = registrar.os.fsync
+        injected = False
+        fsync_faulted = False
+
+        def inject_after_ownership_check(**kwargs):
+            nonlocal injected
+            matches = real_matches(**kwargs)
+            if (
+                matches
+                and kwargs["name"] == markdown.name
+                and not injected
+            ):
+                foreign_staging.replace(markdown)
+                injected = True
+            return matches
+
+        def retain_primary_cleanup_note(descriptor):
+            nonlocal fsync_faulted
+            if injected and not fsync_faulted:
+                fsync_faulted = True
+                raise OSError("cleanup fsync fault")
+            return real_fsync(descriptor)
+
+        with (
+            mock.patch.object(
+                registrar,
+                "_path_matches_descriptor",
+                side_effect=inject_after_ownership_check,
+            ),
+            mock.patch.object(
+                registrar.os,
+                "fsync",
+                side_effect=retain_primary_cleanup_note,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "primary final probe failure",
+            ) as raised:
+                registrar._write_paired_outputs(
+                    output_markdown=markdown,
+                    output_json=output_json,
+                    markdown_payload=b"owned markdown\n",
+                    json_payload=b'{"owned":true}\n',
+                    final_probe=lambda: (_ for _ in ()).throw(
+                        RuntimeError("primary final probe failure"),
+                    ),
+                )
+
+        self.assertTrue(injected)
+        self.assertTrue(fsync_faulted)
+        self.assertTrue(markdown.exists())
+        self.assertEqual(markdown.stat().st_ino, foreign_inode)
+        self.assertEqual(markdown.read_bytes(), foreign_payload)
+        self.assertFalse(output_json.exists())
+        self.assertTrue(
+            any(
+                "cleanup fsync fault" in note
+                for note in getattr(raised.exception, "__notes__", ())
+            )
+        )
 
     def test_output_parent_fault_keeps_primary_error_and_closes_descriptor(self):
         target = self.docs / "parent-fstat.json"

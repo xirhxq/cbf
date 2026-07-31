@@ -3489,6 +3489,24 @@ def replay_two_range_reacquisition(
     disk_contract = protocol.get("disk_contract")
     if not isinstance(disk_contract, Mapping):
         raise ValueError("protocol must declare disk_contract")
+    registered_ranging_sigma = None
+    if invocation_name == "registered_replay":
+        experiment = protocol.get("experiment")
+        if not isinstance(experiment, Mapping):
+            raise ValueError(
+                "registered protocol experiment.ranging_sigma_m "
+                "differs from exact binding",
+            )
+        registered_ranging_sigma = experiment.get("ranging_sigma_m")
+        if (
+            type(registered_ranging_sigma) is not float
+            or not math.isfinite(registered_ranging_sigma)
+            or registered_ranging_sigma != 0.5
+        ):
+            raise ValueError(
+                "registered protocol experiment.ranging_sigma_m "
+                "differs from exact binding",
+            )
     protocol_identity = (
         None if invocation_name == "unit_fixture"
         else observed_protocol_identity
@@ -3712,9 +3730,7 @@ def replay_two_range_reacquisition(
                 data=source_payloads["truth_data"],
                 run_seeds=run_seeds,
                 max_frames=max_frames,
-                ranging_sigma=float(
-                    protocol.get("ranging_sigma", 0.5),
-                ),
+                ranging_sigma=registered_ranging_sigma,
             )
         decompressed_digest = hashlib.sha256()
         expected_keys = (

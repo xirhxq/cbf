@@ -11,6 +11,7 @@ import importlib.util
 import json
 import math
 import os
+import secrets
 import stat
 import subprocess
 import sys
@@ -715,7 +716,10 @@ def _analysis_schema_contract() -> dict:
         "invocation_name": (
             "enum:smoke_analyzer_a,smoke_analyzer_b,registered_analyzer"
         ),
-        "decision": "enum:PASS,FAIL",
+        "decision": (
+            "registered_enum:pass,fail;"
+            "smoke_enum:smoke_pass,smoke_fail"
+        ),
         "semantic_payload_sha256": "lowercase_sha256",
         "identities": "strict_object:literal_nested_field_order",
         "budgets": "strict_object:non_boolean_nonnegative_integers",
@@ -732,7 +736,10 @@ def _analysis_schema_contract() -> dict:
         "paired_comparison": (
             "strict_object:exact_intersection_linear_p95"
         ),
-        "scientific_gates": "ordered_list:exactly_nine_gate_records",
+        "scientific_gates": (
+            "registered_ordered_list:exactly_nine_gate_records;"
+            "smoke_ordered_list:empty"
+        ),
         "integrity_gates": (
             "ordered_list:exactly_fourteen_gate_records"
         ),
@@ -741,7 +748,8 @@ def _analysis_schema_contract() -> dict:
     }
     list_contract = {
         "scientific_gate_ids": list(analyzer.GATES),
-        "scientific_gate_count": 9,
+        "registered_scientific_gate_count": 9,
+        "smoke_scientific_gate_count": 0,
         "integrity_gate_ids": list(analyzer.INTEGRITY_GATE_IDS),
         "integrity_gate_count": 14,
         "tail_metrics": list(analyzer.TAIL_METRICS),
@@ -1272,7 +1280,8 @@ def _validate_cardinality(protocol: Mapping) -> None:
         "list_order_and_cardinality"
     ]
     if (
-        analysis_lists.get("scientific_gate_count") != 9
+        analysis_lists.get("registered_scientific_gate_count") != 9
+        or analysis_lists.get("smoke_scientific_gate_count") != 0
         or analysis_lists.get("integrity_gate_count") != 14
         or analysis_lists.get("smoke_expected_rows") != 18
         or analysis_lists.get("registered_expected_rows") != 140000
@@ -1516,6 +1525,37 @@ def _validate_authorization_contract(protocol: Mapping) -> None:
         raise ValueError("authorization record contract differs")
 
 
+def _type_aware_deep_equal(observed: object, expected: object) -> bool:
+    if isinstance(expected, Mapping):
+        return (
+            isinstance(observed, Mapping)
+            and tuple(observed) == tuple(expected)
+            and all(
+                _type_aware_deep_equal(observed[key], expected[key])
+                for key in expected
+            )
+        )
+    if isinstance(expected, list):
+        return (
+            type(observed) is list
+            and len(observed) == len(expected)
+            and all(
+                _type_aware_deep_equal(item, expected_item)
+                for item, expected_item in zip(observed, expected)
+            )
+        )
+    if isinstance(expected, tuple):
+        return (
+            type(observed) is tuple
+            and len(observed) == len(expected)
+            and all(
+                _type_aware_deep_equal(item, expected_item)
+                for item, expected_item in zip(observed, expected)
+            )
+        )
+    return type(observed) is type(expected) and observed == expected
+
+
 def _validate_exact_static_contract(protocol: Mapping) -> None:
     expected = _build_protocol(
         head=protocol["implementation_parent_commit"],
@@ -1537,7 +1577,10 @@ def _validate_exact_static_contract(protocol: Mapping) -> None:
         "authorization",
         "commands",
     ):
-        if protocol[section] != expected[section]:
+        if not _type_aware_deep_equal(
+            protocol[section],
+            expected[section],
+        ):
             raise ValueError(f"exact protocol {section} contract differs")
 
 
@@ -1686,6 +1729,107 @@ def _lstat_path(path: Path, *, leaf: str) -> os.stat_result | None:
     raise RuntimeError("unreachable path validation state")
 
 
+def _leaf_identity_state(metadata: os.stat_result) -> tuple[int, int, int, int]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+    )
+
+
+def _parent_identity_state(metadata: os.stat_result) -> tuple[int, int]:
+    return metadata.st_dev, metadata.st_ino
+
+
+def _open_bound_source_leaf(
+    path: Path,
+) -> tuple[int, int, tuple[int, int], tuple[int, int, int, int]]:
+    parent = path.parent
+    observed_parent = _lstat_path(parent, leaf="directory")
+    assert observed_parent is not None
+    parent_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    parent_descriptor = os.open(parent, parent_flags)
+    descriptor = None
+    try:
+        parent_state = _parent_identity_state(observed_parent)
+        if _parent_identity_state(os.fstat(parent_descriptor)) != parent_state:
+            raise ValueError(f"source parent identity changed: {parent}")
+        try:
+            observed_leaf = os.stat(
+                path.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            raise ValueError(
+                f"source identity changed before open: {path}"
+            ) from None
+        if stat.S_ISLNK(observed_leaf.st_mode):
+            raise ValueError(
+                f"symbolic-link path component is forbidden: {path}"
+            )
+        if not stat.S_ISREG(observed_leaf.st_mode):
+            raise ValueError(f"trusted leaf must be a regular file: {path}")
+        leaf_state = _leaf_identity_state(observed_leaf)
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        descriptor = os.open(
+            path.name,
+            flags,
+            dir_fd=parent_descriptor,
+        )
+        opened_leaf = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened_leaf.st_mode)
+            or _leaf_identity_state(opened_leaf) != leaf_state
+        ):
+            raise ValueError(f"source identity changed before open: {path}")
+        return parent_descriptor, descriptor, parent_state, leaf_state
+    except BaseException:
+        if descriptor is not None:
+            os.close(descriptor)
+        os.close(parent_descriptor)
+        raise
+
+
+def _verify_bound_source_leaf(
+    path: Path,
+    *,
+    parent_descriptor: int,
+    parent_state: tuple[int, int],
+    leaf_state: tuple[int, int, int, int],
+    label: str,
+) -> None:
+    try:
+        descriptor_leaf = os.stat(
+            path.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        raise ValueError(f"{label} identity changed: {path}") from None
+    observed_parent = _lstat_path(path.parent, leaf="directory")
+    observed_leaf = _lstat_path(path, leaf="file")
+    assert observed_parent is not None
+    assert observed_leaf is not None
+    if (
+        _parent_identity_state(os.fstat(parent_descriptor)) != parent_state
+        or _parent_identity_state(observed_parent) != parent_state
+        or _leaf_identity_state(descriptor_leaf) != leaf_state
+        or _leaf_identity_state(observed_leaf) != leaf_state
+    ):
+        raise ValueError(f"{label} identity changed: {path}")
+
+
 def _read_bound_source(
     path: Path,
     *,
@@ -1694,13 +1838,12 @@ def _read_bound_source(
     capture_payload: bool = True,
 ) -> tuple[bytes | None, dict]:
     path = _absolute(path)
-    _lstat_path(path, leaf="file")
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
-    descriptor = os.open(path, flags)
+    (
+        parent_descriptor,
+        descriptor,
+        parent_state,
+        leaf_state,
+    ) = _open_bound_source_leaf(path)
     chunks = [] if capture_payload else None
     try:
         before = os.fstat(descriptor)
@@ -1717,8 +1860,16 @@ def _read_bound_source(
             if chunks is not None:
                 chunks.append(chunk)
         after = os.fstat(descriptor)
+        _verify_bound_source_leaf(
+            path,
+            parent_descriptor=parent_descriptor,
+            parent_state=parent_state,
+            leaf_state=leaf_state,
+            label="source",
+        )
     finally:
         os.close(descriptor)
+        os.close(parent_descriptor)
     before_state = (
         before.st_dev,
         before.st_ino,
@@ -1733,16 +1884,6 @@ def _read_bound_source(
     )
     if before_state != after_state or bytes_read != after.st_size:
         raise ValueError(f"source changed while reading: {path}")
-    observed_path = _lstat_path(path, leaf="file")
-    assert observed_path is not None
-    path_state = (
-        observed_path.st_dev,
-        observed_path.st_ino,
-        observed_path.st_size,
-        observed_path.st_mtime_ns,
-    )
-    if path_state != after_state:
-        raise ValueError(f"source path changed while reading: {path}")
     identity = {
         "path": str(path),
         "device": after.st_dev,
@@ -1769,13 +1910,12 @@ def _read_bound_gzip_source(
 ) -> tuple[dict, dict]:
     """Verify both gzip hash domains through one no-follow descriptor."""
     path = _absolute(path)
-    _lstat_path(path, leaf="file")
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
-    descriptor = os.open(path, flags)
+    (
+        parent_descriptor,
+        descriptor,
+        parent_state,
+        leaf_state,
+    ) = _open_bound_source_leaf(path)
     cache_key = None
     try:
         before = os.fstat(descriptor)
@@ -1821,8 +1961,16 @@ def _read_bound_gzip_source(
                     f"decompressed comparator hash differs: {path}"
                 )
         after = os.fstat(descriptor)
+        _verify_bound_source_leaf(
+            path,
+            parent_descriptor=parent_descriptor,
+            parent_state=parent_state,
+            leaf_state=leaf_state,
+            label="gzip comparator",
+        )
     finally:
         os.close(descriptor)
+        os.close(parent_descriptor)
     expected_state = (
         before.st_dev,
         before.st_ino,
@@ -1835,15 +1983,7 @@ def _read_bound_gzip_source(
         after.st_size,
         after.st_mtime_ns,
     )
-    observed_path = _lstat_path(path, leaf="file")
-    assert observed_path is not None
-    path_state = (
-        observed_path.st_dev,
-        observed_path.st_ino,
-        observed_path.st_size,
-        observed_path.st_mtime_ns,
-    )
-    if after_state != expected_state or path_state != expected_state:
+    if after_state != expected_state:
         raise ValueError(f"gzip comparator identity changed: {path}")
     assert cache_key is not None
     _GZIP_HASH_VALIDATION_CACHE.add(cache_key)
@@ -2406,23 +2546,92 @@ def _rollback_owned_entry(
     descriptor: int,
 ) -> list[BaseException]:
     faults = []
-    removed = False
+    settled = False
+    quarantine_name = None
+    restore_linked = False
     for _ in range(3):
         try:
-            if not removed:
+            if not settled and quarantine_name is None:
                 try:
-                    owned = _path_matches_descriptor(
+                    _path_matches_descriptor(
                         parent_descriptor=parent_descriptor,
                         name=name,
                         descriptor=descriptor,
                     )
                 except FileNotFoundError:
-                    removed = True
+                    settled = True
                 else:
-                    if not owned:
-                        return faults
-                    os.unlink(name, dir_fd=parent_descriptor)
-                    removed = True
+                    quarantine_name = (
+                        ".cbf2026-protocol-rollback-"
+                        f"{secrets.token_hex(16)}"
+                    )
+                    reserve_flags = (
+                        os.O_WRONLY
+                        | os.O_CREAT
+                        | os.O_EXCL
+                        | getattr(os, "O_CLOEXEC", 0)
+                        | getattr(os, "O_NOFOLLOW", 0)
+                    )
+                    reserve_descriptor = os.open(
+                        quarantine_name,
+                        reserve_flags,
+                        0o600,
+                        dir_fd=parent_descriptor,
+                    )
+                    os.close(reserve_descriptor)
+                    try:
+                        os.rename(
+                            name,
+                            quarantine_name,
+                            src_dir_fd=parent_descriptor,
+                            dst_dir_fd=parent_descriptor,
+                        )
+                    except BaseException:
+                        os.unlink(
+                            quarantine_name,
+                            dir_fd=parent_descriptor,
+                        )
+                        quarantine_name = None
+                        raise
+            if not settled and quarantine_name is not None:
+                observed = os.stat(
+                    quarantine_name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+                owned = os.fstat(descriptor)
+                is_owned = (
+                    stat.S_ISREG(observed.st_mode)
+                    and (observed.st_dev, observed.st_ino)
+                    == (owned.st_dev, owned.st_ino)
+                )
+                if is_owned:
+                    os.unlink(
+                        quarantine_name,
+                        dir_fd=parent_descriptor,
+                    )
+                else:
+                    if not restore_linked:
+                        try:
+                            os.link(
+                                quarantine_name,
+                                name,
+                                src_dir_fd=parent_descriptor,
+                                dst_dir_fd=parent_descriptor,
+                                follow_symlinks=False,
+                            )
+                        except FileExistsError:
+                            raise RuntimeError(
+                                "foreign protocol target preserved in "
+                                f"quarantine: {quarantine_name}"
+                            ) from None
+                        restore_linked = True
+                    os.unlink(
+                        quarantine_name,
+                        dir_fd=parent_descriptor,
+                    )
+                quarantine_name = None
+                settled = True
             os.fsync(parent_descriptor)
             return faults
         except BaseException as error:
