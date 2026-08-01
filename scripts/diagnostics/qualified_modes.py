@@ -190,8 +190,10 @@ def enumerate_qualified_starts(
     else:
         first, second = canonical_references
         pair_keys = tuple(sorted((first[0], second[0])))
+        analytic: list[QualifiedStart] = []
         for branch, estimate in _circle_branches(first, second):
-            tentative.append(QualifiedStart("circle", estimate, pair_keys, branch))
+            analytic.append(QualifiedStart("circle", estimate, pair_keys, branch))
+        return tuple(sorted(analytic, key=stable_attempt_id))
     unique: list[QualifiedStart] = []
     for start in sorted(tentative, key=stable_attempt_id):
         if all(_point_distance(start.estimate, kept.estimate) > 1e-9 for kept in unique):
@@ -272,6 +274,8 @@ def _circle_branches(
     midpoint = (first_position[0] + along * unit_x, first_position[1] + along * unit_y)
     negative = (midpoint[0] + height * unit_y, midpoint[1] - height * unit_x)
     positive = (midpoint[0] - height * unit_y, midpoint[1] + height * unit_x)
+    if negative == positive:
+        return (("negative", negative),)
     return (("negative", negative), ("positive", positive))
 
 
@@ -316,10 +320,12 @@ def _seed_estimate(seed: object) -> tuple[float, float] | None:
         or not np.allclose(covariance, covariance.T, rtol=1e-12, atol=1e-12)
     ):
         return None
+    canonical = 0.5 * (covariance + covariance.T)
     try:
-        return estimate if np.all(np.linalg.eigvalsh(covariance) > 0.0) else None
+        eigenvalues = np.linalg.eigvalsh(canonical)
     except np.linalg.LinAlgError:
         return None
+    return estimate if np.all(np.isfinite(eigenvalues)) and np.all(eigenvalues > 0.0) else None
 
 
 def _point_distance(first: tuple[float, float], second: tuple[float, float]) -> float:

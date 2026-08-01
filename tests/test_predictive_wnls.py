@@ -995,25 +995,51 @@ class CandidateAcceptanceTests(unittest.TestCase):
         self.assertEqual(projected.attempt_id, "analytic:two-root")
         self.assertEqual(projected.estimate, (120.0, 0.0))
 
-    def test_innovation_diagnostic_cannot_remove_a_second_local_mode(self):
-        near = make_converged_candidate_result(estimate=(0.0, 0.0))
-        mirror = make_converged_candidate_result(estimate=(120.0, 0.0))
-        mirror["innovation"] = {
-            "valid": False,
-            "failure_reason": "innovation_q_exceeds_reference_quantile",
+    def test_legacy_innovation_cannot_remove_a_real_two_range_local_mode(self):
+        solve_kwargs = {
+            "reference_positions": [[-80.0, 0.0], [80.0, 0.0]],
+            "reference_covariances": [np.eye(2), np.eye(2)],
+            "measurements": [100.0, 100.0],
+            "ranging_sigma": 0.5,
         }
+        lower = solve_finite_budget_wnls(
+            **solve_kwargs,
+            initial_estimate=[0.0, -60.0],
+        )
+        upper = solve_finite_budget_wnls(
+            **solve_kwargs,
+            initial_estimate=[0.0, 60.0],
+        )
+
+        self.assertEqual(lower["status"], "converged")
+        self.assertEqual(upper["status"], "converged")
+        self.assertEqual(lower["cost"], 0.0)
+        self.assertEqual(upper["cost"], 0.0)
+        np.testing.assert_allclose(lower["estimate"], [0.0, -60.0])
+        np.testing.assert_allclose(upper["estimate"], [0.0, 60.0])
+        legacy = candidate_acceptance(
+            upper,
+            live_prediction={
+                "estimate": lower["estimate"],
+                "modeled_covariance": lower["covariance"],
+            },
+            active_reference_count=2,
+            base_anchor_provenance=[0, 1],
+        )
+        self.assertFalse(legacy[0])
+        self.assertEqual(legacy[1], "innovation_q_exceeds_reference_quantile")
 
         candidates = [
             locally_eligible_candidate(
-                near,
-                attempt_id="near",
-                active_reference_count=3,
+                lower,
+                attempt_id="lower-circle-root",
+                active_reference_count=2,
                 base_anchor_provenance=[0, 1],
             ),
             locally_eligible_candidate(
-                mirror,
-                attempt_id="mirror",
-                active_reference_count=3,
+                upper,
+                attempt_id="upper-circle-root",
+                active_reference_count=2,
                 base_anchor_provenance=[0, 1],
             ),
         ]
@@ -1022,6 +1048,40 @@ class CandidateAcceptanceTests(unittest.TestCase):
         clustering = cluster_candidates(candidates, MODE_TOLERANCE_M)
         self.assertTrue(clustering.separable)
         self.assertEqual(len(clustering.modes), 2)
+
+    def test_local_eligibility_retains_every_noninnovation_gate(self):
+        complete = make_converged_candidate_result()
+        invalid_covariance = make_converged_candidate_result(
+            covariance=((1.0, 2.0), (2.0, 1.0)),
+        )
+        invalid_fim = make_converged_candidate_result()
+        invalid_fim["fim_valid"] = False
+        cases = (
+            ("not_converged", {"status": "failed"}, 2, [0, 1], "candidate_not_numerically_converged"),
+            ("incomplete", {"status": "converged"}, 2, [0, 1], "invalid_candidate_output"),
+            ("covariance", invalid_covariance, 2, [0, 1], "invalid_candidate_output"),
+            ("fim", invalid_fim, 2, [0, 1], "invalid_candidate_output"),
+            ("invalid_provenance", complete, 2, [0], "insufficient_base_anchor_provenance"),
+            ("insufficient_provenance", complete, 2, [0, 0], "insufficient_base_anchor_provenance"),
+            ("one_reference", complete, 1, [0, 1], "insufficient_active_references"),
+            (
+                "reduced_cost",
+                make_converged_candidate_result(cost=math.nextafter(9.0, math.inf)),
+                2,
+                [0, 1],
+                "reacquisition_reduced_cost_exceeds_nine",
+            ),
+        )
+        for name, result, active_count, provenance, expected_reason in cases:
+            with self.subTest(name=name):
+                eligible, reason, diagnostics = candidate_local_eligibility(
+                    result,
+                    active_reference_count=active_count,
+                    base_anchor_provenance=provenance,
+                )
+                self.assertFalse(eligible)
+                self.assertEqual(reason, expected_reason)
+                self.assertEqual(diagnostics["failure_reason"], expected_reason)
 
     def test_legacy_candidate_acceptance_retains_three_value_innovation_contract(self):
         candidate = make_converged_candidate_result(estimate=(120.0, 0.0))
