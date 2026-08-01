@@ -2,8 +2,11 @@
 
 Date: 2026-08-01
 
-Status: conceptual design approved by the researcher; written specification
-awaiting researcher review
+Status: independent written-specification review passed; awaiting researcher
+review
+
+Independent review:
+docs/superpowers/specs/reviews/2026-08-01-cbf2026-qualified-modes-hybrid-distributed-cbf-design-review.md
 
 ## Purpose
 
@@ -181,8 +184,10 @@ may collapse two of these layers into one implication.
 
 An eligible record is a complete solver result that passes the existing
 finite, convergence, stationarity, residual, local-FIM/SPD,
-current-reference, provenance, and local innovation/cost checks. Eligibility
-is necessary but does not authorize publication.
+current-reference, provenance, and data-fit cost checks. Deployment-domain,
+history-innovation, and branch-qualification tests are explicitly excluded
+from local eligibility. Eligibility is necessary but does not authorize
+publication.
 
 A numerical mode is a cluster of eligible records whose final estimates are
 numerically indistinguishable under the frozen clustering rule below.
@@ -190,9 +195,11 @@ numerically indistinguishable under the frozen clustering rule below.
 An admissible mode is a numerical mode that passes the applicable
 deployment-domain or temporal-history qualifier.
 
-A representative is the deterministic record chosen inside one already
-selected admissible mode. Cost, innovation, and source order may select a
-representative inside a mode. They must never select between distinct modes.
+A representative is the deterministic record chosen inside one valid
+numerical mode before mode qualification. Objective cost and a frozen
+deterministic tie-break may select a representative inside a mode. Innovation,
+deployment domain, and source order across modes must not remove or select
+between distinct modes.
 
 Fresh is permitted if and only if exactly one admissible mode exists and its
 representative passes all current-frame continuous-update checks. Zero or
@@ -218,10 +225,28 @@ connected components are provisional clusters. A provisional cluster is
 valid only if its complete diameter is also at most
 \(\tau_{\mathrm{mode}}\). A component connected only by a chaining sequence
 but with larger diameter is nonseparable_chain and cannot be published.
+The presence of any nonseparable_chain makes the entire frame
+non-publishable; the component cannot be discarded while another component is
+published.
 
 This rule is deterministic, source-label invariant, and input-order
 invariant. Sensitivity outputs for 0.5, 1, and 2 mm are mandatory, but only
 the 1 mm result controls the primary decision.
+
+The publication pipeline is frozen in this order:
+
+1. evaluate local eligibility without any domain or history innovation gate;
+2. cluster every locally eligible record;
+3. reject the complete frame if any provisional cluster is nonseparable;
+4. select one canonical representative inside every valid cluster by
+   objective cost and the frozen within-cluster tie-break;
+5. evaluate the deployment-domain or history qualifier for every cluster
+   representative;
+6. require exactly one admissible cluster; and
+7. publish only the representative of that unique cluster.
+
+No implementation shortcut may apply innovation before clustering or use
+innovation to suppress a discovered false mode.
 
 ### Candidate completeness
 
@@ -314,8 +339,13 @@ The private prior:
 - may be propagated only by logged applied held commands;
 - may remain available as unpublished branch-history state after the public
   two-frame prediction horizon expires;
-- has an age no greater than the finite registered mission horizon minus one,
-  with every propagation and age serialized;
+- uses the frozen policy
+  \[
+  K_{\mathrm{priv,max}}=H-1,
+  \]
+  where \(H\) is the exact registered mission-frame count;
+- becomes absent immediately when its age exceeds
+  \(K_{\mathrm{priv,max}}\), with every propagation and age serialized;
 - is not a WNLS range, anchor, continuous residual, or FIM term;
 - is not reset by predicted, unavailable, ambiguous, or rejected output; and
 - must become absent when its source, command chronology, covariance, or age
@@ -334,6 +364,11 @@ Under those premises, unique-mode publication preserves the correct branch.
 The FIM does not prove any premise in this list. An incorrect overconfident
 prior that remains self-consistent with a false branch is a required negative
 test and Monte Carlo failure mode.
+
+All development and confirmatory reports stratify true-mode pass,
+false-mode pass, multi-pass, no-pass, wrong-unique, and availability outcomes
+by private-prior age. Choosing \(K_{\mathrm{priv,max}}=H-1\) is a disclosed
+finite-mission policy, not a correctness guarantee.
 
 ## Publication and lifecycle semantics
 
@@ -372,45 +407,112 @@ The dynamic active set remains
 where optional sUAV references have strictly lower squad-local index. Dynamic
 FIM references never create a CBF distance edge.
 
-On an open flow interval with a fixed active set, compute the analytic FIM
-derivative from the current estimated directions, velocity-command interface,
-and topologically preceding modeled-matrix derivatives. The
-controller-facing certificate is
-
+Let
 \[
-\nu_i^{\mathrm{ub}}(t)=
-\frac{3\|P_i\|_2^2\|\dot\Phi_i\|_2}
+v_i=[u_{ix},u_{iy}]^{\mathsf T},
+\qquad
+V_i^{\max}=\sqrt{2}\,25
+\]
+for an sUAV and \(V_i^{\max}=0\) for a hovering bUAV. On an open flow
+interval with a fixed active set, define
+\[
+\beta_{ij}:=
+\frac{V_i^{\max}+V_j^{\max}}{s_{ij}},
+\]
+which is fixed before the local QPs are solved and satisfies
+\(\|\dot n_{ij}\|_2\le\beta_{ij}\) for every admissible planar command.
+
+The command-independent flow bounds are computed topologically. Set
+\(L_j^P=\bar\nu_j=0\) for a bUAV. For every sUAV \(i\), after all predecessor
+bounds are available, define
+\[
+\overline{\dot w}_{ij}
+:=
+2\beta_{ij}\|P_j\|_2+L_j^P,
+\]
+\[
+L_i^\Phi
+:=
+\sum_{j\in\mathcal R_i}
+\left(
+\frac{\overline{\dot w}_{ij}}{w_{ij}^2}
++\frac{2\beta_{ij}}{w_{ij}}
+\right),
+\qquad
+L_i^P:=\|P_i\|_2^2 L_i^\Phi,
+\]
+and
+\[
+\bar\nu_i
+:=
+\frac{3L_i^P}
 {2\sqrt{\lambda_{\max}(P_i)}}.
 \]
 
-The calculation proceeds in the same bases-first, increasing-local-index order
-as the FIM. Every input must be finite, every active distance must exceed the
-declared singular-distance tolerance, and every active FIM must pass the
-declared SPD/conditioning gate. The analyzer independently recomputes
-\(\dot\Phi_i\), \(\nu_i^{\mathrm{ub}}\), and
-\(D^+\epsilon_i\le\nu_i^{\mathrm{ub}}\) on flow intervals.
+These inequalities follow from
+\[
+|\dot w_{ij}|
+\le
+2\|\dot n_{ij}\|_2\|P_j\|_2+\|\dot P_j\|_2,
+\]
+\[
+\|\dot\Phi_i\|_2
+\le
+\sum_{j\in\mathcal R_i}
+\left(
+\frac{|\dot w_{ij}|}{w_{ij}^2}
++\frac{2\|\dot n_{ij}\|_2}{w_{ij}}
+\right),
+\]
+and
+\(\|\dot P_i\|_2\le\|P_i\|_2^2\|\dot\Phi_i\|_2\).
+Therefore
+\[
+D^+\epsilon_i\le\bar\nu_i
+\]
+for every component-bounded command on the admitted fixed-active-set
+geometry and modeled-matrix state.
+
+Every quantity in \(\bar\nu_i\) is determined from the current state,
+mission input bound, and topologically preceding bounds before any current
+local QP decision is solved. The controller rows use \(\bar\nu_i\), never an
+instantaneous expression that depends on the unknown current command.
+
+Every input must be finite, every active distance must exceed the declared
+singular-distance tolerance, and every active FIM must pass the declared
+SPD/conditioning gate. The analyzer additionally recomputes the realized
+\[
+\nu_i^{\mathrm{inst}}(t)=
+\frac{3\|P_i\|_2^2\|\dot\Phi_i\|_2}
+{2\sqrt{\lambda_{\max}(P_i)}}
+\]
+from the applied planar commands and verifies
+\[
+D^+\epsilon_i\le\nu_i^{\mathrm{inst}}\le\bar\nu_i
+\]
+on every flow interval.
 
 The positive backward difference may remain as a descriptive log field. It
 must not be supplied to a theorem-aligned hard CBF in place of the analytic
 certificate.
 
 If the analytic rate certificate is invalid, the affected controller interval
-does not satisfy the invariance premises and must not be counted as a
-theorem-aligned controlled interval.
+does not satisfy the invariance premises. It remains in the controller primary
+interval universe and is counted as certificate-unavailable.
 
 On every theorem-aligned flow interval, the controller-facing nominal estimate
 must satisfy
 
 \[
-\dot{\hat p}_i=u_i.
+\dot{\hat p}_i=v_i.
 \]
 
 It may be reset only through the hybrid guard below. The offline WNLS sidecar
 does not supply this state. If a future implementation instead uses an
 estimator with a nonzero flow residual
-\(\dot{\hat p}_i-u_i\), that residual requires a separately derived bound and
+\(\dot{\hat p}_i-v_i\), that residual requires a separately derived bound and
 a new design version; it may not be silently absorbed into
-\(\nu_i^{\mathrm{ub}}\).
+\(\bar\nu_i\).
 
 ## Allocated pairwise distributed CBFs
 
@@ -453,12 +555,12 @@ d_{\mathrm{loc}}-\|\hat p_i-\hat p_j\|-\epsilon_i-\epsilon_j.
 The two endpoint rows are
 
 \[
--n_{ij}^{\mathsf T}u_i-\nu_i^{\mathrm{ub}}
+-n_{ij}^{\mathsf T}v_i-\bar\nu_i
 +a_{ij}^i\alpha(b_{\mathrm{loc}}^{ij})\ge0,
 \]
 
 \[
-+n_{ij}^{\mathsf T}u_j-\nu_j^{\mathrm{ub}}
++n_{ij}^{\mathsf T}v_j-\bar\nu_j
 +a_{ij}^j\alpha(b_{\mathrm{loc}}^{ij})\ge0.
 \]
 
@@ -474,12 +576,12 @@ b_{\mathrm{col}}^{ij}=
 the endpoint rows are
 
 \[
-+n_{ij}^{\mathsf T}u_i-\nu_i^{\mathrm{ub}}
++n_{ij}^{\mathsf T}v_i-\bar\nu_i
 +a_{ij}^i\alpha(b_{\mathrm{col}}^{ij})\ge0,
 \]
 
 \[
--n_{ij}^{\mathsf T}u_j-\nu_j^{\mathrm{ub}}
+-n_{ij}^{\mathsf T}v_j-\bar\nu_j
 +a_{ij}^j\alpha(b_{\mathrm{col}}^{ij})\ge0.
 \]
 
@@ -499,17 +601,25 @@ must be replaced, not retained in parallel with the allocated row.
 
 ### Distributed-realization proposition
 
-Suppose every endpoint uses the same pair snapshot and allocation, every local
-hard QP is feasible in the explicit componentwise input set, and every
-endpoint applies a command satisfying all of its local allocated rows. Summing
-the two endpoint inequalities for each sUAV pair, or using the single sUAV row
-for a hovering bUAV pair, gives the complete coupled CBF row. The existing
-stacked conditional invariance argument then applies on the flow interval.
+This proposition concerns an ideal continuous-time allocated interface.
+Suppose every endpoint uses the same instantaneous pair state and allocation,
+every local hard QP is feasible in the explicit componentwise input set, and
+the applied commands satisfy all local allocated rows almost everywhere.
+Summing the two endpoint inequalities for each sUAV pair, or using the single
+sUAV row for a hovering bUAV pair, gives the complete coupled CBF row. The
+existing stacked conditional invariance argument then applies on the flow
+interval.
 
 This is a distributed sufficient realization. It is more conservative than a
 centralized coupled row. Centralized feasibility does not imply that every
 fixed-allocation local QP is feasible. Local infeasibility, deadlock, and task
 noncompletion are therefore mandatory experimental outcomes.
+
+The 2 Hz implementation evaluates snapshot rows and holds the resulting
+commands. Because this design intentionally adds no sampled-data reserve, its
+update-time and trajectory residuals are empirical implementation evidence.
+They do not by themselves prove that the continuous-time allocated rows hold
+almost everywhere or that the 2 Hz implementation inherits the proposition.
 
 ## Hybrid reset guard
 
@@ -540,6 +650,19 @@ Every reset record must include
 \(b_e^-\), \(b_e^+\), allocation versions, QP feasibility, and the guard
 decision.
 
+A reset is a versioned topological transaction. All proposed active-set
+changes for one logical time are collected first. The affected-node set is the
+changed nodes together with their complete transitive-descendant closure in
+the proposed active DAG. In a propose phase, the bUAV roots and then every
+affected sUAV compute proposed \(P_i\), \(\epsilon_i\), \(L_i^P\), and
+\(\bar\nu_i\) in the common topological order. Every affected hard edge is
+reconstructed from that one proposed version. In a commit phase, the version
+is installed only after every affected endpoint and guard passes. Partial
+commits and mixed pre/post-reset edge snapshots are prohibited. This
+two-phase transaction remains distributed: each node computes its own
+proposed values from frozen mission configuration and messages from
+topologically preceding nodes.
+
 If a proposed new FIM set fails the guard while the preceding set remains
 fully valid, the preceding set and certificate may remain active. If the
 preceding set is no longer valid, the theorem-aligned controlled interval ends
@@ -559,13 +682,16 @@ Assume:
 3. every accepted reset maps the pre-reset state into the post-reset tightened
    set and post-reset feasible input domain.
 
-The flow comparison argument preserves each tightened set between resets, and
-the reset guard preserves membership at every reset. Induction over the finite
-reset sequence therefore gives hybrid conditional forward invariance.
+The reset times are assumed locally finite, with no Zeno accumulation. The
+flow comparison argument preserves each tightened set between resets, and the
+reset guard preserves membership at every reset. Induction over every finite
+reset prefix therefore gives hybrid conditional forward invariance.
 
 The conclusion remains conditional on
 \(\|p_i-\hat p_i\|\le\epsilon_i\). Neither the FIM nor the reset guard proves
-that premise.
+that premise. Validity of the error envelope immediately after every reset is
+an explicit theorem premise and an independently reported empirical
+indicator; nonnegative estimated barriers alone cannot establish it.
 
 ## Controller behavior when evidence is unavailable
 
@@ -610,6 +736,9 @@ The implementation plan must include, at minimum:
   except at 1 mm;
 - connected-component chaining with diameter above 1 mm fails closed;
 - clustering is invariant to record order and source-label permutation;
+- a false mode that would fail innovation remains present through local
+  eligibility and clustering;
+- representative selection precedes and is independent of mode qualification;
 - two-circle enumeration returns both distinct roots;
 - no domain/history prior with multiple modes fails closed;
 - the declared deployment half-plane selects only the ocean-side mode;
@@ -617,6 +746,8 @@ The implementation plan must include, at minimum:
 - exactly one history-qualified mode publishes fresh;
 - zero or multiple qualified modes do not publish fresh;
 - rejected candidates do not reset private state;
+- private age \(H-1\) remains eligible for scoring and age \(H\) becomes
+  absent;
 - truth, future-frame, and analyzer-derived fields cannot enter runtime gates;
   and
 - an incorrect self-consistent private prior is retained as a negative case,
@@ -626,8 +757,8 @@ The implementation plan must include, at minimum:
 
 - bases-first topological derivative propagation matches finite perturbation on
   fixed-active-set fixtures;
-- the analytic \(\nu_i^{\mathrm{ub}}\) independently upper-bounds the observed
-  flow derivative within numerical tolerance;
+- the realized \(\nu_i^{\mathrm{inst}}\) is no greater than the
+  command-independent \(\bar\nu_i\) within numerical tolerance;
 - backward difference is never routed into a theorem-aligned hard row;
 - active-set additions and removals create explicit reset records;
 - a post-reset negative barrier is rejected;
@@ -667,27 +798,80 @@ and may diagnose structural failure. It may change code and thresholds only
 through a new documented development round. Every change must retain the
 failed run and previous development evidence.
 
+The primary tuple universe is every scheduled post-initialization
+\((\text{declared mission},\text{frame},\text{sUAV})\) tuple, whether or not
+the mission process starts successfully. Ambiguous, rejected, failed,
+predicted, unavailable, aborted, launch-failed, never-started, and
+missing-output tuples remain in this universe. A launch-failed or never-started
+mission contributes its complete frozen schedule as missing output. Fresh
+retention is fresh outputs divided by the primary tuple universe.
+Fresh-or-bounded-predicted availability uses the same denominator. Conditional
+containment is computed only over fresh or bounded-predicted finite outputs,
+but the joint available-and-contained rate is also reported over the full
+primary tuple universe. No runtime or analyzer status may remove a tuple from
+these denominators.
+
+The initialization universe is every
+\((\text{declared mission},\text{frame }0,\text{sUAV})\) tuple. A
+never-started or launch-failed mission contributes missing initialization
+outcomes. Domain-assumption, mode-enumeration, qualification, and publication
+outcomes are reported over this universe; frame-zero failures cannot disappear
+through the post-initialization exclusion above.
+
+The controller primary interval universe is every scheduled
+post-initialization control interval in every declared mission. Never-started
+and launch-failed missions contribute their complete frozen interval schedules
+as certificate-unavailable. An interval has controller-certificate
+availability only when one committed version supplies a complete finite
+state/radius snapshot, valid \(\bar\nu\) bounds, complete allocated hard rows,
+a feasible bounded-input local hard QP for every sUAV, and a non-aborted
+controller status. Certificate-invalid, missing-snapshot,
+guard-rejected-without-valid-predecessor, QP-infeasible, unavailable, and
+aborted intervals remain in this universe.
+
+Minimum-depth containment uses the published finite fresh or predicted outputs
+at that depth as its denominator. A registered depth with a zero denominator
+fails the gate. The 50 m catastrophic-error gate covers every finite fresh or
+predicted output, not only contained or uniquely fresh subsets.
+
+A successful primary mission must finish the search within the frozen horizon,
+have controller-certificate availability equal to 1.0 over its complete
+interval universe, and have no certificate abort, QP infeasibility,
+componentwise input violation, accepted-guard violation, implemented hard-row
+violation, or true localization/collision constraint violation. Operational
+mission completion without these conditions is reported separately and cannot
+pass the primary mission-success gate.
+
 The development gates are:
 
 - complete registered-key and manifest accounting;
 - zero truth reads by runtime decision code;
+- zero initialization-universe assumption or accounting omissions;
 - zero cross-mode source-order publications;
 - zero fresh publications with multiple admissible modes;
 - zero wrong-mode fresh publications in development evidence;
 - no errors above the retained 50 m catastrophic-error threshold;
 - aggregate valid-output containment at least 0.98;
 - minimum squad-local-depth containment at least 0.95;
+- joint available-and-contained rate at least 0.93 over the full primary tuple
+  universe;
 - fresh retention at least 0.98;
 - fresh-or-bounded-predicted availability at least 0.95;
 - zero missing or duplicated allocated hard rows;
-- zero analytic-rate-certificate violations on admitted flow intervals;
+- controller-certificate availability at least 0.99 over the complete
+  controller primary interval universe;
+- zero cases with
+  \(\nu_i^{\mathrm{inst}}>\bar\nu_i\) on a certificate-available interval;
 - zero accepted reset-guard violations;
 - zero componentwise input-limit violations;
 - zero local hard-QP infeasibility in the primary allocation arm;
 - zero negative implemented local or reconstructed full hard-row residuals,
-  within a frozen numerical tolerance; and
-- at least 0.95 mission completion without a persistent safe-but-stopped
-  deadlock.
+  within a frozen numerical tolerance;
+- zero true localization-distance or collision-distance violations in a
+  successful primary mission; and
+- successful primary-mission fraction at least 0.95, using all declared
+  development missions as the denominator; never-started and launch-failed
+  missions are unsuccessful.
 
 Failure of a development gate permits diagnosis and a new versioned design
 round. It does not permit relabeling a failed arm as confirmatory evidence.
@@ -703,6 +887,14 @@ The primary confirmatory population contains 60 independent mission seeds.
 Each seed generates its own mission trajectory and measurement-noise
 realization. Repeating range noise on a single preserved truth trajectory does
 not satisfy this requirement.
+
+These 60 seeds define the registered primary-mission universe before launch.
+Every seed contributes its complete frozen frame, tuple, and control-interval
+schedule to the relevant denominators. A never-started or launch-failed seed
+contributes missing estimator outputs, certificate-unavailable controller
+intervals, and one unsuccessful mission. The confirmatory primary-mission
+success denominator is therefore exactly 60, regardless of process-launch or
+runtime status.
 
 The dynamic DAG is the primary controller and estimator-analysis condition. A
 fixed-reference FIM replay may be retained as a paired reference-graph
