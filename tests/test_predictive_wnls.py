@@ -1799,6 +1799,47 @@ class QualifiedMultistartIntegrationTests(unittest.TestCase):
             len(expected) - 1,
         )
 
+    def test_malformed_early_result_cannot_interrupt_exactly_once_callbacks(self):
+        calls = []
+
+        def solver(start):
+            calls.append(predictive_wnls.stable_attempt_id(start))
+            if len(calls) == 1:
+                malformed = make_converged_candidate_result(
+                    estimate=start.estimate,
+                )
+                cycle = []
+                cycle.append(cycle)
+                malformed["cost"] = cycle
+                return malformed
+            return self.honest_solver_result(self.references(), start)
+
+        audit = None
+        try:
+            audit = solve_qualified_multistart(**self.kwargs(solver=solver))
+        except ValueError:
+            pass
+
+        self.assertIsNotNone(audit)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), len(set(calls)))
+        self.assertEqual(len(audit["solver_attempts"]), 2)
+        self.assertEqual(
+            [attempt["attempt_id"] for attempt in audit["solver_attempts"]],
+            calls,
+        )
+        first = audit["solver_attempts"][0]
+        self.assertEqual(first["solver_result"]["status"], "invalid")
+        self.assertEqual(
+            first["solver_result"]["failure_reason"],
+            "invalid_solver_result_evidence",
+        )
+        self.assertFalse(first["local_eligible"])
+        self.assertEqual(
+            first["local_eligibility_reason"],
+            "invalid_solver_result_evidence",
+        )
+
     def test_reference_display_order_does_not_change_calls_or_output(self):
         references = self.references() + [
             {
@@ -1880,21 +1921,19 @@ class QualifiedMultistartIntegrationTests(unittest.TestCase):
                 solve_qualified_multistart(**kwargs)
         self.assertEqual(calls, [])
 
-    def test_solver_mapping_order_is_canonical_but_unknown_fields_are_rejected(self):
-        complete = make_converged_candidate_result()
+    def test_solver_mapping_order_or_unknown_fields_are_retained_as_invalid(self):
 
         def reordered(start):
             result = make_converged_candidate_result(estimate=start.estimate)
             return dict(reversed(tuple(result.items())))
 
-        audit = solve_qualified_multistart(
-            **self.kwargs(solver=reordered)
-        )
+        audit = solve_qualified_multistart(**self.kwargs(solver=reordered))
         self.assertEqual(len(audit["solver_attempts"]), 2)
-        self.assertEqual(
-            list(audit["solver_attempts"][0]["solver_result"]),
-            sorted(complete),
-        )
+        self.assertTrue(all(
+            attempt["solver_result"]["failure_reason"]
+            == "invalid_solver_result_evidence"
+            for attempt in audit["solver_attempts"]
+        ))
 
         def unknown(start):
             return {
@@ -1902,8 +1941,13 @@ class QualifiedMultistartIntegrationTests(unittest.TestCase):
                 "unknown_solver_fact": 1,
             }
 
-        with self.assertRaisesRegex(ValueError, "exact qualified schema"):
-            solve_qualified_multistart(**self.kwargs(solver=unknown))
+        audit = solve_qualified_multistart(**self.kwargs(solver=unknown))
+        self.assertEqual(len(audit["solver_attempts"]), 2)
+        self.assertTrue(all(
+            attempt["local_eligibility_reason"]
+            == "invalid_solver_result_evidence"
+            for attempt in audit["solver_attempts"]
+        ))
 
     def test_private_history_is_only_a_postclustering_qualifier_input(self):
         references = self.references() + [

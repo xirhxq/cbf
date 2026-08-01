@@ -68,6 +68,116 @@ def registered_deployment_domain():
     }
 
 
+def valid_serialized_proposal_row(index=0):
+    """Return one proposal row in the frozen serialized field order."""
+    return {
+        "accepted": False,
+        "cost": 1.0,
+        "damping": 0.001,
+        "invalid_trial_reason": "invalid_trial_terms",
+        "proposal": index,
+        "raw_step_norm": 1.0,
+        "stationarity_norm": 1.0,
+        "trial_cost": None,
+    }
+
+
+def valid_failed_serialized_solver_result():
+    """Return a bounded failed result in the frozen serialized field order."""
+    return {
+        "cost": 0.0,
+        "covariance": None,
+        "epsilon": None,
+        "estimate": [0.0, 0.0],
+        "failure_reason": "synthetic_failure",
+        "fim_valid": False,
+        "iterations": 0,
+        "phi_condition": None,
+        "phi_min_eigenvalue": None,
+        "proposal_count": 0,
+        "proposal_trace": [],
+        "stationarity_norm": 0.0,
+        "status": "failed",
+    }
+
+
+def malformed_serialized_solver_evidence_cases():
+    """Build fresh malformed records shared by producer/analyzer probes."""
+    formal = valid_failed_serialized_solver_result()
+    formal.update({
+        "epsilon": False,
+        "fim_valid": 1,
+        "proposal_count": True,
+        "iterations": -7,
+        "cost": "bad",
+        "stationarity_norm": {},
+        "failure_reason": 7,
+    })
+    too_many = valid_failed_serialized_solver_result()
+    too_many["proposal_trace"] = [
+        valid_serialized_proposal_row(index) for index in range(51)
+    ]
+    too_many["proposal_count"] = 51
+    too_many["iterations"] = 51
+    boolean_count = valid_failed_serialized_solver_result()
+    boolean_count["proposal_count"] = True
+    negative_iteration = valid_failed_serialized_solver_result()
+    negative_iteration["iterations"] = -1
+    nonstring_reason = valid_failed_serialized_solver_result()
+    nonstring_reason["failure_reason"] = 17
+    empty_reason = valid_failed_serialized_solver_result()
+    empty_reason["failure_reason"] = ""
+    unknown_status = valid_failed_serialized_solver_result()
+    unknown_status["status"] = "mystery"
+    nonfinite = valid_failed_serialized_solver_result()
+    nonfinite["cost"] = float("inf")
+    overflow = valid_failed_serialized_solver_result()
+    overflow["cost"] = 10**10000
+    forbidden = valid_failed_serialized_solver_result()
+    forbidden["cost"] = {"truth_position": [0.0, 0.0]}
+    deep = valid_failed_serialized_solver_result()
+    nested = 0.0
+    for _ in range(16):
+        nested = [nested]
+    deep["cost"] = nested
+    oversized = valid_failed_serialized_solver_result()
+    oversized["cost"] = [0.0] * 5000
+    noncontiguous = valid_failed_serialized_solver_result()
+    noncontiguous["proposal_trace"] = [valid_serialized_proposal_row(1)]
+    noncontiguous["proposal_count"] = 1
+    noncontiguous["iterations"] = 1
+    count_mismatch = valid_failed_serialized_solver_result()
+    count_mismatch["proposal_trace"] = [valid_serialized_proposal_row(0)]
+    nonboolean_accepted = valid_failed_serialized_solver_result()
+    proposal = valid_serialized_proposal_row(0)
+    proposal["accepted"] = 1
+    nonboolean_accepted["proposal_trace"] = [proposal]
+    nonboolean_accepted["proposal_count"] = 1
+    nonboolean_accepted["iterations"] = 1
+    recursive = valid_failed_serialized_solver_result()
+    cycle = []
+    cycle.append(cycle)
+    recursive["cost"] = cycle
+    return (
+        ("formal-reviewer-record", formal),
+        ("51-row-trace", too_many),
+        ("bool-as-int", boolean_count),
+        ("negative-iteration", negative_iteration),
+        ("non-string-reason", nonstring_reason),
+        ("empty-reason", empty_reason),
+        ("unknown-status", unknown_status),
+        ("nonfinite-scalar", nonfinite),
+        ("overflow-scalar", overflow),
+        ("forbidden", forbidden),
+        ("excessive-depth", deep),
+        ("excessive-size", oversized),
+        ("noncontiguous-proposals", noncontiguous),
+        ("count-mismatch", count_mismatch),
+        ("nonboolean-accepted", nonboolean_accepted),
+        ("recursive-cycle", recursive),
+    )
+
+
 def build_registered_qualified_row(
     *,
     frame_index=180,
@@ -256,7 +366,7 @@ class QualifiedReplayTests(unittest.TestCase):
         nested["audit_bundle"]["solver_attempts"][0]["solver_result"][
             "unknown"
         ] = True
-        with self.assertRaisesRegex(ValueError, "solver result.*exact schema"):
+        with self.assertRaisesRegex(ValueError, "solver result evidence"):
             validate_qualified_replay_row(nested)
         boolean_diameter = copy.deepcopy(row)
         boolean_diameter["audit_bundle"]["clustering"]["modes"][0][
@@ -270,6 +380,37 @@ class QualifiedReplayTests(unittest.TestCase):
         ] = [100, 101]
         with self.assertRaisesRegex(ValueError, "base anchor provenance"):
             validate_qualified_replay_row(false_provenance)
+
+    def test_producer_validator_rejects_every_malformed_solver_evidence_case(self):
+        for name, malformed_result in malformed_serialized_solver_evidence_cases():
+            with self.subTest(name=name):
+                row = self.build_registered_row()
+                row["audit_bundle"]["solver_attempts"][0][
+                    "solver_result"
+                ] = malformed_result
+                with self.assertRaisesRegex(ValueError, "solver result evidence"):
+                    validate_qualified_replay_row(row)
+
+    def test_producer_validator_rejects_reordered_protocol_mappings(self):
+        row = self.build_registered_row()
+        reversed_row = dict(reversed(tuple(row.items())))
+        with self.assertRaisesRegex(ValueError, "exact field order"):
+            validate_qualified_replay_row(reversed_row)
+
+        row = self.build_registered_row()
+        row["audit_bundle"] = dict(reversed(tuple(
+            row["audit_bundle"].items()
+        )))
+        with self.assertRaisesRegex(ValueError, "audit bundle.*exact schema"):
+            validate_qualified_replay_row(row)
+
+        row = self.build_registered_row()
+        result = row["audit_bundle"]["solver_attempts"][0]["solver_result"]
+        row["audit_bundle"]["solver_attempts"][0]["solver_result"] = dict(
+            reversed(tuple(result.items()))
+        )
+        with self.assertRaisesRegex(ValueError, "solver result evidence.*order"):
+            validate_qualified_replay_row(row)
 
 
 if __name__ == "__main__":

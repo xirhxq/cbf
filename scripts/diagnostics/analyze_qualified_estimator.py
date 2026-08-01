@@ -7,7 +7,6 @@ import math
 import numpy as np
 
 from scripts.diagnostics.estimator_lifecycle import (
-    PRIVATE_STATE_FIELDS,
     PriorBundle,
     _canonical_public_state,
     _canonical_unavailable_reason,
@@ -39,7 +38,7 @@ EXPECTED_RAW_SCHEMA_ID = (
     "cbf2026-qualified-mode-hybrid-dcbf-estimator-raw-v1"
 )
 EXPECTED_METHOD_ID = "qualified-mode-hybrid-dcbf-estimator-v1"
-ROW_FIELDS = {
+ROW_FIELDS = (
     "schema_id",
     "method_id",
     "frame_index",
@@ -64,8 +63,8 @@ ROW_FIELDS = {
     "private_age",
     "history_version",
     "audit_bundle",
-}
-AUDIT_FIELDS = {
+)
+AUDIT_FIELDS = (
     "runtime_inputs",
     "starts",
     "solver_attempts",
@@ -79,54 +78,143 @@ AUDIT_FIELDS = {
     "sensitivity",
     "decision",
     "lifecycle",
-}
-RUNTIME_INPUT_FIELDS = {
-    "references",
+)
+RUNTIME_INPUT_FIELDS = (
+    "active_reference_count",
+    "base_anchor_provenance",
     "live_seed",
     "private_seed",
-    "active_reference_count",
+    "references",
+)
+REFERENCE_FIELDS = (
     "base_anchor_provenance",
-}
-TRANSITION_FIELDS = {
-    "previous_public",
-    "previous_private",
-    "held_velocity",
-    "frame_index",
+    "covariance",
+    "key",
+    "position",
+    "range",
+    "ranging_sigma",
+)
+START_FIELDS = (
+    "attempt_id",
+    "kind",
+    "estimate",
+    "reference_keys",
+    "branch",
+)
+SOLVER_ATTEMPT_FIELDS = (
+    "attempt_id",
+    "start_record",
+    "solver_result",
+    "local_eligible",
+    "local_eligibility_reason",
+    "local_diagnostics",
+)
+TRANSITION_FIELDS = (
     "applied_command_frame",
+    "frame_index",
+    "held_velocity",
     "history_version",
     "mission_horizon_frames",
-}
-SOLVER_RESULT_FIELDS = {
-    "status",
-    "estimate",
+    "previous_private",
+    "previous_public",
+)
+SOLVER_RESULT_FIELDS = (
+    "cost",
     "covariance",
     "epsilon",
-    "phi_min_eigenvalue",
-    "phi_condition",
+    "estimate",
+    "failure_reason",
     "fim_valid",
-    "proposal_count",
     "iterations",
-    "cost",
-    "stationarity_norm",
-    "failure_reason",
+    "phi_condition",
+    "phi_min_eigenvalue",
+    "proposal_count",
     "proposal_trace",
-}
-LOCAL_DIAGNOSTIC_FIELDS = {
-    "failure_reason",
-    "geometry_failure_reason",
-    "reduced_whitened_cost",
-    "recomputed_estimate",
-    "recomputed_covariance",
-    "recomputed_objective",
-    "recomputed_residual_cost",
-    "recomputed_residual",
-    "recomputed_fim",
-    "recomputed_gauss_newton",
-    "recomputed_stationarity_norm",
-    "solver_geometry_consistent",
+    "stationarity_norm",
+    "status",
+)
+PROPOSAL_TRACE_FIELDS = (
+    "accepted",
+    "cost",
+    "damping",
+    "invalid_trial_reason",
+    "proposal",
+    "raw_step_norm",
+    "stationarity_norm",
+    "trial_cost",
+)
+LOCAL_DIAGNOSTIC_FIELDS = (
     "active_reference_count",
     "base_anchor_provenance",
-}
+    "failure_reason",
+    "geometry_failure_reason",
+    "recomputed_covariance",
+    "recomputed_estimate",
+    "recomputed_fim",
+    "recomputed_gauss_newton",
+    "recomputed_objective",
+    "recomputed_residual",
+    "recomputed_residual_cost",
+    "recomputed_stationarity_norm",
+    "reduced_whitened_cost",
+    "solver_geometry_consistent",
+)
+CANDIDATE_FIELDS = ("attempt_id", "estimate", "objective_cost", "payload")
+CANDIDATE_PAYLOAD_FIELDS = (
+    "base_anchor_provenance", "cost", "covariance", "epsilon", "estimate",
+    "failure_reason", "fim_valid", "iterations", "phi_condition",
+    "phi_min_eigenvalue", "proposal_count", "proposal_trace",
+    "stationarity_norm", "status",
+)
+CLUSTERING_FIELDS = (
+    "tolerance_m", "separable", "reason", "mode_count", "modes",
+)
+MODE_FIELDS = ("mode_id", "member_ids", "diameter_m")
+PRIOR_FIELDS = ("history_version", "private_prior", "public_prediction")
+QUALIFIER_CONTEXT_FIELDS = (
+    "propagated_private_prior", "qualifier_kind", "qualifier_payload",
+)
+QUALIFICATION_FIELDS = ("mode_id", "admissible", "reason", "score")
+SENSITIVITY_FIELDS = (
+    "0x1.0624dd2f1a9fcp-11",
+    "0x1.0624dd2f1a9fcp-10",
+    "0x1.0624dd2f1a9fcp-9",
+)
+DECISION_FIELDS = ("status", "reason", "mode_id", "representative_attempt_id")
+LIFECYCLE_FIELDS = ("history_version", "next_private_state", "public_output")
+MAX_WNLS_PROPOSALS = 50
+MIN_WNLS_DAMPING = 1e-15
+MAX_WNLS_DAMPING = 1e15
+INITIAL_WNLS_DAMPING = 1e-3
+WNLS_DAMPING_FACTOR = 10.0
+RELATIVE_SPECTRAL_THRESHOLD = 1e-12
+RELATIVE_TIE_TOLERANCE = 1e-12
+EVIDENCE_MAX_DEPTH = 8
+EVIDENCE_MAX_NODES = 4096
+FORBIDDEN_FRAGMENTS = ("truth", "analyzer", "future", "realized")
+SEED_FIELDS = ("estimate", "modeled_covariance")
+SERIALIZED_PRIVATE_STATE_FIELDS = (
+    "age_frames", "estimate", "history_version", "last_command_frame",
+    "last_held_velocity", "modeled_covariance", "propagated_to_frame",
+    "source_fresh_frame", "status",
+)
+SERIALIZED_FRESH_PUBLIC_FIELDS = (
+    "aged_modeled_radius", "base_anchor_provenance", "epsilon", "estimate",
+    "mode_id", "modeled_covariance", "output_status", "prediction_age",
+    "reason",
+)
+SERIALIZED_PREDICTED_PUBLIC_FIELDS = (
+    "aged_modeled_radius", "base_anchor_provenance", "epsilon", "estimate",
+    "modeled_covariance", "output_status", "prediction_age",
+)
+SERIALIZED_UNAVAILABLE_PUBLIC_FIELDS = (
+    "aged_modeled_radius", "base_anchor_provenance", "epsilon", "estimate",
+    "modeled_covariance", "output_status", "prediction_age", "reason",
+)
+DEPLOYMENT_DOMAIN_FIELDS = (
+    "anchor_coordinates", "anchor_ids", "deployment_vertices",
+    "domain_version", "margin_m", "ocean_side", "offset", "unit_normal",
+)
 
 
 def validate_and_recompute_qualified_row(row) -> dict:
@@ -174,6 +262,9 @@ def validate_and_recompute_qualified_row(row) -> dict:
             active_reference_count=runtime["active_reference_count"],
             base_anchor_provenance=runtime["base_anchor_provenance"],
         )
+        if _is_exact_invalid_evidence_sentinel(result):
+            locally_valid = False
+            reason = "invalid_solver_result_evidence"
         geometry = _independent_solver_geometry(
             result,
             runtime["references"],
@@ -365,7 +456,7 @@ def validate_and_recompute_qualified_row(row) -> dict:
 
 
 def _validate_exact_protocol(row):
-    if not isinstance(row, Mapping) or set(row) != ROW_FIELDS:
+    if not isinstance(row, Mapping) or tuple(row) != ROW_FIELDS:
         raise ValueError("qualified row differs from exact schema")
     if row["schema_id"] != EXPECTED_RAW_SCHEMA_ID:
         raise ValueError("qualified row schema identity mismatch")
@@ -404,61 +495,63 @@ def _validate_exact_protocol(row):
         for members in row["mode_members"]
     ):
         raise ValueError("mode_members are invalid")
-    _reject_forbidden(row)
     audit = row["audit_bundle"]
-    if not isinstance(audit, Mapping) or set(audit) != AUDIT_FIELDS:
+    if not isinstance(audit, Mapping) or tuple(audit) != AUDIT_FIELDS:
         raise ValueError("qualified audit differs from exact schema")
     runtime = audit["runtime_inputs"]
-    if not isinstance(runtime, Mapping) or set(runtime) != RUNTIME_INPUT_FIELDS:
+    if not isinstance(runtime, Mapping) or tuple(runtime) != RUNTIME_INPUT_FIELDS:
         raise ValueError("qualified runtime inputs differ from exact schema")
     transition = audit["transition_inputs"]
-    if not isinstance(transition, Mapping) or set(transition) != TRANSITION_FIELDS:
+    if (
+        not isinstance(transition, Mapping)
+        or tuple(transition) != TRANSITION_FIELDS
+    ):
         raise ValueError("transition inputs differ from exact schema")
     _validate_runtime_contract(row, runtime, transition)
     if not isinstance(audit["starts"], list):
         raise ValueError("start records differ from exact schema")
     for start in audit["starts"]:
-        if not isinstance(start, Mapping) or set(start) != {
-            "attempt_id", "kind", "estimate", "reference_keys", "branch",
-        }:
+        if not isinstance(start, Mapping) or tuple(start) != START_FIELDS:
             raise ValueError("start record differs from exact schema")
     if not isinstance(audit["solver_attempts"], list):
         raise ValueError("solver attempts differ from exact schema")
     for attempt in audit["solver_attempts"]:
-        if not isinstance(attempt, Mapping) or set(attempt) != {
-            "attempt_id",
-            "start_record",
-            "solver_result",
-            "local_eligible",
-            "local_eligibility_reason",
-            "local_diagnostics",
-        }:
+        if (
+            not isinstance(attempt, Mapping)
+            or tuple(attempt) != SOLVER_ATTEMPT_FIELDS
+        ):
             raise ValueError("solver attempt differs from exact schema")
-        if not isinstance(attempt["solver_result"], Mapping) or set(
-            attempt["solver_result"]
-        ) != SOLVER_RESULT_FIELDS:
-            raise ValueError("solver result differs from exact schema")
-        if not isinstance(attempt["local_diagnostics"], Mapping) or set(
-            attempt["local_diagnostics"]
-        ) != LOCAL_DIAGNOSTIC_FIELDS:
-            raise ValueError("local diagnostics differ from exact schema")
+        if (
+            not isinstance(attempt["start_record"], Mapping)
+            or tuple(attempt["start_record"]) != START_FIELDS
+        ):
+            raise ValueError("solver attempt start record differs from exact schema")
+        _validate_solver_result_evidence(attempt["solver_result"])
+        if (
+            not isinstance(attempt["local_diagnostics"], Mapping)
+            or tuple(attempt["local_diagnostics"])
+            != LOCAL_DIAGNOSTIC_FIELDS
+        ):
+            raise ValueError("local diagnostics differ from exact field order")
     if not isinstance(audit["local_candidates"], list) or any(
         not isinstance(candidate, Mapping)
-        or set(candidate) != {
-            "attempt_id", "estimate", "objective_cost", "payload",
-        }
+        or tuple(candidate) != CANDIDATE_FIELDS
         or not isinstance(candidate["attempt_id"], str)
         or not candidate["attempt_id"]
         or _finite_vec2(candidate["estimate"]) is None
         or _finite_nonnegative(candidate["objective_cost"]) is None
         or not isinstance(candidate["payload"], Mapping)
+        or tuple(candidate["payload"]) != CANDIDATE_PAYLOAD_FIELDS
         for candidate in audit["local_candidates"]
     ):
         raise ValueError("local candidates differ from exact schema")
+    for candidate in audit["local_candidates"]:
+        _validate_candidate_payload_evidence(candidate["payload"])
     clustering = audit["clustering"]
-    if not isinstance(clustering, Mapping) or set(clustering) != {
-        "tolerance_m", "separable", "reason", "mode_count", "modes",
-    }:
+    if (
+        not isinstance(clustering, Mapping)
+        or tuple(clustering) != CLUSTERING_FIELDS
+    ):
         raise ValueError("clustering differs from exact schema")
     if (
         _finite_nonnegative(clustering["tolerance_m"]) is None
@@ -469,7 +562,7 @@ def _validate_exact_protocol(row):
         raise ValueError("clustering scalar fields are invalid")
     if not isinstance(clustering["modes"], list) or any(
         not isinstance(mode, Mapping)
-        or set(mode) != {"mode_id", "member_ids", "diameter_m"}
+        or tuple(mode) != MODE_FIELDS
         or not isinstance(mode["mode_id"], str)
         or not mode["mode_id"]
         or not isinstance(mode["member_ids"], list)
@@ -483,32 +576,44 @@ def _validate_exact_protocol(row):
         raise ValueError("cluster diameter or mode record is invalid")
     if not isinstance(audit["representatives"], list) or any(
         not isinstance(candidate, Mapping)
-        or set(candidate) != {
-            "attempt_id", "estimate", "objective_cost", "payload",
-        }
+        or tuple(candidate) != CANDIDATE_FIELDS
         or not isinstance(candidate["attempt_id"], str)
         or not candidate["attempt_id"]
         or _finite_vec2(candidate["estimate"]) is None
         or _finite_nonnegative(candidate["objective_cost"]) is None
         or not isinstance(candidate["payload"], Mapping)
+        or tuple(candidate["payload"]) != CANDIDATE_PAYLOAD_FIELDS
         for candidate in audit["representatives"]
     ):
         raise ValueError("representatives differ from exact schema")
-    if not isinstance(audit["prior_bundle"], Mapping) or set(
-        audit["prior_bundle"]
-    ) != {"public_prediction", "private_prior", "history_version"}:
+    for representative in audit["representatives"]:
+        _validate_candidate_payload_evidence(representative["payload"])
+    if (
+        not isinstance(audit["prior_bundle"], Mapping)
+        or tuple(audit["prior_bundle"]) != PRIOR_FIELDS
+    ):
         raise ValueError("prior bundle differs from exact schema")
-    if not isinstance(audit["qualifier_context"], Mapping) or set(
-        audit["qualifier_context"]
-    ) != {
-        "qualifier_kind", "qualifier_payload", "propagated_private_prior",
-    }:
+    _validate_optional_public_order(
+        audit["prior_bundle"]["public_prediction"],
+    )
+    _validate_optional_private_order(audit["prior_bundle"]["private_prior"])
+    if (
+        not isinstance(audit["qualifier_context"], Mapping)
+        or tuple(audit["qualifier_context"]) != QUALIFIER_CONTEXT_FIELDS
+    ):
         raise ValueError("qualifier context differs from exact schema")
+    _validate_qualifier_payload_order(
+        audit["qualifier_context"]["qualifier_kind"],
+        audit["qualifier_context"]["qualifier_payload"],
+    )
+    _validate_optional_private_order(
+        audit["qualifier_context"]["propagated_private_prior"],
+    )
     for field in ("qualifications",):
         records = audit[field]
         if not isinstance(records, list) or any(
             not isinstance(item, Mapping)
-            or set(item) != {"mode_id", "admissible", "reason", "score"}
+            or tuple(item) != QUALIFICATION_FIELDS
             or not isinstance(item["mode_id"], str)
             or not item["mode_id"]
             or not isinstance(item["admissible"], bool)
@@ -520,30 +625,27 @@ def _validate_exact_protocol(row):
             for item in records
         ):
             raise ValueError("qualification records differ from exact schema")
-    if not isinstance(audit["sensitivity"], Mapping) or set(
-        audit["sensitivity"]
-    ) != {0.0005.hex(), 0.001.hex(), 0.002.hex()}:
+    if (
+        not isinstance(audit["sensitivity"], Mapping)
+        or tuple(audit["sensitivity"]) != SENSITIVITY_FIELDS
+    ):
         raise ValueError("sensitivity record differs from exact schema")
     if any(
         not _nonnegative_int(count)
         for count in audit["sensitivity"].values()
     ):
         raise ValueError("sensitivity count is not a non-boolean integer")
-    if not isinstance(audit["decision"], Mapping) or set(
-        audit["decision"]
-    ) != {"status", "reason", "mode_id", "representative_attempt_id"}:
+    if (
+        not isinstance(audit["decision"], Mapping)
+        or tuple(audit["decision"]) != DECISION_FIELDS
+    ):
         raise ValueError("decision record differs from exact schema")
     lifecycle = audit["lifecycle"]
-    if not isinstance(lifecycle, Mapping) or set(lifecycle) != {
-        "public_output", "next_private_state", "history_version",
-    }:
+    if not isinstance(lifecycle, Mapping) or tuple(lifecycle) != LIFECYCLE_FIELDS:
         raise ValueError("lifecycle record differs from exact schema")
-    private = lifecycle["next_private_state"]
-    if private is not None and (
-        not isinstance(private, Mapping)
-        or set(private) != set(PRIVATE_STATE_FIELDS)
-    ):
-        raise ValueError("next private state differs from exact schema")
+    _validate_optional_public_order(lifecycle["public_output"])
+    _validate_optional_private_order(lifecycle["next_private_state"])
+    _reject_forbidden(row)
 
 
 def _validate_runtime_contract(row, runtime, transition):
@@ -552,10 +654,7 @@ def _validate_runtime_contract(row, runtime, transition):
         raise ValueError("runtime references are invalid")
     keys = []
     for reference in references:
-        if not isinstance(reference, Mapping) or set(reference) != {
-            "key", "position", "range", "covariance", "ranging_sigma",
-            "base_anchor_provenance",
-        }:
+        if not isinstance(reference, Mapping) or tuple(reference) != REFERENCE_FIELDS:
             raise ValueError("runtime reference schema mismatch")
         key = reference["key"]
         reference_provenance = reference["base_anchor_provenance"]
@@ -587,9 +686,7 @@ def _validate_runtime_contract(row, runtime, transition):
         seed = runtime[field]
         if seed is None:
             continue
-        if not isinstance(seed, Mapping) or set(seed) != {
-            "estimate", "modeled_covariance",
-        }:
+        if not isinstance(seed, Mapping) or tuple(seed) != SEED_FIELDS:
             raise ValueError(f"{field} schema mismatch")
         if (
             _finite_vec2(seed["estimate"]) is None
@@ -639,6 +736,7 @@ def _validate_runtime_contract(row, runtime, transition):
         raise ValueError("applied command chronology mismatch")
     previous_public = transition["previous_public"]
     if previous_public is not None:
+        _validate_optional_public_order(previous_public)
         status = (
             previous_public.get("output_status")
             if isinstance(previous_public, Mapping)
@@ -654,11 +752,68 @@ def _validate_runtime_contract(row, runtime, transition):
         if not valid:
             raise ValueError("previous public state schema mismatch")
     previous_private = transition["previous_private"]
+    _validate_optional_private_order(previous_private)
     if (
         previous_private is not None
         and canonical_private_state(previous_private) is None
     ):
         raise ValueError("previous private state schema mismatch")
+
+
+def _validate_optional_public_order(value):
+    if value is None:
+        return
+    if not isinstance(value, Mapping):
+        raise ValueError("public state differs from exact field order")
+    expected = {
+        "fresh": SERIALIZED_FRESH_PUBLIC_FIELDS,
+        "predicted": SERIALIZED_PREDICTED_PUBLIC_FIELDS,
+        "unavailable": SERIALIZED_UNAVAILABLE_PUBLIC_FIELDS,
+    }.get(value.get("output_status"))
+    if expected is None or tuple(value) != expected:
+        raise ValueError("public state differs from exact field order")
+
+
+def _validate_optional_private_order(value):
+    if value is not None and (
+        not isinstance(value, Mapping)
+        or tuple(value) != SERIALIZED_PRIVATE_STATE_FIELDS
+    ):
+        raise ValueError("private state differs from exact field order")
+
+
+def _validate_qualifier_payload_order(kind, payload):
+    if not isinstance(payload, Mapping):
+        raise ValueError("qualifier payload differs from exact field order")
+    _reject_forbidden(payload)
+    expected = {
+        "deployment": ("domain",),
+        "history": ("innovation_limit",),
+        "unavailable": ("reason",),
+    }.get(kind)
+    if expected is None or tuple(payload) != expected:
+        raise ValueError("qualifier payload differs from exact field order")
+    if kind == "deployment":
+        domain = payload["domain"]
+        if (
+            not isinstance(domain, Mapping)
+            or tuple(domain) != DEPLOYMENT_DOMAIN_FIELDS
+        ):
+            raise ValueError("deployment domain differs from exact field order")
+
+
+def _validate_candidate_payload_evidence(payload):
+    if (
+        not isinstance(payload, Mapping)
+        or tuple(payload) != CANDIDATE_PAYLOAD_FIELDS
+        or not _canonical_provenance(payload["base_anchor_provenance"])
+    ):
+        raise ValueError("candidate payload differs from exact field order")
+    solver_result = {
+        field: payload[field]
+        for field in SOLVER_RESULT_FIELDS
+    }
+    _validate_solver_result_evidence(solver_result)
 
 
 def _nonnegative_int(value):
@@ -744,6 +899,317 @@ def _finite_psd_2x2(value):
     return bool(
         np.isfinite(eigenvalues).all()
         and eigenvalues[0] >= -1e-12 * max(1.0, eigenvalues[-1])
+    )
+
+
+def _analyzer_bounded_solver_evidence(value):
+    active_ids = set()
+    visited_nodes = 0
+
+    def walk(item, depth):
+        nonlocal visited_nodes
+        visited_nodes += 1
+        if visited_nodes > EVIDENCE_MAX_NODES or depth > EVIDENCE_MAX_DEPTH:
+            return False
+        if isinstance(item, Mapping):
+            identifier = id(item)
+            if identifier in active_ids:
+                return False
+            active_ids.add(identifier)
+            try:
+                for key, nested in item.items():
+                    if not isinstance(key, str) or any(
+                        fragment in key.lower()
+                        for fragment in FORBIDDEN_FRAGMENTS
+                    ):
+                        return False
+                    if not walk(nested, depth + 1):
+                        return False
+                return True
+            finally:
+                active_ids.remove(identifier)
+        if isinstance(item, list):
+            identifier = id(item)
+            if identifier in active_ids:
+                return False
+            active_ids.add(identifier)
+            try:
+                return all(walk(nested, depth + 1) for nested in item)
+            finally:
+                active_ids.remove(identifier)
+        return item is None or isinstance(item, (str, bool, Real))
+
+    return walk(value, 0)
+
+
+def _analyzer_cost_equal(first, second):
+    tolerance = RELATIVE_TIE_TOLERANCE * max(
+        1.0,
+        abs(first),
+        abs(second),
+    )
+    return abs(first - second) <= tolerance
+
+
+def _validate_analyzer_proposals(trace, status):
+    if not isinstance(trace, list) or len(trace) > MAX_WNLS_PROPOSALS:
+        raise ValueError("solver result evidence proposal trace is invalid")
+    previous_damping = None
+    previous_cost = None
+    previous_trial_cost = None
+    previous_accepted = None
+    for expected_index, proposal_row in enumerate(trace):
+        if (
+            not isinstance(proposal_row, Mapping)
+            or tuple(proposal_row) != PROPOSAL_TRACE_FIELDS
+        ):
+            raise ValueError(
+                "solver result evidence proposal field order is invalid"
+            )
+        proposal_index = proposal_row["proposal"]
+        damping = _finite_number(proposal_row["damping"])
+        cost = _finite_nonnegative(proposal_row["cost"])
+        stationarity = _finite_nonnegative(
+            proposal_row["stationarity_norm"]
+        )
+        raw_step = (
+            None
+            if proposal_row["raw_step_norm"] is None
+            else _finite_nonnegative(proposal_row["raw_step_norm"])
+        )
+        trial_cost = (
+            None
+            if proposal_row["trial_cost"] is None
+            else _finite_nonnegative(proposal_row["trial_cost"])
+        )
+        invalid_reason = proposal_row["invalid_trial_reason"]
+        accepted = proposal_row["accepted"]
+        if (
+            not _nonnegative_int(proposal_index)
+            or proposal_index != expected_index
+            or damping is None
+            or damping < MIN_WNLS_DAMPING
+            or damping > MAX_WNLS_DAMPING
+            or cost is None
+            or stationarity is None
+            or (
+                proposal_row["raw_step_norm"] is not None
+                and raw_step is None
+            )
+            or (
+                proposal_row["trial_cost"] is not None
+                and trial_cost is None
+            )
+            or (
+                invalid_reason is not None
+                and (not isinstance(invalid_reason, str) or not invalid_reason)
+            )
+            or not isinstance(accepted, bool)
+        ):
+            raise ValueError("solver result evidence proposal value is invalid")
+        if expected_index == 0:
+            if damping != INITIAL_WNLS_DAMPING:
+                raise ValueError("solver result evidence damping is invalid")
+        else:
+            expected_damping = (
+                max(MIN_WNLS_DAMPING, previous_damping / WNLS_DAMPING_FACTOR)
+                if previous_accepted
+                else previous_damping * WNLS_DAMPING_FACTOR
+            )
+            expected_cost = (
+                previous_trial_cost if previous_accepted else previous_cost
+            )
+            if (
+                damping != expected_damping
+                or expected_cost is None
+                or not _analyzer_cost_equal(cost, expected_cost)
+            ):
+                raise ValueError(
+                    "solver result evidence proposal sequence is invalid"
+                )
+        if accepted:
+            if (
+                invalid_reason is not None
+                or trial_cost is None
+                or not trial_cost < cost
+            ):
+                raise ValueError("solver result evidence acceptance is invalid")
+        elif trial_cost is None and invalid_reason is None:
+            raise ValueError("solver result evidence rejection is incomplete")
+        elif trial_cost is not None and invalid_reason is not None:
+            raise ValueError("solver result evidence rejection is ambiguous")
+        elif trial_cost is not None and trial_cost < cost:
+            raise ValueError("solver result evidence rejection is inconsistent")
+        if status == "converged" and (
+            raw_step is None
+            or (
+                invalid_reason is not None
+                and invalid_reason not in {
+                    "invalid_trial_terms",
+                    "non-finite_trial_cost",
+                }
+            )
+        ):
+            raise ValueError("solver result evidence converged trace is invalid")
+        previous_damping = damping
+        previous_cost = cost
+        previous_trial_cost = trial_cost
+        previous_accepted = accepted
+
+
+def _analyzer_solver_covariance(value):
+    try:
+        covariance = np.asarray(value, dtype=float)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if (
+        covariance.shape != (2, 2)
+        or not np.isfinite(covariance).all()
+        or not np.allclose(covariance, covariance.T, rtol=1e-12, atol=1e-12)
+    ):
+        return None
+    canonical = 0.5 * (covariance + covariance.T)
+    try:
+        eigenvalues = np.linalg.eigvalsh(canonical)
+    except np.linalg.LinAlgError:
+        return None
+    if (
+        not np.isfinite(eigenvalues).all()
+        or eigenvalues[0]
+        <= RELATIVE_SPECTRAL_THRESHOLD * eigenvalues[-1]
+    ):
+        return None
+    return eigenvalues
+
+
+def _validate_analyzer_converged_result(result, trace):
+    eigenvalues = _analyzer_solver_covariance(result["covariance"])
+    epsilon = _finite_nonnegative(result["epsilon"])
+    phi_minimum = _finite_nonnegative(result["phi_min_eigenvalue"])
+    phi_condition = _finite_nonnegative(result["phi_condition"])
+    cost = _finite_nonnegative(result["cost"])
+    stationarity = _finite_nonnegative(result["stationarity_norm"])
+    if (
+        _finite_vec2(result["estimate"]) is None
+        or eigenvalues is None
+        or epsilon is None
+        or epsilon <= 0.0
+        or phi_minimum is None
+        or phi_minimum <= 0.0
+        or phi_condition is None
+        or phi_condition < 1.0
+        or result["fim_valid"] is not True
+        or result["failure_reason"] is not None
+        or cost is None
+        or stationarity is None
+    ):
+        raise ValueError("solver result evidence converged fields are invalid")
+    expected_epsilon = 3.0 * math.sqrt(float(eigenvalues[-1]))
+    expected_phi_minimum = 1.0 / float(eigenvalues[-1])
+    expected_phi_condition = float(eigenvalues[-1] / eigenvalues[0])
+    if not (
+        math.isclose(epsilon, expected_epsilon, rel_tol=1e-9, abs_tol=1e-12)
+        and math.isclose(
+            phi_minimum,
+            expected_phi_minimum,
+            rel_tol=1e-9,
+            abs_tol=1e-12,
+        )
+        and math.isclose(
+            phi_condition,
+            expected_phi_condition,
+            rel_tol=1e-9,
+            abs_tol=1e-12,
+        )
+    ):
+        raise ValueError("solver result evidence FIM fields are inconsistent")
+    if trace and (
+        trace[-1]["accepted"] is not True
+        or trace[-1]["trial_cost"] != cost
+    ):
+        raise ValueError("solver result evidence terminal proposal is invalid")
+
+
+def _validate_analyzer_nonconverged_result(result):
+    status = result["status"]
+    phi_minimum = result["phi_min_eigenvalue"]
+    if (
+        result["covariance"] is not None
+        or result["epsilon"] is not None
+        or result["phi_condition"] is not None
+        or result["fim_valid"] is not False
+        or not isinstance(result["failure_reason"], str)
+        or not result["failure_reason"]
+        or (
+            result["estimate"] is not None
+            and _finite_vec2(result["estimate"]) is None
+        )
+        or (
+            result["cost"] is not None
+            and _finite_nonnegative(result["cost"]) is None
+        )
+        or (
+            result["stationarity_norm"] is not None
+            and _finite_nonnegative(result["stationarity_norm"]) is None
+        )
+        or (status == "failed" and phi_minimum is not None)
+        or (
+            status == "invalid"
+            and phi_minimum is not None
+            and _finite_number(phi_minimum) is None
+        )
+    ):
+        raise ValueError("solver result evidence failure fields are invalid")
+
+
+def _validate_solver_result_evidence(result):
+    if not isinstance(result, Mapping):
+        raise ValueError("solver result evidence is not a mapping")
+    if tuple(result) != SOLVER_RESULT_FIELDS:
+        raise ValueError("solver result evidence field order is invalid")
+    if not _analyzer_bounded_solver_evidence(result):
+        raise ValueError("solver result evidence is unbounded or forbidden")
+    status = result["status"]
+    if status not in {"converged", "failed", "invalid"}:
+        raise ValueError("solver result evidence status is invalid")
+    proposal_count = result["proposal_count"]
+    iterations = result["iterations"]
+    trace = result["proposal_trace"]
+    if (
+        not _nonnegative_int(proposal_count)
+        or not _nonnegative_int(iterations)
+        or not isinstance(trace, list)
+        or proposal_count != iterations
+        or proposal_count != len(trace)
+    ):
+        raise ValueError("solver result evidence counts are invalid")
+    _validate_analyzer_proposals(trace, status)
+    if status == "converged":
+        _validate_analyzer_converged_result(result, trace)
+    else:
+        _validate_analyzer_nonconverged_result(result)
+
+
+def _is_exact_invalid_evidence_sentinel(result):
+    return (
+        isinstance(result, Mapping)
+        and tuple(result) == SOLVER_RESULT_FIELDS
+        and result["status"] == "invalid"
+        and result["estimate"] is None
+        and result["covariance"] is None
+        and result["epsilon"] is None
+        and result["phi_min_eigenvalue"] is None
+        and result["phi_condition"] is None
+        and result["fim_valid"] is False
+        and type(result["proposal_count"]) is int
+        and result["proposal_count"] == 0
+        and type(result["iterations"]) is int
+        and result["iterations"] == 0
+        and result["cost"] is None
+        and result["stationarity_norm"] is None
+        and result["failure_reason"] == "invalid_solver_result_evidence"
+        and isinstance(result["proposal_trace"], list)
+        and not result["proposal_trace"]
     )
 
 

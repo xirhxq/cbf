@@ -158,7 +158,6 @@ class QualifiedAnalyzerTests(unittest.TestCase):
         )
 
         result = validate_and_recompute_qualified_row(row)
-
         self.assertTrue(result["valid"])
         self.assertEqual(result["mode_count"], 0)
 
@@ -301,6 +300,61 @@ class QualifiedAnalyzerTests(unittest.TestCase):
             lambda row: row.update(method_id="two-range-reacquisition-v2"),
             "method identity mismatch",
         )
+
+    def test_analyzer_rejects_every_malformed_solver_evidence_case(self):
+        for name, malformed_result in (
+            replay_test.malformed_serialized_solver_evidence_cases()
+        ):
+            with self.subTest(name=name):
+                row = valid_registered_row()
+                row["audit_bundle"]["solver_attempts"][0][
+                    "solver_result"
+                ] = malformed_result
+                with self.assertRaisesRegex(ValueError, "solver result evidence"):
+                    validate_and_recompute_qualified_row(row)
+
+    def test_analyzer_rejects_reordered_protocol_mappings(self):
+        row = valid_registered_row()
+        with self.assertRaisesRegex(ValueError, "qualified row.*exact schema"):
+            validate_and_recompute_qualified_row(
+                dict(reversed(tuple(row.items())))
+            )
+
+        row = valid_registered_row()
+        row["audit_bundle"] = dict(reversed(tuple(
+            row["audit_bundle"].items()
+        )))
+        with self.assertRaisesRegex(ValueError, "qualified audit.*exact schema"):
+            validate_and_recompute_qualified_row(row)
+
+        row = valid_registered_row()
+        result = row["audit_bundle"]["solver_attempts"][0]["solver_result"]
+        row["audit_bundle"]["solver_attempts"][0]["solver_result"] = dict(
+            reversed(tuple(result.items()))
+        )
+        with self.assertRaisesRegex(ValueError, "solver result evidence.*order"):
+            validate_and_recompute_qualified_row(row)
+
+    def test_analyzer_reconstructs_only_the_exact_invalid_evidence_sentinel(self):
+        row = replay_test.build_registered_qualified_row(
+            solver_from_start=lambda start: {},
+        )
+
+        result = validate_and_recompute_qualified_row(row)
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["mode_count"], 0)
+        self.assertTrue(all(
+            attempt["local_eligibility_reason"]
+            == "invalid_solver_result_evidence"
+            for attempt in row["audit_bundle"]["solver_attempts"]
+        ))
+
+        tampered = copy.deepcopy(row)
+        tampered["audit_bundle"]["solver_attempts"][0]["solver_result"][
+            "estimate"
+        ] = [0.0, 0.0]
+        with self.assertRaisesRegex(ValueError, "local eligibility outcome"):
+            validate_and_recompute_qualified_row(tampered)
 
 
 if __name__ == "__main__":

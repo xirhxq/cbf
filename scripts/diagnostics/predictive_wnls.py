@@ -75,7 +75,7 @@ _CANDIDATE_SOURCE_ORDER = {
     "circle_negative": 2,
     "circle_positive": 3,
 }
-_PROPOSAL_TRACE_FIELDS = {
+_PROPOSAL_TRACE_FIELDS = (
     "proposal",
     "damping",
     "cost",
@@ -84,7 +84,7 @@ _PROPOSAL_TRACE_FIELDS = {
     "trial_cost",
     "invalid_trial_reason",
     "accepted",
-}
+)
 _CONVERGED_TRACE_INVALID_REASONS = {
     "invalid_trial_terms",
     "non-finite_trial_cost",
@@ -1214,7 +1214,7 @@ def _complete_converged_solver_result(result: object) -> bool:
         or not isinstance(proposal_count, Integral)
         or isinstance(iterations, bool)
         or not isinstance(iterations, Integral)
-        or not isinstance(trace, list)
+        or not isinstance(trace, (tuple, list))
         or proposal_count != iterations
         or proposal_count != len(trace)
         or proposal_count < 0
@@ -1226,7 +1226,7 @@ def _complete_converged_solver_result(result: object) -> bool:
     previous_trial_cost: float | None = None
     previous_accepted: bool | None = None
     for index, row in enumerate(trace):
-        if not isinstance(row, Mapping) or set(row) != _PROPOSAL_TRACE_FIELDS:
+        if not isinstance(row, Mapping) or tuple(row) != _PROPOSAL_TRACE_FIELDS:
             return False
         proposal = row.get("proposal")
         if (
@@ -1677,12 +1677,11 @@ def solve_qualified_multistart(
     )
     if not callable(bound_solver):
         raise ValueError("bound qualified solver must be callable")
-    solver_results = []
-    for start in starts:
-        raw_result = bound_solver(start)
-        solver_results.append(
-            _canonical_qualified_solver_result(raw_result)
-        )
+    raw_solver_results = [bound_solver(start) for start in starts]
+    solver_results = [
+        _canonical_qualified_solver_result(raw_result)
+        for raw_result in raw_solver_results
+    ]
 
     attempts = []
     local_candidates = []
@@ -1693,6 +1692,9 @@ def solve_qualified_multistart(
             active_reference_count=active_reference_count,
             base_anchor_provenance=base_anchor_provenance,
         )
+        if _is_invalid_qualified_solver_result_evidence(result):
+            locally_valid = False
+            reason = "invalid_solver_result_evidence"
         geometry = _qualified_recompute_solver_geometry(
             result,
             validated["references"],
@@ -1799,6 +1801,8 @@ _QUALIFIED_SOLVER_RESULT_FIELDS = (
     "failure_reason",
     "proposal_trace",
 )
+_QUALIFIED_EVIDENCE_MAX_DEPTH = 8
+_QUALIFIED_EVIDENCE_MAX_NODES = 4096
 _QUALIFIED_FORBIDDEN_FRAGMENTS = (
     "truth",
     "analyzer",
@@ -2127,6 +2131,248 @@ def _qualified_contains_forbidden(value, active_ids=None):
     return False
 
 
+def _qualified_bounded_solver_evidence(value):
+    active_ids = set()
+    nodes = 0
+
+    def visit(item, depth):
+        nonlocal nodes
+        nodes += 1
+        if (
+            nodes > _QUALIFIED_EVIDENCE_MAX_NODES
+            or depth > _QUALIFIED_EVIDENCE_MAX_DEPTH
+        ):
+            return False
+        if isinstance(item, Mapping):
+            identifier = id(item)
+            if identifier in active_ids:
+                return False
+            active_ids.add(identifier)
+            try:
+                for key, nested in item.items():
+                    if not isinstance(key, str) or any(
+                        fragment in key.lower()
+                        for fragment in _QUALIFIED_FORBIDDEN_FRAGMENTS
+                    ):
+                        return False
+                    if not visit(nested, depth + 1):
+                        return False
+                return True
+            finally:
+                active_ids.remove(identifier)
+        if isinstance(item, (tuple, list)):
+            identifier = id(item)
+            if identifier in active_ids:
+                return False
+            active_ids.add(identifier)
+            try:
+                return all(visit(nested, depth + 1) for nested in item)
+            finally:
+                active_ids.remove(identifier)
+        return item is None or isinstance(item, (str, bool, Real))
+
+    return visit(value, 0)
+
+
+def _qualified_nonempty_string(value):
+    return isinstance(value, str) and bool(value)
+
+
+def _qualified_proposal_trace_valid(trace):
+    if (
+        not isinstance(trace, (tuple, list))
+        or len(trace) > MAX_WNLS_PROPOSALS
+    ):
+        return False
+    previous_damping = None
+    previous_cost = None
+    previous_trial_cost = None
+    previous_accepted = None
+    for index, row in enumerate(trace):
+        if not isinstance(row, Mapping) or tuple(row) != _PROPOSAL_TRACE_FIELDS:
+            return False
+        if not _nonnegative_qualified_int(row["proposal"]):
+            return False
+        if int(row["proposal"]) != index:
+            return False
+        damping = _qualified_finite_number(row["damping"])
+        cost = _qualified_finite_nonnegative(row["cost"])
+        stationarity = _qualified_finite_nonnegative(row["stationarity_norm"])
+        raw_step = (
+            None
+            if row["raw_step_norm"] is None
+            else _qualified_finite_nonnegative(row["raw_step_norm"])
+        )
+        trial = (
+            None
+            if row["trial_cost"] is None
+            else _qualified_finite_nonnegative(row["trial_cost"])
+        )
+        invalid_reason = row["invalid_trial_reason"]
+        accepted = row["accepted"]
+        if (
+            damping is None
+            or damping < MIN_WNLS_DAMPING
+            or damping > MAX_WNLS_DAMPING
+            or cost is None
+            or stationarity is None
+            or (row["raw_step_norm"] is not None and raw_step is None)
+            or (row["trial_cost"] is not None and trial is None)
+            or (
+                invalid_reason is not None
+                and not _qualified_nonempty_string(invalid_reason)
+            )
+            or not isinstance(accepted, bool)
+        ):
+            return False
+        if index == 0:
+            if damping != INITIAL_WNLS_DAMPING:
+                return False
+        else:
+            expected_damping = (
+                max(MIN_WNLS_DAMPING, previous_damping / WNLS_DAMPING_FACTOR)
+                if previous_accepted
+                else previous_damping * WNLS_DAMPING_FACTOR
+            )
+            expected_cost = (
+                previous_trial_cost if previous_accepted else previous_cost
+            )
+            if (
+                damping != expected_damping
+                or expected_cost is None
+                or not _same_recomputed_cost(cost, expected_cost)
+            ):
+                return False
+        if accepted:
+            if invalid_reason is not None or trial is None or not trial < cost:
+                return False
+        elif trial is None and invalid_reason is None:
+            return False
+        elif trial is not None and invalid_reason is not None:
+            return False
+        elif trial is not None and trial < cost:
+            return False
+        previous_damping = damping
+        previous_cost = cost
+        previous_trial_cost = trial
+        previous_accepted = accepted
+    return True
+
+
+def _nonnegative_qualified_int(value):
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, Integral)
+        and value >= 0
+    )
+
+
+def _qualified_nonconverged_solver_result_valid(value):
+    status = value["status"]
+    estimate = value["estimate"]
+    phi_minimum = value["phi_min_eigenvalue"]
+    cost = value["cost"]
+    stationarity = value["stationarity_norm"]
+    if (
+        status not in {"failed", "invalid"}
+        or value["covariance"] is not None
+        or value["epsilon"] is not None
+        or value["phi_condition"] is not None
+        or value["fim_valid"] is not False
+        or not _qualified_nonempty_string(value["failure_reason"])
+        or (
+            estimate is not None
+            and _qualified_finite_vec2(estimate) is None
+        )
+        or (
+            cost is not None
+            and _qualified_finite_nonnegative(cost) is None
+        )
+        or (
+            stationarity is not None
+            and _qualified_finite_nonnegative(stationarity) is None
+        )
+    ):
+        return False
+    if status == "failed" and phi_minimum is not None:
+        return False
+    if (
+        status == "invalid"
+        and phi_minimum is not None
+        and _qualified_finite_number(phi_minimum) is None
+    ):
+        return False
+    return True
+
+
+def _qualified_solver_result_evidence_valid(value):
+    if (
+        not isinstance(value, Mapping)
+        or tuple(value) != _QUALIFIED_SOLVER_RESULT_FIELDS
+        or not _qualified_bounded_solver_evidence(value)
+    ):
+        return False
+    status = value["status"]
+    if status not in {"converged", "failed", "invalid"}:
+        return False
+    count = value["proposal_count"]
+    iterations = value["iterations"]
+    trace = value["proposal_trace"]
+    if (
+        not _nonnegative_qualified_int(count)
+        or not _nonnegative_qualified_int(iterations)
+        or not isinstance(trace, (tuple, list))
+        or int(count) != int(iterations)
+        or int(count) != len(trace)
+        or not _qualified_proposal_trace_valid(trace)
+    ):
+        return False
+    if status == "converged":
+        return _complete_converged_solver_result(value)
+    return _qualified_nonconverged_solver_result_valid(value)
+
+
+def _invalid_qualified_solver_result_evidence():
+    return {
+        "status": "invalid",
+        "estimate": None,
+        "covariance": None,
+        "epsilon": None,
+        "phi_min_eigenvalue": None,
+        "phi_condition": None,
+        "fim_valid": False,
+        "proposal_count": 0,
+        "iterations": 0,
+        "cost": None,
+        "stationarity_norm": None,
+        "failure_reason": "invalid_solver_result_evidence",
+        "proposal_trace": [],
+    }
+
+
+def _is_invalid_qualified_solver_result_evidence(value):
+    return (
+        isinstance(value, Mapping)
+        and tuple(value) == _QUALIFIED_SOLVER_RESULT_FIELDS
+        and value["status"] == "invalid"
+        and value["estimate"] is None
+        and value["covariance"] is None
+        and value["epsilon"] is None
+        and value["phi_min_eigenvalue"] is None
+        and value["phi_condition"] is None
+        and value["fim_valid"] is False
+        and type(value["proposal_count"]) is int
+        and value["proposal_count"] == 0
+        and type(value["iterations"]) is int
+        and value["iterations"] == 0
+        and value["cost"] is None
+        and value["stationarity_norm"] is None
+        and value["failure_reason"] == "invalid_solver_result_evidence"
+        and isinstance(value["proposal_trace"], list)
+        and not value["proposal_trace"]
+    )
+
+
 def _qualified_json_value(value, active_ids=None):
     if active_ids is None:
         active_ids = set()
@@ -2170,12 +2416,22 @@ def _qualified_json_value(value, active_ids=None):
 
 
 def _canonical_qualified_solver_result(value):
-    if not isinstance(value, Mapping) or set(value) != set(
-        _QUALIFIED_SOLVER_RESULT_FIELDS
-    ):
-        raise ValueError("solver result differs from exact qualified schema")
-    return {
+    if not _qualified_solver_result_evidence_valid(value):
+        return _invalid_qualified_solver_result_evidence()
+    canonical = {
         field: _qualified_json_value(value[field])
+        for field in _QUALIFIED_SOLVER_RESULT_FIELDS
+        if field != "proposal_trace"
+    }
+    canonical["proposal_trace"] = [
+        {
+            field: _qualified_json_value(row[field])
+            for field in _PROPOSAL_TRACE_FIELDS
+        }
+        for row in value["proposal_trace"]
+    ]
+    return {
+        field: canonical[field]
         for field in _QUALIFIED_SOLVER_RESULT_FIELDS
     }
 
