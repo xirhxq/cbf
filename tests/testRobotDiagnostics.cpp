@@ -306,6 +306,25 @@ TEST_CASE("theorem certificate requires the frozen componentwise QP bound") {
     }
 }
 
+TEST_CASE("legacy covariance ignores a disabled zero component limit") {
+    json settings = makeTheoremRateConfig();
+    settings["cbfs"]["uncertainty-rate"]["mode"] = "off";
+    settings["cbfs"]["input-limits"]["on"] = false;
+    settings["cbfs"]["input-limits"]["planar-component-max"] = 0.0;
+    Robot robot(1, settings);
+    robot.currentUncertainty = 13.0;
+
+    CHECK_NOTHROW(robot.getCovariance(
+        robot.settings["cbfs"]["without-slack"]["comm-fixed"]
+    ));
+    CHECK(robot.positionCovariance.isApprox(
+        4.0 * Eigen::Matrix2d::Identity(),
+        1e-12
+    ));
+    CHECK(robot.currentUncertainty == doctest::Approx(13.0));
+    CHECK_FALSE(robot.certificateAvailable);
+}
+
 TEST_CASE("theorem refresh preserves descriptive backward uncertainty history") {
     json settings = makeTheoremRateConfig();
     Robot robot(1, settings);

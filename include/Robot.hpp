@@ -573,8 +573,9 @@ public:
         };
 
         const Point currentPosition = model->xy();
-        const double planarComponentMax =
-            inputLimitsConfig.value("planar-component-max", 25.0);
+        const double planarComponentMax = theoremAligned
+            ? inputLimitsConfig.at("planar-component-max").get<double>()
+            : 25.0;
         const double uavSpeedBound =
             std::sqrt(2.0) * planarComponentMax;
         std::vector<cbf2026::ReferenceRateInput> rateInputs;
