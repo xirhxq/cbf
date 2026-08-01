@@ -5,6 +5,10 @@ from numbers import Integral, Real
 
 import numpy as np
 
+from scripts.diagnostics.estimator_lifecycle import (
+    canonical_private_state as canonical_qualified_private_state,
+    reset_private_state as reset_qualified_private_state,
+)
 from scripts.diagnostics.predictive_wnls import (
     FRAME_DT_SECONDS,
     INNOVATION_REFERENCE_QUANTILE,
@@ -285,6 +289,9 @@ def solve_two_range_reacquisition(
 
 
 def canonical_private_state(value: object) -> dict | None:
+    qualified = canonical_qualified_private_state(value)
+    if qualified is not None:
+        return qualified
     if not isinstance(value, Mapping):
         return None
     if set(value) != set(PRIVATE_STATE_FIELDS):
@@ -319,24 +326,7 @@ def canonical_private_state(value: object) -> dict | None:
 
 
 def reset_private_state(candidate: object, *, frame_index: int) -> dict | None:
-    if not isinstance(candidate, Mapping):
-        return None
-    estimate = _finite_vector(candidate.get("estimate"))
-    covariance = canonical_spd_covariance(candidate.get("modeled_covariance"))
-    if estimate is None or covariance is None:
-        return None
-    if isinstance(frame_index, bool) or not isinstance(frame_index, Integral):
-        return None
-    if frame_index < 0:
-        return None
-    return {
-        "status": "available",
-        "estimate": estimate.tolist(),
-        "modeled_covariance": covariance.tolist(),
-        "source_fresh_frame": int(frame_index),
-        "propagated_to_frame": int(frame_index),
-        "age_frames": 0,
-    }
+    return reset_qualified_private_state(candidate, frame_index=frame_index)
 
 
 def propagate_private_state(

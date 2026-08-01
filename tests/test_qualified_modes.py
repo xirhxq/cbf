@@ -1,5 +1,5 @@
 import unittest
-from dataclasses import replace
+from dataclasses import asdict, replace
 from hashlib import sha256
 import json
 import math
@@ -8,6 +8,7 @@ from itertools import combinations
 import numpy as np
 
 from scripts.diagnostics.qualified_modes import (
+    DeploymentContract,
     MODE_TOLERANCE_M,
     LocalCandidate,
     NumericalMode,
@@ -16,6 +17,10 @@ from scripts.diagnostics.qualified_modes import (
     cluster_candidates,
     enumerate_qualified_starts,
     project_local_candidate,
+    publish_unique_mode,
+    qualify_deployment_mode,
+    qualify_all,
+    qualify_history_mode,
     select_representative,
     sensitivity_cluster_counts,
     stable_attempt_id,
@@ -177,6 +182,577 @@ class ModeClusteringTests(unittest.TestCase):
             "0x1.0624dd2f1a9fcp-10": 1,
             "0x1.0624dd2f1a9fcp-9": 1,
         })
+
+
+class DeploymentQualificationTests(unittest.TestCase):
+    def domain(self, **changes):
+        domain = DeploymentContract(
+            anchor_ids=(0, 2),
+            anchor_coordinates=((-1550.0, -300.0), (-1550.0, 300.0)),
+            deployment_vertices=(
+                (-1491.0, -201.0),
+                (-1369.0, -201.0),
+                (-1369.0, 201.0),
+                (-1491.0, 201.0),
+            ),
+            unit_normal=(1.0, 0.0),
+            offset=1550.0,
+            ocean_side=1,
+            margin_m=1.0,
+            domain_version="ocean-side-v1",
+        )
+        return replace(domain, **changes)
+
+    def mode(self, key, xy, cost=1.0):
+        return cluster_candidates(
+            [LocalCandidate(key, tuple(xy), cost, {"key": key})],
+            MODE_TOLERANCE_M,
+        ).modes[0]
+
+    def clustering(self, *modes):
+        candidates = [member for mode in modes for member in mode.members]
+        return cluster_candidates(candidates, MODE_TOLERANCE_M)
+
+    def test_ocean_side_domain_selects_one_mirror_mode(self):
+        domain = self.domain()
+        ocean = self.mode("ocean", (-1490.0, 0.0), cost=100.0)
+        land = self.mode("land", (-1610.0, 0.0), cost=1.0)
+        decisions = tuple(
+            qualify_deployment_mode(mode, select_representative(mode), domain)
+            for mode in (ocean, land)
+        )
+
+        publication = publish_unique_mode(
+            self.clustering(ocean, land),
+            decisions,
+        )
+
+        self.assertEqual(publication.status, "fresh")
+        self.assertEqual(publication.mode_id, canonical_mode_id(ocean))
+
+    def test_cross_line_or_invalid_domain_fails_closed(self):
+        invalid = DeploymentContract(
+            anchor_ids=(0, 2),
+            anchor_coordinates=((0.0, 0.0), (1.0, 0.0)),
+            deployment_vertices=((-1.0, -1.0), (1.0, 1.0)),
+            unit_normal=(0.0, 0.0),
+            offset=0.0,
+            ocean_side=1,
+            margin_m=1.0,
+            domain_version="ocean-side-v1",
+        )
+
+        with self.assertRaises(ValueError):
+            mode = self.mode("invalid", (0.0, 0.0))
+            qualify_deployment_mode(mode, select_representative(mode), invalid)
+
+    def test_margin_is_inclusive_and_one_ulp_below_is_rejected(self):
+        equality = self.mode("equality", (-1549.0, 4.0))
+        below = self.mode(
+            "below",
+            (math.nextafter(-1549.0, -math.inf), 4.0),
+        )
+
+        equality_result = qualify_deployment_mode(
+            equality,
+            select_representative(equality),
+            self.domain(),
+        )
+        below_result = qualify_deployment_mode(
+            below,
+            select_representative(below),
+            self.domain(),
+        )
+
+        self.assertTrue(equality_result.admissible)
+        self.assertEqual(equality_result.score, 1.0)
+        self.assertFalse(below_result.admissible)
+        self.assertLess(below_result.score, 1.0)
+
+    def test_invalid_deployment_contract_variants_raise(self):
+        invalid_contracts = {
+            "reversed_normal": self.domain(unit_normal=(-1.0, 0.0)),
+            "unnormalized_normal": self.domain(unit_normal=(2.0, 0.0)),
+            "duplicate_anchor_ids": self.domain(anchor_ids=(0, 0)),
+            "negative_anchor_id": self.domain(anchor_ids=(0, -1)),
+            "duplicate_anchor_coordinates": self.domain(
+                anchor_coordinates=((-1550.0, -300.0), (-1550.0, -300.0)),
+            ),
+            "bad_offset": self.domain(offset=1549.0),
+            "bad_version": self.domain(domain_version="ocean-side-v2"),
+            "bad_ocean_side": self.domain(ocean_side=0),
+            "zero_margin": self.domain(margin_m=0.0),
+            "nonfinite_margin": self.domain(margin_m=math.nan),
+            "nonfinite_anchor": self.domain(
+                anchor_coordinates=((math.inf, -300.0), (-1550.0, 300.0)),
+            ),
+            "nonfinite_normal": self.domain(unit_normal=(math.nan, 0.0)),
+            "nonfinite_vertex": self.domain(
+                deployment_vertices=((math.nan, 0.0),),
+            ),
+            "no_vertices": self.domain(deployment_vertices=()),
+            "crossing_region": self.domain(
+                deployment_vertices=((-1491.0, 0.0), (-1550.0, 0.0)),
+            ),
+        }
+        candidate = self.mode("candidate", (-1490.0, 0.0))
+        representative = select_representative(candidate)
+
+        for name, domain in invalid_contracts.items():
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                qualify_deployment_mode(candidate, representative, domain)
+
+    def test_deployment_vectors_reject_numeric_strings_with_value_error(self):
+        invalid_contracts = {
+            "anchor_coordinates": self.domain(
+                anchor_coordinates=(("-1550", "-300"), ("-1550", "300")),
+            ),
+            "unit_normal": self.domain(unit_normal=("1", "0")),
+            "deployment_vertices": self.domain(
+                deployment_vertices=(("-1491", "0"),),
+            ),
+        }
+        mode = self.mode("candidate", (-1490.0, 0.0))
+        representative = select_representative(mode)
+
+        for name, domain in invalid_contracts.items():
+            with self.subTest(name=name):
+                try:
+                    qualify_deployment_mode(mode, representative, domain)
+                except Exception as error:
+                    outcome = type(error).__name__
+                else:
+                    outcome = "no_exception"
+                self.assertEqual(outcome, "ValueError")
+
+    def test_candidate_and_representative_must_be_finite_and_consistent(self):
+        good = LocalCandidate("good", (-1490.0, 0.0), 1.0, {})
+        other = LocalCandidate("other", (-1480.0, 0.0), 1.0, {})
+        mode = NumericalMode(("good",), (good,), 0.0)
+        malformed = NumericalMode(
+            ("bad",),
+            (LocalCandidate("bad", (math.nan, 0.0), 1.0, {}),),
+            0.0,
+        )
+
+        with self.assertRaises(ValueError):
+            qualify_deployment_mode(mode, other, self.domain())
+        with self.assertRaises(ValueError):
+            qualify_deployment_mode(
+                malformed,
+                malformed.members[0],
+                self.domain(),
+            )
+
+    def test_publication_refuses_nonseparable_zero_and_multiple_modes(self):
+        ocean = self.mode("ocean", (-1490.0, 0.0))
+        land = self.mode("land", (-1610.0, 0.0))
+        clustering = self.clustering(ocean, land)
+        reject_all = tuple(
+            qualify_deployment_mode(mode, select_representative(mode), self.domain())
+            for mode in (land,)
+        )
+        zero = publish_unique_mode(
+            self.clustering(land),
+            reject_all,
+        )
+        multiple = publish_unique_mode(
+            clustering,
+            tuple(
+                replace(
+                    qualify_deployment_mode(
+                        mode,
+                        select_representative(mode),
+                        self.domain(),
+                    ),
+                    admissible=True,
+                )
+                for mode in clustering.modes
+            ),
+        )
+        nonseparable = publish_unique_mode(
+            replace(clustering, separable=False, reason="nonseparable_chain", modes=()),
+            (),
+        )
+
+        self.assertEqual(zero.reason, "no_admissible_mode")
+        self.assertEqual(multiple.reason, "multiple_admissible_modes")
+        self.assertEqual(nonseparable.reason, "nonseparable_chain")
+        self.assertTrue(all(
+            decision.status == "unavailable"
+            for decision in (zero, multiple, nonseparable)
+        ))
+
+    def test_malformed_publication_inputs_fail_closed(self):
+        mode = self.mode("candidate", (-1490.0, 0.0))
+        clustering = self.clustering(mode)
+        qualification = qualify_deployment_mode(
+            mode,
+            select_representative(mode),
+            self.domain(),
+        )
+        malformed_cases = (
+            (),
+            (qualification, qualification),
+            (replace(qualification, mode_id="unknown"),),
+            (replace(qualification, mode_id=""),),
+        )
+        for qualifications in malformed_cases:
+            with self.subTest(qualifications=qualifications):
+                decision = publish_unique_mode(clustering, qualifications)
+                self.assertEqual(decision.status, "unavailable")
+                self.assertEqual(decision.reason, "malformed_qualification_input")
+        valid_qualification = replace(qualification, admissible=True)
+        malformed_clustering = replace(clustering, tolerance_m=math.nan)
+        decision = publish_unique_mode(
+            malformed_clustering,
+            (valid_qualification,),
+        )
+        self.assertEqual(decision.status, "unavailable")
+        self.assertEqual(decision.reason, "malformed_clustering_input")
+
+
+class HistoryQualificationTests(unittest.TestCase):
+    def mode(self, key, xy, covariance=None):
+        if covariance is None:
+            covariance = [[0.5, 0.0], [0.0, 0.5]]
+        candidate = LocalCandidate(
+            key,
+            tuple(xy),
+            1.0,
+            {"covariance": covariance},
+        )
+        return cluster_candidates([candidate], MODE_TOLERANCE_M).modes[0]
+
+    def prior(self, xy=(0.0, 0.0), covariance=None):
+        if covariance is None:
+            covariance = [[0.5, 0.0], [0.0, 0.5]]
+        return {
+            "status": "available",
+            "estimate": list(xy),
+            "modeled_covariance": covariance,
+            "source_fresh_frame": 0,
+            "propagated_to_frame": 1,
+            "age_frames": 1,
+            "last_command_frame": 0,
+            "last_held_velocity": [0.0, 0.0],
+            "history_version": 1,
+        }
+
+    def test_unique_low_innovation_mode_publishes_fresh(self):
+        near = self.mode("near", (1.0, 0.0))
+        far = self.mode("far", (20.0, 0.0))
+        clustering = cluster_candidates(
+            [near.members[0], far.members[0]],
+            MODE_TOLERANCE_M,
+        )
+        qualifications = tuple(
+            qualify_history_mode(
+                mode,
+                select_representative(mode),
+                self.prior(),
+                11.829007011943707,
+            )
+            for mode in clustering.modes
+        )
+
+        publication = publish_unique_mode(clustering, qualifications)
+
+        self.assertEqual(publication.status, "fresh")
+        self.assertEqual(publication.mode_id, canonical_mode_id(near))
+        self.assertEqual(publication.representative.attempt_id, "near")
+
+    def test_zero_or_multiple_history_modes_do_not_publish(self):
+        near_a = self.mode("near-a", (1.0, 0.0))
+        near_b = self.mode("near-b", (-1.0, 0.0))
+        far = self.mode("far", (20.0, 0.0))
+        zero_clustering = cluster_candidates(
+            [far.members[0]],
+            MODE_TOLERANCE_M,
+        )
+        multiple_clustering = cluster_candidates(
+            [near_a.members[0], near_b.members[0]],
+            MODE_TOLERANCE_M,
+        )
+
+        zero = publish_unique_mode(
+            zero_clustering,
+            tuple(
+                qualify_history_mode(
+                    mode,
+                    select_representative(mode),
+                    self.prior(),
+                    11.829007011943707,
+                )
+                for mode in zero_clustering.modes
+            ),
+        )
+        multiple = publish_unique_mode(
+            multiple_clustering,
+            tuple(
+                qualify_history_mode(
+                    mode,
+                    select_representative(mode),
+                    self.prior(),
+                    11.829007011943707,
+                )
+                for mode in multiple_clustering.modes
+            ),
+        )
+
+        self.assertEqual(zero.reason, "no_admissible_mode")
+        self.assertEqual(multiple.reason, "multiple_admissible_modes")
+        self.assertEqual(zero.status, "unavailable")
+        self.assertEqual(multiple.status, "unavailable")
+
+    def test_history_threshold_is_inclusive_at_exact_float_boundary(self):
+        threshold = 11.829007011943707
+        cases = (
+            (math.nextafter(threshold, -math.inf), True),
+            (threshold, True),
+            (math.nextafter(threshold, math.inf), False),
+        )
+        for q_value, expected in cases:
+            with self.subTest(q_value=q_value):
+                half_variance = 0.5 / q_value
+                covariance = [[half_variance, 0.0], [0.0, 1.0]]
+                mode = self.mode("candidate", (1.0, 0.0), covariance)
+                result = qualify_history_mode(
+                    mode,
+                    select_representative(mode),
+                    self.prior(covariance=covariance),
+                    threshold,
+                )
+                self.assertEqual(result.score, q_value)
+                self.assertEqual(result.admissible, expected)
+
+    def test_history_rejects_noncanonical_covariance_and_limit(self):
+        mode = self.mode("candidate", (1.0, 0.0))
+        representative = select_representative(mode)
+        malformed_covariances = (
+            [[1.0, 1e-6], [0.0, 1.0]],
+            [[1.0, 0.0], [0.0, 1e-13]],
+            [[1.0, 0.0], [0.0, 0.0]],
+            [[math.nan, 0.0], [0.0, 1.0]],
+        )
+        for covariance in malformed_covariances:
+            with self.subTest(source="prior", covariance=covariance):
+                with self.assertRaises(ValueError):
+                    qualify_history_mode(
+                        mode,
+                        representative,
+                        self.prior(covariance=covariance),
+                        11.829007011943707,
+                    )
+            with self.subTest(source="candidate", covariance=covariance):
+                malformed_mode = self.mode("bad", (1.0, 0.0), covariance)
+                with self.assertRaises(ValueError):
+                    qualify_history_mode(
+                        malformed_mode,
+                        select_representative(malformed_mode),
+                        self.prior(),
+                        11.829007011943707,
+                    )
+        with self.assertRaises(ValueError):
+            qualify_history_mode(
+                mode,
+                representative,
+                self.prior(),
+                math.nextafter(11.829007011943707, math.inf),
+            )
+
+    def test_representative_payload_must_match_mode_member(self):
+        mode = self.mode("candidate", (20.0, 0.0))
+        representative = replace(
+            select_representative(mode),
+            payload={"covariance": [[100.0, 0.0], [0.0, 100.0]]},
+        )
+
+        with self.assertRaises(ValueError):
+            qualify_history_mode(
+                mode,
+                representative,
+                self.prior(),
+                11.829007011943707,
+            )
+
+    def test_incorrect_self_consistent_prior_is_analyzer_side_wrong_unique(self):
+        false_mode = self.mode("false", (100.0, 0.0))
+        true_mode = self.mode("true", (0.0, 0.0))
+        clustering = cluster_candidates(
+            [false_mode.members[0], true_mode.members[0]],
+            MODE_TOLERANCE_M,
+        )
+        qualifications = tuple(
+            qualify_history_mode(
+                mode,
+                select_representative(mode),
+                self.prior(xy=(100.0, 0.0)),
+                11.829007011943707,
+            )
+            for mode in clustering.modes
+        )
+
+        runtime = publish_unique_mode(clustering, qualifications)
+        truth_mode_id = canonical_mode_id(true_mode)
+        analyzer_label = (
+            "wrong_unique"
+            if runtime.status == "fresh" and runtime.mode_id != truth_mode_id
+            else "not_wrong_unique"
+        )
+
+        self.assertEqual(runtime.status, "fresh")
+        self.assertEqual(runtime.reason, "unique_admissible_mode")
+        self.assertEqual(runtime.mode_id, canonical_mode_id(false_mode))
+        self.assertEqual(analyzer_label, "wrong_unique")
+
+
+class QualifierPayloadSchemaTests(unittest.TestCase):
+    def setUp(self):
+        candidate = LocalCandidate(
+            "candidate",
+            (-1490.0, 0.0),
+            1.0,
+            {"covariance": [[1.0, 0.0], [0.0, 1.0]]},
+        )
+        self.mode = cluster_candidates(
+            [candidate],
+            MODE_TOLERANCE_M,
+        ).modes[0]
+        self.representative = select_representative(self.mode)
+        self.domain = DeploymentContract(
+            anchor_ids=(0, 2),
+            anchor_coordinates=((-1550.0, -300.0), (-1550.0, 300.0)),
+            deployment_vertices=((-1491.0, 0.0), (-1369.0, 0.0)),
+            unit_normal=(1.0, 0.0),
+            offset=1550.0,
+            ocean_side=1,
+            margin_m=1.0,
+            domain_version="ocean-side-v1",
+        )
+        self.prior = {
+            "status": "available",
+            "estimate": [-1490.0, 0.0],
+            "modeled_covariance": [[1.0, 0.0], [0.0, 1.0]],
+            "source_fresh_frame": 0,
+            "propagated_to_frame": 1,
+            "age_frames": 1,
+            "last_command_frame": 0,
+            "last_held_velocity": [0.0, 0.0],
+            "history_version": 1,
+        }
+
+    def test_exact_deployment_and_history_payload_schemas_are_accepted(self):
+        deployment = qualify_all(
+            (self.mode,),
+            (self.representative,),
+            "deployment",
+            {"domain": asdict(self.domain)},
+        )
+        history = qualify_all(
+            (self.mode,),
+            (self.representative,),
+            "history",
+            {
+                "propagated_private_prior": self.prior,
+                "innovation_limit": 11.829007011943707,
+            },
+        )
+
+        self.assertTrue(deployment[0].admissible)
+        self.assertTrue(history[0].admissible)
+
+    def test_unknown_or_forbidden_runtime_payload_fields_raise(self):
+        forbidden = (
+            "truth_position",
+            "future_estimate",
+            "analyzer_label",
+            "realized_error",
+        )
+        for key in forbidden:
+            with self.subTest(kind="deployment", key=key):
+                with self.assertRaises(ValueError):
+                    qualify_all(
+                        (self.mode,),
+                        (self.representative,),
+                        "deployment",
+                        {"domain": self.domain, key: [0.0, 0.0]},
+                    )
+            with self.subTest(kind="history", key=key):
+                with self.assertRaises(ValueError):
+                    qualify_all(
+                        (self.mode,),
+                        (self.representative,),
+                        "history",
+                        {
+                            "propagated_private_prior": self.prior,
+                            "innovation_limit": 11.829007011943707,
+                            key: [0.0, 0.0],
+                        },
+                    )
+        nested_domain = asdict(self.domain)
+        nested_domain["truth_position"] = [0.0, 0.0]
+        with self.assertRaises(ValueError):
+            qualify_all(
+                (self.mode,),
+                (self.representative,),
+                "deployment",
+                {"domain": nested_domain},
+            )
+        with self.assertRaises(ValueError):
+            qualify_all(
+                (self.mode,),
+                (self.representative,),
+                "deployment",
+                {"domain": self.domain, "unknown": True},
+            )
+
+    def test_direct_qualifiers_reject_forbidden_candidate_payload_fields(self):
+        for key in (
+            "truth_position",
+            "future_estimate",
+            "analyzer_label",
+            "realized_error",
+        ):
+            candidate = replace(
+                self.representative,
+                payload={
+                    "covariance": [[1.0, 0.0], [0.0, 1.0]],
+                    key: [0.0, 0.0],
+                },
+            )
+            mode = NumericalMode(
+                (candidate.attempt_id,),
+                (candidate,),
+                0.0,
+            )
+            with self.subTest(kind="deployment", key=key):
+                with self.assertRaises(ValueError):
+                    qualify_deployment_mode(mode, candidate, self.domain)
+            with self.subTest(kind="history", key=key):
+                with self.assertRaises(ValueError):
+                    qualify_history_mode(
+                        mode,
+                        candidate,
+                        self.prior,
+                        11.829007011943707,
+                    )
+
+    def test_mismatched_modes_representatives_and_unknown_kind_raise(self):
+        with self.assertRaises(ValueError):
+            qualify_all(
+                (self.mode,),
+                (),
+                "deployment",
+                {"domain": self.domain},
+            )
+        with self.assertRaises(ValueError):
+            qualify_all(
+                (self.mode,),
+                (self.representative,),
+                "unsupported",
+                {},
+            )
 
 
 class QualifiedStartEnumerationTests(unittest.TestCase):

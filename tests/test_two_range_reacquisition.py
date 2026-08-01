@@ -68,6 +68,21 @@ class TaggedPrivateStateTests(unittest.TestCase):
         self.assertEqual(state["age_frames"], 0)
         self.assertEqual(state["estimate"], [1.0, -2.0])
 
+    def test_reset_delegates_to_versioned_qualified_private_schema(self):
+        state = reset_private_state(
+            {
+                "estimate": [1.0, -2.0],
+                "modeled_covariance": [[2.0, 0.1], [0.1, 1.0]],
+            },
+            frame_index=17,
+        )
+
+        self.assertIn("history_version", state)
+        self.assertEqual(state["history_version"], 0)
+        self.assertIsNone(state["last_command_frame"])
+        self.assertIsNone(state["last_held_velocity"])
+        self.assertIsNotNone(two_range.canonical_private_state(state))
+
     def test_propagation_is_exactly_one_transition(self):
         state = reset_private_state(
             {
