@@ -138,6 +138,87 @@ class QualifiedAnalyzerTests(unittest.TestCase):
                     row=fresh,
                 )
 
+    def test_analyzer_rejects_boolean_lifecycle_numeric_coercion(self):
+        cases = (
+            (
+                "fresh public estimate",
+                replay_test.fresh_registered_qualified_row,
+                lambda row: row["audit_bundle"]["lifecycle"][
+                    "public_output"
+                ]["estimate"].__setitem__(0, False),
+            ),
+            (
+                "fresh public covariance",
+                replay_test.fresh_registered_qualified_row,
+                lambda row: row["audit_bundle"]["lifecycle"][
+                    "public_output"
+                ].update(
+                    modeled_covariance=[[True, False], [False, True]]
+                ),
+            ),
+            (
+                "previous public estimate",
+                replay_test.aged_registered_qualified_row,
+                lambda row: row["audit_bundle"]["transition_inputs"][
+                    "previous_public"
+                ]["estimate"].__setitem__(0, False),
+            ),
+            (
+                "previous private estimate",
+                replay_test.aged_registered_qualified_row,
+                lambda row: row["audit_bundle"]["transition_inputs"][
+                    "previous_private"
+                ]["estimate"].__setitem__(0, False),
+            ),
+            (
+                "previous private covariance",
+                replay_test.aged_registered_qualified_row,
+                lambda row: row["audit_bundle"]["transition_inputs"][
+                    "previous_private"
+                ].update(
+                    modeled_covariance=[[True, False], [False, True]]
+                ),
+            ),
+        )
+        for name, factory, mutation in cases:
+            with self.subTest(name=name):
+                row = factory()
+                mutation(row)
+                with self.assertRaises(ValueError):
+                    validate_and_recompute_qualified_row(row)
+
+    def test_analyzer_rejects_mission_inconsistent_provenance_rewrite(self):
+        row = valid_registered_row()
+        rewritten = replay_test.rewrite_nonempty_provenance(
+            row,
+            [100, 101],
+        )
+        self.assertGreaterEqual(rewritten, 10)
+        with self.assertRaisesRegex(ValueError, "mission base authority"):
+            validate_and_recompute_qualified_row(row)
+
+        aged = replay_test.aged_registered_qualified_row()
+        aged["audit_bundle"]["transition_inputs"]["previous_public"][
+            "base_anchor_provenance"
+        ] = [100, 101]
+        with self.assertRaisesRegex(ValueError, "mission base authority"):
+            validate_and_recompute_qualified_row(aged)
+
+    def test_analyzer_bounds_forbidden_field_traversal(self):
+        row = valid_registered_row()
+        row["audit_bundle"]["qualifier_context"]["qualifier_payload"][
+            "reason"
+        ] = replay_test.nested_lists(1500)
+        with self.assertRaisesRegex(ValueError, "bounded"):
+            validate_and_recompute_qualified_row(row)
+
+        row = valid_registered_row()
+        row["audit_bundle"]["qualifier_context"]["qualifier_payload"][
+            "reason"
+        ] = [0.0] * 5000
+        with self.assertRaisesRegex(ValueError, "bounded"):
+            validate_and_recompute_qualified_row(row)
+
     def test_analyzer_recomputes_fabricated_solver_geometry(self):
         fabricated = {
             "status": "converged",

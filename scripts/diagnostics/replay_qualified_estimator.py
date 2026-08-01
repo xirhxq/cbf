@@ -6,7 +6,17 @@ import math
 
 import numpy as np
 
+from scripts.diagnostics.estimator_lifecycle import (
+    _canonical_public_state,
+    _canonical_unavailable_reason,
+    canonical_private_state,
+)
 from scripts.diagnostics.predictive_wnls import solve_qualified_multistart
+from scripts.diagnostics.qualified_modes import (
+    INNOVATION_LIMIT,
+    DeploymentContract,
+    _validated_deployment_contract,
+)
 
 
 RAW_SCHEMA_ID = "cbf2026-qualified-mode-hybrid-dcbf-estimator-raw-v1"
@@ -130,6 +140,8 @@ RELATIVE_TIE_TOLERANCE = 1e-12
 EVIDENCE_MAX_DEPTH = 8
 EVIDENCE_MAX_NODES = 4096
 FORBIDDEN_FRAGMENTS = ("truth", "analyzer", "future", "realized")
+REGISTERED_MISSION_BASE_IDS = (0, 1, 2)
+REGISTERED_DEPLOYMENT_ANCHOR_IDS = (0, 2)
 SERIALIZED_PRIVATE_STATE_FIELDS = (
     "age_frames", "estimate", "history_version", "last_command_frame",
     "last_held_velocity", "modeled_covariance", "propagated_to_frame",
@@ -271,7 +283,9 @@ def validate_qualified_replay_row(row: Mapping) -> None:
     if (
         not isinstance(row["runtime_inputs"], Mapping)
         or tuple(row["runtime_inputs"]) != RUNTIME_INPUT_FIELDS
-        or row["runtime_inputs"] != audit["runtime_inputs"]
+        or not strict_protocol_equal(
+            row["runtime_inputs"], audit["runtime_inputs"]
+        )
     ):
         raise ValueError("qualified runtime input projection is inconsistent")
     for field in (
@@ -347,6 +361,11 @@ def _validate_exact_audit_schema(audit):
     for reference in references:
         key = reference["key"]
         provenance = reference["base_anchor_provenance"]
+        if not registered_mission_provenance_is_valid(provenance):
+            raise ValueError(
+                "runtime reference base anchor provenance violates "
+                "mission base authority"
+            )
         if (
             not isinstance(key, list)
             or len(key) != 2
@@ -357,7 +376,6 @@ def _validate_exact_audit_schema(audit):
             or _finite_nonnegative(reference["range"]) is None
             or not _finite_psd_2x2(reference["covariance"])
             or _finite_positive(reference["ranging_sigma"]) is None
-            or not _canonical_provenance(provenance)
             or (key[0] == "base" and provenance != [key[1]])
             or (key[0] != "base" and len(provenance) < 2)
         ):
@@ -376,9 +394,13 @@ def _validate_exact_audit_schema(audit):
         for reference in references
         for anchor in reference["base_anchor_provenance"]
     })
+    if not registered_mission_provenance_is_valid(aggregate_provenance):
+        raise ValueError(
+            "base anchor provenance is invalid: runtime aggregate violates "
+            "mission base authority"
+        )
     if (
-        not _canonical_provenance(aggregate_provenance)
-        or len(aggregate_provenance) < 2
+        len(aggregate_provenance) < 2
         or aggregate_provenance != derived_provenance
     ):
         raise ValueError("base anchor provenance is invalid")
@@ -405,6 +427,8 @@ def _validate_exact_audit_schema(audit):
         for start in starts
     ):
         raise ValueError("start records differ from exact schema")
+    for start in starts:
+        _validate_start_record(start)
     attempts = audit["solver_attempts"]
     if not isinstance(attempts, list):
         raise ValueError("solver attempts differ from exact schema")
@@ -426,6 +450,7 @@ def _validate_exact_audit_schema(audit):
             or tuple(attempt["start_record"]) != START_FIELDS
         ):
             raise ValueError("solver attempt start differs from exact schema")
+        _validate_start_record(attempt["start_record"])
         _validate_solver_result_evidence(attempt["solver_result"])
         if (
             not isinstance(attempt["local_diagnostics"], Mapping)
@@ -433,13 +458,11 @@ def _validate_exact_audit_schema(audit):
         ):
             raise ValueError("local diagnostics differ from exact schema")
         local = attempt["local_diagnostics"]
-        if (
-            not _nonnegative_int(local["active_reference_count"])
-            or not _canonical_provenance(local["base_anchor_provenance"])
-            or local["base_anchor_provenance"] != aggregate_provenance
-            or not isinstance(local["solver_geometry_consistent"], bool)
-        ):
-            raise ValueError("local diagnostics values are invalid")
+        _validate_local_diagnostics_values(
+            local,
+            active_reference_count=len(references),
+            expected_provenance=aggregate_provenance,
+        )
     candidates = audit["local_candidates"]
     representatives = audit["representatives"]
     for name, records in (
@@ -459,7 +482,10 @@ def _validate_exact_audit_schema(audit):
         ):
             raise ValueError(f"{name} differ from exact schema")
         for record in records:
-            _validate_candidate_payload_evidence(record["payload"])
+            _validate_candidate_payload_evidence(
+                record["payload"],
+                aggregate_provenance,
+            )
     clustering = audit["clustering"]
     if (
         not isinstance(clustering, Mapping)
@@ -493,10 +519,15 @@ def _validate_exact_audit_schema(audit):
         or tuple(transition) != TRANSITION_FIELDS
     ):
         raise ValueError("transition inputs differ from exact schema")
+    _validate_transition_values(transition)
     _validate_optional_public_order(transition["previous_public"])
     _validate_optional_private_order(transition["previous_private"])
     prior = audit["prior_bundle"]
-    if not isinstance(prior, Mapping) or tuple(prior) != PRIOR_FIELDS:
+    if (
+        not isinstance(prior, Mapping)
+        or tuple(prior) != PRIOR_FIELDS
+        or not _nonnegative_int(prior["history_version"])
+    ):
         raise ValueError("prior bundle differs from exact schema")
     _validate_optional_public_order(prior["public_prediction"])
     _validate_optional_private_order(prior["private_prior"])
@@ -540,32 +571,239 @@ def _validate_exact_audit_schema(audit):
     if not isinstance(decision, Mapping) or tuple(decision) != DECISION_FIELDS:
         raise ValueError("decision differs from exact schema")
     lifecycle = audit["lifecycle"]
-    if not isinstance(lifecycle, Mapping) or tuple(lifecycle) != LIFECYCLE_FIELDS:
+    if (
+        not isinstance(lifecycle, Mapping)
+        or tuple(lifecycle) != LIFECYCLE_FIELDS
+        or not _nonnegative_int(lifecycle["history_version"])
+    ):
         raise ValueError("lifecycle differs from exact schema")
-    _validate_optional_public_order(lifecycle["public_output"])
+    _validate_optional_public_order(
+        lifecycle["public_output"],
+        expected_fresh_provenance=aggregate_provenance,
+    )
     _validate_optional_private_order(lifecycle["next_private_state"])
 
 
-def _validate_optional_public_order(value):
+def _validate_optional_public_order(value, *, expected_fresh_provenance=None):
     if value is None:
         return
     if not isinstance(value, Mapping):
         raise ValueError("public state differs from exact field order")
+    status = value.get("output_status")
     expected = {
         "fresh": SERIALIZED_FRESH_PUBLIC_FIELDS,
         "predicted": SERIALIZED_PREDICTED_PUBLIC_FIELDS,
         "unavailable": SERIALIZED_UNAVAILABLE_PUBLIC_FIELDS,
-    }.get(value.get("output_status"))
+    }.get(status)
     if expected is None or tuple(value) != expected:
         raise ValueError("public state differs from exact field order")
+    if not exact_public_numeric_types_are_valid(value):
+        raise ValueError("public state numeric values are invalid")
+    semantically_valid = (
+        _canonical_public_state(value) is not None
+        if status in {"fresh", "predicted"}
+        else _canonical_unavailable_reason(value) is not None
+    )
+    if not semantically_valid:
+        raise ValueError("public state values are invalid")
+    if (
+        status == "fresh"
+        and not registered_mission_provenance_is_valid(
+            value["base_anchor_provenance"]
+        )
+    ):
+        raise ValueError(
+            "public state base anchor provenance violates mission base authority"
+        )
+    if (
+        expected_fresh_provenance is not None
+        and status == "fresh"
+        and value["base_anchor_provenance"]
+        != expected_fresh_provenance
+    ):
+        raise ValueError("public state base anchor provenance is invalid")
 
 
 def _validate_optional_private_order(value):
     if value is not None and (
         not isinstance(value, Mapping)
         or tuple(value) != SERIALIZED_PRIVATE_STATE_FIELDS
+        or not exact_private_numeric_types_are_valid(value)
+        or canonical_private_state(value) is None
     ):
-        raise ValueError("private state differs from exact field order")
+        raise ValueError("private state differs from exact schema")
+
+
+def exact_public_numeric_types_are_valid(value):
+    if not isinstance(value, Mapping):
+        return False
+    status = value.get("output_status")
+    if status == "unavailable":
+        return all(
+            value.get(field) is None
+            for field in (
+                "estimate",
+                "modeled_covariance",
+                "epsilon",
+                "prediction_age",
+                "aged_modeled_radius",
+            )
+        )
+    if status not in {"fresh", "predicted"}:
+        return False
+    radius_field = "epsilon" if status == "fresh" else "aged_modeled_radius"
+    return (
+        _finite_vec2(value.get("estimate")) is not None
+        and _finite_spd_2x2(value.get("modeled_covariance"))
+        and _finite_positive(value.get(radius_field)) is not None
+        and _nonnegative_int(value.get("prediction_age"))
+    )
+
+
+def exact_private_numeric_types_are_valid(value):
+    if not isinstance(value, Mapping):
+        return False
+    held_velocity = value.get("last_held_velocity")
+    return (
+        _finite_vec2(value.get("estimate")) is not None
+        and _finite_spd_2x2(value.get("modeled_covariance"))
+        and all(
+            _nonnegative_int(value.get(field))
+            for field in (
+                "source_fresh_frame",
+                "propagated_to_frame",
+                "age_frames",
+                "history_version",
+            )
+        )
+        and (
+            value.get("last_command_frame") is None
+            or _nonnegative_int(value.get("last_command_frame"))
+        )
+        and (
+            held_velocity is None
+            or _finite_vec2(held_velocity) is not None
+        )
+    )
+
+
+def _validate_start_record(start):
+    reference_keys = start["reference_keys"]
+    if (
+        not isinstance(start["attempt_id"], str)
+        or not start["attempt_id"]
+        or not isinstance(start["kind"], str)
+        or not start["kind"]
+        or _finite_vec2(start["estimate"]) is None
+        or not isinstance(reference_keys, list)
+        or not reference_keys
+        or any(not _valid_reference_key(key) for key in reference_keys)
+        or reference_keys != sorted(reference_keys)
+        or len({tuple(key) for key in reference_keys}) != len(reference_keys)
+        or (
+            start["branch"] is not None
+            and (
+                not isinstance(start["branch"], str)
+                or not start["branch"]
+            )
+        )
+    ):
+        raise ValueError("start record values differ from exact schema")
+
+
+def _valid_reference_key(key):
+    return (
+        isinstance(key, list)
+        and len(key) == 2
+        and isinstance(key[0], str)
+        and bool(key[0])
+        and _nonnegative_int(key[1])
+    )
+
+
+def _validate_local_diagnostics_values(
+    local,
+    *,
+    active_reference_count,
+    expected_provenance,
+):
+    optional_reasons = ("failure_reason", "geometry_failure_reason")
+    optional_matrices = (
+        "recomputed_covariance",
+        "recomputed_fim",
+        "recomputed_gauss_newton",
+    )
+    optional_scalars = (
+        "recomputed_objective",
+        "recomputed_residual_cost",
+        "recomputed_stationarity_norm",
+        "reduced_whitened_cost",
+    )
+    residual = local["recomputed_residual"]
+    if (
+        not _nonnegative_int(local["active_reference_count"])
+        or local["active_reference_count"] != active_reference_count
+        or not _canonical_provenance(local["base_anchor_provenance"])
+        or local["base_anchor_provenance"] != expected_provenance
+        or not isinstance(local["solver_geometry_consistent"], bool)
+        or any(
+            local[field] is not None
+            and (
+                not isinstance(local[field], str)
+                or not local[field]
+            )
+            for field in optional_reasons
+        )
+        or any(
+            local[field] is not None
+            and _finite_matrix_2x2(local[field]) is None
+            for field in optional_matrices
+        )
+        or (
+            local["recomputed_estimate"] is not None
+            and _finite_vec2(local["recomputed_estimate"]) is None
+        )
+        or (
+            residual is not None
+            and (
+                not isinstance(residual, list)
+                or len(residual) != active_reference_count
+                or any(_finite_number(value) is None for value in residual)
+            )
+        )
+        or any(
+            local[field] is not None
+            and _finite_nonnegative(local[field]) is None
+            for field in optional_scalars
+        )
+    ):
+        raise ValueError("local diagnostics values differ from exact schema")
+
+
+def _validate_transition_values(transition):
+    frame = transition["frame_index"]
+    command_frame = transition["applied_command_frame"]
+    horizon = transition["mission_horizon_frames"]
+    if (
+        not _nonnegative_int(frame)
+        or not _nonnegative_int(transition["history_version"])
+        or not _nonnegative_int(horizon)
+        or horizon == 0
+        or frame >= horizon
+        or _finite_vec2(transition["held_velocity"]) is None
+        or (
+            frame == 0
+            and command_frame is not None
+        )
+        or (
+            frame > 0
+            and (
+                not _nonnegative_int(command_frame)
+                or command_frame != frame - 1
+            )
+        )
+    ):
+        raise ValueError("transition values differ from exact schema")
 
 
 def _validate_qualifier_payload_order(kind, payload):
@@ -586,15 +824,34 @@ def _validate_qualifier_payload_order(kind, payload):
             or tuple(domain) != DEPLOYMENT_DOMAIN_FIELDS
         ):
             raise ValueError("deployment domain differs from exact field order")
+        if (
+            not isinstance(domain["anchor_ids"], list)
+            or tuple(domain["anchor_ids"])
+            != REGISTERED_DEPLOYMENT_ANCHOR_IDS
+        ):
+            raise ValueError("deployment anchor authority is invalid")
+        try:
+            _validated_deployment_contract(DeploymentContract(**domain))
+        except (TypeError, ValueError) as error:
+            raise ValueError("qualifier payload values are invalid") from error
+    elif kind == "history":
+        if _finite_number(payload["innovation_limit"]) != INNOVATION_LIMIT:
+            raise ValueError("qualifier payload values are invalid")
+    elif (
+        not isinstance(payload["reason"], str)
+        or not payload["reason"]
+    ):
+        raise ValueError("qualifier payload values are invalid")
 
 
-def _validate_candidate_payload_evidence(payload):
+def _validate_candidate_payload_evidence(payload, expected_provenance):
     if (
         not isinstance(payload, Mapping)
         or tuple(payload) != CANDIDATE_PAYLOAD_FIELDS
         or not _canonical_provenance(payload["base_anchor_provenance"])
+        or payload["base_anchor_provenance"] != expected_provenance
     ):
-        raise ValueError("candidate payload differs from exact field order")
+        raise ValueError("candidate payload base anchor provenance is invalid")
     solver_result = {
         field: payload[field]
         for field in SOLVER_RESULT_FIELDS
@@ -743,14 +1000,11 @@ def _validate_solver_proposal_trace(trace, *, converged):
 
 
 def _solver_spd_covariance(value):
-    try:
-        covariance = np.asarray(value, dtype=float)
-    except (TypeError, ValueError, OverflowError):
+    covariance = _finite_matrix_2x2(value)
+    if covariance is None:
         return None
     if (
-        covariance.shape != (2, 2)
-        or not np.isfinite(covariance).all()
-        or not np.allclose(covariance, covariance.T, rtol=1e-12, atol=1e-12)
+        not np.allclose(covariance, covariance.T, rtol=1e-12, atol=1e-12)
     ):
         return None
     canonical = 0.5 * (covariance + covariance.T)
@@ -916,15 +1170,34 @@ def _finite_vec2(value):
     return result if all(item is not None for item in result) else None
 
 
+def exact_json_matrix_2x2_is_valid(value):
+    return (
+        isinstance(value, list)
+        and len(value) == 2
+        and all(isinstance(row, list) and len(row) == 2 for row in value)
+        and all(
+            _finite_number(item) is not None
+            for row in value
+            for item in row
+        )
+    )
+
+
+def _finite_matrix_2x2(value):
+    if not exact_json_matrix_2x2_is_valid(value):
+        return None
+    numbers = [[_finite_number(item) for item in row] for row in value]
+    if any(item is None for row in numbers for item in row):
+        return None
+    return np.asarray(numbers, dtype=float)
+
+
 def _finite_psd_2x2(value):
-    try:
-        covariance = np.asarray(value, dtype=float)
-    except (TypeError, ValueError, OverflowError):
+    covariance = _finite_matrix_2x2(value)
+    if covariance is None:
         return False
     if (
-        covariance.shape != (2, 2)
-        or not np.isfinite(covariance).all()
-        or not np.allclose(covariance, covariance.T, rtol=1e-12, atol=1e-12)
+        not np.allclose(covariance, covariance.T, rtol=1e-12, atol=1e-12)
     ):
         return False
     try:
@@ -938,14 +1211,11 @@ def _finite_psd_2x2(value):
 
 
 def _finite_spd_2x2(value):
-    try:
-        covariance = np.asarray(value, dtype=float)
-    except (TypeError, ValueError, OverflowError):
+    covariance = _finite_matrix_2x2(value)
+    if covariance is None:
         return False
     if (
-        covariance.shape != (2, 2)
-        or not np.isfinite(covariance).all()
-        or not np.allclose(covariance, covariance.T, rtol=1e-12, atol=1e-12)
+        not np.allclose(covariance, covariance.T, rtol=1e-12, atol=1e-12)
     ):
         return False
     try:
@@ -967,36 +1237,126 @@ def _canonical_provenance(value):
     )
 
 
-def _reject_forbidden_runtime_fields(value, active_ids=None):
+def registered_mission_provenance_is_valid(value):
+    return (
+        _canonical_provenance(value)
+        and bool(value)
+        and set(value).issubset(REGISTERED_MISSION_BASE_IDS)
+    )
+
+
+def strict_protocol_equal(first, second):
+    """Compare bounded JSON values without Python's bool/number coercion."""
+    visited_nodes = [0]
+    active_pairs = set()
+
+    def compare(left, right, depth):
+        visited_nodes[0] += 1
+        if (
+            depth > EVIDENCE_MAX_DEPTH
+            or visited_nodes[0] > EVIDENCE_MAX_NODES
+        ):
+            return False
+        if isinstance(left, bool) or isinstance(right, bool):
+            return (
+                isinstance(left, bool)
+                and isinstance(right, bool)
+                and left is right
+            )
+        if isinstance(left, Mapping) or isinstance(right, Mapping):
+            if not isinstance(left, Mapping) or not isinstance(right, Mapping):
+                return False
+            pair = (id(left), id(right))
+            if pair in active_pairs:
+                return False
+            if tuple(left) != tuple(right):
+                return False
+            active_pairs.add(pair)
+            try:
+                return all(
+                    compare(left[key], right[key], depth + 1)
+                    for key in left
+                )
+            finally:
+                active_pairs.remove(pair)
+        if isinstance(left, list) or isinstance(right, list):
+            if (
+                not isinstance(left, list)
+                or not isinstance(right, list)
+                or len(left) != len(right)
+            ):
+                return False
+            pair = (id(left), id(right))
+            if pair in active_pairs:
+                return False
+            active_pairs.add(pair)
+            try:
+                return all(
+                    compare(left_item, right_item, depth + 1)
+                    for left_item, right_item in zip(
+                        left, right, strict=True
+                    )
+                )
+            finally:
+                active_pairs.remove(pair)
+        return left == right
+
+    return compare(first, second, 0)
+
+
+def reject_forbidden_protocol_fields(
+    value,
+    active_ids=None,
+    *,
+    depth=0,
+    visited_nodes=None,
+):
     if active_ids is None:
         active_ids = set()
+    if visited_nodes is None:
+        visited_nodes = [0]
+    visited_nodes[0] += 1
+    if (
+        depth > EVIDENCE_MAX_DEPTH
+        or visited_nodes[0] > EVIDENCE_MAX_NODES
+    ):
+        raise ValueError("qualified protocol payload is not bounded")
     if isinstance(value, Mapping):
         identifier = id(value)
         if identifier in active_ids:
-            raise ValueError("cyclic qualified row payload")
+            raise ValueError("cyclic qualified protocol payload")
         active_ids.add(identifier)
         try:
             for key, nested in value.items():
                 if not isinstance(key, str):
-                    raise ValueError("qualified row key is invalid")
+                    raise ValueError("qualified protocol key is invalid")
                 lowered = key.lower()
-                if any(fragment in lowered for fragment in (
-                    "truth",
-                    "analyzer",
-                    "future",
-                    "realized",
-                )):
+                if any(fragment in lowered for fragment in FORBIDDEN_FRAGMENTS):
                     raise ValueError("forbidden qualified runtime field")
-                _reject_forbidden_runtime_fields(nested, active_ids)
+                reject_forbidden_protocol_fields(
+                    nested,
+                    active_ids,
+                    depth=depth + 1,
+                    visited_nodes=visited_nodes,
+                )
         finally:
             active_ids.remove(identifier)
     elif isinstance(value, list):
         identifier = id(value)
         if identifier in active_ids:
-            raise ValueError("cyclic qualified row payload")
+            raise ValueError("cyclic qualified protocol payload")
         active_ids.add(identifier)
         try:
             for item in value:
-                _reject_forbidden_runtime_fields(item, active_ids)
+                reject_forbidden_protocol_fields(
+                    item,
+                    active_ids,
+                    depth=depth + 1,
+                    visited_nodes=visited_nodes,
+                )
         finally:
             active_ids.remove(identifier)
+
+
+def _reject_forbidden_runtime_fields(value):
+    reject_forbidden_protocol_fields(value)

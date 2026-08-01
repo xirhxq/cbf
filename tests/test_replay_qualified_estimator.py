@@ -224,6 +224,53 @@ def build_registered_qualified_row(
     )
 
 
+def fresh_registered_qualified_row():
+    return build_registered_qualified_row(
+        frame_index=0,
+        applied_command_frame=None,
+        history_version=0,
+        qualifier_kind="deployment",
+        qualifier_payload={"domain": registered_deployment_domain()},
+    )
+
+
+def aged_registered_qualified_row():
+    fresh = fresh_registered_qualified_row()
+    lifecycle = fresh["audit_bundle"]["lifecycle"]
+    return build_registered_qualified_row(
+        frame_index=1,
+        applied_command_frame=0,
+        history_version=2,
+        previous_public=lifecycle["public_output"],
+        previous_private=lifecycle["next_private_state"],
+    )
+
+
+def rewrite_nonempty_provenance(value, replacement):
+    rewritten = 0
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if key == "base_anchor_provenance" and nested:
+                value[key] = list(replacement)
+                rewritten += 1
+            else:
+                rewritten += rewrite_nonempty_provenance(
+                    nested,
+                    replacement,
+                )
+    elif isinstance(value, list):
+        for nested in value:
+            rewritten += rewrite_nonempty_provenance(nested, replacement)
+    return rewritten
+
+
+def nested_lists(depth):
+    value = "leaf"
+    for _ in range(depth):
+        value = [value]
+    return value
+
+
 class QualifiedReplayTests(unittest.TestCase):
     def build_registered_row(self):
         return build_registered_qualified_row()
@@ -381,6 +428,240 @@ class QualifiedReplayTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "base anchor provenance"):
             validate_qualified_replay_row(false_provenance)
 
+    def test_producer_rejects_recursive_current_provenance_tampering(self):
+        cases = (
+            (
+                "local candidate",
+                lambda row: row["audit_bundle"]["local_candidates"][0][
+                    "payload"
+                ].update(base_anchor_provenance=[100, 101]),
+            ),
+            (
+                "representative",
+                lambda row: row["audit_bundle"]["representatives"][0][
+                    "payload"
+                ].update(base_anchor_provenance=[100, 101]),
+            ),
+        )
+        for name, mutation in cases:
+            with self.subTest(name=name):
+                row = self.build_registered_row()
+                mutation(row)
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "base anchor provenance",
+                ):
+                    validate_qualified_replay_row(row)
+
+        fresh = build_registered_qualified_row(
+            frame_index=0,
+            applied_command_frame=None,
+            history_version=0,
+            qualifier_kind="deployment",
+            qualifier_payload={"domain": registered_deployment_domain()},
+        )
+        fresh["audit_bundle"]["lifecycle"]["public_output"][
+            "base_anchor_provenance"
+        ] = [100, 101]
+        with self.assertRaisesRegex(ValueError, "base anchor provenance"):
+            validate_qualified_replay_row(fresh)
+
+    def test_producer_rejects_boolean_numeric_nested_state_evidence(self):
+        fresh = build_registered_qualified_row(
+            frame_index=0,
+            applied_command_frame=None,
+            history_version=0,
+            qualifier_kind="deployment",
+            qualifier_payload={"domain": registered_deployment_domain()},
+        )
+        fresh["audit_bundle"]["lifecycle"]["public_output"][
+            "epsilon"
+        ] = False
+        with self.assertRaisesRegex(ValueError, "public state"):
+            validate_qualified_replay_row(fresh)
+
+        fresh = build_registered_qualified_row(
+            frame_index=0,
+            applied_command_frame=None,
+            history_version=0,
+            qualifier_kind="deployment",
+            qualifier_payload={"domain": registered_deployment_domain()},
+        )
+        lifecycle = fresh["audit_bundle"]["lifecycle"]
+        aged = build_registered_qualified_row(
+            frame_index=1,
+            applied_command_frame=0,
+            history_version=2,
+            previous_public=lifecycle["public_output"],
+            previous_private=lifecycle["next_private_state"],
+        )
+        aged["audit_bundle"]["transition_inputs"]["previous_private"][
+            "age_frames"
+        ] = False
+        with self.assertRaisesRegex(ValueError, "private state"):
+            validate_qualified_replay_row(aged)
+
+    def test_producer_rejects_boolean_numeric_nested_audit_fields(self):
+        cases = (
+            (
+                "runtime covariance",
+                lambda row: row["audit_bundle"]["runtime_inputs"][
+                    "references"
+                ][0]["covariance"][0].__setitem__(0, False),
+            ),
+            (
+                "start estimate",
+                lambda row: row["audit_bundle"]["starts"][0][
+                    "estimate"
+                ].__setitem__(0, False),
+            ),
+            (
+                "local diagnostic",
+                lambda row: row["audit_bundle"]["solver_attempts"][0][
+                    "local_diagnostics"
+                ].update(recomputed_objective=False),
+            ),
+            (
+                "transition frame",
+                lambda row: row["audit_bundle"]["transition_inputs"].update(
+                    frame_index=False
+                ),
+            ),
+            (
+                "prior history version",
+                lambda row: row["audit_bundle"]["prior_bundle"].update(
+                    history_version=False
+                ),
+            ),
+            (
+                "lifecycle history version",
+                lambda row: row["audit_bundle"]["lifecycle"].update(
+                    history_version=False
+                ),
+            ),
+        )
+        for name, mutation in cases:
+            with self.subTest(name=name):
+                row = self.build_registered_row()
+                mutation(row)
+                with self.assertRaises(ValueError):
+                    validate_qualified_replay_row(row)
+
+        deployment = build_registered_qualified_row(
+            frame_index=0,
+            applied_command_frame=None,
+            history_version=0,
+            qualifier_kind="deployment",
+            qualifier_payload={"domain": registered_deployment_domain()},
+        )
+        deployment["audit_bundle"]["qualifier_context"][
+            "qualifier_payload"
+        ]["domain"]["margin_m"] = False
+        with self.assertRaisesRegex(ValueError, "qualifier payload"):
+            validate_qualified_replay_row(deployment)
+
+        history = build_registered_qualified_row(
+            qualifier_kind="history",
+            qualifier_payload={"innovation_limit": 11.829007011943707},
+        )
+        history["audit_bundle"]["qualifier_context"]["qualifier_payload"][
+            "innovation_limit"
+        ] = False
+        with self.assertRaisesRegex(ValueError, "qualifier payload"):
+            validate_qualified_replay_row(history)
+
+    def test_producer_rejects_boolean_lifecycle_numeric_coercion(self):
+        cases = (
+            (
+                "fresh public estimate",
+                fresh_registered_qualified_row,
+                lambda row: row["audit_bundle"]["lifecycle"][
+                    "public_output"
+                ]["estimate"].__setitem__(0, False),
+            ),
+            (
+                "fresh public covariance",
+                fresh_registered_qualified_row,
+                lambda row: row["audit_bundle"]["lifecycle"][
+                    "public_output"
+                ].update(
+                    modeled_covariance=[[True, False], [False, True]]
+                ),
+            ),
+            (
+                "previous public estimate",
+                aged_registered_qualified_row,
+                lambda row: row["audit_bundle"]["transition_inputs"][
+                    "previous_public"
+                ]["estimate"].__setitem__(0, False),
+            ),
+            (
+                "previous private estimate",
+                aged_registered_qualified_row,
+                lambda row: row["audit_bundle"]["transition_inputs"][
+                    "previous_private"
+                ]["estimate"].__setitem__(0, False),
+            ),
+            (
+                "previous private covariance",
+                aged_registered_qualified_row,
+                lambda row: row["audit_bundle"]["transition_inputs"][
+                    "previous_private"
+                ].update(
+                    modeled_covariance=[[True, False], [False, True]]
+                ),
+            ),
+            (
+                "transition held velocity",
+                aged_registered_qualified_row,
+                lambda row: row["audit_bundle"]["transition_inputs"].update(
+                    held_velocity=[False, 0.0]
+                ),
+            ),
+        )
+        for name, factory, mutation in cases:
+            with self.subTest(name=name):
+                row = factory()
+                mutation(row)
+                with self.assertRaises(ValueError):
+                    validate_qualified_replay_row(row)
+
+    def test_producer_rejects_mission_inconsistent_provenance_rewrite(self):
+        row = self.build_registered_row()
+        rewritten = rewrite_nonempty_provenance(row, [100, 101])
+        self.assertGreaterEqual(rewritten, 10)
+        with self.assertRaisesRegex(ValueError, "mission base authority"):
+            validate_qualified_replay_row(row)
+
+        aged = aged_registered_qualified_row()
+        aged["audit_bundle"]["transition_inputs"]["previous_public"][
+            "base_anchor_provenance"
+        ] = [100, 101]
+        with self.assertRaisesRegex(ValueError, "mission base authority"):
+            validate_qualified_replay_row(aged)
+
+        deployment = fresh_registered_qualified_row()
+        deployment["audit_bundle"]["qualifier_context"][
+            "qualifier_payload"
+        ]["domain"]["anchor_ids"] = [0, 1]
+        with self.assertRaisesRegex(ValueError, "deployment anchor authority"):
+            validate_qualified_replay_row(deployment)
+
+    def test_producer_bounds_forbidden_field_traversal(self):
+        row = self.build_registered_row()
+        row["audit_bundle"]["qualifier_context"]["qualifier_payload"][
+            "reason"
+        ] = nested_lists(1500)
+        with self.assertRaisesRegex(ValueError, "bounded"):
+            validate_qualified_replay_row(row)
+
+        row = self.build_registered_row()
+        row["audit_bundle"]["qualifier_context"]["qualifier_payload"][
+            "reason"
+        ] = [0.0] * 5000
+        with self.assertRaisesRegex(ValueError, "bounded"):
+            validate_qualified_replay_row(row)
+
     def test_producer_validator_rejects_every_malformed_solver_evidence_case(self):
         for name, malformed_result in malformed_serialized_solver_evidence_cases():
             with self.subTest(name=name):
@@ -419,6 +700,20 @@ class QualifiedReplayTests(unittest.TestCase):
         )))
         with self.assertRaisesRegex(ValueError, "runtime input projection"):
             validate_qualified_replay_row(runtime_row)
+
+        bool_covariance = json.loads(json.dumps(self.build_registered_row()))
+        bool_covariance["runtime_inputs"]["references"][0]["covariance"][0][1] = False
+        with self.assertRaisesRegex(ValueError, "runtime input projection"):
+            validate_qualified_replay_row(bool_covariance)
+
+        bool_provenance = json.loads(json.dumps(self.build_registered_row()))
+        bool_provenance["runtime_inputs"]["base_anchor_provenance"] = [
+            False,
+            True,
+            2,
+        ]
+        with self.assertRaisesRegex(ValueError, "runtime input projection"):
+            validate_qualified_replay_row(bool_provenance)
 
         qualification_row = json.loads(json.dumps(self.build_registered_row()))
         qualification = qualification_row["qualifications"][0]

@@ -19,6 +19,15 @@ from scripts.diagnostics.replay_localization_calibration import (
     _linearized_terms,
     fim_radius,
 )
+from scripts.diagnostics.replay_qualified_estimator import (
+    REGISTERED_DEPLOYMENT_ANCHOR_IDS,
+    exact_json_matrix_2x2_is_valid,
+    exact_private_numeric_types_are_valid,
+    exact_public_numeric_types_are_valid,
+    registered_mission_provenance_is_valid,
+    reject_forbidden_protocol_fields,
+    strict_protocol_equal,
+)
 from scripts.diagnostics.qualified_modes import (
     MODE_TOLERANCE_M,
     ModeQualification,
@@ -224,7 +233,7 @@ def validate_and_recompute_qualified_row(row) -> dict:
     runtime = audit["runtime_inputs"]
     transition = audit["transition_inputs"]
 
-    if not _strict_equal(row["runtime_inputs"], runtime):
+    if not strict_protocol_equal(row["runtime_inputs"], runtime):
         raise ValueError("runtime input projection mismatch")
     reference_keys = [tuple(reference["key"]) for reference in runtime["references"]]
     if reference_keys != sorted(reference_keys):
@@ -548,6 +557,10 @@ def _validate_exact_protocol(row):
             != LOCAL_DIAGNOSTIC_FIELDS
         ):
             raise ValueError("local diagnostics differ from exact field order")
+        if not registered_mission_provenance_is_valid(
+            attempt["local_diagnostics"]["base_anchor_provenance"]
+        ):
+            raise ValueError("local diagnostics violate mission base authority")
     if not isinstance(audit["local_candidates"], list) or any(
         not isinstance(candidate, Mapping)
         or tuple(candidate) != CANDIDATE_FIELDS
@@ -673,6 +686,11 @@ def _validate_runtime_contract(row, runtime, transition):
             raise ValueError("runtime reference schema mismatch")
         key = reference["key"]
         reference_provenance = reference["base_anchor_provenance"]
+        if not registered_mission_provenance_is_valid(reference_provenance):
+            raise ValueError(
+                "base anchor provenance mismatch: runtime reference violates "
+                "mission base authority"
+            )
         if (
             not isinstance(key, list)
             or len(key) != 2
@@ -683,7 +701,6 @@ def _validate_runtime_contract(row, runtime, transition):
             or _finite_nonnegative(reference["range"]) is None
             or not _finite_psd_2x2(reference["covariance"])
             or _finite_positive(reference["ranging_sigma"]) is None
-            or not _canonical_provenance(reference_provenance)
             or (
                 key[0] == "base"
                 and reference_provenance != [key[1]]
@@ -719,9 +736,13 @@ def _validate_runtime_contract(row, runtime, transition):
         for reference in references
         for anchor in reference["base_anchor_provenance"]
     })
+    if not registered_mission_provenance_is_valid(provenance):
+        raise ValueError(
+            "base anchor provenance mismatch: runtime aggregate violates "
+            "mission base authority"
+        )
     if (
-        not _canonical_provenance(provenance)
-        or len(provenance) < 2
+        len(provenance) < 2
         or provenance != derived_provenance
     ):
         raise ValueError("base anchor provenance mismatch")
@@ -787,14 +808,26 @@ def _validate_optional_public_order(value):
     }.get(value.get("output_status"))
     if expected is None or tuple(value) != expected:
         raise ValueError("public state differs from exact field order")
+    if not exact_public_numeric_types_are_valid(value):
+        raise ValueError("public state numeric values are invalid")
+    if (
+        value["output_status"] == "fresh"
+        and not registered_mission_provenance_is_valid(
+            value["base_anchor_provenance"]
+        )
+    ):
+        raise ValueError(
+            "public state base anchor provenance violates mission base authority"
+        )
 
 
 def _validate_optional_private_order(value):
     if value is not None and (
         not isinstance(value, Mapping)
         or tuple(value) != SERIALIZED_PRIVATE_STATE_FIELDS
+        or not exact_private_numeric_types_are_valid(value)
     ):
-        raise ValueError("private state differs from exact field order")
+        raise ValueError("private state differs from exact schema")
 
 
 def _validate_qualifier_payload_order(kind, payload):
@@ -815,13 +848,21 @@ def _validate_qualifier_payload_order(kind, payload):
             or tuple(domain) != DEPLOYMENT_DOMAIN_FIELDS
         ):
             raise ValueError("deployment domain differs from exact field order")
+        if (
+            not isinstance(domain["anchor_ids"], list)
+            or tuple(domain["anchor_ids"])
+            != REGISTERED_DEPLOYMENT_ANCHOR_IDS
+        ):
+            raise ValueError("deployment anchor authority is invalid")
 
 
 def _validate_candidate_payload_evidence(payload):
     if (
         not isinstance(payload, Mapping)
         or tuple(payload) != CANDIDATE_PAYLOAD_FIELDS
-        or not _canonical_provenance(payload["base_anchor_provenance"])
+        or not registered_mission_provenance_is_valid(
+            payload["base_anchor_provenance"]
+        )
     ):
         raise ValueError("candidate payload differs from exact field order")
     solver_result = {
@@ -875,6 +916,8 @@ def _finite_vec2(value):
 
 
 def _finite_spd_2x2(value):
+    if not exact_json_matrix_2x2_is_valid(value):
+        return False
     try:
         covariance = np.asarray(value, dtype=float)
     except (TypeError, ValueError, OverflowError):
@@ -897,6 +940,8 @@ def _finite_spd_2x2(value):
 
 
 def _finite_psd_2x2(value):
+    if not exact_json_matrix_2x2_is_valid(value):
+        return False
     try:
         covariance = np.asarray(value, dtype=float)
     except (TypeError, ValueError, OverflowError):
@@ -1073,6 +1118,8 @@ def _validate_analyzer_proposals(trace, status):
 
 
 def _analyzer_solver_covariance(value):
+    if not exact_json_matrix_2x2_is_valid(value):
+        return None
     try:
         covariance = np.asarray(value, dtype=float)
     except (TypeError, ValueError, OverflowError):
@@ -1516,31 +1563,4 @@ def _strict_equal(first, second):
 
 
 def _reject_forbidden(value, active_ids=None):
-    if active_ids is None:
-        active_ids = set()
-    if isinstance(value, Mapping):
-        identifier = id(value)
-        if identifier in active_ids:
-            raise ValueError("cyclic qualified analyzer payload")
-        active_ids.add(identifier)
-        try:
-            for key, nested in value.items():
-                if not isinstance(key, str):
-                    raise ValueError("qualified analyzer key is invalid")
-                if any(fragment in key.lower() for fragment in (
-                    "truth", "analyzer", "future", "realized",
-                )):
-                    raise ValueError("forbidden qualified runtime field")
-                _reject_forbidden(nested, active_ids)
-        finally:
-            active_ids.remove(identifier)
-    elif isinstance(value, list):
-        identifier = id(value)
-        if identifier in active_ids:
-            raise ValueError("cyclic qualified analyzer payload")
-        active_ids.add(identifier)
-        try:
-            for item in value:
-                _reject_forbidden(item, active_ids)
-        finally:
-            active_ids.remove(identifier)
+    reject_forbidden_protocol_fields(value, active_ids)
