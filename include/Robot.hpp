@@ -1871,6 +1871,90 @@ public:
         });
     }
 
+    cbf2026::NodeRateInput committedRateEvidenceInput(
+        const cbf2026::CommittedCertificateState& state
+    ) const {
+        if (!usesAnalyticTopologicalRateCertificate()
+            || !state.valid
+            || state.version == 0
+            || state.certificates.count(id) != 1U
+            || state.endpoints.count(id) != 1U) {
+            throw std::invalid_argument(
+                "committed rate evidence input is unavailable"
+            );
+        }
+        const auto& certificate = state.certificates.at(id);
+        const auto& local = state.endpoints.at(id);
+        if (certificate.snapshotVersion != state.version
+            || local.snapshotVersion != state.version) {
+            throw std::invalid_argument(
+                "committed rate evidence input mixes versions"
+            );
+        }
+
+        constexpr double planarComponentMax = 25.0;
+        const double predecessorSpeedBound =
+            std::sqrt(2.0) * planarComponentMax;
+        std::vector<cbf2026::ReferenceRateInput> references;
+        references.reserve(certificate.frozenReferences.size());
+        for (const auto& frozen : certificate.frozenReferences) {
+            cbf2026::PredecessorRateSnapshot predecessor;
+            predecessor.referenceId = frozen.referenceId;
+            predecessor.snapshotVersion = state.version;
+            Eigen::Vector2d referencePosition;
+            if (frozen.referenceId < 0) {
+                const std::int64_t baseId =
+                    -static_cast<std::int64_t>(frozen.referenceId) - 1;
+                if (baseId < 0
+                    || baseId >= static_cast<std::int64_t>(bases.size())) {
+                    throw std::invalid_argument(
+                        "committed evidence base reference is invalid"
+                    );
+                }
+                predecessor.localIndex = 0;
+                predecessor.hoveringBase = true;
+                predecessor.covariance = Eigen::Matrix2d::Zero();
+                predecessor.covarianceRateBound = 0.0;
+                predecessor.speedBound = 0.0;
+                const Point base = bases.at(static_cast<std::size_t>(baseId));
+                referencePosition = Eigen::Vector2d(base.x, base.y);
+            } else {
+                const auto endpoint = state.endpoints.find(
+                    frozen.referenceId
+                );
+                if (endpoint == state.endpoints.end()) {
+                    throw std::invalid_argument(
+                        "committed evidence UAV predecessor is missing"
+                    );
+                }
+                predecessor.localIndex = getIdInPart(frozen.referenceId);
+                predecessor.hoveringBase = false;
+                predecessor.covariance = endpoint->second.covariance;
+                predecessor.covarianceRateBound =
+                    endpoint->second.covarianceRateBound;
+                predecessor.speedBound = predecessorSpeedBound;
+                referencePosition = endpoint->second.estimate;
+            }
+            const Eigen::Vector2d displacement =
+                local.estimate - referencePosition;
+            const double distance = displacement.norm();
+            const double sigma = rangingUncertaintyFunction(distance);
+            references.push_back({
+                predecessor,
+                distance,
+                displacement / distance,
+                sigma * sigma
+            });
+        }
+        return {
+            id,
+            idInMyPart,
+            state.version,
+            planarComponentMax,
+            std::move(references)
+        };
+    }
+
     cbf2026::HardConstraintProblem buildHardConstraintProblem(
         const cbf2026::CommittedCertificateState& state
     ) const {
@@ -2087,7 +2171,12 @@ public:
         return problem;
     }
 
-    cbf2026::FeasibilityResult checkLocalHardQpFeasibility(
+    struct LocalHardQpEvidence {
+        cbf2026::FeasibilityResult feasibility;
+        std::optional<Eigen::VectorXd> solution;
+    };
+
+    LocalHardQpEvidence solveLocalHardQpEvidence(
         const cbf2026::HardConstraintProblem& problem
     ) const {
         const std::string digest =
@@ -2098,7 +2187,7 @@ public:
                 || problem.planarComponentMax != 25.0
                 || problem.yawRateMax != 0.35
                 || problem.bounds.size() != 6) {
-                return {false, "invalid-problem", -inf, digest};
+                return {{false, "invalid-problem", -inf, digest}, std::nullopt};
             }
             const auto requiredBounds = cbf2026::theoremInputBounds();
             for (std::size_t index = 0;
@@ -2113,14 +2202,14 @@ public:
                     || bound.controlIndex != required.controlIndex
                     || bound.coefficient != required.coefficient
                     || bound.limit != required.limit) {
-                    return {false, "invalid-bound", -inf, digest};
+                    return {{false, "invalid-bound", -inf, digest}, std::nullopt};
                 }
             }
             for (const auto& row : problem.rows) {
                 if (row.coefficients.size() != problem.controlSize
                     || !row.coefficients.allFinite()
                     || !std::isfinite(row.constant)) {
-                    return {false, "invalid-row", -inf, digest};
+                    return {{false, "invalid-row", -inf, digest}, std::nullopt};
                 }
             }
             json objectiveSettings =
@@ -2155,7 +2244,7 @@ public:
             if (status != "optimal"
                 || solution.size() != problem.controlSize
                 || !solution.allFinite()) {
-                return {false, status, -inf, digest};
+                return {{false, status, -inf, digest}, std::nullopt};
             }
             double minimumResidual = inf;
             for (const auto& bound : problem.bounds) {
@@ -2171,27 +2260,46 @@ public:
                     row.constant + row.coefficients.dot(solution)
                 );
             }
-            return {
+            return {{
                 std::isfinite(minimumResidual)
                     && minimumResidual >= -1e-7,
                 status,
                 minimumResidual,
                 digest
-            };
+            }, solution};
         } catch (const std::exception& error) {
-            return {false, error.what(), -inf, digest};
+            return {{false, error.what(), -inf, digest}, std::nullopt};
         } catch (...) {
-            return {false, "unknown-error", -inf, digest};
+            return {{false, "unknown-error", -inf, digest}, std::nullopt};
         }
     }
 
+    cbf2026::FeasibilityResult checkLocalHardQpFeasibility(
+        const cbf2026::HardConstraintProblem& problem
+    ) const {
+        return solveLocalHardQpEvidence(problem).feasibility;
+    }
+
+    void clearEvidenceOptimisationState() {
+        opt = json::object();
+        lastConsumedHardConstraintProblem.reset();
+        lastConsumedHardProblemHash.clear();
+    }
+
     void optimise() {
+        const bool evidenceMode = settings.contains("evidence-stream")
+            && settings.at("evidence-stream").is_object()
+            && settings.at("evidence-stream").value("enabled", false);
+        if (evidenceMode) {
+            clearEvidenceOptimisationState();
+        } else {
+            lastConsumedHardConstraintProblem.reset();
+            lastConsumedHardProblemHash.clear();
+        }
         VectorXd uNominal = VectorXd::Zero(model->uSize());
         const bool theoremAligned =
             usesAnalyticTopologicalRateCertificate();
         const cbf2026::HardConstraintProblem* committedHardProblem = nullptr;
-        lastConsumedHardConstraintProblem.reset();
-        lastConsumedHardProblemHash.clear();
         if (theoremAligned) {
             if (!committedCertificateState.valid
                 || committedCertificateState.version == 0) {

@@ -91,6 +91,15 @@ foreach(SOURCE ${SOURCES})
     target_link_libraries(${EXECUTABLE} PRIVATE cbf_deps)
 endforeach()
 
+if(BUILD_TESTING)
+    target_compile_definitions(Swarm PRIVATE CBF_EVIDENCE_TEST_HOOKS)
+    add_executable(SwarmNoEvidenceTestHooks src/Swarm.cpp)
+    target_compile_definitions(
+        SwarmNoEvidenceTestHooks PRIVATE PROJECT_ROOT="${CMAKE_SOURCE_DIR}"
+    )
+    target_link_libraries(SwarmNoEvidenceTestHooks PRIVATE cbf_deps)
+endif()
+
 file(GLOB TEST_SOURCES "tests/*.cpp")
 foreach(TEST_SOURCE ${TEST_SOURCES})
     get_filename_component(TEST_EXECUTABLE ${TEST_SOURCE} NAME_WE)

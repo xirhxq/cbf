@@ -2,8 +2,15 @@
 #define CBF_SWARM_HPP
 
 #include "Robot.hpp"
+#include "diagnostics/EvidenceStream.hpp"
 
+#ifdef CBF_EVIDENCE_TEST_HOOKS
+#include <cstdlib>
+#endif
 #include <exception>
+#include <limits>
+#include <map>
+#include <set>
 #include <utility>
 
 template<typename UpdateAction, typename LogAction>
@@ -85,6 +92,15 @@ public:
     std::vector<cbf2026::ResetTransaction> certificateResetHistory;
     std::optional<std::string> certificateUnavailableReason;
     std::set<std::uint64_t> attemptedCertificateResetFrames;
+    std::unique_ptr<cbf2026::diagnostics::EvidenceStream> evidenceStream;
+    cbf2026::diagnostics::ExactResetWitnessStore<Robot::LocalHardQpEvidence>
+        exactResetQpWitnesses;
+    std::set<std::uint64_t> emittedEvidenceControllerFrames;
+    std::set<std::uint64_t> completedEvidenceControllerFrames;
+    std::set<std::uint64_t> emittedEvidenceResetFrames;
+    std::map<std::uint64_t, std::size_t>
+        emittedEvidenceEndpointRowCounts;
+    std::string pendingEvidenceAbortReason;
 public:
     Swarm(json &settings)
             : config(settings),
@@ -97,6 +113,12 @@ public:
             throw std::invalid_argument(
                 "qualified hybrid distributed CBF configuration is invalid"
             );
+        }
+        validateEvidenceStreamConfig();
+        if (evidenceMode()) {
+            evidenceStream = std::make_unique<
+                cbf2026::diagnostics::EvidenceStream
+            >(std::cout);
         }
         if (settings.contains("output_path")) {
             customOutputPath = settings["output_path"];
@@ -117,6 +139,13 @@ public:
     }
 
     void output() {
+        if (evidenceMode()) {
+            std::cerr
+                << "An Swarm with " << n << " robots @ time "
+                << std::fixed << std::setprecision(4)
+                << robots[0]->runtime << std::endl;
+            return;
+        }
         printf("An Swarm with %d robots @ time %.4lf: ---------\n", n, robots[0]->runtime);
         for (auto &robot: robots) {
             robot->output();
@@ -125,16 +154,52 @@ public:
     }
 
     void endLog() {
+        if (evidenceMode()) {
+            return;
+        }
         ofstream << std::fixed << std::setprecision(6) << data;
         ofstream.close();
     }
 
     void logParams() {
+        if (evidenceMode()) {
+            return;
+        }
         data["para"] = robots[0]->getParams();
         data["config"] = config;
     }
 
     void logOnce() {
+        if (evidenceMode()) {
+            const bool complete = std::all_of(
+                robots.begin(), robots.end(),
+                [](const std::unique_ptr<Robot>& robot) {
+                    return robot->opt.is_object()
+                           && robot->opt.value("status", "") == "success";
+                }
+            );
+            if (!complete) {
+                const double timeStep = config.at("execute")
+                    .at("time-step").get<double>();
+                const auto frameIndex = static_cast<std::uint64_t>(
+                    std::llround(robots.front()->runtime / timeStep)
+                );
+                emitControllerAbortEvidence(
+                    frameIndex,
+                    pendingEvidenceAbortReason.empty()
+                        ? "optimization_incomplete"
+                        : pendingEvidenceAbortReason
+                );
+                return;
+            }
+            const double timeStep = config.at("execute")
+                .at("time-step").get<double>();
+            const auto frameIndex = static_cast<std::uint64_t>(
+                std::llround(robots.front()->runtime / timeStep)
+            );
+            emitControllerEvidence(frameIndex);
+            return;
+        }
         stepData["runtime"] = robots[0]->runtime;
         {
             json robotsJson = json::array();
@@ -177,6 +242,11 @@ public:
     }
 
     void initLog() {
+        if (evidenceMode()) {
+            outputDir = "evidence-stream://stdout";
+            filename.clear();
+            return;
+        }
         std::string dataDir;
         std::string runSuffix;
 
@@ -284,9 +354,22 @@ public:
         proposal.changedNodes = changedNodes;
         proposal.frameIndex = frameIndex;
         proposal.causes.assign(causes.begin() + 1, causes.end());
+        cbf2026::CommittedCertificateState predecessorState;
         try {
-        cbf2026::CommittedCertificateState predecessorState =
-            committedCertificateState;
+#ifdef CBF_EVIDENCE_TEST_HOOKS
+        if (evidenceTestFixtureMode()) {
+            const char* failBootstrap = std::getenv(
+                "CBF_EVIDENCE_TEST_FAIL_BOOTSTRAP"
+            );
+            if (failBootstrap != nullptr
+                && std::string(failBootstrap) == "1") {
+                throw std::runtime_error(
+                    "injected evidence bootstrap failure"
+                );
+            }
+        }
+#endif
+        predecessorState = committedCertificateState;
         if (!predecessorState.valid) {
             const auto bootstrap = buildTheoremCandidate(
                 0, all_ids, nullptr
@@ -390,12 +473,16 @@ public:
             proposal,
             nextCommitted,
             authority,
-            [this](
+            [this, frameIndex](
                 int robotId,
                 const cbf2026::HardConstraintProblem& problem
             ) {
-                return robots.at(robotId - 1)
-                    ->checkLocalHardQpFeasibility(problem);
+                auto evidence = robots.at(robotId - 1)
+                    ->solveLocalHardQpEvidence(problem);
+                exactResetQpWitnesses.record(
+                    frameIndex, robotId, evidence
+                );
+                return evidence.feasibility;
             }
         );
         auto prospectiveHistory = certificateResetHistory;
@@ -422,6 +509,13 @@ public:
         );
         certificateResetHistory.swap(prospectiveHistory);
         certificateUnavailableReason.reset();
+        emitResetEvidence(
+            transaction,
+            predecessorState.endpoints,
+            candidate.endpoints,
+            predecessorState.certificates,
+            candidate.certificates
+        );
         return transaction;
         } catch (const std::exception& error) {
             if (!certificateUnavailableReason.has_value()) {
@@ -451,6 +545,22 @@ public:
                 transaction.hardEdges = proposal.hardEdges;
                 transaction.localHardQps = proposal.localHardQps;
                 certificateResetHistory.push_back(std::move(transaction));
+            }
+            const auto recordedTransaction = std::find_if(
+                certificateResetHistory.rbegin(),
+                certificateResetHistory.rend(),
+                [frameIndex](const cbf2026::ResetTransaction& transaction) {
+                    return transaction.frameIndex == frameIndex;
+                }
+            );
+            if (recordedTransaction != certificateResetHistory.rend()) {
+                emitResetEvidence(
+                    *recordedTransaction,
+                    predecessorState.endpoints,
+                    proposal.candidateEndpoints,
+                    predecessorState.certificates,
+                    proposal.candidateCertificates
+                );
             }
             throw;
         } catch (...) {
@@ -482,6 +592,22 @@ public:
                 transaction.hardEdges = proposal.hardEdges;
                 transaction.localHardQps = proposal.localHardQps;
                 certificateResetHistory.push_back(std::move(transaction));
+            }
+            const auto recordedTransaction = std::find_if(
+                certificateResetHistory.rbegin(),
+                certificateResetHistory.rend(),
+                [frameIndex](const cbf2026::ResetTransaction& transaction) {
+                    return transaction.frameIndex == frameIndex;
+                }
+            );
+            if (recordedTransaction != certificateResetHistory.rend()) {
+                emitResetEvidence(
+                    *recordedTransaction,
+                    predecessorState.endpoints,
+                    proposal.candidateEndpoints,
+                    predecessorState.certificates,
+                    proposal.candidateCertificates
+                );
             }
             throw;
         }
@@ -625,39 +751,60 @@ public:
         double tTotal = settings["time-total"], tStep = settings["time-step"];
 
         exchangeData();
-        if (usesTheoremAlignedCertificates()) {
-            refreshTheoremCertificateFrame(
-                0,
-                all_ids,
-                {cbf2026::ResetCause::CertificateDiscontinuity}
-            );
-        } else {
-            std::vector<Robot*> covarianceBootstrapOrder;
-            covarianceBootstrapOrder.reserve(robots.size());
-            for (auto &robot: robots) {
-                covarianceBootstrapOrder.push_back(robot.get());
-            }
-            std::sort(
-                covarianceBootstrapOrder.begin(),
-                covarianceBootstrapOrder.end(),
-                [](const Robot* lhs, const Robot* rhs) {
-                    if (lhs->idInMyPart != rhs->idInMyPart) {
-                        return lhs->idInMyPart < rhs->idInMyPart;
+        if (evidenceMode()) {
+            emitInitializationEvidence();
+        }
+        try {
+            if (usesTheoremAlignedCertificates()) {
+                refreshTheoremCertificateFrame(
+                    0,
+                    all_ids,
+                    {cbf2026::ResetCause::CertificateDiscontinuity}
+                );
+            } else {
+                std::vector<Robot*> covarianceBootstrapOrder;
+                covarianceBootstrapOrder.reserve(robots.size());
+                for (auto &robot: robots) {
+                    covarianceBootstrapOrder.push_back(robot.get());
+                }
+                std::sort(
+                    covarianceBootstrapOrder.begin(),
+                    covarianceBootstrapOrder.end(),
+                    [](const Robot* lhs, const Robot* rhs) {
+                        if (lhs->idInMyPart != rhs->idInMyPart) {
+                            return lhs->idInMyPart < rhs->idInMyPart;
+                        }
+                        return lhs->partId < rhs->partId;
                     }
-                    return lhs->partId < rhs->partId;
-                }
-            );
-            for (Robot* robot: covarianceBootstrapOrder) {
-                robot->updateCovarianceAndRate(tStep);
-                for (auto &receiver: robots) {
-                    receiver->comm->receivePositionCovariance(
-                        robot->id, robot->positionCovariance
-                    );
-                    receiver->comm->receiveUncertaintyRate(
-                        robot->id, robot->uncertaintyRate
-                    );
+                );
+                for (Robot* robot: covarianceBootstrapOrder) {
+                    robot->updateCovarianceAndRate(tStep);
+                    for (auto &receiver: robots) {
+                        receiver->comm->receivePositionCovariance(
+                            robot->id, robot->positionCovariance
+                        );
+                        receiver->comm->receiveUncertaintyRate(
+                            robot->id, robot->uncertaintyRate
+                        );
+                    }
                 }
             }
+        } catch (...) {
+            if (!evidenceMode()) {
+                throw;
+            }
+            const std::exception_ptr bootstrapFailure =
+                std::current_exception();
+            const std::string reason = exceptionMessage(bootstrapFailure);
+            try {
+                emitControllerAbortEvidence(0, reason);
+            } catch (...) {
+            }
+            try {
+                emitMissionTerminal(false, "bootstrap_failure");
+            } catch (...) {
+            }
+            std::rethrow_exception(bootstrapFailure);
         }
         checkInformationExchange();
         initLog();
@@ -675,6 +822,12 @@ public:
         while (robots[0]->runtime < tTotal) {
             bool frameLogAttempted = false;
             try {
+                if (evidenceMode()) {
+                    pendingEvidenceAbortReason.clear();
+                    for (auto& robot : robots) {
+                        robot->clearEvidenceOptimisationState();
+                    }
+                }
                 if (robots[0]->runtime > 0.0) {
                     exchangeData();
                     if (usesTheoremAlignedCertificates()) {
@@ -691,7 +844,16 @@ public:
                 }
                 checkInformationExchange();
                 for (auto &robot: robots) robot->checkRobotsInsideWorld();
-                printf("\r%.2lf seconds elapsed... %.2lf%%", robots[0]->runtime, gridWorldGroundTruth.getPercentage() * 100);
+                if (evidenceMode()) {
+                    std::cerr
+                        << std::fixed << std::setprecision(2)
+                        << robots[0]->runtime
+                        << " seconds elapsed... "
+                        << gridWorldGroundTruth.getPercentage() * 100
+                        << "%\n";
+                } else {
+                    printf("\r%.2lf seconds elapsed... %.2lf%%", robots[0]->runtime, gridWorldGroundTruth.getPercentage() * 100);
+                }
                 for (auto &robot: robots) robot->updateGridWorld();
                 updateGridWorld();
                 checkUpdatedGridWorld();
@@ -713,7 +875,9 @@ public:
                     if (checkConstraintViolation()) {
                         frameLogAttempted = true;
                         logOnce();
-                        std::cout << "\n[Simulation Terminated] Constraint violation detected at t=" << robots[0]->runtime << "s" << std::endl;
+                        std::ostream& termination = evidenceMode()
+                            ? std::cerr : std::cout;
+                        termination << "\n[Simulation Terminated] Constraint violation detected at t=" << robots[0]->runtime << "s" << std::endl;
                         break;
                     }
                 }
@@ -723,9 +887,25 @@ public:
                 for (auto &robot: robots) robot->stepTimeForward(tStep);
             }
             catch (...) {
+                const std::exception_ptr currentFailure =
+                    std::current_exception();
+                if (evidenceMode()) {
+                    pendingEvidenceAbortReason = exceptionMessage(
+                        currentFailure
+                    );
+                    const auto frameIndex = static_cast<std::uint64_t>(
+                        std::llround(robots.front()->runtime / tStep)
+                    );
+                    try {
+                        emitControllerAbortEvidence(
+                            frameIndex, pendingEvidenceAbortReason
+                        );
+                    } catch (...) {
+                    }
+                }
                 loopFailure = recoverFailedIteration(
-                    std::current_exception(),
-                    frameLogAttempted,
+                    currentFailure,
+                    evidenceMode() ? true : frameLogAttempted,
                     [&]() {
                         for (auto &robot: robots) {
                             robot->updateGridWorld();
@@ -739,16 +919,38 @@ public:
             }
         }
 
-        printf("\nAfter %.4lf seconds\n", robots[0]->runtime);
+        if (evidenceMode()) {
+            std::cerr << "After " << std::fixed << std::setprecision(4)
+                      << robots[0]->runtime << " seconds\n";
+        } else {
+            printf("\nAfter %.4lf seconds\n", robots[0]->runtime);
+        }
         output();
+        if (evidenceMode()) {
+            const bool missionCompleted = !loopFailure
+                && robots.front()->runtime >= tTotal;
+            emitMissionTerminal(
+                missionCompleted,
+                missionCompleted ? "completed" : (
+                    loopFailure ? "loop_failure" : "terminated_early"
+                )
+            );
+        }
         endLog();
 
-        if (loopFailure) {
-            printf("Data so far has been saved in %s\n", filename.c_str());
+        if (evidenceMode()) {
+            std::cerr << (loopFailure
+                ? "Evidence prefix retained after failure\n"
+                : "Evidence stream completed\n");
+            std::cerr << "[OUTPUT_DIR] " << outputDir << std::endl;
         } else {
-            printf("Data saved in %s\n", filename.c_str());
+            if (loopFailure) {
+                printf("Data so far has been saved in %s\n", filename.c_str());
+            } else {
+                printf("Data saved in %s\n", filename.c_str());
+            }
+            std::cout << "[OUTPUT_DIR] " << outputDir << std::endl;
         }
-        std::cout << "[OUTPUT_DIR] " << outputDir << std::endl;
 
         if (loopFailure) {
             std::rethrow_exception(loopFailure);
@@ -756,6 +958,920 @@ public:
     }
 
 private:
+    bool evidenceMode() const {
+        return config.contains("evidence-stream")
+               && config.at("evidence-stream").is_object()
+               && config.at("evidence-stream").value("enabled", false);
+    }
+
+#ifdef CBF_EVIDENCE_TEST_HOOKS
+    bool evidenceTestFixtureMode() const {
+        return evidenceMode()
+               && config.at("evidence-stream").value(
+                    "campaign-id", ""
+                  ) == "two-frame-fixture";
+    }
+#endif
+
+    void validateEvidenceStreamConfig() const {
+        if (!config.contains("evidence-stream")) {
+            return;
+        }
+        const auto& evidence = config.at("evidence-stream");
+        const std::set<std::string> expectedKeys = {
+            "enabled",
+            "schema-version",
+            "campaign-id",
+            "trajectory-seed",
+            "range-noise-seed",
+            "condition"
+        };
+        std::set<std::string> actualKeys;
+        if (evidence.is_object()) {
+            for (const auto& [key, value] : evidence.items()) {
+                (void)value;
+                actualKeys.insert(key);
+            }
+        }
+        if (!evidence.is_object()
+            || actualKeys != expectedKeys
+            || !evidence.at("enabled").is_boolean()
+            || !evidence.at("enabled").get<bool>()
+            || evidence.at("schema-version")
+                   != "cbf2026-qualified-evidence-v1"
+            || !evidence.at("campaign-id").is_string()
+            || evidence.at("campaign-id").get<std::string>().empty()
+            || !evidence.at("trajectory-seed").is_number_integer()
+            || !evidence.at("range-noise-seed").is_number_integer()
+            || evidence.at("condition") != "dynamic_primary"
+            || !config.contains("qualified-estimator")) {
+            throw std::invalid_argument(
+                "evidence-stream identity is invalid"
+            );
+        }
+    }
+
+    json evidenceBaseRecord(
+        const std::string& recordType,
+        std::uint64_t frameIndex
+    ) const {
+        const auto& identity = config.at("evidence-stream");
+        return {
+            {"record_type", recordType},
+            {"schema_version", identity.at("schema-version")},
+            {"campaign_id", identity.at("campaign-id")},
+            {"condition", identity.at("condition")},
+            {"trajectory_seed", identity.at("trajectory-seed")},
+            {"range_noise_seed", identity.at("range-noise-seed")},
+            {"frame_index", frameIndex}
+        };
+    }
+
+    static json vectorJson(const Eigen::VectorXd& value) {
+        json result = json::array();
+        for (Eigen::Index index = 0; index < value.size(); ++index) {
+            result.push_back(value[index]);
+        }
+        return result;
+    }
+
+    static json vectorJson(const Eigen::Vector2d& value) {
+        return json::array({value.x(), value.y()});
+    }
+
+    static json matrixJson(const Eigen::Matrix2d& value) {
+        return json::array({
+            json::array({value(0, 0), value(0, 1)}),
+            json::array({value(1, 0), value(1, 1)})
+        });
+    }
+
+    static json finiteOrNull(double value) {
+        return std::isfinite(value) ? json(value) : json(nullptr);
+    }
+
+    static std::string exceptionMessage(
+        const std::exception_ptr& failure
+    ) {
+        try {
+            if (failure) {
+                std::rethrow_exception(failure);
+            }
+        } catch (const std::exception& error) {
+            return error.what();
+        } catch (...) {
+            return "unknown_error";
+        }
+        return "no_exception";
+    }
+
+    static json edgeIdentityJson(const cbf2026::EdgeId& edge) {
+        return {
+            {"kind", edge.kind == cbf2026::EdgeKind::Localization
+                ? "localization" : "collision"},
+            {"low", edge.low},
+            {"high", edge.high},
+            {"base_id", edge.baseId}
+        };
+    }
+
+    static json endpointStateJson(
+        const cbf2026::EndpointCertificateSnapshot& endpoint
+    ) {
+        return {
+            {"robot_id", endpoint.robotId},
+            {"estimate", vectorJson(endpoint.estimate)},
+            {"covariance", matrixJson(endpoint.covariance)},
+            {"covariance_rate_bound", endpoint.covarianceRateBound},
+            {"epsilon", endpoint.epsilon},
+            {"bar_nu", endpoint.barNu},
+            {"snapshot_version", endpoint.snapshotVersion},
+            {"allocation_version", endpoint.allocationVersion}
+        };
+    }
+
+    static json endpointStateMapJson(
+        const std::map<int, cbf2026::EndpointCertificateSnapshot>& endpoints
+    ) {
+        json result = json::array();
+        for (const auto& [robotId, endpoint] : endpoints) {
+            (void)robotId;
+            result.push_back(endpointStateJson(endpoint));
+        }
+        return result;
+    }
+
+    static json hardProblemJson(
+        const cbf2026::HardConstraintProblem& problem
+    ) {
+        json bounds = json::array();
+        for (const auto& bound : problem.bounds) {
+            bounds.push_back({
+                {"control_index", bound.controlIndex},
+                {"coefficient", bound.coefficient},
+                {"limit", bound.limit}
+            });
+        }
+        json rows = json::array();
+        for (const auto& row : problem.rows) {
+            rows.push_back({
+                {"edge", edgeIdentityJson(row.edge)},
+                {"owner", row.owner},
+                {"name", row.name},
+                {"coefficients", vectorJson(row.coefficients)},
+                {"constant", row.constant},
+                {"post_reset_barrier", row.postResetBarrier},
+                {"snapshot_version", row.snapshotVersion},
+                {"allocation_version", row.allocationVersion}
+            });
+        }
+        return {
+            {"owner", problem.owner},
+            {"control_size", problem.controlSize},
+            {"planar_component_max", problem.planarComponentMax},
+            {"yaw_rate_max", problem.yawRateMax},
+            {"snapshot_version", problem.snapshotVersion},
+            {"allocation_version", problem.allocationVersion},
+            {"bounds", bounds},
+            {"rows", rows},
+            {"hard_problem_id",
+             cbf2026::canonicalHardConstraintProblemHash(problem)}
+        };
+    }
+
+    void emitInitializationEvidence() {
+        if (!evidenceMode()) {
+            return;
+        }
+        for (const auto& robot : robots) {
+            json row = evidenceBaseRecord("initialization", 0);
+            const Point position = robot->model->xy();
+            row["robot_id"] = robot->id;
+            row["runtime"] = {
+                {"local_index", robot->idInMyPart}
+            };
+            row["analyzer_only"] = {
+                {"truth_position", {position.x, position.y}}
+            };
+            evidenceStream->write(row);
+        }
+    }
+
+    void emitResetEvidence(
+        const cbf2026::ResetTransaction& transaction,
+        const std::map<int, cbf2026::EndpointCertificateSnapshot>&
+            predecessorEndpoints,
+        const std::map<int, cbf2026::EndpointCertificateSnapshot>&
+            proposedEndpoints,
+        const std::map<int, cbf2026::NodeRateCertificate>&
+            predecessorCertificates,
+        const std::map<int, cbf2026::NodeRateCertificate>&
+            proposedCertificates
+    ) {
+        if (!evidenceMode()
+            || !emittedEvidenceResetFrames.insert(
+                transaction.frameIndex
+            ).second) {
+            return;
+        }
+        json row = evidenceBaseRecord("reset", transaction.frameIndex);
+        json causes = json::array();
+        for (const auto cause : transaction.causes) {
+            causes.push_back(cbf2026::resetCauseName(cause));
+        }
+        json nodes = json::array();
+        for (const auto& node : transaction.nodes) {
+            json item = {
+                {"node_id", node.nodeId},
+                {"topological_index", node.topologicalIndex},
+                {"snapshot_version", node.snapshotVersion},
+                {"delta_p", vectorJson(node.deltaEstimate)},
+                {"delta_epsilon", node.deltaEpsilon},
+                {"pre_active_references", node.preActiveReferences},
+                {"post_active_references", node.postActiveReferences}
+            };
+            item["proposed_snapshot"] = node.proposedSnapshot.has_value()
+                ? endpointStateJson(*node.proposedSnapshot) : json(nullptr);
+            nodes.push_back(std::move(item));
+        }
+        json hardEdges = json::array();
+        for (const auto& edge : transaction.hardEdges) {
+            json endpointRows = json::array();
+            for (const auto& endpoint : edge.endpointRows) {
+                endpointRows.push_back({
+                    {"owner", endpoint.owner},
+                    {"coefficient", vectorJson(endpoint.coefficient)},
+                    {"constant", endpoint.constant},
+                    {"allocation", endpoint.allocation},
+                    {"snapshot_version", endpoint.snapshotVersion},
+                    {"allocation_version", endpoint.allocationVersion}
+                });
+            }
+            hardEdges.push_back({
+                {"edge", edgeIdentityJson(edge.edge)},
+                {"threshold", edge.threshold},
+                {"base_position", vectorJson(edge.basePosition)},
+                {"b_minus", edge.preBarrier},
+                {"b_plus", edge.postBarrier},
+                {"class_k_coefficient", edge.classKCoefficient},
+                {"class_k_power", edge.classKPower},
+                {"endpoint_rows", endpointRows}
+            });
+        }
+        json hardProblems = json::array();
+        for (const auto& [robotId, problem] :
+             transaction.checkedHardProblems) {
+            (void)robotId;
+            hardProblems.push_back(hardProblemJson(problem));
+        }
+        json localQps = json::array();
+        for (const auto& local : transaction.localHardQps) {
+            json solution = nullptr;
+            const Robot::LocalHardQpEvidence* exactEvidence = nullptr;
+            if (local.feasibility.status != "unchecked") {
+                try {
+                    exactEvidence = &exactResetQpWitnesses.at(
+                        transaction.frameIndex, local.nodeId
+                    );
+                } catch (const std::out_of_range&) {
+                    throw std::runtime_error(
+                        "verified reset QP is missing its exact solve witness"
+                    );
+                }
+                const auto& exactFeasibility = exactEvidence->feasibility;
+                if (exactFeasibility.feasible != local.feasibility.feasible
+                    || exactFeasibility.status != local.feasibility.status
+                    || exactFeasibility.minimumResidual
+                        != local.feasibility.minimumResidual
+                    || exactFeasibility.hardProblemHash
+                        != local.feasibility.hardProblemHash) {
+                    throw std::runtime_error(
+                        "reset QP witness disagrees with the guard decision"
+                    );
+                }
+                if (exactEvidence->solution.has_value()) {
+                    solution = vectorJson(*exactEvidence->solution);
+                }
+            }
+            if (transaction.status == cbf2026::GuardStatus::Accepted
+                && (exactEvidence == nullptr
+                    || !exactEvidence->solution.has_value())) {
+                throw std::runtime_error(
+                    "accepted reset QP is missing its exact solution witness"
+                );
+            }
+            const auto& feasibility = exactEvidence == nullptr
+                ? local.feasibility : exactEvidence->feasibility;
+            localQps.push_back({
+                {"node_id", local.nodeId},
+                {"problem", hardProblemJson(local.problem)},
+                {"feasible", feasibility.feasible},
+                {"status", feasibility.status},
+                {"minimum_residual",
+                 finiteOrNull(feasibility.minimumResidual)},
+                {"hard_problem_id", feasibility.hardProblemHash},
+                {"solution", solution}
+            });
+        }
+        std::string resetStage = "proposal_started";
+        if (transaction.status == cbf2026::GuardStatus::Accepted) {
+            resetStage = "committed";
+        } else if (!transaction.checkedHardProblems.empty()) {
+            resetStage = "lifecycle_rejected";
+        } else if (std::any_of(
+            transaction.localHardQps.begin(),
+            transaction.localHardQps.end(),
+            [](const cbf2026::LocalHardQpResetRecord& local) {
+                return local.feasibility.status != "unchecked";
+            }
+        )) {
+            resetStage = "hard_qp_verified";
+        } else if (!transaction.localHardQps.empty()) {
+            resetStage = "hard_qp_preflight";
+        } else if (!transaction.hardEdges.empty()) {
+            resetStage = "hard_edges_built";
+        } else if (!transaction.nodes.empty()) {
+            resetStage = "candidate_built";
+        }
+        json activeSets = json::array();
+        std::set<int> activeNodeIds;
+        for (const auto& [robotId, certificate] :
+             predecessorCertificates) {
+            (void)certificate;
+            activeNodeIds.insert(robotId);
+        }
+        for (const auto& [robotId, certificate] : proposedCertificates) {
+            (void)certificate;
+            activeNodeIds.insert(robotId);
+        }
+        for (int robotId : activeNodeIds) {
+            const auto predecessor = predecessorCertificates.find(robotId);
+            const auto proposed = proposedCertificates.find(robotId);
+            activeSets.push_back({
+                {"node_id", robotId},
+                {"pre_active_references",
+                 predecessor == predecessorCertificates.end()
+                    ? std::vector<int>{}
+                    : cbf2026::canonicalFrozenReferenceIds(
+                        predecessor->second
+                      )},
+                {"post_active_references",
+                 proposed == proposedCertificates.end()
+                    ? std::vector<int>{}
+                    : cbf2026::canonicalFrozenReferenceIds(
+                        proposed->second
+                      )}
+            });
+        }
+        row["runtime"] = {
+            {"stage", resetStage},
+            {"trigger", causes},
+            {"predecessor_version", transaction.predecessorVersion},
+            {"proposed_version", transaction.proposedVersion},
+            {"changed_nodes", transaction.changedNodes},
+            {"descendant_closure", transaction.descendantClosure},
+            {"nodes", nodes},
+            {"active_sets", activeSets},
+            {"pre_endpoint_states",
+             endpointStateMapJson(predecessorEndpoints)},
+            {"post_endpoint_states",
+             endpointStateMapJson(proposedEndpoints)},
+            {"hard_edges", hardEdges},
+            {"hard_problems", hardProblems},
+            {"local_hard_qps", localQps},
+            {"guard_decision", transaction.status
+                == cbf2026::GuardStatus::Accepted
+                ? "accepted" : "rejected"},
+            {"outcome", transaction.status
+                == cbf2026::GuardStatus::Accepted
+                ? "commit" : "abort"},
+            {"reason", transaction.reason}
+        };
+        evidenceStream->write(row);
+        exactResetQpWitnesses.eraseFrame(transaction.frameIndex);
+    }
+
+    struct RateEvidenceState {
+        std::map<int, cbf2026::NodeRateInput> inputs;
+        std::map<int, Eigen::Matrix2d> covarianceDerivatives;
+        std::map<int, double> upperDiniEpsilonRates;
+        std::map<int, double> realizedEpsilonRates;
+    };
+
+    RateEvidenceState reconstructRateEvidenceState() const {
+        RateEvidenceState evidence;
+        for (Robot* robot : theoremTopologicalOrder()) {
+            auto input = robot->committedRateEvidenceInput(
+                committedCertificateState
+            );
+            const auto& certificate =
+                committedCertificateState.certificates.at(robot->id);
+            const Eigen::Vector2d nodeVelocity =
+                robot->model->getControlInput().head<2>();
+            Eigen::Matrix2d dotInformation = Eigen::Matrix2d::Zero();
+            std::vector<cbf2026::ReferenceRealizedDerivative> derivatives;
+            for (const auto& reference : input.references) {
+                Eigen::Vector2d predecessorVelocity =
+                    Eigen::Vector2d::Zero();
+                if (!reference.predecessor.hoveringBase) {
+                    predecessorVelocity = robots.at(
+                        reference.predecessor.referenceId - 1
+                    )->model->getControlInput().head<2>();
+                }
+                const Eigen::Vector2d relativeVelocity =
+                    nodeVelocity - predecessorVelocity;
+                const Eigen::Vector2d dotDirection = (
+                    Eigen::Matrix2d::Identity()
+                    - reference.direction
+                      * reference.direction.transpose()
+                ) * relativeVelocity / reference.distance;
+                const Eigen::Matrix2d predecessorPdot =
+                    reference.predecessor.hoveringBase
+                    ? Eigen::Matrix2d::Zero()
+                    : evidence.covarianceDerivatives.at(
+                        reference.predecessor.referenceId
+                    );
+                const double dotEffectiveVariance =
+                    2.0 * dotDirection.dot(
+                        reference.predecessor.covariance
+                        * reference.direction
+                    )
+                    + reference.direction.dot(
+                        predecessorPdot * reference.direction
+                    );
+                const double effectiveVariance =
+                    reference.direction.dot(
+                        reference.predecessor.covariance
+                        * reference.direction
+                    ) + reference.rangingVariance;
+                dotInformation.noalias() +=
+                    -dotEffectiveVariance
+                     / std::pow(effectiveVariance, 2)
+                     * (reference.direction
+                        * reference.direction.transpose())
+                    + (
+                        dotDirection * reference.direction.transpose()
+                        + reference.direction * dotDirection.transpose()
+                    ) / effectiveVariance;
+                derivatives.push_back({
+                    reference.predecessor.referenceId,
+                    dotEffectiveVariance,
+                    dotDirection
+                });
+            }
+            Eigen::Matrix2d covarianceDerivative =
+                -certificate.covariance
+                 * dotInformation
+                 * certificate.covariance;
+            covarianceDerivative = 0.5 * (
+                covarianceDerivative + covarianceDerivative.transpose()
+            );
+            Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> solver(
+                certificate.covariance
+            );
+            if (solver.info() != Eigen::Success) {
+                throw std::runtime_error(
+                    "evidence covariance eigendecomposition failed"
+                );
+            }
+            const double lambdaMax = solver.eigenvalues().maxCoeff();
+            const double gap = solver.eigenvalues()[1]
+                               - solver.eigenvalues()[0];
+            const double scale = std::max(1.0, std::abs(lambdaMax));
+            const double lambdaDini = gap <= 1e-12 * scale
+                ? Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d>(
+                    covarianceDerivative
+                  ).eigenvalues().maxCoeff()
+                : solver.eigenvectors().col(1).dot(
+                    covarianceDerivative
+                    * solver.eigenvectors().col(1)
+                  );
+            evidence.inputs.emplace(robot->id, input);
+            evidence.covarianceDerivatives.emplace(
+                robot->id, covarianceDerivative
+            );
+            evidence.upperDiniEpsilonRates.emplace(
+                robot->id,
+                3.0 * lambdaDini / (2.0 * std::sqrt(lambdaMax))
+            );
+            evidence.realizedEpsilonRates.emplace(
+                robot->id,
+                cbf2026::realizedEpsilonRate(certificate, derivatives)
+            );
+        }
+        return evidence;
+    }
+
+    void emitControllerAbortEvidence(
+        std::uint64_t frameIndex,
+        const std::string& reason
+    ) {
+        if (!evidenceMode()
+            || emittedEvidenceControllerFrames.count(frameIndex) != 0U) {
+            return;
+        }
+        json nodes = json::array();
+        for (const auto& robot : robots) {
+            const bool solved = robot->opt.is_object()
+                && robot->opt.value("status", "") == "success";
+            json command = nullptr;
+            if (solved) {
+                command = vectorJson(robot->model->getControlInput());
+            }
+            nodes.push_back({
+                {"robot_id", robot->id},
+                {"snapshot_version", robot->certificateSnapshotVersion},
+                {"optimization_status", solved
+                    ? robot->opt.at("solver_info")
+                        .value("status", "unknown")
+                    : (robot->opt.is_object()
+                        ? robot->opt.value("status", "not-attempted")
+                        : "not-attempted")},
+                {"applied_command", command},
+                {"committed_hard_problem_id",
+                 robot->committedCertificateState.valid
+                    && robot->committedCertificateState.hardProblems.count(
+                        robot->id
+                    ) == 1U
+                    ? cbf2026::canonicalHardConstraintProblemHash(
+                        robot->committedCertificateState.hardProblems.at(
+                            robot->id
+                        )
+                      )
+                    : "unavailable"},
+                {"consumed_hard_problem_id",
+                 robot->lastConsumedHardProblemHash.empty()
+                    ? "unavailable"
+                    : robot->lastConsumedHardProblemHash}
+            });
+        }
+        json row = evidenceBaseRecord("controller_interval", frameIndex);
+        row["runtime"] = {
+            {"snapshot_version", committedCertificateState.version},
+            {"allocation_version", 1},
+            {"nodes", nodes},
+            {"expected_node_count", 14},
+            {"expected_endpoint_row_count", 232},
+            {"expected_reconstructed_row_count", 119},
+            {"observed_endpoint_row_count",
+             emittedEvidenceEndpointRowCounts[frameIndex]},
+            {"abort_reason", reason},
+            {"complete", false}
+        };
+        row["analyzer_only"] = json::object();
+        evidenceStream->write(row);
+        emittedEvidenceControllerFrames.insert(frameIndex);
+    }
+
+    void emitControllerEvidence(std::uint64_t frameIndex) {
+        if (!evidenceMode()
+            || emittedEvidenceControllerFrames.count(frameIndex) != 0U) {
+            return;
+        }
+        if (!committedCertificateState.valid
+            || committedCertificateState.endpoints.size() != 14U
+            || committedCertificateState.hardProblems.size() != 14U) {
+            throw std::runtime_error(
+                "controller evidence requires a complete committed state"
+            );
+        }
+        const auto authority = theoremGuardAuthority();
+        std::map<cbf2026::EdgeId, cbf2026::HardEdgeAuthority>
+            authorityByEdge;
+        for (const auto& edge : authority.hardEdges) {
+            authorityByEdge.emplace(edge.edge, edge);
+        }
+        struct OwnedRow {
+            const cbf2026::HardConstraintRow* row;
+            const cbf2026::HardConstraintProblem* problem;
+        };
+        std::vector<OwnedRow> ownedRows;
+        for (const auto& [robotId, problem] :
+             committedCertificateState.hardProblems) {
+            (void)robotId;
+            for (const auto& row : problem.rows) {
+                ownedRows.push_back({&row, &problem});
+            }
+        }
+        std::sort(
+            ownedRows.begin(), ownedRows.end(),
+            [](const OwnedRow& lhs, const OwnedRow& rhs) {
+                if (lhs.row->edge != rhs.row->edge) {
+                    return lhs.row->edge < rhs.row->edge;
+                }
+                return lhs.row->owner < rhs.row->owner;
+            }
+        );
+        if (ownedRows.size() != 232U || authorityByEdge.size() != 119U) {
+            throw std::runtime_error(
+                "controller evidence hard-edge universe is incomplete"
+            );
+        }
+
+        double localResidualMinimum =
+            std::numeric_limits<double>::infinity();
+        std::map<cbf2026::EdgeId, std::vector<cbf2026::EndpointRow>>
+            rowsByEdge;
+        for (const auto& owned : ownedRows) {
+            const auto& row = *owned.row;
+            const auto& edgeAuthority = authorityByEdge.at(row.edge);
+            const auto& first =
+                committedCertificateState.endpoints.at(row.edge.low);
+            const Eigen::Vector2d secondPosition = row.edge.baseId >= 0
+                ? edgeAuthority.basePosition
+                : committedCertificateState.endpoints.at(
+                    row.edge.high
+                  ).estimate;
+            const Eigen::Vector2d displacement =
+                first.estimate - secondPosition;
+            const double separation = displacement.norm();
+            const Eigen::Vector2d normal = displacement / separation;
+            const double alphaValue = edgeAuthority.classKCoefficient
+                * std::pow(
+                    row.postResetBarrier,
+                    edgeAuthority.classKPower
+                );
+            const double allocation = row.edge.baseId >= 0 ? 1.0 : 0.5;
+            const Eigen::VectorXd ownerCommand =
+                robots.at(row.owner - 1)->model->getControlInput();
+            const double residual =
+                row.constant + row.coefficients.dot(ownerCommand);
+            localResidualMinimum = std::min(
+                localResidualMinimum, residual
+            );
+            rowsByEdge[row.edge].push_back({
+                row.edge,
+                row.owner,
+                row.coefficients.head<2>(),
+                row.constant,
+                allocation,
+                row.snapshotVersion,
+                row.allocationVersion
+            });
+
+            json edge = edgeIdentityJson(row.edge);
+            edge["threshold"] = edgeAuthority.threshold;
+            edge["base_position"] = vectorJson(
+                edgeAuthority.basePosition
+            );
+            edge["normal"] = vectorJson(normal);
+            edge["separation"] = separation;
+            edge["tightened_barrier"] = row.postResetBarrier;
+            edge["class_k_coefficient"] =
+                edgeAuthority.classKCoefficient;
+            edge["class_k_power"] = edgeAuthority.classKPower;
+            edge["alpha_value"] = alphaValue;
+
+            json evidenceRow = evidenceBaseRecord(
+                "endpoint_row", frameIndex
+            );
+            evidenceRow["edge"] = edge;
+            evidenceRow["owner"] = row.owner;
+            evidenceRow["allocation"] = allocation;
+            evidenceRow["coefficient"] = vectorJson(Eigen::Vector2d(
+                row.coefficients.head<2>()
+            ));
+            evidenceRow["constant"] = row.constant;
+            evidenceRow["snapshot_version"] = row.snapshotVersion;
+            evidenceRow["allocation_version"] = row.allocationVersion;
+            evidenceRow["owner_applied_command"] = vectorJson(
+                ownerCommand
+            );
+            evidenceRow["qp_status"] = robots.at(row.owner - 1)
+                ->opt.at("solver_info").value("status", "unknown");
+            evidenceRow["hard_problem_id"] =
+                cbf2026::canonicalHardConstraintProblemHash(
+                    *owned.problem
+                );
+            evidenceStream->write(evidenceRow);
+            ++emittedEvidenceEndpointRowCounts[frameIndex];
+#ifdef CBF_EVIDENCE_TEST_HOOKS
+            const char* failAfterRows = std::getenv(
+                "CBF_EVIDENCE_TEST_FAIL_AFTER_ENDPOINT_ROWS"
+            );
+            if (evidenceTestFixtureMode() && failAfterRows != nullptr) {
+                char* end = nullptr;
+                const unsigned long long requested = std::strtoull(
+                    failAfterRows, &end, 10
+                );
+                if (end != failAfterRows && *end == '\0'
+                    && requested > 0U
+                    && emittedEvidenceEndpointRowCounts[frameIndex]
+                        >= requested) {
+                    throw std::runtime_error(
+                        "injected evidence endpoint emission failure"
+                    );
+                }
+            }
+#endif
+        }
+
+        if (rowsByEdge.size() != 119U) {
+            throw std::runtime_error(
+                "controller evidence reconstructed-row universe is incomplete"
+            );
+        }
+        double reconstructedResidualMinimum =
+            std::numeric_limits<double>::infinity();
+        for (const auto& [edge, endpointRows] : rowsByEdge) {
+            const auto full = cbf2026::reconstructFullRow(endpointRows);
+            const Eigen::Vector2d lowCommand = robots.at(edge.low - 1)
+                ->model->getControlInput().head<2>();
+            Eigen::Vector2d highCommand = Eigen::Vector2d::Zero();
+            if (edge.baseId < 0) {
+                highCommand = robots.at(edge.high - 1)
+                    ->model->getControlInput().head<2>();
+            }
+            reconstructedResidualMinimum = std::min(
+                reconstructedResidualMinimum,
+                full.constant
+                + full.coefficientI.dot(lowCommand)
+                + full.coefficientJ.dot(highCommand)
+            );
+        }
+
+        const auto rateEvidence = reconstructRateEvidenceState();
+        json nodes = json::array();
+        double maximumVx = 0.0;
+        double maximumVy = 0.0;
+        double maximumYaw = 0.0;
+        for (Robot* robot : theoremTopologicalOrder()) {
+            const auto& input = rateEvidence.inputs.at(robot->id);
+            const auto& certificate =
+                committedCertificateState.certificates.at(robot->id);
+            const auto& endpoint =
+                committedCertificateState.endpoints.at(robot->id);
+            const auto& problem =
+                committedCertificateState.hardProblems.at(robot->id);
+            const Eigen::VectorXd command =
+                robot->model->getControlInput();
+            maximumVx = std::max(maximumVx, std::abs(command[0]));
+            maximumVy = std::max(maximumVy, std::abs(command[1]));
+            maximumYaw = std::max(maximumYaw, std::abs(command[2]));
+            json references = json::array();
+            for (const auto& reference : input.references) {
+                references.push_back({
+                    {"canonical_reference_id",
+                     reference.predecessor.referenceId},
+                    {"reference_kind",
+                     reference.predecessor.hoveringBase ? "base" : "uav"},
+                    {"direction", vectorJson(reference.direction)},
+                    {"distance", reference.distance},
+                    {"ranging_variance", reference.rangingVariance},
+                    {"predecessor_local_index",
+                     reference.predecessor.localIndex},
+                    {"predecessor_snapshot_version",
+                     reference.predecessor.snapshotVersion},
+                    {"predecessor_covariance",
+                     matrixJson(reference.predecessor.covariance)},
+                    {"predecessor_covariance_rate_bound",
+                     reference.predecessor.covarianceRateBound},
+                    {"predecessor_speed_bound",
+                     reference.predecessor.speedBound}
+                });
+            }
+            const std::string committedProblemId =
+                cbf2026::canonicalHardConstraintProblemHash(problem);
+            const auto hardOnly =
+                robot->solveLocalHardQpEvidence(problem);
+            double normalMinimum =
+                std::numeric_limits<double>::infinity();
+            for (const auto& bound : problem.bounds) {
+                normalMinimum = std::min(
+                    normalMinimum,
+                    bound.coefficient * command[bound.controlIndex]
+                    + bound.limit
+                );
+            }
+            for (const auto& hardRow : problem.rows) {
+                normalMinimum = std::min(
+                    normalMinimum,
+                    hardRow.constant
+                    + hardRow.coefficients.dot(command)
+                );
+            }
+            nodes.push_back({
+                {"robot_id", robot->id},
+                {"local_index", robot->idInMyPart},
+                {"snapshot_version", endpoint.snapshotVersion},
+                {"allocation_version", endpoint.allocationVersion},
+                {"interface_estimate", vectorJson(endpoint.estimate)},
+                {"node_component_bound", input.planarComponentMax},
+                {"references", references},
+                {"information", matrixJson(certificate.information)},
+                {"covariance", matrixJson(certificate.covariance)},
+                {"covariance_derivative", matrixJson(
+                    rateEvidence.covarianceDerivatives.at(robot->id)
+                )},
+                {"covariance_rate_bound",
+                 certificate.covarianceRateBound},
+                {"epsilon", certificate.epsilon},
+                {"dplus_epsilon",
+                 rateEvidence.upperDiniEpsilonRates.at(robot->id)},
+                {"nu_inst",
+                 rateEvidence.realizedEpsilonRates.at(robot->id)},
+                {"bar_nu", certificate.epsilonRateBound},
+                {"applied_command", vectorJson(command)},
+                {"normal_qp", {
+                    {"status", robot->opt.at("solver_info")
+                        .value("status", "unknown")},
+                    {"minimum_residual", normalMinimum},
+                    {"hard_problem_id", robot->lastConsumedHardProblemHash},
+                    {"solution", vectorJson(command)}
+                }},
+                {"hard_only_qp", {
+                    {"status", hardOnly.feasibility.status},
+                    {"minimum_residual", hardOnly.feasibility.minimumResidual},
+                    {"hard_problem_id", hardOnly.feasibility.hardProblemHash},
+                    {"solution", hardOnly.solution.has_value()
+                        ? vectorJson(*hardOnly.solution) : json(nullptr)}
+                }},
+                {"normal_problem", hardProblemJson(problem)},
+                {"hard_only_problem", hardProblemJson(problem)},
+                {"committed_hard_problem_id", committedProblemId},
+                {"consumed_hard_problem_id",
+                 robot->lastConsumedHardProblemHash}
+            });
+        }
+
+        bool resetAttempted = false;
+        bool resetCommitted = false;
+        std::string resetStatus = "not-attempted";
+        for (const auto& transaction : certificateResetHistory) {
+            if (transaction.frameIndex == frameIndex) {
+                resetAttempted = true;
+                resetCommitted = transaction.status
+                    == cbf2026::GuardStatus::Accepted;
+                resetStatus = resetCommitted ? "accepted" : "rejected";
+                break;
+            }
+        }
+        json truth = json::array();
+        for (const auto& robot : robots) {
+            const Point position = robot->model->xy();
+            truth.push_back({
+                {"robot_id", robot->id},
+                {"position", {position.x, position.y}}
+            });
+        }
+        json controller = evidenceBaseRecord(
+            "controller_interval", frameIndex
+        );
+        controller["runtime"] = {
+            {"snapshot_version", committedCertificateState.version},
+            {"allocation_version", 1},
+            {"nodes", nodes},
+            {"expected_node_count", 14},
+            {"expected_endpoint_row_count", 232},
+            {"expected_reconstructed_row_count", 119},
+            {"observed_endpoint_row_count", ownedRows.size()},
+            {"complete_finite_snapshot", true},
+            {"reset", {
+                {"attempted", resetAttempted},
+                {"guard_status", resetStatus},
+                {"committed", resetCommitted}
+            }},
+            {"component_maxima", {
+                {"vx", maximumVx},
+                {"vy", maximumVy},
+                {"yaw_rate", maximumYaw}
+            }},
+            {"local_residual_minimum", localResidualMinimum},
+            {"reconstructed_residual_minimum",
+             reconstructedResidualMinimum},
+            {"abort_reason", ""},
+            {"complete", true}
+        };
+        controller["analyzer_only"] = {{"truth", truth}};
+        evidenceStream->write(controller);
+        emittedEvidenceControllerFrames.insert(frameIndex);
+        completedEvidenceControllerFrames.insert(frameIndex);
+    }
+
+    void emitMissionTerminal(bool success, const std::string& reason) {
+        if (!evidenceMode()) {
+            return;
+        }
+        const double timeStep = config.at("execute")
+            .at("time-step").get<double>();
+        const std::uint64_t declaredFrames = static_cast<std::uint64_t>(
+            std::llround(
+                config.at("execute").at("time-total").get<double>()
+                / timeStep
+            )
+        );
+        json row = evidenceBaseRecord("mission_terminal", declaredFrames);
+        row["runtime"] = {
+            {"success", success},
+            {"reason", reason},
+            {"process_outcome", reason},
+            {"declared_frames", declaredFrames},
+            {"completed_intervals",
+             completedEvidenceControllerFrames.size()}
+        };
+        evidenceStream->write(row);
+    }
+
     struct TheoremCandidate {
         std::map<int, cbf2026::NodeRateCertificate> certificates;
         std::map<int, cbf2026::EndpointCertificateSnapshot> endpoints;
@@ -1494,6 +2610,8 @@ private:
     }
 
     bool checkConstraintViolation() {
+        std::ostream& diagnostics = evidenceMode()
+            ? std::cerr : std::cout;
         // Check h_loc constraints for violation
         // Constraint: distance + uncertainty <= max_range
         // Violation occurs when: distance + uncertainty1 + uncertainty2 > max_range
@@ -1536,13 +2654,13 @@ private:
                     double totalDistance = distance + robotUncertainty + otherUncertainty;
 
                     if (totalDistance > violationThreshold) {
-                        std::cout << "\n[Constraint Violation] Robot " << robot->id
-                                  << " - Robot " << otherId
-                                  << ": distance=" << distance
-                                  << ", uncertainty=" << robotUncertainty << "+" << otherUncertainty
-                                  << ", total=" << totalDistance
-                                  << " > threshold=" << violationThreshold << " (maxRange=" << maxRange << " + buffer=" << buffer << ")"
-                                  << " at t=" << robot->runtime << std::endl;
+                        diagnostics << "\n[Constraint Violation] Robot " << robot->id
+                                    << " - Robot " << otherId
+                                    << ": distance=" << distance
+                                    << ", uncertainty=" << robotUncertainty << "+" << otherUncertainty
+                                    << ", total=" << totalDistance
+                                    << " > threshold=" << violationThreshold << " (maxRange=" << maxRange << " + buffer=" << buffer << ")"
+                                    << " at t=" << robot->runtime << std::endl;
                         return true;
                     }
                 }
@@ -1562,13 +2680,13 @@ private:
                     double totalDistance = distance + robotUncertainty;
 
                     if (totalDistance > violationThreshold) {
-                        std::cout << "\n[Constraint Violation] Robot " << robot->id
-                                  << " - Base " << baseId
-                                  << ": distance=" << distance
-                                  << ", uncertainty=" << robotUncertainty
-                                  << ", total=" << totalDistance
-                                  << " > threshold=" << violationThreshold << " (maxRange=" << maxRange << " + buffer=" << buffer << ")"
-                                  << " at t=" << robot->runtime << std::endl;
+                        diagnostics << "\n[Constraint Violation] Robot " << robot->id
+                                    << " - Base " << baseId
+                                    << ": distance=" << distance
+                                    << ", uncertainty=" << robotUncertainty
+                                    << ", total=" << totalDistance
+                                    << " > threshold=" << violationThreshold << " (maxRange=" << maxRange << " + buffer=" << buffer << ")"
+                                    << " at t=" << robot->runtime << std::endl;
                         return true;
                     }
                 }
