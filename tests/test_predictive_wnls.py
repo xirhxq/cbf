@@ -6,10 +6,15 @@ from unittest import mock
 import numpy as np
 
 import scripts.diagnostics.predictive_wnls as predictive_wnls
+from scripts.diagnostics.qualified_modes import (
+    MODE_TOLERANCE_M,
+    cluster_candidates,
+)
 from scripts.diagnostics.predictive_wnls import (
     algebraic_multilateration_candidate,
     best_conditioned_pair,
     candidate_acceptance,
+    candidate_local_eligibility,
     finalize_attempt,
     initial_candidates,
     make_unavailable_output,
@@ -23,6 +28,7 @@ from scripts.diagnostics.predictive_wnls import (
     select_candidate_result,
     solve_finite_budget_wnls,
     solve_predictive_multistart,
+    locally_eligible_candidate,
     two_circle_candidates,
 )
 from scripts.diagnostics.extract_predictive_wnls_stage0 import run_stage0_fixture
@@ -965,6 +971,76 @@ class FiniteBudgetWnlsTests(unittest.TestCase):
 
 
 class CandidateAcceptanceTests(unittest.TestCase):
+    def test_local_eligibility_ignores_history_innovation_but_retains_data_fit(self):
+        candidate = make_converged_candidate_result(
+            estimate=(120.0, 0.0),
+            cost=9.0,
+        )
+
+        eligible, reason, diagnostics = candidate_local_eligibility(
+            candidate,
+            active_reference_count=2,
+            base_anchor_provenance=[0, 1],
+        )
+        projected = locally_eligible_candidate(
+            candidate,
+            attempt_id="analytic:two-root",
+            active_reference_count=2,
+            base_anchor_provenance=[0, 1],
+        )
+
+        self.assertTrue(eligible)
+        self.assertEqual(reason, "locally_eligible")
+        self.assertEqual(diagnostics["failure_reason"], None)
+        self.assertEqual(projected.attempt_id, "analytic:two-root")
+        self.assertEqual(projected.estimate, (120.0, 0.0))
+
+    def test_innovation_diagnostic_cannot_remove_a_second_local_mode(self):
+        near = make_converged_candidate_result(estimate=(0.0, 0.0))
+        mirror = make_converged_candidate_result(estimate=(120.0, 0.0))
+        mirror["innovation"] = {
+            "valid": False,
+            "failure_reason": "innovation_q_exceeds_reference_quantile",
+        }
+
+        candidates = [
+            locally_eligible_candidate(
+                near,
+                attempt_id="near",
+                active_reference_count=3,
+                base_anchor_provenance=[0, 1],
+            ),
+            locally_eligible_candidate(
+                mirror,
+                attempt_id="mirror",
+                active_reference_count=3,
+                base_anchor_provenance=[0, 1],
+            ),
+        ]
+
+        self.assertTrue(all(candidate is not None for candidate in candidates))
+        clustering = cluster_candidates(candidates, MODE_TOLERANCE_M)
+        self.assertTrue(clustering.separable)
+        self.assertEqual(len(clustering.modes), 2)
+
+    def test_legacy_candidate_acceptance_retains_three_value_innovation_contract(self):
+        candidate = make_converged_candidate_result(estimate=(120.0, 0.0))
+
+        legacy = candidate_acceptance(
+            candidate,
+            live_prediction={
+                "estimate": [0.0, 0.0],
+                "modeled_covariance": [[1.0, 0.0], [0.0, 1.0]],
+            },
+            active_reference_count=3,
+            base_anchor_provenance=[0, 1],
+            allow_two_reference_reacquisition=False,
+        )
+
+        self.assertEqual(len(legacy), 3)
+        self.assertFalse(legacy[0])
+        self.assertEqual(legacy[1], "innovation_q_exceeds_reference_quantile")
+
     def test_two_reference_reacquisition_requires_explicit_option(self):
         result = make_converged_candidate_result(cost=9.0)
         default = candidate_acceptance(

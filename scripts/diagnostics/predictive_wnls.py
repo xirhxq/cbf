@@ -11,6 +11,10 @@ from scripts.diagnostics.replay_localization_calibration import (
     _validated_inputs,
     fim_radius,
 )
+from scripts.diagnostics.qualified_modes import (
+    LocalCandidate,
+    project_local_candidate,
+)
 
 
 FRAME_DT_SECONDS = 0.5
@@ -1278,6 +1282,93 @@ def _complete_converged_solver_result(result: object) -> bool:
         if terminal["accepted"] is not True or terminal["trial_cost"] != cost:
             return False
     return True
+
+
+def recompute_local_candidate_diagnostics(
+    result: object,
+    *,
+    active_reference_count: int,
+    base_anchor_provenance: object,
+) -> dict:
+    """Validate local solver facts without a cross-mode innovation decision."""
+    diagnostics: dict = {
+        "failure_reason": None,
+        "recomputed_result": None,
+        "reduced_whitened_cost": None,
+    }
+    if not isinstance(result, Mapping):
+        diagnostics["failure_reason"] = "invalid_candidate_result"
+        return diagnostics
+    if result.get("status") != "converged":
+        diagnostics["failure_reason"] = "candidate_not_numerically_converged"
+        return diagnostics
+    if not _complete_converged_solver_result(result):
+        diagnostics["failure_reason"] = "invalid_candidate_output"
+        return diagnostics
+    estimate = _finite_vector(result.get("estimate"))
+    covariance = _finite_spd_covariance(result.get("covariance"))
+    cost = _finite_nonnegative_scalar(result.get("cost"))
+    if estimate is None or covariance is None or cost is None:
+        diagnostics["failure_reason"] = "invalid_candidate_output"
+        return diagnostics
+    if result.get("fim_valid") is not True:
+        diagnostics["failure_reason"] = "final_fim_not_positive_definite"
+        return diagnostics
+    if _canonical_base_provenance(base_anchor_provenance) is None:
+        diagnostics["failure_reason"] = "insufficient_base_anchor_provenance"
+        return diagnostics
+    if isinstance(active_reference_count, bool) or not isinstance(
+        active_reference_count,
+        Integral,
+    ):
+        diagnostics["failure_reason"] = "invalid_active_reference_count"
+        return diagnostics
+    active_count = int(active_reference_count)
+    if active_count < 2:
+        diagnostics["failure_reason"] = "insufficient_active_references"
+        return diagnostics
+    reduced_cost = cost / max(1, active_count - 2)
+    diagnostics["reduced_whitened_cost"] = reduced_cost
+    if reduced_cost > 9.0:
+        diagnostics["failure_reason"] = "reacquisition_reduced_cost_exceeds_nine"
+        return diagnostics
+    diagnostics["recomputed_result"] = dict(result)
+    return diagnostics
+
+
+def candidate_local_eligibility(
+    result: object,
+    *,
+    active_reference_count: int,
+    base_anchor_provenance: object,
+) -> tuple[bool, str, dict]:
+    """Validate one local solver result without global-mode qualification."""
+    diagnostics = recompute_local_candidate_diagnostics(
+        result,
+        active_reference_count=active_reference_count,
+        base_anchor_provenance=base_anchor_provenance,
+    )
+    if diagnostics["failure_reason"] is not None:
+        return False, diagnostics["failure_reason"], diagnostics
+    return True, "locally_eligible", diagnostics
+
+
+def locally_eligible_candidate(
+    result: object,
+    *,
+    attempt_id: str,
+    active_reference_count: int,
+    base_anchor_provenance: object,
+) -> LocalCandidate | None:
+    """Project an eligible result for post-solver global-mode clustering."""
+    eligible, _, diagnostics = candidate_local_eligibility(
+        result,
+        active_reference_count=active_reference_count,
+        base_anchor_provenance=base_anchor_provenance,
+    )
+    if not eligible:
+        return None
+    return project_local_candidate(attempt_id, diagnostics["recomputed_result"])
 
 
 def candidate_acceptance(
