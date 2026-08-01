@@ -75,7 +75,17 @@ _CANDIDATE_SOURCE_ORDER = {
     "circle_negative": 2,
     "circle_positive": 3,
 }
-_PROPOSAL_TRACE_FIELDS = (
+_PROPOSAL_TRACE_FIELDS = {
+    "proposal",
+    "damping",
+    "cost",
+    "stationarity_norm",
+    "raw_step_norm",
+    "trial_cost",
+    "invalid_trial_reason",
+    "accepted",
+}
+_QUALIFIED_PROPOSAL_TRACE_FIELDS = (
     "proposal",
     "damping",
     "cost",
@@ -1214,7 +1224,7 @@ def _complete_converged_solver_result(result: object) -> bool:
         or not isinstance(proposal_count, Integral)
         or isinstance(iterations, bool)
         or not isinstance(iterations, Integral)
-        or not isinstance(trace, (tuple, list))
+        or not isinstance(trace, list)
         or proposal_count != iterations
         or proposal_count != len(trace)
         or proposal_count < 0
@@ -1226,7 +1236,7 @@ def _complete_converged_solver_result(result: object) -> bool:
     previous_trial_cost: float | None = None
     previous_accepted: bool | None = None
     for index, row in enumerate(trace):
-        if not isinstance(row, Mapping) or tuple(row) != _PROPOSAL_TRACE_FIELDS:
+        if not isinstance(row, Mapping) or set(row) != _PROPOSAL_TRACE_FIELDS:
             return False
         proposal = row.get("proposal")
         if (
@@ -2189,7 +2199,10 @@ def _qualified_proposal_trace_valid(trace):
     previous_trial_cost = None
     previous_accepted = None
     for index, row in enumerate(trace):
-        if not isinstance(row, Mapping) or tuple(row) != _PROPOSAL_TRACE_FIELDS:
+        if (
+            not isinstance(row, Mapping)
+            or tuple(row) != _QUALIFIED_PROPOSAL_TRACE_FIELDS
+        ):
             return False
         if not _nonnegative_qualified_int(row["proposal"]):
             return False
@@ -2305,6 +2318,17 @@ def _qualified_nonconverged_solver_result_valid(value):
     return True
 
 
+def _complete_qualified_converged_solver_result(value):
+    trace = value.get("proposal_trace") if isinstance(value, Mapping) else None
+    if not isinstance(trace, (tuple, list)):
+        return False
+    if isinstance(trace, list):
+        return _complete_converged_solver_result(value)
+    legacy_compatible = dict(value)
+    legacy_compatible["proposal_trace"] = list(trace)
+    return _complete_converged_solver_result(legacy_compatible)
+
+
 def _qualified_solver_result_evidence_valid(value):
     if (
         not isinstance(value, Mapping)
@@ -2328,7 +2352,7 @@ def _qualified_solver_result_evidence_valid(value):
     ):
         return False
     if status == "converged":
-        return _complete_converged_solver_result(value)
+        return _complete_qualified_converged_solver_result(value)
     return _qualified_nonconverged_solver_result_valid(value)
 
 
@@ -2426,7 +2450,7 @@ def _canonical_qualified_solver_result(value):
     canonical["proposal_trace"] = [
         {
             field: _qualified_json_value(row[field])
-            for field in _PROPOSAL_TRACE_FIELDS
+            for field in _QUALIFIED_PROPOSAL_TRACE_FIELDS
         }
         for row in value["proposal_trace"]
     ]

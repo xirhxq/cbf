@@ -458,6 +458,21 @@ def validate_and_recompute_qualified_row(row) -> dict:
 def _validate_exact_protocol(row):
     if not isinstance(row, Mapping) or tuple(row) != ROW_FIELDS:
         raise ValueError("qualified row differs from exact schema")
+    if (
+        not isinstance(row["runtime_inputs"], Mapping)
+        or tuple(row["runtime_inputs"]) != RUNTIME_INPUT_FIELDS
+    ):
+        raise ValueError(
+            "runtime input projection differs from exact field order"
+        )
+    if not isinstance(row["qualifications"], list) or any(
+        not isinstance(item, Mapping)
+        or tuple(item) != QUALIFICATION_FIELDS
+        for item in row["qualifications"]
+    ):
+        raise ValueError(
+            "qualification projection differs from exact field order"
+        )
     if row["schema_id"] != EXPECTED_RAW_SCHEMA_ID:
         raise ValueError("qualified row schema identity mismatch")
     if row["method_id"] != EXPECTED_METHOD_ID:

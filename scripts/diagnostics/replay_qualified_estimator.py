@@ -268,7 +268,11 @@ def validate_qualified_replay_row(row: Mapping) -> None:
     if not isinstance(audit, Mapping) or tuple(audit) != AUDIT_FIELDS:
         raise ValueError("qualified audit bundle differs from exact schema")
     _validate_exact_audit_schema(audit)
-    if row["runtime_inputs"] != audit["runtime_inputs"]:
+    if (
+        not isinstance(row["runtime_inputs"], Mapping)
+        or tuple(row["runtime_inputs"]) != RUNTIME_INPUT_FIELDS
+        or row["runtime_inputs"] != audit["runtime_inputs"]
+    ):
         raise ValueError("qualified runtime input projection is inconsistent")
     for field in (
         "local_candidate_count",
@@ -300,12 +304,7 @@ def validate_qualified_replay_row(row: Mapping) -> None:
     for qualification in row["qualifications"]:
         if (
             not isinstance(qualification, Mapping)
-            or tuple(qualification) != (
-                "mode_id",
-                "admissible",
-                "reason",
-                "score",
-            )
+            or tuple(qualification) != QUALIFICATION_FIELDS
             or not isinstance(qualification["mode_id"], str)
             or not qualification["mode_id"]
             or not isinstance(qualification["admissible"], bool)

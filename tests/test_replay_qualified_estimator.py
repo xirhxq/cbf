@@ -412,6 +412,22 @@ class QualifiedReplayTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "solver result evidence.*order"):
             validate_qualified_replay_row(row)
 
+    def test_producer_rejects_dealiased_reordered_top_projections(self):
+        runtime_row = json.loads(json.dumps(self.build_registered_row()))
+        runtime_row["runtime_inputs"] = dict(reversed(tuple(
+            runtime_row["runtime_inputs"].items()
+        )))
+        with self.assertRaisesRegex(ValueError, "runtime input projection"):
+            validate_qualified_replay_row(runtime_row)
+
+        qualification_row = json.loads(json.dumps(self.build_registered_row()))
+        qualification = qualification_row["qualifications"][0]
+        qualification_row["qualifications"][0] = dict(reversed(tuple(
+            qualification.items()
+        )))
+        with self.assertRaisesRegex(ValueError, "qualification record"):
+            validate_qualified_replay_row(qualification_row)
+
 
 if __name__ == "__main__":
     unittest.main()

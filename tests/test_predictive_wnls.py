@@ -1,3 +1,4 @@
+import copy
 import math
 import unittest
 from pathlib import Path
@@ -973,6 +974,35 @@ class FiniteBudgetWnlsTests(unittest.TestCase):
 
 
 class CandidateAcceptanceTests(unittest.TestCase):
+    def test_legacy_real_solver_eligibility_ignores_proposal_key_order(self):
+        result = solve_finite_budget_wnls(
+            [[0.0, 0.0], [6.0, 0.0], [0.0, 8.0]],
+            [np.eye(2), np.eye(2), np.eye(2)],
+            [5.0, 5.0, 5.0],
+            [3.1, 4.1],
+            0.5,
+        )
+        reordered = copy.deepcopy(result)
+        reordered["proposal_trace"][0] = dict(reversed(tuple(
+            reordered["proposal_trace"][0].items()
+        )))
+
+        original = candidate_local_eligibility(
+            result,
+            active_reference_count=3,
+            base_anchor_provenance=[0, 1],
+        )
+        reordered_outcome = candidate_local_eligibility(
+            reordered,
+            active_reference_count=3,
+            base_anchor_provenance=[0, 1],
+        )
+
+        self.assertEqual(result["status"], "converged")
+        self.assertGreater(len(result["proposal_trace"]), 0)
+        self.assertEqual(original[:2], (True, "locally_eligible"))
+        self.assertEqual(reordered_outcome[:2], original[:2])
+
     def test_local_eligibility_ignores_history_innovation_but_retains_data_fit(self):
         candidate = make_converged_candidate_result(
             estimate=(120.0, 0.0),
@@ -1745,6 +1775,21 @@ class QualifiedMultistartIntegrationTests(unittest.TestCase):
         self.assertEqual(len(called), len(set(called)))
         self.assertEqual(len(audit["solver_attempts"]), 2)
         self.assertEqual(len(audit["local_candidates"]), 2)
+
+    def test_qualified_tuple_trace_is_canonicalized_without_legacy_leakage(self):
+        def solver(start):
+            result = self.honest_solver_result(self.references(), start)
+            result["proposal_trace"] = tuple(result["proposal_trace"])
+            return result
+
+        audit = solve_qualified_multistart(**self.kwargs(solver=solver))
+
+        self.assertEqual(len(audit["solver_attempts"]), 2)
+        self.assertEqual(len(audit["local_candidates"]), 2)
+        self.assertTrue(all(
+            isinstance(attempt["solver_result"]["proposal_trace"], list)
+            for attempt in audit["solver_attempts"]
+        ))
 
     def test_every_three_reference_start_is_solved_before_filtering(self):
         references = self.references() + [

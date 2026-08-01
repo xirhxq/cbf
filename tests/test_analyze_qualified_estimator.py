@@ -1,4 +1,5 @@
 import copy
+import json
 import unittest
 
 from scripts.diagnostics.analyze_qualified_estimator import (
@@ -334,6 +335,22 @@ class QualifiedAnalyzerTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "solver result evidence.*order"):
             validate_and_recompute_qualified_row(row)
+
+    def test_analyzer_rejects_dealiased_reordered_top_projections(self):
+        runtime_row = json.loads(json.dumps(valid_registered_row()))
+        runtime_row["runtime_inputs"] = dict(reversed(tuple(
+            runtime_row["runtime_inputs"].items()
+        )))
+        with self.assertRaisesRegex(ValueError, "runtime input.*field order"):
+            validate_and_recompute_qualified_row(runtime_row)
+
+        qualification_row = json.loads(json.dumps(valid_registered_row()))
+        qualification = qualification_row["qualifications"][0]
+        qualification_row["qualifications"][0] = dict(reversed(tuple(
+            qualification.items()
+        )))
+        with self.assertRaisesRegex(ValueError, "qualification.*field order"):
+            validate_and_recompute_qualified_row(qualification_row)
 
     def test_analyzer_reconstructs_only_the_exact_invalid_evidence_sentinel(self):
         row = replay_test.build_registered_qualified_row(
