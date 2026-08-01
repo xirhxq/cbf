@@ -6,6 +6,9 @@ from unittest import mock
 import numpy as np
 
 import scripts.diagnostics.two_range_reacquisition as two_range
+from scripts.diagnostics.estimator_lifecycle import (
+    reset_private_state as reset_qualified_private_state,
+)
 from scripts.diagnostics.predictive_wnls import make_unavailable_output
 from scripts.diagnostics.two_range_reacquisition import (
     advance_two_range_prior,
@@ -68,7 +71,7 @@ class TaggedPrivateStateTests(unittest.TestCase):
         self.assertEqual(state["age_frames"], 0)
         self.assertEqual(state["estimate"], [1.0, -2.0])
 
-    def test_reset_delegates_to_versioned_qualified_private_schema(self):
+    def test_reset_preserves_exact_legacy_private_schema(self):
         state = reset_private_state(
             {
                 "estimate": [1.0, -2.0],
@@ -77,11 +80,32 @@ class TaggedPrivateStateTests(unittest.TestCase):
             frame_index=17,
         )
 
-        self.assertIn("history_version", state)
-        self.assertEqual(state["history_version"], 0)
-        self.assertIsNone(state["last_command_frame"])
-        self.assertIsNone(state["last_held_velocity"])
+        self.assertEqual(set(state), {
+            "status",
+            "estimate",
+            "modeled_covariance",
+            "source_fresh_frame",
+            "propagated_to_frame",
+            "age_frames",
+        })
         self.assertIsNotNone(two_range.canonical_private_state(state))
+
+    def test_qualified_private_state_cannot_enter_legacy_propagation(self):
+        qualified = reset_qualified_private_state(
+            {
+                "estimate": [1.0, -2.0],
+                "modeled_covariance": [[2.0, 0.1], [0.1, 1.0]],
+            },
+            frame_index=17,
+            history_version=3,
+        )
+
+        self.assertIsNone(two_range.canonical_private_state(qualified))
+        self.assertIsNone(propagate_private_state(
+            qualified,
+            [0.0, 0.0],
+            next_frame_index=18,
+        ))
 
     def test_propagation_is_exactly_one_transition(self):
         state = reset_private_state(

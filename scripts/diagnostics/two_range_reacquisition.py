@@ -6,7 +6,6 @@ from numbers import Integral, Real
 import numpy as np
 
 from scripts.diagnostics.estimator_lifecycle import (
-    canonical_private_state as canonical_qualified_private_state,
     reset_private_state as reset_qualified_private_state,
 )
 from scripts.diagnostics.predictive_wnls import (
@@ -289,9 +288,6 @@ def solve_two_range_reacquisition(
 
 
 def canonical_private_state(value: object) -> dict | None:
-    qualified = canonical_qualified_private_state(value)
-    if qualified is not None:
-        return qualified
     if not isinstance(value, Mapping):
         return None
     if set(value) != set(PRIVATE_STATE_FIELDS):
@@ -326,7 +322,17 @@ def canonical_private_state(value: object) -> dict | None:
 
 
 def reset_private_state(candidate: object, *, frame_index: int) -> dict | None:
-    return reset_qualified_private_state(candidate, frame_index=frame_index)
+    qualified = reset_qualified_private_state(candidate, frame_index=frame_index)
+    if qualified is None:
+        return None
+    return {
+        "status": qualified["status"],
+        "estimate": qualified["estimate"],
+        "modeled_covariance": qualified["modeled_covariance"],
+        "source_fresh_frame": qualified["source_fresh_frame"],
+        "propagated_to_frame": qualified["propagated_to_frame"],
+        "age_frames": qualified["age_frames"],
+    }
 
 
 def propagate_private_state(

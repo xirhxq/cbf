@@ -166,8 +166,16 @@ def _distance(a: LocalCandidate, b: LocalCandidate) -> float:
 
 def select_representative(mode: NumericalMode) -> LocalCandidate:
     """Return the frozen, within-mode-only deterministic representative."""
+    if not isinstance(mode, NumericalMode) or not mode.members:
+        raise ValueError("mode must contain at least one candidate")
+    canonical_members = []
+    for member in mode.members:
+        canonical = _canonical_local_candidate(member)
+        if canonical is None:
+            raise ValueError("mode contains a malformed candidate")
+        canonical_members.append(canonical)
     return min(
-        mode.members,
+        canonical_members,
         key=lambda candidate: (
             candidate.objective_cost,
             candidate.estimate[0].hex(),
@@ -179,9 +187,17 @@ def select_representative(mode: NumericalMode) -> LocalCandidate:
 
 def canonical_mode_id(mode: NumericalMode) -> str:
     """Hash only sorted final coordinates, never start metadata or labels."""
+    if not isinstance(mode, NumericalMode) or not mode.members:
+        raise ValueError("mode must contain at least one candidate")
+    canonical_members = []
+    for member in mode.members:
+        canonical = _canonical_local_candidate(member)
+        if canonical is None:
+            raise ValueError("mode contains a malformed candidate")
+        canonical_members.append(canonical)
     coordinates = sorted(
         (member.estimate[0].hex(), member.estimate[1].hex())
-        for member in mode.members
+        for member in canonical_members
     )
     encoded = json.dumps(coordinates, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -376,15 +392,69 @@ def qualify_all(
 
 
 def _contains_forbidden_runtime_key(value: object) -> bool:
+    return not _runtime_payload_is_safe(value, set())
+
+
+def _runtime_payload_is_safe(value: object, active_ids: set[int]) -> bool:
+    if value is None or isinstance(value, (str, bool)):
+        return True
+    if isinstance(value, Real):
+        return math.isfinite(float(value))
+    if isinstance(value, np.generic):
+        return _runtime_payload_is_safe(value.item(), active_ids)
+    if isinstance(value, DeploymentContract):
+        nested = (
+            value.anchor_ids,
+            value.anchor_coordinates,
+            value.deployment_vertices,
+            value.unit_normal,
+            value.offset,
+            value.ocean_side,
+            value.margin_m,
+            value.domain_version,
+        )
+        return _runtime_container_is_safe(value, nested, active_ids)
     if isinstance(value, Mapping):
-        for key, nested in value.items():
-            if key in FORBIDDEN_RUNTIME_KEYS:
-                return True
-            if _contains_forbidden_runtime_key(nested):
-                return True
-    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-        return any(_contains_forbidden_runtime_key(item) for item in value)
+        identifier = id(value)
+        if identifier in active_ids:
+            return False
+        active_ids.add(identifier)
+        try:
+            return all(
+                isinstance(key, str)
+                and key not in FORBIDDEN_RUNTIME_KEYS
+                and _runtime_payload_is_safe(nested, active_ids)
+                for key, nested in value.items()
+            )
+        finally:
+            active_ids.remove(identifier)
+    if isinstance(value, (tuple, list)):
+        return _runtime_container_is_safe(value, value, active_ids)
+    if isinstance(value, np.ndarray):
+        identifier = id(value)
+        if identifier in active_ids:
+            return False
+        active_ids.add(identifier)
+        try:
+            return _runtime_payload_is_safe(value.tolist(), active_ids)
+        finally:
+            active_ids.remove(identifier)
     return False
+
+
+def _runtime_container_is_safe(
+    container: object,
+    values: object,
+    active_ids: set[int],
+) -> bool:
+    identifier = id(container)
+    if identifier in active_ids:
+        return False
+    active_ids.add(identifier)
+    try:
+        return all(_runtime_payload_is_safe(item, active_ids) for item in values)
+    finally:
+        active_ids.remove(identifier)
 
 
 def publish_unique_mode(
@@ -414,12 +484,14 @@ def publish_unique_mode(
     if not isinstance(modes, tuple) or not modes:
         return _unavailable_publication("no_admissible_mode")
     try:
-        mode_ids = tuple(canonical_mode_id(mode) for mode in modes)
-        all_member_ids = tuple(
-            member.attempt_id for mode in modes for member in mode.members
-        )
+        mode_ids_list = []
+        all_member_ids_list = []
         for mode in modes:
             _validate_mode_representative(mode, select_representative(mode))
+            mode_ids_list.append(canonical_mode_id(mode))
+            all_member_ids_list.extend(
+                member.attempt_id for member in mode.members
+            )
             actual_diameter = max(
                 (
                     _distance(first, second)
@@ -433,6 +505,8 @@ def publish_unique_mode(
                 or abs(actual_diameter - mode.diameter_m) > CONTRACT_TOLERANCE
             ):
                 raise ValueError("mode diameter is inconsistent")
+        mode_ids = tuple(mode_ids_list)
+        all_member_ids = tuple(all_member_ids_list)
     except (TypeError, ValueError):
         return _unavailable_publication("malformed_clustering_input")
     if (
@@ -570,6 +644,8 @@ def _validate_mode_representative(
         raise ValueError("mode must contain at least one candidate")
     if not isinstance(representative, LocalCandidate):
         raise ValueError("representative must be a LocalCandidate")
+    if any(not isinstance(member, LocalCandidate) for member in mode.members):
+        raise ValueError("mode contains a malformed candidate")
     if len(mode.member_ids) != len(mode.members):
         raise ValueError("mode member IDs are incomplete")
     actual_ids = tuple(member.attempt_id for member in mode.members)
@@ -625,11 +701,26 @@ def _valid_local_candidate(candidate: object) -> bool:
         isinstance(candidate, LocalCandidate)
         and isinstance(candidate.attempt_id, str)
         and candidate.attempt_id
-        and _finite_point(candidate.estimate) is not None
+        and _strict_finite_point(candidate.estimate) is not None
         and (cost := _finite_scalar(candidate.objective_cost)) is not None
         and cost >= 0.0
         and isinstance(candidate.payload, Mapping)
         and not _contains_forbidden_runtime_key(candidate.payload)
+    )
+
+
+def _canonical_local_candidate(candidate: object) -> LocalCandidate | None:
+    if not _valid_local_candidate(candidate):
+        return None
+    estimate = _strict_finite_point(candidate.estimate)
+    cost = _finite_scalar(candidate.objective_cost)
+    if estimate is None or cost is None:
+        return None
+    return LocalCandidate(
+        candidate.attempt_id,
+        estimate,
+        cost,
+        candidate.payload,
     )
 
 

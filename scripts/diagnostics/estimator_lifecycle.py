@@ -3,7 +3,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 import math
-from numbers import Integral
+from numbers import Integral, Real
 
 import numpy as np
 
@@ -25,6 +25,42 @@ PRIVATE_STATE_FIELDS = (
     "last_held_velocity",
     "history_version",
 )
+FORBIDDEN_RUNTIME_KEYS = frozenset({
+    "truth_position",
+    "future_estimate",
+    "analyzer_label",
+    "realized_error",
+})
+FRESH_PUBLIC_FIELDS = frozenset({
+    "output_status",
+    "estimate",
+    "modeled_covariance",
+    "epsilon",
+    "prediction_age",
+    "aged_modeled_radius",
+    "base_anchor_provenance",
+    "mode_id",
+    "reason",
+})
+PREDICTED_PUBLIC_FIELDS = frozenset({
+    "output_status",
+    "estimate",
+    "modeled_covariance",
+    "epsilon",
+    "prediction_age",
+    "aged_modeled_radius",
+    "base_anchor_provenance",
+})
+UNAVAILABLE_PUBLIC_FIELDS = frozenset({
+    "output_status",
+    "estimate",
+    "modeled_covariance",
+    "epsilon",
+    "prediction_age",
+    "aged_modeled_radius",
+    "base_anchor_provenance",
+    "reason",
+})
 
 
 @dataclass(frozen=True)
@@ -335,9 +371,16 @@ def finalize_qualified_lifecycle(
     status = _decision_field(decision, "status")
     representative = _decision_field(decision, "representative")
     mode_id = _decision_field(decision, "mode_id")
+    decision_reason = _decision_field(decision, "reason")
     fresh_state = (
         _candidate_state(representative)
-        if status == "fresh" and isinstance(mode_id, str) and mode_id
+        if (
+            status == "fresh"
+            and isinstance(mode_id, str)
+            and mode_id
+            and isinstance(decision_reason, str)
+            and decision_reason
+        )
         else None
     )
     if fresh_state is not None:
@@ -377,7 +420,7 @@ def finalize_qualified_lifecycle(
                     "aged_modeled_radius": None,
                     "base_anchor_provenance": provenance,
                     "mode_id": mode_id,
-                    "reason": _decision_field(decision, "reason"),
+                    "reason": decision_reason,
                 },
                 "next_private_state": next_private,
                 "history_version": next_version,
@@ -393,21 +436,52 @@ def finalize_qualified_lifecycle(
 def _canonical_public_state(
     value: object,
 ) -> tuple[str, np.ndarray, np.ndarray, int] | None:
-    if not isinstance(value, Mapping):
+    if (
+        not isinstance(value, Mapping)
+        or not _runtime_public_payload_is_safe(value)
+    ):
         return None
     status = value.get("output_status")
     age = _nonnegative_integer(value.get("prediction_age"))
     if status == "fresh":
-        if age != 0:
+        if (
+            set(value) != FRESH_PUBLIC_FIELDS
+            or age != 0
+            or value.get("aged_modeled_radius") is not None
+            or not isinstance(value.get("mode_id"), str)
+            or not value.get("mode_id")
+            or not isinstance(value.get("reason"), str)
+            or not value.get("reason")
+            or _canonical_provenance(value.get("base_anchor_provenance")) is None
+        ):
             return None
     elif status == "predicted":
-        if age not in (1, 2):
+        if (
+            set(value) != PREDICTED_PUBLIC_FIELDS
+            or age not in (1, 2)
+            or value.get("epsilon") is not None
+            or value.get("base_anchor_provenance") != []
+        ):
             return None
     else:
         return None
     estimate = _finite_vector(value.get("estimate"))
     covariance = _canonical_spd_covariance(value.get("modeled_covariance"))
     if estimate is None or covariance is None:
+        return None
+    expected_radius = _modeled_radius(covariance)
+    raw_radius = (
+        value.get("epsilon")
+        if status == "fresh"
+        else value.get("aged_modeled_radius")
+    )
+    radius = _finite_real(raw_radius)
+    if (
+        radius is None
+        or radius <= 0.0
+        or abs(radius - expected_radius)
+        > COVARIANCE_ATOL + COVARIANCE_RTOL * abs(expected_radius)
+    ):
         return None
     return status, estimate, covariance, age
 
@@ -437,8 +511,9 @@ def _propagate_public_state(previous_public: object, velocity: np.ndarray) -> di
 def _retained_public_prediction(value: object) -> Mapping:
     state = _canonical_public_state(value)
     if state is None or state[0] != "predicted":
-        if isinstance(value, Mapping) and value.get("output_status") == "unavailable":
-            return value
+        unavailable_reason = _canonical_unavailable_reason(value)
+        if unavailable_reason is not None:
+            return _make_unavailable_public(unavailable_reason)
         return _make_unavailable_public("no_qualified_public_output")
     _, estimate, covariance, age = state
     radius = 3.0 * math.sqrt(float(np.linalg.eigvalsh(covariance)[-1]))
@@ -464,6 +539,68 @@ def _make_unavailable_public(reason: str) -> dict:
         "base_anchor_provenance": [],
         "reason": reason,
     }
+
+
+def _canonical_unavailable_reason(value: object) -> str | None:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != UNAVAILABLE_PUBLIC_FIELDS
+        or not _runtime_public_payload_is_safe(value)
+        or value.get("output_status") != "unavailable"
+        or any(
+            value.get(field) is not None
+            for field in (
+                "estimate",
+                "modeled_covariance",
+                "epsilon",
+                "prediction_age",
+                "aged_modeled_radius",
+            )
+        )
+        or value.get("base_anchor_provenance") != []
+        or not isinstance(value.get("reason"), str)
+        or not value.get("reason")
+    ):
+        return None
+    return value["reason"]
+
+
+def _runtime_public_payload_is_safe(value: object) -> bool:
+    if isinstance(value, Mapping):
+        return all(
+            isinstance(key, str)
+            and key not in FORBIDDEN_RUNTIME_KEYS
+            and _runtime_public_payload_is_safe(nested)
+            for key, nested in value.items()
+        )
+    if isinstance(value, (tuple, list)):
+        return all(_runtime_public_payload_is_safe(item) for item in value)
+    if value is None or isinstance(value, (str, bool)):
+        return True
+    return _finite_real(value) is not None
+
+
+def _finite_real(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        return None
+    scalar = float(value)
+    return scalar if math.isfinite(scalar) else None
+
+
+def _canonical_provenance(value: object) -> list[int] | None:
+    if not isinstance(value, list):
+        return None
+    roots = []
+    for item in value:
+        root = _nonnegative_integer(item)
+        if root is None:
+            return None
+        roots.append(root)
+    return roots if roots == sorted(set(roots)) else None
+
+
+def _modeled_radius(covariance: np.ndarray) -> float:
+    return 3.0 * math.sqrt(float(np.linalg.eigvalsh(covariance)[-1]))
 
 
 def _retained_private_state(

@@ -348,3 +348,65 @@ class QualifiedLifecycleTests(unittest.TestCase):
         self.assertEqual(result["public_output"]["output_status"], "unavailable")
         self.assertIsNone(result["next_private_state"])
         self.assertEqual(result["history_version"], 0)
+
+    def test_malformed_public_inputs_canonicalize_unavailable_and_keep_private(self):
+        initial = self.initial_fresh()
+        prior = advance_qualified_prior(
+            initial["public_output"],
+            initial["next_private_state"],
+            [0.0, 0.0],
+            next_frame_index=1,
+            applied_command_frame=0,
+            mission_horizon_frames=10,
+            history_version=2,
+        )
+        predicted = dict(prior.public_prediction)
+        missing = dict(predicted)
+        missing.pop("epsilon")
+        malformed_inputs = {
+            "missing_field": missing,
+            "unknown_field": dict(predicted, unknown=True),
+            "noncanonical_predicted_field": dict(predicted, epsilon=3.0),
+            "recursive_forbidden_field": dict(
+                predicted,
+                diagnostics={"nested": [{"truth_position": [9.0, 9.0]}]},
+            ),
+            "stale_unavailable_localization": {
+                "output_status": "unavailable",
+                "estimate": [9.0, 9.0],
+                "modeled_covariance": [[1.0, 0.0], [0.0, 1.0]],
+                "epsilon": None,
+                "prediction_age": None,
+                "aged_modeled_radius": None,
+                "base_anchor_provenance": [],
+                "reason": "stale",
+                "diagnostics": {"truth_position": [9.0, 9.0]},
+            },
+        }
+        expected_keys = {
+            "output_status",
+            "estimate",
+            "modeled_covariance",
+            "epsilon",
+            "prediction_age",
+            "aged_modeled_radius",
+            "base_anchor_provenance",
+            "reason",
+        }
+
+        for name, public_input in malformed_inputs.items():
+            with self.subTest(name=name):
+                result = finalize_qualified_lifecycle(
+                    self.unavailable_decision(),
+                    PriorBundle(public_input, prior.private_prior, 2),
+                    frame_index=1,
+                    mission_horizon_frames=10,
+                )
+
+                public = result["public_output"]
+                self.assertEqual(public["output_status"], "unavailable")
+                self.assertEqual(set(public), expected_keys)
+                self.assertIsNone(public["estimate"])
+                self.assertIsNone(public["modeled_covariance"])
+                self.assertNotIn("truth_position", json.dumps(public))
+                self.assertIs(result["next_private_state"], prior.private_prior)

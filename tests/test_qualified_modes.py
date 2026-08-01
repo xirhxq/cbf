@@ -11,6 +11,8 @@ from scripts.diagnostics.qualified_modes import (
     DeploymentContract,
     MODE_TOLERANCE_M,
     LocalCandidate,
+    ModeClustering,
+    ModeQualification,
     NumericalMode,
     QualifiedStart,
     canonical_mode_id,
@@ -106,6 +108,46 @@ class ModeClusteringTests(unittest.TestCase):
             0.0,
         )
         self.assertEqual(canonical_mode_id(mode), canonical_mode_id(renamed))
+
+    def test_integer_coordinates_canonicalize_for_representative_and_mode_id(self):
+        integer_candidate = LocalCandidate("integer", (-1490, 0), 1.0, {})
+        integer_mode = NumericalMode(("integer",), (integer_candidate,), 0.0)
+        float_candidate = LocalCandidate("float", (-1490.0, 0.0), 1.0, {})
+        float_mode = NumericalMode(("float",), (float_candidate,), 0.0)
+
+        try:
+            representative = select_representative(integer_mode)
+            integer_mode_id = canonical_mode_id(integer_mode)
+        except Exception as error:
+            outcome = type(error).__name__
+            representative = None
+            integer_mode_id = None
+        else:
+            outcome = "accepted"
+
+        self.assertEqual(outcome, "accepted")
+        self.assertTrue(all(type(value) is float for value in representative.estimate))
+        self.assertEqual(integer_mode_id, canonical_mode_id(float_mode))
+
+    def test_representative_and_mode_id_reject_malformed_coordinates_with_value_error(self):
+        malformed_estimates = (
+            ("-1490", "0"),
+            (True, 0.0),
+            (math.nan, 0.0),
+        )
+        for estimate in malformed_estimates:
+            candidate = LocalCandidate("bad", estimate, 1.0, {})
+            mode = NumericalMode(("bad",), (candidate,), 0.0)
+            outcomes = []
+            for operation in (select_representative, canonical_mode_id):
+                try:
+                    operation(mode)
+                except Exception as error:
+                    outcomes.append(type(error).__name__)
+                else:
+                    outcomes.append("accepted")
+            with self.subTest(estimate=estimate):
+                self.assertEqual(outcomes, ["ValueError", "ValueError"])
 
     def test_representative_precedence_is_complete_within_a_valid_cluster(self):
         cases = (
@@ -344,6 +386,33 @@ class DeploymentQualificationTests(unittest.TestCase):
                 self.domain(),
             )
 
+    def test_deployment_canonicalizes_integers_and_rejects_malformed_coordinates(self):
+        integer_candidate = LocalCandidate("integer", (-1490, 0), 1.0, {})
+        integer_mode = NumericalMode(("integer",), (integer_candidate,), 0.0)
+        try:
+            integer_result = qualify_deployment_mode(
+                integer_mode,
+                integer_candidate,
+                self.domain(),
+            )
+        except Exception as error:
+            integer_outcome = type(error).__name__
+        else:
+            integer_outcome = "admissible" if integer_result.admissible else "rejected"
+        self.assertEqual(integer_outcome, "admissible")
+
+        for estimate in (("-1490", "0"), (True, 0.0), (math.nan, 0.0)):
+            candidate = LocalCandidate("bad", estimate, 1.0, {})
+            mode = NumericalMode(("bad",), (candidate,), 0.0)
+            try:
+                qualify_deployment_mode(mode, candidate, self.domain())
+            except Exception as error:
+                outcome = type(error).__name__
+            else:
+                outcome = "accepted"
+            with self.subTest(estimate=estimate):
+                self.assertEqual(outcome, "ValueError")
+
     def test_publication_refuses_nonseparable_zero_and_multiple_modes(self):
         ocean = self.mode("ocean", (-1490.0, 0.0))
         land = self.mode("land", (-1610.0, 0.0))
@@ -411,6 +480,57 @@ class DeploymentQualificationTests(unittest.TestCase):
         self.assertEqual(decision.status, "unavailable")
         self.assertEqual(decision.reason, "malformed_clustering_input")
 
+    def test_publication_canonicalizes_integers_and_fails_closed_on_bad_coordinates(self):
+        integer_candidate = LocalCandidate("integer", (-1490, 0), 1.0, {})
+        integer_mode = NumericalMode(("integer",), (integer_candidate,), 0.0)
+        float_mode = NumericalMode(
+            ("float",),
+            (LocalCandidate("float", (-1490.0, 0.0), 1.0, {}),),
+            0.0,
+        )
+        integer_clustering = ModeClustering(
+            MODE_TOLERANCE_M,
+            True,
+            "separable",
+            (integer_mode,),
+        )
+        qualification = ModeQualification(
+            canonical_mode_id(float_mode),
+            True,
+            "deployment_side",
+            60.0,
+        )
+        try:
+            published = publish_unique_mode(integer_clustering, (qualification,))
+        except Exception as error:
+            integer_outcome = type(error).__name__
+            published = None
+        else:
+            integer_outcome = published.status
+
+        self.assertEqual(integer_outcome, "fresh")
+        self.assertTrue(all(
+            type(value) is float for value in published.representative.estimate
+        ))
+
+        for estimate in (("-1490", "0"), (True, 0.0), (math.nan, 0.0)):
+            candidate = LocalCandidate("bad", estimate, 1.0, {})
+            mode = NumericalMode(("bad",), (candidate,), 0.0)
+            clustering = ModeClustering(
+                MODE_TOLERANCE_M,
+                True,
+                "separable",
+                (mode,),
+            )
+            try:
+                decision = publish_unique_mode(clustering, (qualification,))
+            except Exception as error:
+                outcome = type(error).__name__
+            else:
+                outcome = decision.status
+            with self.subTest(estimate=estimate):
+                self.assertEqual(outcome, "unavailable")
+
 
 class HistoryQualificationTests(unittest.TestCase):
     def mode(self, key, xy, covariance=None):
@@ -461,6 +581,44 @@ class HistoryQualificationTests(unittest.TestCase):
         self.assertEqual(publication.status, "fresh")
         self.assertEqual(publication.mode_id, canonical_mode_id(near))
         self.assertEqual(publication.representative.attempt_id, "near")
+
+    def test_history_canonicalizes_integers_and_rejects_malformed_coordinates(self):
+        integer_candidate = LocalCandidate(
+            "integer",
+            (1, 0),
+            1.0,
+            {"covariance": [[0.5, 0.0], [0.0, 0.5]]},
+        )
+        integer_mode = NumericalMode(("integer",), (integer_candidate,), 0.0)
+        try:
+            integer_result = qualify_history_mode(
+                integer_mode,
+                integer_candidate,
+                self.prior(),
+                11.829007011943707,
+            )
+        except Exception as error:
+            integer_outcome = type(error).__name__
+        else:
+            integer_outcome = "admissible" if integer_result.admissible else "rejected"
+        self.assertEqual(integer_outcome, "admissible")
+
+        for estimate in (("1", "0"), (True, 0.0), (math.nan, 0.0)):
+            candidate = replace(integer_candidate, attempt_id="bad", estimate=estimate)
+            mode = NumericalMode(("bad",), (candidate,), 0.0)
+            try:
+                qualify_history_mode(
+                    mode,
+                    candidate,
+                    self.prior(),
+                    11.829007011943707,
+                )
+            except Exception as error:
+                outcome = type(error).__name__
+            else:
+                outcome = "accepted"
+            with self.subTest(estimate=estimate):
+                self.assertEqual(outcome, "ValueError")
 
     def test_zero_or_multiple_history_modes_do_not_publish(self):
         near_a = self.mode("near-a", (1.0, 0.0))
@@ -737,6 +895,35 @@ class QualifierPayloadSchemaTests(unittest.TestCase):
                         self.prior,
                         11.829007011943707,
                     )
+
+    def test_nested_object_arrays_and_opaque_payloads_fail_closed(self):
+        malformed_payloads = {
+            "nested_forbidden_object_array": {
+                "covariance": [[1.0, 0.0], [0.0, 1.0]],
+                "metadata": np.array(
+                    [{"nested": {"truth_position": [9.0, 9.0]}}],
+                    dtype=object,
+                ),
+            },
+            "unsupported_opaque_container": {
+                "covariance": [[1.0, 0.0], [0.0, 1.0]],
+                "metadata": object(),
+            },
+        }
+        for name, payload in malformed_payloads.items():
+            candidate = replace(self.representative, payload=payload)
+            mode = NumericalMode(
+                (candidate.attempt_id,),
+                (candidate,),
+                0.0,
+            )
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                qualify_all(
+                    (mode,),
+                    (candidate,),
+                    "deployment",
+                    {"domain": self.domain},
+                )
 
     def test_mismatched_modes_representatives_and_unknown_kind_raise(self):
         with self.assertRaises(ValueError):
