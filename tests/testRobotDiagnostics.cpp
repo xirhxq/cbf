@@ -75,6 +75,48 @@ json makeSingleRobotNoCbfConfig(const std::string& optimiser) {
     };
 }
 
+json makeTheoremRateConfig() {
+    json settings = makeSingleRobotNoCbfConfig("Gurobi");
+    settings["world"]["boundary"] = json::array({
+        json::array({-50.0, -50.0}),
+        json::array({50.0, -50.0}),
+        json::array({50.0, 50.0}),
+        json::array({-50.0, 50.0})
+    });
+    settings["initial"]["position"]["positions"] =
+        json::array({json::array({0.0, 0.0})});
+    settings["bases"] = json::array({
+        json::array({-10.0, 0.0}),
+        json::array({0.0, -10.0})
+    });
+    settings["formation"]["bases-id"] =
+        json::array({json::array({0, 1})});
+    settings["position_covariance"] = {
+        {"enable", true},
+        {"ranging_sigma", 2.0},
+        {"uncertainty-type", "std_avg"}
+    };
+    settings["cbfs"]["uncertainty-rate"] = {
+        {"mode", "analytic-topological"}
+    };
+    settings["cbfs"]["input-limits"] = {
+        {"on", true},
+        {"planar-component-max", 25.0},
+        {"yaw-rate-max", 0.35}
+    };
+    settings["cbfs"]["without-slack"]["comm-fixed"] = {
+        {"on", true},
+        {"max-range", 100.0},
+        {"k", 1.0},
+        {"compensate-velocity", false},
+        {"consider-uncertainty", true},
+        {"min-neighbour-id-offset", -2},
+        {"max-neighbour-id-offset", 0},
+        {"alpha", {{"coe", 0.1}, {"pow", 1}}}
+    };
+    return settings;
+}
+
 }  // namespace
 
 TEST_CASE("RobotUsesZeroNominalWhenNoPolicyIsConfigured") {
@@ -121,4 +163,224 @@ TEST_CASE("RobotRecordsFailureWhenSolverStatusQueryThrows") {
     CHECK(robot.opt.value("error", "missing") == "Status check failed");
     CHECK(robot.opt.value("solver_info", json::object()).value("status", "missing")
           == "status-check-error");
+}
+
+TEST_CASE("theorem covariance entry point installs the exact rate certificate state") {
+    json settings = makeTheoremRateConfig();
+    Robot robot(1, settings);
+    robot.certificateSnapshotVersion = 7;
+    const auto independentlyComputed =
+        cbf2026::computeNodeRateCertificate({
+            robot.id,
+            robot.idInMyPart,
+            7,
+            25.0,
+            {
+                {
+                    {cbf2026::canonicalBaseReferenceId(0), 0, 7, true,
+                     Eigen::Matrix2d::Zero(), 0.0, 0.0},
+                    10.0,
+                    Eigen::Vector2d::UnitX(),
+                    4.0
+                },
+                {
+                    {cbf2026::canonicalBaseReferenceId(1), 0, 7, true,
+                     Eigen::Matrix2d::Zero(), 0.0, 0.0},
+                    10.0,
+                    Eigen::Vector2d::UnitY(),
+                    4.0
+                }
+            }
+        });
+
+    robot.getCovariance(
+        robot.settings["cbfs"]["without-slack"]["comm-fixed"]
+    );
+
+    CHECK(robot.certificateAvailable);
+    CHECK(robot.rateCertificate.robotId == robot.id);
+    CHECK(robot.rateCertificate.snapshotVersion == 7);
+    CHECK((robot.rateCertificate.information.array()
+           == independentlyComputed.information.array()).all());
+    CHECK((robot.positionCovariance.array()
+           == independentlyComputed.covariance.array()).all());
+    CHECK(robot.currentUncertainty == independentlyComputed.epsilon);
+
+    robot.positionCovariance.setConstant(99.0);
+    robot.currentUncertainty = -1.0;
+    robot.getCovariance(
+        robot.settings["cbfs"]["without-slack"]["comm-fixed"]
+    );
+
+    CHECK((robot.positionCovariance.array()
+           == independentlyComputed.covariance.array()).all());
+    CHECK(robot.currentUncertainty == independentlyComputed.epsilon);
+
+    robot.bases[1] = robot.bases[0];
+    CHECK_THROWS_AS(
+        robot.getCovariance(
+            robot.settings["cbfs"]["without-slack"]["comm-fixed"]
+        ),
+        std::invalid_argument
+    );
+    CHECK_FALSE(robot.certificateAvailable);
+}
+
+TEST_CASE("theorem hard row uses analytic epsilon rate not backward history") {
+    json settings = makeTheoremRateConfig();
+    Robot robot(1, settings);
+    robot.rateCertificate = cbf2026::computeNodeRateCertificate({
+        robot.id,
+        robot.idInMyPart,
+        7,
+        25.0,
+        {
+            {
+                {cbf2026::canonicalBaseReferenceId(0), 0, 7, true,
+                 Eigen::Matrix2d::Zero(), 0.0, 0.0},
+                10.0,
+                Eigen::Vector2d::UnitX(),
+                1.0
+            },
+            {
+                {cbf2026::canonicalBaseReferenceId(1), 0, 7, true,
+                 Eigen::Matrix2d::Zero(), 0.0, 0.0},
+                10.0,
+                Eigen::Vector2d::UnitY(),
+                1.0
+            }
+        }
+    });
+    robot.certificateAvailable = true;
+    robot.currentUncertainty = robot.rateCertificate.epsilon;
+    robot.setupFormation();
+
+    auto& commConfig =
+        robot.settings["cbfs"]["without-slack"]["comm-fixed"];
+    robot.previousUncertainty = -1000.0;
+    robot.uncertaintyRate = 1000.0;
+    robot.setFixedCommCBF(commConfig);
+    const Eigen::VectorXd state = robot.model->getX();
+    const double first = robot.cbfNoSlack.cbfs.at(
+        "fixedCommCBF(base-0)"
+    ).dhdt(state, 0.0);
+
+    robot.previousUncertainty = 1000.0;
+    robot.uncertaintyRate = 0.0;
+    robot.setFixedCommCBF(commConfig);
+    const double second = robot.cbfNoSlack.cbfs.at(
+        "fixedCommCBF(base-0)"
+    ).dhdt(state, 0.0);
+
+    CHECK(first == doctest::Approx(
+        -robot.rateCertificate.epsilonRateBound
+    ).epsilon(1e-12));
+    CHECK(second == doctest::Approx(first).epsilon(1e-12));
+}
+
+TEST_CASE("theorem certificate requires the frozen componentwise QP bound") {
+    json settings = makeTheoremRateConfig();
+
+    SUBCASE("input limits are disabled") {
+        settings["cbfs"]["input-limits"]["on"] = false;
+        Robot robot(1, settings);
+        CHECK_THROWS_AS(
+            robot.getCovariance(
+                robot.settings["cbfs"]["without-slack"]["comm-fixed"]
+            ),
+            std::invalid_argument
+        );
+        CHECK_FALSE(robot.certificateAvailable);
+    }
+
+    SUBCASE("planar component limit differs from 25") {
+        settings["cbfs"]["input-limits"]["planar-component-max"] = 24.0;
+        Robot robot(1, settings);
+        CHECK_THROWS_AS(
+            robot.getCovariance(
+                robot.settings["cbfs"]["without-slack"]["comm-fixed"]
+            ),
+            std::invalid_argument
+        );
+        CHECK_FALSE(robot.certificateAvailable);
+    }
+}
+
+TEST_CASE("theorem refresh preserves descriptive backward uncertainty history") {
+    json settings = makeTheoremRateConfig();
+    Robot robot(1, settings);
+    robot.certificateSnapshotVersion = 7;
+    robot.hasUncertaintyHistory = true;
+    robot.previousUncertainty = 1.0;
+    robot.currentUncertainty = 1.0;
+    robot.uncertaintyRate = 99.0;
+
+    robot.updateCovarianceAndRate(0.5);
+
+    CHECK(robot.previousUncertainty == doctest::Approx(1.0));
+    CHECK(robot.currentUncertainty == doctest::Approx(6.0));
+    CHECK(robot.uncertaintyRate == doctest::Approx(10.0));
+    CHECK(robot.rateCertificate.epsilonRateBound
+          > robot.uncertaintyRate);
+}
+
+TEST_CASE("theorem recursion consumes predecessor covariance rate certificate") {
+    json settings = makeTheoremRateConfig();
+    settings["num"] = 2;
+    settings["all"] = json::array({1, 2});
+    settings["initial"]["position"]["positions"] = json::array({
+        json::array({0.0, 0.0}),
+        json::array({5.0, 5.0})
+    });
+    Robot robot(2, settings);
+    robot.certificateSnapshotVersion = 7;
+    robot.comm->receivePosition2D(1, Point(0.0, 0.0));
+
+    auto makePredecessor = [](double componentMax) {
+        return cbf2026::computeNodeRateCertificate({
+            1,
+            1,
+            7,
+            componentMax,
+            {
+                {
+                    {cbf2026::canonicalBaseReferenceId(0), 0, 7, true,
+                     Eigen::Matrix2d::Zero(), 0.0, 0.0},
+                    10.0,
+                    Eigen::Vector2d::UnitX(),
+                    1.0
+                },
+                {
+                    {cbf2026::canonicalBaseReferenceId(1), 0, 7, true,
+                     Eigen::Matrix2d::Zero(), 0.0, 0.0},
+                    10.0,
+                    Eigen::Vector2d::UnitY(),
+                    1.0
+                }
+            }
+        });
+    };
+    const auto slowerPredecessor = makePredecessor(5.0);
+    const auto fasterPredecessor = makePredecessor(25.0);
+    REQUIRE((slowerPredecessor.covariance.array()
+             == fasterPredecessor.covariance.array()).all());
+    REQUIRE(slowerPredecessor.covarianceRateBound
+            < fasterPredecessor.covarianceRateBound);
+
+    robot.otherRateCertificates[1] = slowerPredecessor;
+    robot.uncertaintyRate = 10000.0;
+    robot.getCovariance(
+        robot.settings["cbfs"]["without-slack"]["comm-fixed"]
+    );
+    const Eigen::Matrix2d slowerCovariance = robot.positionCovariance;
+    const double slowerBound = robot.rateCertificate.covarianceRateBound;
+
+    robot.otherRateCertificates[1] = fasterPredecessor;
+    robot.uncertaintyRate = 0.0;
+    robot.getCovariance(
+        robot.settings["cbfs"]["without-slack"]["comm-fixed"]
+    );
+
+    CHECK(robot.positionCovariance.isApprox(slowerCovariance, 1e-12));
+    CHECK(robot.rateCertificate.covarianceRateBound > slowerBound);
 }

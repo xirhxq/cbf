@@ -4,6 +4,7 @@
 #include "utils.h"
 #include "cbf/cbf"
 #include "cbf/CBFConfig.hpp"
+#include "cbf/FimRateCertificate.hpp"
 #include "world/world"
 #include "models/models"
 #include "optimisers/optimisers"
@@ -43,6 +44,12 @@ public:
     double currentUncertainty = 0.0;
     double uncertaintyRate = 0.0;
     bool hasUncertaintyHistory = false;
+    cbf2026::NodeRateCertificate rateCertificate =
+        cbf2026::baseRateCertificate(0, 0);
+    bool certificateAvailable = false;
+    std::uint64_t certificateSnapshotVersion = 0;
+    std::unordered_map<int, cbf2026::NodeRateCertificate>
+        otherRateCertificates;
 
     std::string cvtExplorationMode;
     double cvtFrontFocusDistance;
@@ -516,21 +523,107 @@ public:
         return references;
     }
 
+    bool usesAnalyticTopologicalRateCertificate() const {
+        return settings.contains("cbfs")
+               && settings["cbfs"].contains("uncertainty-rate")
+               && settings["cbfs"]["uncertainty-rate"].value("mode", "off")
+                  == "analytic-topological";
+    }
+
     void getCovariance(const json& config) {
-        if (!enablePositionCovariance) return;
+        const bool theoremAligned = usesAnalyticTopologicalRateCertificate();
+        certificateAvailable = false;
+        if (!enablePositionCovariance) {
+            return;
+        }
+        const json inputLimitsConfig =
+            settings["cbfs"].value("input-limits", json::object());
+        if (theoremAligned
+            && (!inputLimitsConfig.value("on", false)
+                || !inputLimitsConfig.contains("planar-component-max")
+                || !inputLimitsConfig.at("planar-component-max").is_number()
+                || !std::isfinite(
+                    inputLimitsConfig.at("planar-component-max").get<double>()
+                )
+                || inputLimitsConfig.at("planar-component-max").get<double>()
+                   != 25.0
+                || settings.value("model", "") != "SingleIntegrate2D"
+                || model->uSize() != 3)) {
+            throw std::invalid_argument(
+                "analytic topological certificate requires enabled +/-25 planar QP bounds"
+            );
+        }
 
         const json references = activeLocalizationReferences(config);
+        json certificateReferences = references;
+        auto sortIds = [](json& ids) {
+            std::vector<int> ordered = ids.get<std::vector<int>>();
+            std::sort(ordered.begin(), ordered.end());
+            ids = ordered;
+        };
+        sortIds(certificateReferences["baseIds"]);
+        sortIds(certificateReferences["anchorIds"]);
+        const json& diagnosticReferences = theoremAligned
+            ? certificateReferences
+            : references;
         myCovarianceFormation = {
             {"id", id},
-            {"anchorIds", references.at("anchorIds")},
-            {"baseIds", references.at("baseIds")}
+            {"anchorIds", diagnosticReferences.at("anchorIds")},
+            {"baseIds", diagnosticReferences.at("baseIds")}
         };
 
-        Point p = this->model->xy();
-        std::vector<Point> anchorPoints;
-        std::vector<Eigen::Matrix2d> anchorCovariances;
+        const Point currentPosition = model->xy();
+        const double planarComponentMax =
+            inputLimitsConfig.value("planar-component-max", 25.0);
+        const double uavSpeedBound =
+            std::sqrt(2.0) * planarComponentMax;
+        std::vector<cbf2026::ReferenceRateInput> rateInputs;
 
-        for (const json& baseIdJson : references.at("baseIds")) {
+        auto makeGeometry = [&](
+            int referenceId,
+            int localIndex,
+            bool hoveringBase,
+            const Point& referencePosition,
+            const Eigen::Matrix2d& covariance,
+            double covarianceRateBound,
+            double speedBound,
+            std::uint64_t predecessorSnapshotVersion
+        ) {
+            const double distance =
+                currentPosition.distance_to(referencePosition);
+            const double rangingSigmaAtDistance =
+                rangingUncertaintyFunction(distance);
+            const double rangingVariance =
+                rangingSigmaAtDistance * rangingSigmaAtDistance;
+            if (!std::isfinite(rangingVariance)
+                || rangingVariance <= 0.0) {
+                throw std::invalid_argument(
+                    "#" + std::to_string(id)
+                    + " has invalid covariance validity: total variance for active reference must be finite and positive"
+                );
+            }
+            const Eigen::Vector2d displacement(
+                currentPosition.x - referencePosition.x,
+                currentPosition.y - referencePosition.y
+            );
+            rateInputs.push_back({
+                {
+                    referenceId,
+                    localIndex,
+                    predecessorSnapshotVersion,
+                    hoveringBase,
+                    covariance,
+                    covarianceRateBound,
+                    speedBound
+                },
+                distance,
+                displacement / distance,
+                rangingVariance
+            });
+        };
+
+        for (const json& baseIdJson :
+             certificateReferences.at("baseIds")) {
             const int baseId = baseIdJson.get<int>();
             if (baseId < 0 || baseId >= static_cast<int>(bases.size())) {
                 throw std::invalid_argument(
@@ -539,148 +632,97 @@ public:
                     + std::to_string(baseId)
                 );
             }
-            anchorPoints.push_back(bases.at(baseId));
-            anchorCovariances.push_back(Eigen::Matrix2d::Zero());
+            makeGeometry(
+                cbf2026::canonicalBaseReferenceId(baseId),
+                0,
+                true,
+                bases.at(baseId),
+                Eigen::Matrix2d::Zero(),
+                0.0,
+                0.0,
+                certificateSnapshotVersion
+            );
         }
 
-        for (const json& anchorIdJson : references.at("anchorIds")) {
+        for (const json& anchorIdJson :
+             certificateReferences.at("anchorIds")) {
             const int otherId = anchorIdJson.get<int>();
             const auto positionIt = comm->_othersPos.find(otherId);
-            const auto covarianceIt =
-                comm->_othersPositionCovariance.find(otherId);
-            if (positionIt == comm->_othersPos.end()
-                || covarianceIt == comm->_othersPositionCovariance.end()) {
+            if (positionIt == comm->_othersPos.end()) {
                 throw std::invalid_argument(
                     "#" + std::to_string(id)
-                    + " is missing active localization data for #"
+                    + " is missing active localization position for #"
                     + std::to_string(otherId)
                 );
             }
-            anchorPoints.push_back(positionIt->second);
-            anchorCovariances.push_back(covarianceIt->second);
-        }
 
-        std::vector<double> angles;
-        std::vector<double> total_variances;
-
-        for (int i = 0; i < anchorPoints.size(); ++i) {
-            double angle = anchorPoints[i].angle_to(p);
-            double distance = p.distance_to(anchorPoints[i]);
-            double ranging_unc = rangingUncertaintyFunction(distance);
-
-            // ρ² = cos²θ·cov(0,0) + sin²θ·cov(1,1) + 2cosθ·sinθ·cov(0,1) + σ²_ranging
-            Eigen::Matrix2d anchor_cov = anchorCovariances[i];
-            double position_var = (std::cos(angle) * std::cos(angle) * anchor_cov(0, 0) +
-                                  std::sin(angle) * std::sin(angle) * anchor_cov(1, 1) +
-                                  2.0 * std::cos(angle) * std::sin(angle) * anchor_cov(0, 1));
-
-            double total_variance = position_var + ranging_unc * ranging_unc;
-
-            if (!std::isfinite(total_variance) || total_variance <= 0.0) {
-                throw std::invalid_argument(
-                    "#" + std::to_string(id)
-                    + " has invalid covariance validity: total variance for active reference "
-                    + std::to_string(i)
-                    + " must be finite and positive"
+            if (theoremAligned) {
+                const auto certificateIt =
+                    otherRateCertificates.find(otherId);
+                if (certificateIt == otherRateCertificates.end()
+                    || certificateIt->second.robotId != otherId) {
+                    throw std::invalid_argument(
+                        "#" + std::to_string(id)
+                        + " is missing predecessor rate certificate for #"
+                        + std::to_string(otherId)
+                    );
+                }
+                makeGeometry(
+                    cbf2026::canonicalUavReferenceId(otherId),
+                    getIdInPart(otherId),
+                    false,
+                    positionIt->second,
+                    certificateIt->second.covariance,
+                    certificateIt->second.covarianceRateBound,
+                    uavSpeedBound,
+                    certificateIt->second.snapshotVersion
+                );
+            } else {
+                const auto covarianceIt =
+                    comm->_othersPositionCovariance.find(otherId);
+                if (covarianceIt
+                    == comm->_othersPositionCovariance.end()) {
+                    throw std::invalid_argument(
+                        "#" + std::to_string(id)
+                        + " is missing active localization data for #"
+                        + std::to_string(otherId)
+                    );
+                }
+                makeGeometry(
+                    cbf2026::canonicalUavReferenceId(otherId),
+                    getIdInPart(otherId),
+                    false,
+                    positionIt->second,
+                    covarianceIt->second,
+                    0.0,
+                    uavSpeedBound,
+                    certificateSnapshotVersion
                 );
             }
-
-            angles.push_back(angle);
-            total_variances.push_back(total_variance);
         }
 
-        int n_anchors = angles.size();
-        if (n_anchors < 2) {
-            throw std::invalid_argument(
-                "#" + std::to_string(this->id) +
-                " has less than two anchor points for covariance calculation"
-            );
-        }
-
-        Eigen::MatrixXd J(n_anchors, 2);
-        Eigen::MatrixXd Sigma = Eigen::MatrixXd::Zero(n_anchors, n_anchors);
-
-        for (int i = 0; i < n_anchors; ++i) {
-            J(i, 0) = std::cos(angles[i]);
-            J(i, 1) = std::sin(angles[i]);
-            Sigma(i, i) = total_variances[i];
-        }
-
-        // Φ = J^T * Σ^(-1) * J (Fisher Information Matrix)
-        Eigen::Matrix2d Phi;
-        Phi = J.transpose() * Sigma.inverse() * J;
-
-        // A relative eigenvalue floor of 1e-12 limits the FIM condition
-        // number to 1e12 while avoiding any regularization of its values.
-        constexpr double relativeSpectralThreshold = 1e-12;
-        if (!Phi.allFinite()) {
+        cbf2026::NodeRateCertificate candidate;
+        try {
+            candidate = cbf2026::computeNodeRateCertificate({
+                id,
+                idInMyPart,
+                certificateSnapshotVersion,
+                planarComponentMax,
+                std::move(rateInputs)
+            });
+        } catch (const std::invalid_argument& error) {
             throw std::invalid_argument(
                 "#" + std::to_string(id)
-                + " has invalid covariance geometry: FIM contains non-finite values"
-            );
-        }
-        const double phiScale = Phi.cwiseAbs().maxCoeff();
-        if ((Phi - Phi.transpose()).cwiseAbs().maxCoeff()
-            > relativeSpectralThreshold * phiScale) {
-            throw std::invalid_argument(
-                "#" + std::to_string(id)
-                + " has invalid covariance geometry: FIM is not symmetric"
-            );
-        }
-        Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> phiEigenSolver(Phi);
-        if (phiEigenSolver.info() != Eigen::Success
-            || !phiEigenSolver.eigenvalues().allFinite()) {
-            throw std::invalid_argument(
-                "#" + std::to_string(id)
-                + " has invalid covariance geometry: FIM eigenvalues are invalid"
-            );
-        }
-        const double minPhiEigenvalue = phiEigenSolver.eigenvalues().minCoeff();
-        const double maxPhiEigenvalue = phiEigenSolver.eigenvalues().maxCoeff();
-        if (maxPhiEigenvalue <= 0.0
-            || minPhiEigenvalue
-               <= relativeSpectralThreshold * maxPhiEigenvalue) {
-            throw std::invalid_argument(
-                "#" + std::to_string(id)
-                + " has invalid covariance geometry: FIM is not positive definite or exceeds the condition limit"
+                + " has invalid covariance FIM certificate: "
+                + error.what()
             );
         }
 
-        positionCovariance = Phi.inverse();
-        if (!positionCovariance.allFinite()) {
-            throw std::invalid_argument(
-                "#" + std::to_string(id)
-                + " has invalid covariance validity: covariance contains non-finite values"
-            );
-        }
-        const double covarianceScale = positionCovariance.cwiseAbs().maxCoeff();
-        if ((positionCovariance - positionCovariance.transpose()).cwiseAbs().maxCoeff()
-            > relativeSpectralThreshold * covarianceScale) {
-            throw std::invalid_argument(
-                "#" + std::to_string(id)
-                + " has invalid covariance validity: covariance is not symmetric"
-            );
-        }
-        Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> covarianceEigenSolver(
-            positionCovariance
-        );
-        if (covarianceEigenSolver.info() != Eigen::Success
-            || !covarianceEigenSolver.eigenvalues().allFinite()
-            || covarianceEigenSolver.eigenvalues().minCoeff()
-               < -relativeSpectralThreshold * covarianceScale) {
-            throw std::invalid_argument(
-                "#" + std::to_string(id)
-                + " has invalid covariance validity: covariance is not positive semidefinite"
-            );
-        }
-
-        const double scalarEpsilon =
-            uncertaintyFromCovarianceFunction(positionCovariance);
-        if (!std::isfinite(scalarEpsilon) || scalarEpsilon < 0.0) {
-            throw std::invalid_argument(
-                "#" + std::to_string(id)
-                + " has invalid covariance validity: configured scalar epsilon is not finite and nonnegative"
-            );
+        rateCertificate = std::move(candidate);
+        positionCovariance = rateCertificate.covariance;
+        if (theoremAligned) {
+            currentUncertainty = rateCertificate.epsilon;
+            certificateAvailable = true;
         }
     }
 
@@ -711,8 +753,18 @@ public:
     void updateCovarianceAndRate(double dt) {
         const auto& commConfig =
             settings["cbfs"]["without-slack"]["comm-fixed"];
+        const bool theoremAligned =
+            usesAnalyticTopologicalRateCertificate();
+        const double descriptiveCurrentBeforeRefresh = currentUncertainty;
         getCovariance(commConfig);
-        updateUncertaintyHistory(uncertaintyFromCovarianceFunction(positionCovariance), dt);
+        const double nextUncertainty =
+            theoremAligned
+            ? rateCertificate.epsilon
+            : uncertaintyFromCovarianceFunction(positionCovariance);
+        if (theoremAligned) {
+            currentUncertainty = descriptiveCurrentBeforeRefresh;
+        }
+        updateUncertaintyHistory(nextUncertainty, dt);
     }
 
     void setupFormation() {
@@ -745,6 +797,13 @@ public:
         std::vector<std::string> anchorCBFNames;
         std::vector<double> formationUncertainties;
         std::vector<double> formationUncertaintyRates;
+        const bool useAnalyticRate =
+            usesAnalyticTopologicalRateCertificate();
+        if (useAnalyticRate && !certificateAvailable) {
+            throw std::invalid_argument(
+                "analytic topological rate certificate is unavailable"
+            );
+        }
 
         for (auto &baseId : myFormation["baseIds"]) {
             int id = baseId.get<int>();
@@ -761,21 +820,52 @@ public:
             formationPoints.push_back(comm->_othersPos[otherId]);
             formationVels.push_back(comm->_othersVel[otherId]);
             anchorCBFNames.push_back("#" + std::to_string(otherId));
-            formationUncertainties.push_back(uncertaintyFromCovarianceFunction(comm->_othersPositionCovariance[otherId]));
-            auto rateIt = comm->_othersUncertaintyRate.find(otherId);
-            formationUncertaintyRates.push_back(
-                rateIt == comm->_othersUncertaintyRate.end() ? 0.0 : rateIt->second
-            );
+            if (useAnalyticRate) {
+                const auto certificateIt =
+                    otherRateCertificates.find(otherId);
+                if (certificateIt == otherRateCertificates.end()
+                    || certificateIt->second.snapshotVersion
+                       != rateCertificate.snapshotVersion) {
+                    throw std::invalid_argument(
+                        "same-version neighbor rate certificate is unavailable"
+                    );
+                }
+                formationUncertainties.push_back(
+                    certificateIt->second.epsilon
+                );
+                formationUncertaintyRates.push_back(
+                    certificateIt->second.epsilonRateBound
+                );
+            } else {
+                formationUncertainties.push_back(
+                    uncertaintyFromCovarianceFunction(
+                        comm->_othersPositionCovariance[otherId]
+                    )
+                );
+                auto rateIt = comm->_othersUncertaintyRate.find(otherId);
+                formationUncertaintyRates.push_back(
+                    rateIt == comm->_othersUncertaintyRate.end()
+                    ? 0.0
+                    : rateIt->second
+                );
+            }
         }
 
-        double myUncertainty = currentUncertainty;
+        const double myUncertainty = useAnalyticRate
+            ? rateCertificate.epsilon
+            : currentUncertainty;
         std::string uncertaintyRateMode = "off";
         if (settings["cbfs"].contains("uncertainty-rate")) {
             uncertaintyRateMode =
                 settings["cbfs"]["uncertainty-rate"].value("mode", "off");
         }
-        bool useUncertaintyRate =
+        const bool useBackwardRate =
             uncertaintyRateMode == "backward-difference-positive";
+        const bool useUncertaintyRate =
+            useBackwardRate || useAnalyticRate;
+        const double myUncertaintyRate = useAnalyticRate
+            ? rateCertificate.epsilonRateBound
+            : uncertaintyRate;
 
         for (int i = 0; i < formationPoints.size(); i++) {
             auto otherPoint = formationPoints[i];
@@ -787,7 +877,7 @@ public:
             bool considerUncertainty = config.value("consider-uncertainty", true);
             double uncertaintyRateSum =
                 considerUncertainty && useUncertaintyRate
-                ? uncertaintyRate + otherUncertaintyRate
+                ? myUncertaintyRate + otherUncertaintyRate
                 : 0.0;
 
             auto fixedFormationCommH = [this, otherPoint, otherVel, maxRange, k, isAnchor, myUncertainty, otherUncertainty, considerUncertainty](VectorXd x, double t) {
@@ -854,7 +944,6 @@ public:
             }
         }
 
-        double myUncertainty = currentUncertainty;
         bool considerUncertainty = config.value("consider-uncertainty", true);
         double safeDistance = config["safe-distance"];
         double k = config.value("k", 1.0);
@@ -864,9 +953,23 @@ public:
             uncertaintyRateMode =
                 settings["cbfs"]["uncertainty-rate"].value("mode", "off");
         }
-        bool useUncertaintyRate =
+        const bool useAnalyticRate =
+            uncertaintyRateMode == "analytic-topological";
+        if (useAnalyticRate && !certificateAvailable) {
+            throw std::invalid_argument(
+                "analytic topological rate certificate is unavailable"
+            );
+        }
+        const double myUncertainty = useAnalyticRate
+            ? rateCertificate.epsilon
+            : currentUncertainty;
+        const double myUncertaintyRate = useAnalyticRate
+            ? rateCertificate.epsilonRateBound
+            : uncertaintyRate;
+        const bool useUncertaintyRate =
             considerUncertainty &&
-            uncertaintyRateMode == "backward-difference-positive";
+            (uncertaintyRateMode == "backward-difference-positive"
+             || useAnalyticRate);
 
         struct SafetyPair {
             int id;
@@ -882,23 +985,41 @@ public:
             if (id == otherId) continue;
 
             double otherUncertainty = 0.0;
-            auto covarianceIt = comm->_othersPositionCovariance.find(otherId);
-            if (enablePositionCovariance &&
-                covarianceIt != comm->_othersPositionCovariance.end()) {
-                otherUncertainty =
-                    uncertaintyFromCovarianceFunction(covarianceIt->second);
+            double otherUncertaintyRate = 0.0;
+            if (useAnalyticRate) {
+                const auto certificateIt =
+                    otherRateCertificates.find(otherId);
+                if (certificateIt == otherRateCertificates.end()
+                    || certificateIt->second.snapshotVersion
+                       != rateCertificate.snapshotVersion) {
+                    throw std::invalid_argument(
+                        "same-version neighbor rate certificate is unavailable"
+                    );
+                }
+                otherUncertainty = certificateIt->second.epsilon;
+                otherUncertaintyRate =
+                    certificateIt->second.epsilonRateBound;
+            } else {
+                auto covarianceIt =
+                    comm->_othersPositionCovariance.find(otherId);
+                if (enablePositionCovariance &&
+                    covarianceIt
+                    != comm->_othersPositionCovariance.end()) {
+                    otherUncertainty =
+                        uncertaintyFromCovarianceFunction(
+                            covarianceIt->second
+                        );
+                }
+                auto rateIt = comm->_othersUncertaintyRate.find(otherId);
+                if (rateIt != comm->_othersUncertaintyRate.end()) {
+                    otherUncertaintyRate = rateIt->second;
+                }
             }
 
             Point otherVelocity(0.0, 0.0);
             auto velocityIt = comm->_othersVel.find(otherId);
             if (velocityIt != comm->_othersVel.end()) {
                 otherVelocity = Point(velocityIt->second);
-            }
-
-            double otherUncertaintyRate = 0.0;
-            auto rateIt = comm->_othersUncertaintyRate.find(otherId);
-            if (rateIt != comm->_othersUncertaintyRate.end()) {
-                otherUncertaintyRate = rateIt->second;
             }
 
             double uncertaintySum =
@@ -937,7 +1058,7 @@ public:
                 considerUncertainty ? myUncertainty + pair.uncertainty : 0.0;
             double uncertaintyRateSum =
                 useUncertaintyRate
-                ? uncertaintyRate + pair.uncertaintyRate
+                ? myUncertaintyRate + pair.uncertaintyRate
                 : 0.0;
 
             CBF safetyCBF;
