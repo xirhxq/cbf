@@ -2,6 +2,7 @@
 
 import math
 from collections.abc import Mapping
+from dataclasses import asdict
 from numbers import Integral, Real
 
 import numpy as np
@@ -12,8 +13,30 @@ from scripts.diagnostics.replay_localization_calibration import (
     fim_radius,
 )
 from scripts.diagnostics.qualified_modes import (
+    MODE_TOLERANCE_M,
+    DeploymentContract,
     LocalCandidate,
+    ModeQualification,
+    canonical_mode_id,
+    cluster_candidates,
+    enumerate_qualified_starts,
     project_local_candidate,
+    publish_unique_mode,
+    qualify_all,
+    select_representative,
+    sensitivity_cluster_counts,
+    stable_attempt_id,
+)
+from scripts.diagnostics.estimator_lifecycle import (
+    FRESH_PUBLIC_FIELDS,
+    PREDICTED_PUBLIC_FIELDS,
+    UNAVAILABLE_PUBLIC_FIELDS,
+    PriorBundle,
+    _canonical_public_state,
+    _canonical_unavailable_reason,
+    advance_qualified_prior,
+    canonical_private_state,
+    finalize_qualified_lifecycle,
 )
 
 
@@ -1596,4 +1619,896 @@ def solve_predictive_multistart(
         "selected_candidate": None,
         "candidate": None,
         "failure_reason": None if records else "no_valid_initial_candidates",
+    }
+
+
+def solve_qualified_multistart(
+    *,
+    references,
+    solver_from_start,
+    live_seed,
+    private_seed,
+    qualifier_kind,
+    qualifier_payload,
+    previous_public,
+    previous_private,
+    held_velocity,
+    frame_index,
+    applied_command_frame,
+    history_version,
+    mission_horizon_frames,
+    active_reference_count,
+    base_anchor_provenance,
+) -> dict:
+    """Solve every stable start and publish only one qualified global mode."""
+    validated = _validate_qualified_runtime_inputs(
+        references=references,
+        solver_from_start=solver_from_start,
+        live_seed=live_seed,
+        private_seed=private_seed,
+        qualifier_kind=qualifier_kind,
+        qualifier_payload=qualifier_payload,
+        previous_public=previous_public,
+        previous_private=previous_private,
+        held_velocity=held_velocity,
+        frame_index=frame_index,
+        applied_command_frame=applied_command_frame,
+        history_version=history_version,
+        mission_horizon_frames=mission_horizon_frames,
+        active_reference_count=active_reference_count,
+        base_anchor_provenance=base_anchor_provenance,
+    )
+    prior_bundle = advance_qualified_prior(
+        previous_public,
+        previous_private,
+        held_velocity,
+        next_frame_index=frame_index,
+        applied_command_frame=applied_command_frame,
+        history_version=history_version,
+        mission_horizon_frames=mission_horizon_frames,
+    )
+    starts = enumerate_qualified_starts(
+        validated["references"],
+        live_seed=live_seed,
+        private_seed=private_seed,
+    )
+    bound_solver = solver_from_start.bind_canonical_references(
+        validated["references"],
+    )
+    if not callable(bound_solver):
+        raise ValueError("bound qualified solver must be callable")
+    solver_results = []
+    for start in starts:
+        raw_result = bound_solver(start)
+        solver_results.append(
+            _canonical_qualified_solver_result(raw_result)
+        )
+
+    attempts = []
+    local_candidates = []
+    for start, result in zip(starts, solver_results, strict=True):
+        attempt_id = stable_attempt_id(start)
+        locally_valid, reason, _ = candidate_local_eligibility(
+            result,
+            active_reference_count=active_reference_count,
+            base_anchor_provenance=base_anchor_provenance,
+        )
+        geometry = _qualified_recompute_solver_geometry(
+            result,
+            validated["references"],
+        )
+        eligible = locally_valid and geometry["solver_geometry_consistent"]
+        if locally_valid and not geometry["solver_geometry_consistent"]:
+            reason = "solver_geometry_mismatch"
+        candidate = (
+            _qualified_local_candidate(
+                attempt_id,
+                geometry["verified_result"],
+                base_anchor_provenance,
+            )
+            if eligible
+            else None
+        )
+        if candidate is not None:
+            local_candidates.append(candidate)
+        attempts.append(
+            _serialize_qualified_solver_attempt(
+                start,
+                result,
+                eligible=eligible,
+                eligibility_reason=reason,
+                geometry=geometry,
+                active_reference_count=active_reference_count,
+                base_anchor_provenance=base_anchor_provenance,
+            )
+        )
+
+    clustering = cluster_candidates(local_candidates, MODE_TOLERANCE_M)
+    representatives = tuple(
+        select_representative(mode) for mode in clustering.modes
+    )
+    qualifications = _qualify_integrated_modes(
+        clustering.modes,
+        representatives,
+        qualifier_kind=qualifier_kind,
+        qualifier_payload=qualifier_payload,
+        propagated_private_prior=prior_bundle.private_prior,
+    )
+    decision = publish_unique_mode(clustering, qualifications)
+    lifecycle = finalize_qualified_lifecycle(
+        decision,
+        prior_bundle,
+        frame_index=frame_index,
+        mission_horizon_frames=mission_horizon_frames,
+    )
+    return {
+        "runtime_inputs": _qualified_json_value({
+            "references": validated["references"],
+            "live_seed": live_seed,
+            "private_seed": private_seed,
+            "active_reference_count": active_reference_count,
+            "base_anchor_provenance": base_anchor_provenance,
+        }),
+        "starts": [_serialize_qualified_start(start) for start in starts],
+        "solver_attempts": attempts,
+        "local_candidates": [
+            _serialize_qualified_candidate(candidate)
+            for candidate in local_candidates
+        ],
+        "clustering": _serialize_qualified_clustering(clustering),
+        "representatives": [
+            _serialize_qualified_candidate(candidate)
+            for candidate in representatives
+        ],
+        "transition_inputs": _serialize_qualified_transition_inputs(
+            previous_public=previous_public,
+            previous_private=previous_private,
+            held_velocity=held_velocity,
+            frame_index=frame_index,
+            applied_command_frame=applied_command_frame,
+            history_version=history_version,
+            mission_horizon_frames=mission_horizon_frames,
+        ),
+        "prior_bundle": _serialize_qualified_prior_bundle(prior_bundle),
+        "qualifier_context": _serialize_qualified_qualifier_context(
+            qualifier_kind=qualifier_kind,
+            qualifier_payload=qualifier_payload,
+            propagated_private_prior=prior_bundle.private_prior,
+        ),
+        "qualifications": [
+            _serialize_mode_qualification(item) for item in qualifications
+        ],
+        "sensitivity": sensitivity_cluster_counts(local_candidates),
+        "decision": _serialize_qualified_publication_decision(decision),
+        "lifecycle": _qualified_json_value(lifecycle),
+    }
+
+
+_QUALIFIED_SOLVER_RESULT_FIELDS = (
+    "status",
+    "estimate",
+    "covariance",
+    "epsilon",
+    "phi_min_eigenvalue",
+    "phi_condition",
+    "fim_valid",
+    "proposal_count",
+    "iterations",
+    "cost",
+    "stationarity_norm",
+    "failure_reason",
+    "proposal_trace",
+)
+_QUALIFIED_FORBIDDEN_FRAGMENTS = (
+    "truth",
+    "analyzer",
+    "future",
+    "realized",
+)
+
+
+class _CanonicalQualifiedSolver:
+    def __init__(self, implementation, references=None):
+        if not callable(implementation):
+            raise ValueError("qualified solver implementation must be callable")
+        self._implementation = implementation
+        self._references = references
+
+    def bind_canonical_references(self, references):
+        canonical = tuple(
+            _qualified_json_value(reference) for reference in references
+        )
+        return _CanonicalQualifiedSolver(self._implementation, canonical)
+
+    def __call__(self, start):
+        if self._references is None:
+            raise ValueError("qualified solver references are not bound")
+        return self._implementation(start, self._references)
+
+
+def canonical_qualified_solver(implementation):
+    """Bind a one-start solver implementation to producer-canonical references."""
+    return _CanonicalQualifiedSolver(implementation)
+
+
+def _validate_qualified_runtime_inputs(**values) -> dict:
+    references = values["references"]
+    if not isinstance(references, (tuple, list)) or len(references) < 2:
+        raise ValueError("qualified references must contain at least two records")
+    canonical_references = []
+    for reference in references:
+        if not isinstance(reference, Mapping) or set(reference) != {
+            "key",
+            "position",
+            "range",
+            "covariance",
+            "ranging_sigma",
+            "base_anchor_provenance",
+        }:
+            raise ValueError("qualified reference schema is invalid")
+        key = reference["key"]
+        if (
+            not isinstance(key, (tuple, list))
+            or len(key) != 2
+            or not isinstance(key[0], str)
+            or not key[0]
+            or isinstance(key[1], bool)
+            or not isinstance(key[1], Integral)
+            or key[1] < 0
+        ):
+            raise ValueError("qualified reference key is invalid")
+        position = _qualified_finite_vec2(reference["position"])
+        radius = _qualified_finite_nonnegative(reference["range"])
+        covariance = _qualified_reference_covariance(reference["covariance"])
+        ranging_sigma = _qualified_finite_number(reference["ranging_sigma"])
+        reference_provenance = _qualified_base_provenance(
+            reference["base_anchor_provenance"],
+        )
+        if (
+            position is None
+            or radius is None
+            or covariance is None
+            or ranging_sigma is None
+            or ranging_sigma <= 0.0
+            or reference_provenance is None
+            or (
+                key[0] == "base"
+                and reference_provenance != (int(key[1]),)
+            )
+            or (key[0] != "base" and len(reference_provenance) < 2)
+        ):
+            raise ValueError("qualified reference geometry is invalid")
+        canonical_references.append({
+            "key": (key[0], int(key[1])),
+            "position": position,
+            "range": radius,
+            "covariance": covariance,
+            "ranging_sigma": ranging_sigma,
+            "base_anchor_provenance": list(reference_provenance),
+        })
+    keys = [reference["key"] for reference in canonical_references]
+    if len(set(keys)) != len(keys):
+        raise ValueError("qualified reference keys must be unique")
+    sigmas = {
+        reference["ranging_sigma"].hex()
+        for reference in canonical_references
+    }
+    if len(sigmas) != 1:
+        raise ValueError("qualified references must share one ranging sigma")
+    solver = values["solver_from_start"]
+    if (
+        not callable(solver)
+        or not callable(getattr(solver, "bind_canonical_references", None))
+    ):
+        raise ValueError("solver_from_start must bind canonical references")
+    for name in ("live_seed", "private_seed"):
+        seed = values[name]
+        if seed is None:
+            continue
+        if not isinstance(seed, Mapping) or set(seed) != {
+            "estimate",
+            "modeled_covariance",
+        }:
+            raise ValueError(f"{name} schema is invalid")
+        if (
+            _qualified_finite_vec2(seed["estimate"]) is None
+            or canonical_spd_covariance(seed["modeled_covariance"]) is None
+            or _qualified_contains_forbidden(seed)
+        ):
+            raise ValueError(f"{name} is invalid")
+    previous_public = values["previous_public"]
+    if previous_public is not None:
+        if not isinstance(previous_public, Mapping):
+            raise ValueError("previous public state is invalid")
+        status = previous_public.get("output_status")
+        expected = {
+            "fresh": FRESH_PUBLIC_FIELDS,
+            "predicted": PREDICTED_PUBLIC_FIELDS,
+            "unavailable": UNAVAILABLE_PUBLIC_FIELDS,
+        }.get(status)
+        if expected is None or set(previous_public) != set(expected):
+            raise ValueError("previous public state schema is invalid")
+        if (
+            status in {"fresh", "predicted"}
+            and _canonical_public_state(previous_public) is None
+        ) or (
+            status == "unavailable"
+            and _canonical_unavailable_reason(previous_public) is None
+        ):
+            raise ValueError("previous public state is invalid")
+        _qualified_json_value(previous_public)
+    previous_private = values["previous_private"]
+    if previous_private is not None:
+        if canonical_private_state(previous_private) is None:
+            raise ValueError("previous private state is invalid")
+        _qualified_json_value(previous_private)
+    held_velocity = _qualified_finite_vec2(values["held_velocity"])
+    if held_velocity is None:
+        raise ValueError("held velocity is invalid")
+    integer_fields = (
+        "frame_index",
+        "history_version",
+        "mission_horizon_frames",
+        "active_reference_count",
+    )
+    for field in integer_fields:
+        value = values[field]
+        if isinstance(value, bool) or not isinstance(value, Integral):
+            raise ValueError(f"{field} must be an integer")
+    frame_index = int(values["frame_index"])
+    history_version = int(values["history_version"])
+    horizon = int(values["mission_horizon_frames"])
+    active_count = int(values["active_reference_count"])
+    if (
+        frame_index < 0
+        or history_version < 0
+        or horizon <= 0
+        or frame_index >= horizon
+        or active_count != len(canonical_references)
+    ):
+        raise ValueError("qualified frame/count contract is invalid")
+    command_frame = values["applied_command_frame"]
+    if frame_index == 0:
+        if (
+            command_frame is not None
+            or previous_public is not None
+            or previous_private is not None
+            or values["qualifier_kind"] != "deployment"
+        ):
+            raise ValueError("frame-zero qualified chronology is invalid")
+    elif (
+        isinstance(command_frame, bool)
+        or not isinstance(command_frame, Integral)
+        or int(command_frame) != frame_index - 1
+    ):
+        raise ValueError("applied command frame is invalid")
+    provenance = values["base_anchor_provenance"]
+    canonical_provenance = _qualified_base_provenance(provenance)
+    derived_provenance = tuple(sorted({
+        anchor
+        for reference in canonical_references
+        for anchor in reference["base_anchor_provenance"]
+    }))
+    if (
+        canonical_provenance is None
+        or len(canonical_provenance) < 2
+        or canonical_provenance != derived_provenance
+    ):
+        raise ValueError("base anchor provenance is invalid")
+    qualifier_kind = values["qualifier_kind"]
+    payload = values["qualifier_payload"]
+    if not isinstance(payload, Mapping) or _qualified_contains_forbidden(payload):
+        raise ValueError("qualifier payload is invalid")
+    if qualifier_kind == "deployment":
+        if set(payload) != {"domain"}:
+            raise ValueError("deployment qualifier payload schema is invalid")
+        qualify_all((), (), "deployment", payload)
+    elif qualifier_kind == "history":
+        if set(payload) != {"innovation_limit"}:
+            raise ValueError("history qualifier payload schema is invalid")
+        limit = _qualified_finite_nonnegative(payload["innovation_limit"])
+        if limit != INNOVATION_REFERENCE_QUANTILE:
+            raise ValueError("history innovation limit is invalid")
+    elif qualifier_kind == "unavailable":
+        if (
+            set(payload) != {"reason"}
+            or not isinstance(payload["reason"], str)
+            or not payload["reason"]
+        ):
+            raise ValueError("unavailable qualifier payload schema is invalid")
+    else:
+        raise ValueError("unsupported qualifier kind")
+    return {
+        "references": tuple(sorted(
+            canonical_references,
+            key=lambda reference: reference["key"],
+        )),
+    }
+
+
+def _qualified_finite_vec2(value):
+    if not isinstance(value, (tuple, list)) or len(value) != 2:
+        return None
+    result = []
+    for item in value:
+        number = _qualified_finite_number(item)
+        if number is None:
+            return None
+        result.append(number)
+    return tuple(result)
+
+
+def _qualified_finite_number(value):
+    if isinstance(value, bool) or not isinstance(value, Real):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _qualified_finite_nonnegative(value):
+    number = _qualified_finite_number(value)
+    return number if number is not None and number >= 0.0 else None
+
+
+def _qualified_reference_covariance(value):
+    try:
+        covariance = np.asarray(value, dtype=float)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if (
+        covariance.shape != (2, 2)
+        or not np.isfinite(covariance).all()
+        or not np.allclose(covariance, covariance.T, rtol=1e-12, atol=1e-12)
+    ):
+        return None
+    canonical = 0.5 * (covariance + covariance.T)
+    try:
+        eigenvalues = np.linalg.eigvalsh(canonical)
+    except np.linalg.LinAlgError:
+        return None
+    if (
+        not np.isfinite(eigenvalues).all()
+        or eigenvalues[0] < -1e-12 * max(1.0, eigenvalues[-1])
+    ):
+        return None
+    return canonical.tolist()
+
+
+def _qualified_base_provenance(value):
+    if not isinstance(value, (tuple, list)) or any(
+        isinstance(item, bool)
+        or not isinstance(item, Integral)
+        or item < 0
+        for item in value
+    ):
+        return None
+    canonical = tuple(int(item) for item in value)
+    if canonical != tuple(sorted(set(canonical))):
+        return None
+    return canonical
+
+
+def _qualified_contains_forbidden(value, active_ids=None):
+    if active_ids is None:
+        active_ids = set()
+    if isinstance(value, Mapping):
+        identifier = id(value)
+        if identifier in active_ids:
+            return True
+        active_ids.add(identifier)
+        try:
+            for key, nested in value.items():
+                if not isinstance(key, str):
+                    return True
+                lowered = key.lower()
+                if any(fragment in lowered for fragment in _QUALIFIED_FORBIDDEN_FRAGMENTS):
+                    return True
+                if _qualified_contains_forbidden(nested, active_ids):
+                    return True
+            return False
+        finally:
+            active_ids.remove(identifier)
+    if isinstance(value, (tuple, list, np.ndarray)):
+        identifier = id(value)
+        if identifier in active_ids:
+            return True
+        active_ids.add(identifier)
+        try:
+            iterable = value.tolist() if isinstance(value, np.ndarray) else value
+            return any(
+                _qualified_contains_forbidden(item, active_ids)
+                for item in iterable
+            )
+        finally:
+            active_ids.remove(identifier)
+    return False
+
+
+def _qualified_json_value(value, active_ids=None):
+    if active_ids is None:
+        active_ids = set()
+    if _qualified_contains_forbidden(value):
+        raise ValueError("forbidden qualified runtime field")
+    if isinstance(value, DeploymentContract):
+        return _qualified_json_value(asdict(value), active_ids)
+    if isinstance(value, np.generic):
+        return _qualified_json_value(value.item(), active_ids)
+    if isinstance(value, np.ndarray):
+        return _qualified_json_value(value.tolist(), active_ids)
+    if isinstance(value, Mapping):
+        identifier = id(value)
+        if identifier in active_ids:
+            raise ValueError("cyclic qualified runtime payload")
+        active_ids.add(identifier)
+        try:
+            return {
+                str(key): _qualified_json_value(value[key], active_ids)
+                for key in sorted(value)
+            }
+        finally:
+            active_ids.remove(identifier)
+    if isinstance(value, (tuple, list)):
+        identifier = id(value)
+        if identifier in active_ids:
+            raise ValueError("cyclic qualified runtime payload")
+        active_ids.add(identifier)
+        try:
+            return [_qualified_json_value(item, active_ids) for item in value]
+        finally:
+            active_ids.remove(identifier)
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    number = _qualified_finite_number(value)
+    if number is None:
+        raise ValueError("qualified payload is not canonical JSON")
+    if isinstance(value, Integral):
+        return int(value)
+    return number
+
+
+def _canonical_qualified_solver_result(value):
+    if not isinstance(value, Mapping) or set(value) != set(
+        _QUALIFIED_SOLVER_RESULT_FIELDS
+    ):
+        raise ValueError("solver result differs from exact qualified schema")
+    return {
+        field: _qualified_json_value(value[field])
+        for field in _QUALIFIED_SOLVER_RESULT_FIELDS
+    }
+
+
+def _qualified_recompute_solver_geometry(result, references):
+    geometry = {
+        "geometry_failure_reason": None,
+        "recomputed_covariance": None,
+        "recomputed_estimate": None,
+        "recomputed_fim": None,
+        "recomputed_gauss_newton": None,
+        "recomputed_objective": None,
+        "recomputed_residual": None,
+        "recomputed_stationarity_norm": None,
+        "solver_geometry_consistent": False,
+        "verified_result": None,
+    }
+    if not _complete_converged_solver_result(result):
+        geometry["geometry_failure_reason"] = "solver_result_not_converged"
+        return geometry
+    estimate = _finite_vector(result["estimate"])
+    if estimate is None:
+        geometry["geometry_failure_reason"] = "invalid_solver_estimate"
+        return geometry
+    positions = np.asarray(
+        [reference["position"] for reference in references],
+        dtype=float,
+    )
+    covariances = np.asarray(
+        [reference["covariance"] for reference in references],
+        dtype=float,
+    )
+    ranges = np.asarray(
+        [reference["range"] for reference in references],
+        dtype=float,
+    )
+    sigma = float(references[0]["ranging_sigma"])
+    terms = _linearized_terms(
+        estimate,
+        positions,
+        covariances,
+        ranges,
+        sigma,
+    )
+    fim = fim_radius(estimate, positions, covariances, sigma)
+    if terms is None or fim.get("status") != "converged":
+        geometry["geometry_failure_reason"] = "geometry_recomputation_failed"
+        return geometry
+    _, _, residual, gauss_newton, gradient, cost = terms
+    covariance = np.asarray(fim["covariance"], dtype=float)
+    try:
+        phi = np.linalg.inv(covariance)
+    except np.linalg.LinAlgError:
+        geometry["geometry_failure_reason"] = "geometry_fim_inversion_failed"
+        return geometry
+    stationarity = float(np.linalg.norm(gradient, ord=np.inf))
+    geometry.update({
+        "recomputed_covariance": covariance.tolist(),
+        "recomputed_estimate": estimate.tolist(),
+        "recomputed_fim": phi.tolist(),
+        "recomputed_gauss_newton": gauss_newton.tolist(),
+        "recomputed_objective": float(cost),
+        "recomputed_residual": residual.tolist(),
+        "recomputed_stationarity_norm": stationarity,
+    })
+    consistent = (
+        _qualified_same_scalar(result["cost"], cost)
+        and _qualified_same_matrix(result["covariance"], covariance)
+        and _qualified_same_scalar(result["epsilon"], fim["epsilon"])
+        and _qualified_same_scalar(
+            result["phi_min_eigenvalue"],
+            fim["phi_min_eigenvalue"],
+        )
+        and _qualified_same_scalar(
+            result["phi_condition"],
+            fim["phi_condition"],
+        )
+        and _qualified_same_scalar(
+            result["stationarity_norm"],
+            stationarity,
+        )
+    )
+    geometry["solver_geometry_consistent"] = consistent
+    if not consistent:
+        geometry["geometry_failure_reason"] = "solver_geometry_mismatch"
+        return geometry
+    verified = dict(result)
+    verified.update({
+        "estimate": estimate.tolist(),
+        "covariance": covariance.tolist(),
+        "epsilon": float(fim["epsilon"]),
+        "phi_min_eigenvalue": float(fim["phi_min_eigenvalue"]),
+        "phi_condition": float(fim["phi_condition"]),
+        "cost": float(cost),
+        "stationarity_norm": stationarity,
+    })
+    geometry["verified_result"] = verified
+    return geometry
+
+
+def _qualified_same_scalar(first, second):
+    first_number = _qualified_finite_number(first)
+    second_number = _qualified_finite_number(second)
+    return (
+        first_number is not None
+        and second_number is not None
+        and math.isclose(
+            first_number,
+            second_number,
+            rel_tol=1e-9,
+            abs_tol=1e-12,
+        )
+    )
+
+
+def _qualified_same_matrix(first, second):
+    try:
+        first_array = np.asarray(first, dtype=float)
+        second_array = np.asarray(second, dtype=float)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return bool(
+        first_array.shape == second_array.shape
+        and np.isfinite(first_array).all()
+        and np.isfinite(second_array).all()
+        and np.allclose(
+            first_array,
+            second_array,
+            rtol=1e-9,
+            atol=1e-12,
+        )
+    )
+
+
+def _serialize_qualified_start(start):
+    return {
+        "attempt_id": stable_attempt_id(start),
+        "kind": start.kind,
+        "estimate": list(start.estimate),
+        "reference_keys": [list(key) for key in start.reference_keys],
+        "branch": start.branch,
+    }
+
+
+def _serialize_qualified_solver_attempt(
+    start,
+    result,
+    *,
+    eligible,
+    eligibility_reason,
+    geometry,
+    active_reference_count,
+    base_anchor_provenance,
+):
+    objective = geometry["recomputed_objective"]
+    reduced_cost = (
+        None
+        if objective is None
+        else objective / max(1, int(active_reference_count) - 2)
+    )
+    return {
+        "attempt_id": stable_attempt_id(start),
+        "start_record": _serialize_qualified_start(start),
+        "solver_result": _qualified_json_value(result),
+        "local_eligible": bool(eligible),
+        "local_eligibility_reason": eligibility_reason,
+        "local_diagnostics": _qualified_json_value({
+            "failure_reason": (
+                None if eligible else eligibility_reason
+            ),
+            "geometry_failure_reason": geometry["geometry_failure_reason"],
+            "reduced_whitened_cost": reduced_cost,
+            "recomputed_estimate": geometry["recomputed_estimate"],
+            "recomputed_covariance": geometry["recomputed_covariance"],
+            "recomputed_objective": objective,
+            "recomputed_residual_cost": objective,
+            "recomputed_residual": geometry["recomputed_residual"],
+            "recomputed_fim": geometry["recomputed_fim"],
+            "recomputed_gauss_newton": geometry["recomputed_gauss_newton"],
+            "recomputed_stationarity_norm": geometry[
+                "recomputed_stationarity_norm"
+            ],
+            "solver_geometry_consistent": geometry[
+                "solver_geometry_consistent"
+            ],
+            "active_reference_count": int(active_reference_count),
+            "base_anchor_provenance": list(base_anchor_provenance),
+        }),
+    }
+
+
+def _qualified_local_candidate(
+    attempt_id,
+    recomputed_result,
+    base_anchor_provenance,
+):
+    projected = project_local_candidate(attempt_id, recomputed_result)
+    if projected is None:
+        return None
+    return LocalCandidate(
+        projected.attempt_id,
+        projected.estimate,
+        projected.objective_cost,
+        {
+            **dict(projected.payload),
+            "base_anchor_provenance": list(base_anchor_provenance),
+        },
+    )
+
+
+def _serialize_qualified_candidate(candidate):
+    return {
+        "attempt_id": candidate.attempt_id,
+        "estimate": list(candidate.estimate),
+        "objective_cost": candidate.objective_cost,
+        "payload": _qualified_json_value(candidate.payload),
+    }
+
+
+def _serialize_qualified_clustering(clustering):
+    return {
+        "tolerance_m": clustering.tolerance_m,
+        "separable": clustering.separable,
+        "reason": clustering.reason,
+        "mode_count": len(clustering.modes),
+        "modes": [
+            {
+                "mode_id": canonical_mode_id(mode),
+                "member_ids": list(mode.member_ids),
+                "diameter_m": mode.diameter_m,
+            }
+            for mode in clustering.modes
+        ],
+    }
+
+
+def _serialize_qualified_transition_inputs(**values):
+    return _qualified_json_value({
+        "previous_public": values["previous_public"],
+        "previous_private": values["previous_private"],
+        "held_velocity": values["held_velocity"],
+        "frame_index": values["frame_index"],
+        "applied_command_frame": values["applied_command_frame"],
+        "history_version": values["history_version"],
+        "mission_horizon_frames": values["mission_horizon_frames"],
+    })
+
+
+def _serialize_qualified_prior_bundle(prior_bundle):
+    if not isinstance(prior_bundle, PriorBundle):
+        raise ValueError("prior bundle is invalid")
+    return _qualified_json_value({
+        "public_prediction": prior_bundle.public_prediction,
+        "private_prior": prior_bundle.private_prior,
+        "history_version": prior_bundle.history_version,
+    })
+
+
+def _serialize_qualified_qualifier_context(
+    *,
+    qualifier_kind,
+    qualifier_payload,
+    propagated_private_prior,
+):
+    return _qualified_json_value({
+        "qualifier_kind": qualifier_kind,
+        "qualifier_payload": qualifier_payload,
+        "propagated_private_prior": (
+            propagated_private_prior if qualifier_kind == "history" else None
+        ),
+    })
+
+
+def _qualify_integrated_modes(
+    modes,
+    representatives,
+    *,
+    qualifier_kind,
+    qualifier_payload,
+    propagated_private_prior,
+):
+    if qualifier_kind == "unavailable":
+        return tuple(
+            ModeQualification(
+                canonical_mode_id(mode),
+                False,
+                qualifier_payload["reason"],
+                None,
+            )
+            for mode in modes
+        )
+    if qualifier_kind == "history":
+        if propagated_private_prior is None:
+            return tuple(
+                ModeQualification(
+                    canonical_mode_id(mode),
+                    False,
+                    "propagated_private_prior_unavailable",
+                    None,
+                )
+                for mode in modes
+            )
+        payload = {
+            "propagated_private_prior": propagated_private_prior,
+            "innovation_limit": qualifier_payload["innovation_limit"],
+        }
+    else:
+        payload = qualifier_payload
+    return qualify_all(
+        modes,
+        representatives,
+        qualifier_kind,
+        payload,
+    )
+
+
+def _serialize_mode_qualification(item):
+    return {
+        "mode_id": item.mode_id,
+        "admissible": item.admissible,
+        "reason": item.reason,
+        "score": item.score,
+    }
+
+
+def _serialize_qualified_publication_decision(decision):
+    return {
+        "status": decision.status,
+        "reason": decision.reason,
+        "mode_id": decision.mode_id,
+        "representative_attempt_id": (
+            None
+            if decision.representative is None
+            else decision.representative.attempt_id
+        ),
     }

@@ -15,6 +15,7 @@ from scripts.diagnostics.predictive_wnls import (
     best_conditioned_pair,
     candidate_acceptance,
     candidate_local_eligibility,
+    canonical_qualified_solver,
     finalize_attempt,
     initial_candidates,
     make_unavailable_output,
@@ -28,6 +29,7 @@ from scripts.diagnostics.predictive_wnls import (
     select_candidate_result,
     solve_finite_budget_wnls,
     solve_predictive_multistart,
+    solve_qualified_multistart,
     locally_eligible_candidate,
     two_circle_candidates,
 )
@@ -1659,6 +1661,302 @@ class PredictiveMultistartBoundaryTests(unittest.TestCase):
         self.assertEqual(attempt["attempt_status"], "invalid")
         self.assertEqual(output["attempt_status"], "invalid")
         self.assertEqual(output["output_status"], "predicted")
+
+
+class QualifiedMultistartIntegrationTests(unittest.TestCase):
+    def references(self):
+        return [
+            {
+                "key": ("base", 0),
+                "position": [0.0, 0.0],
+                "range": 5.0,
+                "covariance": [[1.0, 0.0], [0.0, 1.0]],
+                "ranging_sigma": 0.5,
+                "base_anchor_provenance": [0],
+            },
+            {
+                "key": ("base", 1),
+                "position": [6.0, 0.0],
+                "range": 5.0,
+                "covariance": [[1.0, 0.0], [0.0, 1.0]],
+                "ranging_sigma": 0.5,
+                "base_anchor_provenance": [1],
+            },
+        ]
+
+    def kwargs(self, references=None, solver=None):
+        references = self.references() if references is None else references
+        solver = (
+            (lambda start: make_converged_candidate_result(
+                estimate=start.estimate,
+            ))
+            if solver is None
+            else solver
+        )
+        if not callable(getattr(solver, "bind_canonical_references", None)):
+            one_argument_solver = solver
+            solver = canonical_qualified_solver(
+                lambda start, references: one_argument_solver(start)
+            )
+        return {
+            "references": references,
+            "solver_from_start": solver,
+            "live_seed": None,
+            "private_seed": None,
+            "qualifier_kind": "unavailable",
+            "qualifier_payload": {"reason": "qualifier_information_absent"},
+            "previous_public": None,
+            "previous_private": None,
+            "held_velocity": [0.0, 0.0],
+            "frame_index": 1,
+            "applied_command_frame": 0,
+            "history_version": 1,
+            "mission_horizon_frames": 10,
+            "active_reference_count": len(references),
+            "base_anchor_provenance": sorted({
+                anchor
+                for reference in references
+                for anchor in reference["base_anchor_provenance"]
+            }),
+        }
+
+    def honest_solver_result(self, references, start):
+        return solve_finite_budget_wnls(
+            [reference["position"] for reference in references],
+            [reference["covariance"] for reference in references],
+            [reference["range"] for reference in references],
+            start.estimate,
+            references[0]["ranging_sigma"],
+        )
+
+    def test_two_references_invoke_both_circle_starts_once(self):
+        called = []
+
+        def solver(start):
+            called.append((start.kind, start.branch, start.estimate))
+            return self.honest_solver_result(self.references(), start)
+
+        audit = solve_qualified_multistart(**self.kwargs(solver=solver))
+
+        self.assertEqual(
+            [(kind, branch) for kind, branch, _ in called],
+            [("circle", "negative"), ("circle", "positive")],
+        )
+        self.assertEqual(len(called), len(set(called)))
+        self.assertEqual(len(audit["solver_attempts"]), 2)
+        self.assertEqual(len(audit["local_candidates"]), 2)
+
+    def test_every_three_reference_start_is_solved_before_filtering(self):
+        references = self.references() + [
+            {
+                "key": ("base", 2),
+                "position": [0.0, 8.0],
+                "range": 5.0,
+                "covariance": [[1.0, 0.0], [0.0, 1.0]],
+                "ranging_sigma": 0.5,
+                "base_anchor_provenance": [2],
+            },
+        ]
+        expected = predictive_wnls.enumerate_qualified_starts(
+            references,
+            live_seed=None,
+            private_seed=None,
+        )
+        called = []
+
+        def solver(start):
+            called.append(predictive_wnls.stable_attempt_id(start))
+            if len(called) == 1:
+                failed = self.honest_solver_result(references, start)
+                failed.update({
+                    "status": "failed",
+                    "covariance": None,
+                    "epsilon": None,
+                    "phi_min_eigenvalue": None,
+                    "phi_condition": None,
+                    "fim_valid": False,
+                    "failure_reason": "synthetic_failure",
+                })
+                return failed
+            return self.honest_solver_result(references, start)
+
+        audit = solve_qualified_multistart(
+            **self.kwargs(references=references, solver=solver)
+        )
+
+        self.assertEqual(
+            called,
+            [predictive_wnls.stable_attempt_id(start) for start in expected],
+        )
+        self.assertEqual(len(audit["solver_attempts"]), len(expected))
+        self.assertFalse(audit["solver_attempts"][0]["local_eligible"])
+        self.assertEqual(
+            audit["solver_attempts"][0]["solver_result"]["status"],
+            "failed",
+        )
+        self.assertEqual(
+            len(audit["local_candidates"]),
+            len(expected) - 1,
+        )
+
+    def test_reference_display_order_does_not_change_calls_or_output(self):
+        references = self.references() + [
+            {
+                "key": ("base", 2),
+                "position": [0.0, 8.0],
+                "range": 5.0,
+                "covariance": [[1.0, 0.0], [0.0, 1.0]],
+                "ranging_sigma": 0.5,
+                "base_anchor_provenance": [2],
+            },
+        ]
+
+        def solve_ordered(records):
+            called = []
+
+            def solve_canonical(start, canonical_references):
+                called.append(predictive_wnls.stable_attempt_id(start))
+                return self.honest_solver_result(canonical_references, start)
+
+            solver = canonical_qualified_solver(solve_canonical)
+
+            audit = solve_qualified_multistart(
+                **self.kwargs(references=records, solver=solver)
+            )
+            return called, audit
+
+        first_calls, first = solve_ordered(references)
+        second_calls, second = solve_ordered(list(reversed(references)))
+
+        self.assertEqual(first_calls, second_calls)
+        self.assertEqual(first["starts"], second["starts"])
+        self.assertEqual(first["solver_attempts"], second["solver_attempts"])
+        self.assertEqual(first["clustering"], second["clustering"])
+
+    def test_qualified_path_never_calls_legacy_initial_candidates(self):
+        with mock.patch(
+            "scripts.diagnostics.predictive_wnls.initial_candidates",
+            side_effect=AssertionError("legacy path must remain isolated"),
+        ):
+            audit = solve_qualified_multistart(**self.kwargs())
+
+        self.assertEqual(len(audit["solver_attempts"]), 2)
+
+    def test_unknown_or_forbidden_runtime_fields_fail_before_solver(self):
+        calls = []
+
+        def solver(start):
+            calls.append(start)
+            return make_converged_candidate_result(estimate=start.estimate)
+
+        unknown_reference = dict(self.references()[0], source_label="display")
+        forbidden_payload = {
+            "reason": "missing",
+            "nested": {"future_estimate": [0.0, 0.0]},
+        }
+        malformed_previous_public = {
+            "output_status": "unavailable",
+            "estimate": [0.0, 0.0],
+            "modeled_covariance": None,
+            "epsilon": None,
+            "prediction_age": None,
+            "aged_modeled_radius": None,
+            "base_anchor_provenance": [],
+            "reason": "stale_finite_estimate",
+        }
+        cases = (
+            dict(self.kwargs(solver=solver), references=[
+                unknown_reference,
+                self.references()[1],
+            ]),
+            dict(self.kwargs(solver=solver), qualifier_payload=forbidden_payload),
+            dict(
+                self.kwargs(solver=solver),
+                previous_public=malformed_previous_public,
+            ),
+        )
+        for kwargs in cases:
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                solve_qualified_multistart(**kwargs)
+        self.assertEqual(calls, [])
+
+    def test_solver_mapping_order_is_canonical_but_unknown_fields_are_rejected(self):
+        complete = make_converged_candidate_result()
+
+        def reordered(start):
+            result = make_converged_candidate_result(estimate=start.estimate)
+            return dict(reversed(tuple(result.items())))
+
+        audit = solve_qualified_multistart(
+            **self.kwargs(solver=reordered)
+        )
+        self.assertEqual(len(audit["solver_attempts"]), 2)
+        self.assertEqual(
+            list(audit["solver_attempts"][0]["solver_result"]),
+            sorted(complete),
+        )
+
+        def unknown(start):
+            return {
+                **make_converged_candidate_result(estimate=start.estimate),
+                "unknown_solver_fact": 1,
+            }
+
+        with self.assertRaisesRegex(ValueError, "exact qualified schema"):
+            solve_qualified_multistart(**self.kwargs(solver=unknown))
+
+    def test_private_history_is_only_a_postclustering_qualifier_input(self):
+        references = self.references() + [
+            {
+                "key": ("base", 2),
+                "position": [0.0, 8.0],
+                "range": 5.0,
+                "covariance": [[1.0, 0.0], [0.0, 1.0]],
+                "ranging_sigma": 0.5,
+                "base_anchor_provenance": [2],
+            },
+        ]
+        previous_private = {
+            "status": "available",
+            "estimate": [10.0, 0.0],
+            "modeled_covariance": [[1.0, 0.0], [0.0, 1.0]],
+            "source_fresh_frame": 0,
+            "propagated_to_frame": 0,
+            "age_frames": 0,
+            "last_command_frame": None,
+            "last_held_velocity": None,
+            "history_version": 0,
+        }
+        called = []
+
+        def solver(start):
+            called.append(start)
+            return make_converged_candidate_result(estimate=start.estimate)
+
+        kwargs = self.kwargs(references=references, solver=solver)
+        kwargs.update({
+            "qualifier_kind": "history",
+            "qualifier_payload": {
+                "innovation_limit": 11.829007011943707,
+            },
+            "previous_private": previous_private,
+            "held_velocity": [2.0, 0.0],
+        })
+
+        audit = solve_qualified_multistart(**kwargs)
+
+        self.assertNotIn("private", {start.kind for start in called})
+        self.assertEqual(
+            audit["qualifier_context"]["propagated_private_prior"][
+                "estimate"
+            ],
+            [11.0, 0.0],
+        )
+        self.assertTrue(audit["solver_attempts"])
+        self.assertTrue(all(
+            "propagated_private_prior" not in attempt["solver_result"]
+            for attempt in audit["solver_attempts"]
+        ))
 
 
 class HistoricalMechanismFixtureTests(unittest.TestCase):
