@@ -6,6 +6,7 @@
 #include "cbf/AllocatedPairwiseCBF.hpp"
 #include "cbf/CBFConfig.hpp"
 #include "cbf/FimRateCertificate.hpp"
+#include "cbf/HybridCertificateGuard.hpp"
 #include "world/world"
 #include "models/models"
 #include "optimisers/optimisers"
@@ -54,6 +55,10 @@ public:
     std::uint64_t certificateAllocationVersion = 0;
     std::optional<cbf2026::EndpointCertificateSnapshot>
         localCertificateSnapshot;
+    cbf2026::CommittedCertificateState committedCertificateState;
+    std::optional<cbf2026::HardConstraintProblem>
+        lastConsumedHardConstraintProblem;
+    std::string lastConsumedHardProblemHash;
 
     std::string cvtExplorationMode;
     double cvtFrontFocusDistance;
@@ -571,6 +576,22 @@ public:
 
         deduplicate(references["anchorIds"]);
         deduplicate(references["baseIds"]);
+
+        if (usesAnalyticTopologicalRateCertificate()) {
+            const auto& covarianceConfig = settings.at("position_covariance");
+            const std::string referenceSelection =
+                covarianceConfig.value(
+                    "reference-selection", "dynamic-lower-index"
+                );
+            if (referenceSelection == "fixed-cbf-only") {
+                return references;
+            }
+            if (referenceSelection != "dynamic-lower-index") {
+                throw std::invalid_argument(
+                    "position covariance reference selection is unknown"
+                );
+            }
+        }
 
         for (std::size_t baseId = 0; baseId < bases.size(); ++baseId) {
             if (bases.at(baseId).distance_to(myPosition) <= maxRange) {
@@ -1619,14 +1640,586 @@ public:
 
         setupFormation();
 
+        if (usesAnalyticTopologicalRateCertificate()) {
+            if (cbfConfig["with-slack"]["cvt"]["on"]
+                || cbfConfig["with-slack"]["cvt-yaw"]["on"]) {
+                setCVTCBF(cbfConfig["with-slack"]);
+            }
+            return;
+        }
+
         if (cbfConfig["without-slack"]["comm-fixed"]["on"]) setFixedCommCBF(cbfConfig["without-slack"]["comm-fixed"]);
         if (cbfConfig["without-slack"]["comm-auto"]["on"]) setCommunicationAutoCBF(cbfConfig["without-slack"]["comm-auto"]);
         if (cbfConfig["with-slack"]["cvt"]["on"] || cbfConfig["with-slack"]["cvt-yaw"]["on"]) setCVTCBF(cbfConfig["with-slack"]);
         if (cbfConfig["without-slack"]["safety"]["on"]) setSafetyCBF(cbfConfig["without-slack"]["safety"]);
     }
 
+    cbf2026::NodeRateCertificate proposeRateCertificate(
+        std::uint64_t snapshotVersion,
+        std::uint64_t allocationVersion,
+        const std::map<int, cbf2026::EndpointCertificateSnapshot>&
+            candidatePredecessors,
+        const std::optional<std::vector<int>>& frozenReferenceIds =
+            std::nullopt
+    ) const {
+        if (!usesAnalyticTopologicalRateCertificate()
+            || !enablePositionCovariance) {
+            throw std::invalid_argument(
+                "pure theorem certificate proposal is not enabled"
+            );
+        }
+        const auto& covarianceConfig = settings.at("position_covariance");
+        if (!covarianceConfig.contains("reference-selection")
+            || !covarianceConfig.at("reference-selection").is_string()) {
+            throw std::invalid_argument(
+                "position covariance reference selection is absent"
+            );
+        }
+        const std::string referenceSelection =
+            covarianceConfig.at("reference-selection").get<std::string>();
+        if (referenceSelection != "dynamic-lower-index"
+            && referenceSelection != "fixed-cbf-only") {
+            throw std::invalid_argument(
+                "position covariance reference selection is unknown"
+            );
+        }
+        const auto& inputLimits = settings.at("cbfs").at("input-limits");
+        if (!inputLimits.at("on").get<bool>()
+            || inputLimits.at("planar-component-max").get<double>()
+               != 25.0) {
+            throw std::invalid_argument(
+                "pure theorem proposal requires the frozen planar bound"
+            );
+        }
+
+        json references = {
+            {"anchorIds", json::array()},
+            {"baseIds", json::array()}
+        };
+        auto appendUnique = [](json& ids, int candidate) {
+            if (std::find(ids.begin(), ids.end(), json(candidate))
+                == ids.end()) {
+                ids.push_back(candidate);
+            }
+        };
+        if (frozenReferenceIds.has_value()) {
+            for (const int referenceId : *frozenReferenceIds) {
+                if (referenceId < 0) {
+                    const std::int64_t baseId =
+                        -static_cast<std::int64_t>(referenceId) - 1;
+                    if (baseId < 0
+                        || baseId >= static_cast<std::int64_t>(bases.size())) {
+                        throw std::invalid_argument(
+                            "frozen base reference is outside the mission"
+                        );
+                    }
+                    appendUnique(
+                        references["baseIds"], static_cast<int>(baseId)
+                    );
+                } else if (referenceId > 0) {
+                    appendUnique(references["anchorIds"], referenceId);
+                } else {
+                    throw std::invalid_argument(
+                        "frozen UAV reference zero is invalid"
+                    );
+                }
+            }
+        } else {
+            references = fixedLocalizationReferences();
+        }
+        if (!frozenReferenceIds.has_value()
+            && referenceSelection == "dynamic-lower-index") {
+            const double maximumRange = settings.at("cbfs")
+                .at("without-slack").at("comm-fixed")
+                .at("max-range").get<double>();
+            const Point position = model->xy();
+            for (std::size_t baseId = 0; baseId < bases.size(); ++baseId) {
+                if (position.distance_to(bases.at(baseId)) <= maximumRange) {
+                    appendUnique(
+                        references["baseIds"],
+                        static_cast<int>(baseId)
+                    );
+                }
+            }
+            for (const auto& [otherId, predecessor] :
+                 candidatePredecessors) {
+                if (otherId == id
+                    || !isSamePartAsMe(otherId)
+                    || getIdInPart(otherId) >= idInMyPart) {
+                    continue;
+                }
+                cbf2026::validateEndpointCertificateSnapshot(
+                    otherId, predecessor
+                );
+                if (predecessor.snapshotVersion != snapshotVersion
+                    || predecessor.allocationVersion != allocationVersion) {
+                    throw std::invalid_argument(
+                        "candidate predecessor mixes certificate versions"
+                    );
+                }
+                const Point predecessorPosition(
+                    predecessor.estimate.x(), predecessor.estimate.y()
+                );
+                if (position.distance_to(predecessorPosition)
+                    <= maximumRange) {
+                    appendUnique(references["anchorIds"], otherId);
+                }
+            }
+        }
+        std::vector<int> baseIds =
+            references.at("baseIds").get<std::vector<int>>();
+        std::vector<int> anchorIds =
+            references.at("anchorIds").get<std::vector<int>>();
+        std::sort(baseIds.begin(), baseIds.end());
+        std::sort(
+            anchorIds.begin(), anchorIds.end(),
+            [this](int lhs, int rhs) {
+                if (getIdInPart(lhs) != getIdInPart(rhs)) {
+                    return getIdInPart(lhs) < getIdInPart(rhs);
+                }
+                return lhs < rhs;
+            }
+        );
+        if (std::adjacent_find(baseIds.begin(), baseIds.end())
+                != baseIds.end()
+            || std::adjacent_find(anchorIds.begin(), anchorIds.end())
+               != anchorIds.end()) {
+            throw std::invalid_argument(
+                "candidate localization references are duplicated"
+            );
+        }
+
+        const Point position = model->xy();
+        const double planarComponentMax = 25.0;
+        const double speedBound = std::sqrt(2.0) * planarComponentMax;
+        std::vector<cbf2026::ReferenceRateInput> rateInputs;
+        const auto appendReference = [&rateInputs, &position, this](
+            const cbf2026::PredecessorRateSnapshot& predecessor,
+            const Point& referencePosition
+        ) {
+            const double distance = position.distance_to(referencePosition);
+            const double sigma = rangingUncertaintyFunction(distance);
+            const Eigen::Vector2d displacement(
+                position.x - referencePosition.x,
+                position.y - referencePosition.y
+            );
+            rateInputs.push_back({
+                predecessor,
+                distance,
+                displacement / distance,
+                sigma * sigma
+            });
+        };
+        for (int baseId : baseIds) {
+            if (baseId < 0 || baseId >= static_cast<int>(bases.size())) {
+                throw std::invalid_argument(
+                    "candidate base reference is outside the mission"
+                );
+            }
+            appendReference(
+                {
+                    cbf2026::canonicalBaseReferenceId(baseId),
+                    0,
+                    snapshotVersion,
+                    true,
+                    Eigen::Matrix2d::Zero(),
+                    0.0,
+                    0.0
+                },
+                bases.at(baseId)
+            );
+        }
+        for (int otherId : anchorIds) {
+            const auto predecessor = candidatePredecessors.find(otherId);
+            if (predecessor == candidatePredecessors.end()) {
+                throw std::invalid_argument(
+                    "candidate UAV predecessor is missing"
+                );
+            }
+            cbf2026::validateEndpointCertificateSnapshot(
+                otherId, predecessor->second
+            );
+            if (predecessor->second.snapshotVersion != snapshotVersion
+                || predecessor->second.allocationVersion
+                   != allocationVersion) {
+                throw std::invalid_argument(
+                    "candidate UAV predecessor mixes versions"
+                );
+            }
+            appendReference(
+                {
+                    cbf2026::canonicalUavReferenceId(otherId),
+                    getIdInPart(otherId),
+                    snapshotVersion,
+                    false,
+                    predecessor->second.covariance,
+                    predecessor->second.covarianceRateBound,
+                    speedBound
+                },
+                Point(
+                    predecessor->second.estimate.x(),
+                    predecessor->second.estimate.y()
+                )
+            );
+        }
+        return cbf2026::computeNodeRateCertificate({
+            id,
+            idInMyPart,
+            snapshotVersion,
+            planarComponentMax,
+            std::move(rateInputs)
+        });
+    }
+
+    cbf2026::HardConstraintProblem buildHardConstraintProblem(
+        const cbf2026::CommittedCertificateState& state
+    ) const {
+        if (!usesAnalyticTopologicalRateCertificate()
+            || !state.valid
+            || state.version == 0
+            || static_cast<int>(state.endpoints.size()) != n
+            || static_cast<int>(state.nodeVersions.size()) != n) {
+            throw std::invalid_argument(
+                "complete committed theorem certificate state is unavailable"
+            );
+        }
+        for (int robotId = 1; robotId <= n; ++robotId) {
+            const auto endpoint = state.endpoints.find(robotId);
+            const auto version = state.nodeVersions.find(robotId);
+            if (endpoint == state.endpoints.end()
+                || version == state.nodeVersions.end()
+                || version->second != state.version
+                || endpoint->second.snapshotVersion != state.version) {
+                throw std::invalid_argument(
+                    "committed theorem endpoint state mixes versions"
+                );
+            }
+            cbf2026::validateEndpointCertificateSnapshot(
+                robotId, endpoint->second
+            );
+        }
+
+        const auto& local = state.endpoints.at(id);
+        cbf2026::HardConstraintProblem problem;
+        problem.owner = id;
+        problem.controlSize = model->uSize();
+        problem.planarComponentMax = 25.0;
+        problem.yawRateMax = 0.35;
+        problem.snapshotVersion = state.version;
+        problem.allocationVersion = local.allocationVersion;
+        problem.bounds = cbf2026::theoremInputBounds(
+            problem.planarComponentMax, problem.yawRateMax
+        );
+        if (problem.controlSize != 3) {
+            throw std::invalid_argument(
+                "theorem hard problem requires three controls"
+            );
+        }
+
+        const auto appendOwnedRow = [&problem, this](
+            const cbf2026::EndpointRow& endpointRow,
+            double barrier,
+            const std::string& name
+        ) {
+            cbf2026::HardConstraintRow row;
+            row.edge = endpointRow.edge;
+            row.owner = endpointRow.owner;
+            row.name = name;
+            row.coefficients = cbf2026::endpointRowToModelControl(
+                endpointRow, problem.controlSize
+            );
+            row.constant = endpointRow.constant;
+            row.postResetBarrier = barrier;
+            row.snapshotVersion = endpointRow.snapshotVersion;
+            row.allocationVersion = endpointRow.allocationVersion;
+            problem.rows.push_back(std::move(row));
+        };
+        const auto selectOwnedRow = [this](
+            const std::vector<cbf2026::EndpointRow>& rows
+        ) -> const cbf2026::EndpointRow& {
+            const auto row = std::find_if(
+                rows.begin(), rows.end(),
+                [this](const cbf2026::EndpointRow& candidate) {
+                    return candidate.owner == id;
+                }
+            );
+            if (row == rows.end()) {
+                throw std::invalid_argument(
+                    "hard edge is missing the local endpoint row"
+                );
+            }
+            return *row;
+        };
+
+        const auto registry = fixedBarrierEdgeRegistry();
+        const auto& commConfig =
+            settings["cbfs"]["without-slack"]["comm-fixed"];
+        if (commConfig.value("on", false)) {
+            if (commConfig.value("mode", "") != "allocated-pairwise"
+                || !commConfig.value("consider-uncertainty", true)) {
+                throw std::invalid_argument(
+                    "theorem localization hard rows require allocated pairwise mode"
+                );
+            }
+            const double maximumRange =
+                commConfig.at("max-range").get<double>();
+            const ClassKParameters parameters =
+                readClassKParameters(commConfig, 0.1, 1);
+            for (const auto& edge : registry.fixedLocalizationEdges()) {
+                if (edge.low != id && edge.high != id) {
+                    continue;
+                }
+                const auto& first = state.endpoints.at(edge.low);
+                Eigen::Vector2d secondPosition;
+                double epsilonJ = 0.0;
+                double nuJ = 0.0;
+                if (edge.baseId >= 0) {
+                    if (edge.baseId >= static_cast<int>(bases.size())) {
+                        throw std::invalid_argument(
+                            "fixed base edge has an invalid base ID"
+                        );
+                    }
+                    const Point base = bases.at(edge.baseId);
+                    secondPosition = Eigen::Vector2d(base.x, base.y);
+                } else {
+                    const auto& second = state.endpoints.at(edge.high);
+                    if (second.allocationVersion
+                        != first.allocationVersion) {
+                        throw std::invalid_argument(
+                            "fixed localization endpoints mix allocation versions"
+                        );
+                    }
+                    secondPosition = second.estimate;
+                    epsilonJ = second.epsilon;
+                    nuJ = second.barNu;
+                }
+                auto snapshot = cbf2026::makeEdgeSnapshot(
+                    edge,
+                    first.estimate,
+                    secondPosition,
+                    first.barNu,
+                    nuJ,
+                    0.0,
+                    state.version,
+                    problem.allocationVersion
+                );
+                const double barrier = maximumRange - snapshot.separation
+                    - first.epsilon - epsilonJ;
+                snapshot.alpha = allocatedAlphaValue(parameters, barrier);
+                const auto rows = cbf2026::allocatedRows(
+                    snapshot,
+                    edge.baseId >= 0 ? 1.0 : 0.5,
+                    edge.baseId >= 0 ? 0.0 : 0.5
+                );
+                const int otherId = edge.low == id ? edge.high : edge.low;
+                appendOwnedRow(
+                    selectOwnedRow(rows),
+                    barrier,
+                    edge.baseId >= 0
+                    ? "fixedCommCBF(base-"
+                      + std::to_string(edge.baseId) + ")"
+                    : "fixedCommCBF(#" + std::to_string(otherId) + ")"
+                );
+            }
+        }
+
+        const auto& safetyConfig =
+            settings["cbfs"]["without-slack"]["safety"];
+        if (safetyConfig.value("on", false)) {
+            if (safetyConfig.value("mode", "") != "allocated-pairwise"
+                || !safetyConfig.value("consider-uncertainty", true)) {
+                throw std::invalid_argument(
+                    "theorem collision hard rows require allocated pairwise mode"
+                );
+            }
+            const double safeDistance =
+                safetyConfig.at("safe-distance").get<double>();
+            const ClassKParameters parameters =
+                readClassKParameters(safetyConfig, 0.1, 1);
+            for (const auto& edge : registry.collisionEdges()) {
+                if (edge.low != id && edge.high != id) {
+                    continue;
+                }
+                const auto& first = state.endpoints.at(edge.low);
+                const auto& second = state.endpoints.at(edge.high);
+                if (first.allocationVersion != second.allocationVersion) {
+                    throw std::invalid_argument(
+                        "collision endpoints mix allocation versions"
+                    );
+                }
+                auto snapshot = cbf2026::makeEdgeSnapshot(
+                    edge,
+                    first.estimate,
+                    second.estimate,
+                    first.barNu,
+                    second.barNu,
+                    0.0,
+                    state.version,
+                    problem.allocationVersion
+                );
+                const double barrier = snapshot.separation - safeDistance
+                    - first.epsilon - second.epsilon;
+                snapshot.alpha = allocatedAlphaValue(parameters, barrier);
+                const auto rows = cbf2026::allocatedRows(
+                    snapshot, 0.5, 0.5
+                );
+                const int otherId = edge.low == id ? edge.high : edge.low;
+                appendOwnedRow(
+                    selectOwnedRow(rows),
+                    barrier,
+                    "safetyCBF(#" + std::to_string(otherId) + ")"
+                );
+            }
+        }
+        std::sort(
+            problem.rows.begin(), problem.rows.end(),
+            [](const cbf2026::HardConstraintRow& lhs,
+               const cbf2026::HardConstraintRow& rhs) {
+                if (lhs.edge != rhs.edge) {
+                    return lhs.edge < rhs.edge;
+                }
+                if (lhs.owner != rhs.owner) {
+                    return lhs.owner < rhs.owner;
+                }
+                return lhs.name < rhs.name;
+            }
+        );
+        return problem;
+    }
+
+    cbf2026::FeasibilityResult checkLocalHardQpFeasibility(
+        const cbf2026::HardConstraintProblem& problem
+    ) const {
+        const std::string digest =
+            cbf2026::canonicalHardConstraintProblemHash(problem);
+        try {
+            if (problem.owner != id
+                || problem.controlSize != 3
+                || problem.planarComponentMax != 25.0
+                || problem.yawRateMax != 0.35
+                || problem.bounds.size() != 6) {
+                return {false, "invalid-problem", -inf, digest};
+            }
+            const auto requiredBounds = cbf2026::theoremInputBounds();
+            for (std::size_t index = 0;
+                 index < requiredBounds.size(); ++index) {
+                const auto& bound = problem.bounds[index];
+                const auto& required = requiredBounds[index];
+                if (bound.controlIndex < 0
+                    || bound.controlIndex >= problem.controlSize
+                    || !std::isfinite(bound.coefficient)
+                    || !std::isfinite(bound.limit)
+                    || bound.limit <= 0.0
+                    || bound.controlIndex != required.controlIndex
+                    || bound.coefficient != required.coefficient
+                    || bound.limit != required.limit) {
+                    return {false, "invalid-bound", -inf, digest};
+                }
+            }
+            for (const auto& row : problem.rows) {
+                if (row.coefficients.size() != problem.controlSize
+                    || !row.coefficients.allFinite()
+                    || !std::isfinite(row.constant)) {
+                    return {false, "invalid-row", -inf, digest};
+                }
+            }
+            json objectiveSettings =
+                settings["cbfs"]["objective-function"];
+            auto freshOptimiser = createOptimiser(
+                settings.at("optimiser").get<std::string>(),
+                objectiveSettings
+            );
+            freshOptimiser->start(problem.controlSize, problem.controlSize);
+            Eigen::VectorXd nominal = Eigen::VectorXd::Zero(
+                problem.controlSize
+            );
+            freshOptimiser->setObjective(nominal);
+            for (const auto& bound : problem.bounds) {
+                Eigen::VectorXd coefficients = Eigen::VectorXd::Zero(
+                    problem.controlSize
+                );
+                coefficients[bound.controlIndex] = bound.coefficient;
+                freshOptimiser->addLinearConstraint(
+                    coefficients, -bound.limit
+                );
+            }
+            for (const auto& row : problem.rows) {
+                freshOptimiser->addLinearConstraint(
+                    row.coefficients, -row.constant
+                );
+            }
+            const Eigen::VectorXd solution = freshOptimiser->solve();
+            const json solverStatus = freshOptimiser->getStatus();
+            const std::string status =
+                solverStatus.value("status", "unknown");
+            if (status != "optimal"
+                || solution.size() != problem.controlSize
+                || !solution.allFinite()) {
+                return {false, status, -inf, digest};
+            }
+            double minimumResidual = inf;
+            for (const auto& bound : problem.bounds) {
+                minimumResidual = std::min(
+                    minimumResidual,
+                    bound.coefficient * solution[bound.controlIndex]
+                    + bound.limit
+                );
+            }
+            for (const auto& row : problem.rows) {
+                minimumResidual = std::min(
+                    minimumResidual,
+                    row.constant + row.coefficients.dot(solution)
+                );
+            }
+            return {
+                std::isfinite(minimumResidual)
+                    && minimumResidual >= -1e-7,
+                status,
+                minimumResidual,
+                digest
+            };
+        } catch (const std::exception& error) {
+            return {false, error.what(), -inf, digest};
+        } catch (...) {
+            return {false, "unknown-error", -inf, digest};
+        }
+    }
+
     void optimise() {
         VectorXd uNominal = VectorXd::Zero(model->uSize());
+        const bool theoremAligned =
+            usesAnalyticTopologicalRateCertificate();
+        const cbf2026::HardConstraintProblem* committedHardProblem = nullptr;
+        lastConsumedHardConstraintProblem.reset();
+        lastConsumedHardProblemHash.clear();
+        if (theoremAligned) {
+            if (!committedCertificateState.valid
+                || committedCertificateState.version == 0) {
+                throw std::runtime_error(
+                    "committed theorem hard certificate is unavailable"
+                );
+            }
+            const auto problem =
+                committedCertificateState.hardProblems.find(id);
+            if (problem == committedCertificateState.hardProblems.end()) {
+                throw std::runtime_error(
+                    "committed theorem hard problem is unavailable"
+                );
+            }
+            committedHardProblem = &problem->second;
+            if (committedHardProblem->snapshotVersion
+                    != committedCertificateState.version
+                || committedHardProblem->owner != id) {
+                throw std::runtime_error(
+                    "committed theorem hard problem mixes versions"
+                );
+            }
+            lastConsumedHardConstraintProblem = *committedHardProblem;
+            lastConsumedHardProblemHash =
+                cbf2026::canonicalHardConstraintProblemHash(
+                    *committedHardProblem
+                );
+        }
         const json inputLimitsConfig =
             settings["cbfs"].value("input-limits", json::object());
         const bool inputLimitsEnabled =
@@ -1662,8 +2255,7 @@ public:
             model->startCharge();
             model->setChargeRate(chargeRate);
             uNominal.setZero();
-            model->setControlInput(uNominal);
-        } else {
+        }
             optimiser->clear();
 
             auto f = model->f();
@@ -1676,7 +2268,29 @@ public:
 
             optimiser->start(totalSize, uSize);
 
-            if (inputLimitsEnabled) {
+            if (theoremAligned) {
+                if (!inputLimitsEnabled
+                    || committedHardProblem == nullptr
+                    || committedHardProblem->controlSize != uSize
+                    || committedHardProblem->bounds.size() != 6
+                    || committedHardProblem->planarComponentMax
+                       != planarComponentMax
+                    || committedHardProblem->yawRateMax != yawRateMax) {
+                    throw std::invalid_argument(
+                        "theorem optimiser input bounds disagree with the committed problem"
+                    );
+                }
+                for (const auto& bound : committedHardProblem->bounds) {
+                    Eigen::VectorXd coefficients =
+                        Eigen::VectorXd::Zero(totalSize);
+                    coefficients[bound.controlIndex] = bound.coefficient;
+                    optimiser->addLinearConstraint(
+                        coefficients, -bound.limit
+                    );
+                }
+                opt["input_limits"]["bound_row_count"] =
+                    committedHardProblem->bounds.size();
+            } else if (inputLimitsEnabled) {
                 if (settings.value("model", "") != "SingleIntegrate2D"
                     || uSize != 3) {
                     throw std::invalid_argument(
@@ -1712,7 +2326,31 @@ public:
 
             std::string cbf_method = settings["cbfs"]["without-slack"].value("method", "all");
 
-            if (cbf_method == "all") {
+            if (theoremAligned) {
+                for (const auto& row : committedHardProblem->rows) {
+                    optimiser->addLinearConstraint(
+                        row.coefficients, -row.constant
+                    );
+                    jsonCBFNoSlack.emplace_back(json{
+                        {"name", row.name},
+                        {"coe", model->control2Json(row.coefficients)},
+                        {"const", row.constant},
+                        {"edge", {
+                            {"kind", row.edge.kind
+                                == cbf2026::EdgeKind::Localization
+                                ? "localization" : "collision"},
+                            {"low", row.edge.low},
+                            {"high", row.edge.high},
+                            {"base_id", row.edge.baseId}
+                        }},
+                        {"owner", row.owner},
+                        {"snapshot_version", row.snapshotVersion},
+                        {"allocation_version", row.allocationVersion},
+                        {"post_reset_barrier", row.postResetBarrier}
+                    });
+                    hardConstraintCoefficients.push_back(row.coefficients);
+                }
+            } else if (cbf_method == "all") {
                 for (auto &[name, cbf]: cbfNoSlack.cbfs) {
                     VectorXd uCoe = cbf.constraintUCoe(f, g, x, runtime);
                     double constraintConstWithTime = cbf.constraintConstWithTime(f, g, x, runtime);
@@ -1832,7 +2470,6 @@ public:
             }
 
             // cbfNoSlack.checkInequality(f, g, x, u, runtime);
-        }
     }
 
     void stepTimeForward(double dt) {

@@ -1,0 +1,46 @@
+{
+  "qualified-estimator": {
+    "mode-tolerance-m": 0.001,
+    "sensitivity-tolerances-m": [0.0005, 0.001, 0.002],
+    "deployment": {
+      "anchor-ids": [0, 2],
+      "anchor-coordinates": [[-1550.0, -300.0], [-1550.0, 300.0]],
+      "deployment-vertices": [
+        [-1490.0, -200.0],
+        [-1370.0, -200.0],
+        [-1370.0, 200.0],
+        [-1490.0, 200.0]
+      ],
+      "unit-normal": [1.0, 0.0],
+      "offset": 1550.0,
+      "ocean-side": 1,
+      "margin-m": 1.0,
+      "domain-version": "ocean-side-v1"
+    },
+    "history": {
+      "q-threshold": 11.829007011943707,
+      "process-noise-diagonal": [0.25, 0.25],
+      "public-max-age-frames": 2,
+      "private-max-age-policy": "mission-frames-minus-one"
+    }
+  },
+  "position_covariance": {
+    "reference-selection": "fixed-cbf-only",
+    "ranging_sigma": 0.5,
+    "singular-distance-tolerance-m": 1e-8,
+    "relative-spectral-threshold": 1e-12
+  },
+  "cbfs": {
+    "uncertainty-rate": {"mode": "analytic-topological"},
+    "input-limits": {
+      "on": true,
+      "planar-component-max": 25.0,
+      "yaw-rate-max": 0.35
+    },
+    "without-slack": {
+      "safety": {"on": true, "mode": "allocated-pairwise"},
+      "comm-fixed": {"on": true, "mode": "allocated-pairwise"}
+    }
+  },
+  "execute": {"execution-mode": "distributed", "time-step": 0.5}
+}
