@@ -278,6 +278,13 @@ TEST_CASE("generic allocated-row construction dispatches by canonical edge kind"
     CHECK(collision[0].coefficient.isApprox(
         collisionSnapshot().normal
     ));
+
+    auto unsupported = collisionSnapshot();
+    unsupported.edge.kind = static_cast<cbf2026::EdgeKind>(2);
+    CHECK_THROWS_AS(
+        cbf2026::allocatedRows(unsupported, 0.5, 0.5),
+        std::invalid_argument
+    );
 }
 
 TEST_CASE("fixed endpoint allocation infeasibility is labeled conservatism") {

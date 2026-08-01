@@ -229,31 +229,11 @@ TEST_CASE("theorem covariance entry point installs the exact rate certificate st
 TEST_CASE("theorem hard row uses analytic epsilon rate not backward history") {
     json settings = makeTheoremRateConfig();
     Robot robot(1, settings);
-    robot.rateCertificate = cbf2026::computeNodeRateCertificate({
-        robot.id,
-        robot.idInMyPart,
-        7,
-        25.0,
-        {
-            {
-                {cbf2026::canonicalBaseReferenceId(0), 0, 7, true,
-                 Eigen::Matrix2d::Zero(), 0.0, 0.0},
-                10.0,
-                Eigen::Vector2d::UnitX(),
-                1.0
-            },
-            {
-                {cbf2026::canonicalBaseReferenceId(1), 0, 7, true,
-                 Eigen::Matrix2d::Zero(), 0.0, 0.0},
-                10.0,
-                Eigen::Vector2d::UnitY(),
-                1.0
-            }
-        }
-    });
     robot.certificateSnapshotVersion = 7;
-    robot.certificateAvailable = true;
-    robot.currentUncertainty = robot.rateCertificate.epsilon;
+    robot.getCovariance(
+        robot.settings["cbfs"]["without-slack"]["comm-fixed"]
+    );
+    REQUIRE(robot.certificateAvailable);
     robot.setupFormation();
 
     auto& commConfig =

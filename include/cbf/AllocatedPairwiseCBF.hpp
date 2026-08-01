@@ -295,12 +295,17 @@ inline std::vector<EndpointRow> allocatedRows(
     double allocationI,
     double allocationJ
 ) {
-    if (snapshot.edge.kind == EdgeKind::Localization) {
-        return allocatedLocalizationRows(
-            snapshot, allocationI, allocationJ
-        );
+    switch (snapshot.edge.kind) {
+        case EdgeKind::Localization:
+            return allocatedLocalizationRows(
+                snapshot, allocationI, allocationJ
+            );
+        case EdgeKind::Collision:
+            return allocatedCollisionRows(
+                snapshot, allocationI, allocationJ
+            );
     }
-    return allocatedCollisionRows(snapshot, allocationI, allocationJ);
+    throw std::invalid_argument("edge kind is unsupported");
 }
 
 inline void validateEndpointRowNumeric(const EndpointRow& row) {

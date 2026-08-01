@@ -57,9 +57,11 @@ struct EdgeIdHash {
 };
 
 inline EdgeId canonicalUavEdge(EdgeKind kind, int first, int second) {
-    if (first <= 0 || second <= 0 || first == second) {
+    if ((kind != EdgeKind::Localization
+         && kind != EdgeKind::Collision)
+        || first <= 0 || second <= 0 || first == second) {
         throw std::invalid_argument(
-            "UAV edge endpoints must be distinct positive IDs"
+            "UAV edge kind and endpoints are invalid"
         );
     }
     return {
@@ -80,6 +82,10 @@ inline EdgeId canonicalBaseLocalizationEdge(int uavId, int baseId) {
 }
 
 inline void validateCanonicalEdge(const EdgeId& edge) {
+    if (edge.kind != EdgeKind::Localization
+        && edge.kind != EdgeKind::Collision) {
+        throw std::invalid_argument("edge kind is unsupported");
+    }
     if (edge.low <= 0 || edge.high <= 0) {
         throw std::invalid_argument("edge UAV IDs must be positive");
     }

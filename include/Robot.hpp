@@ -11,6 +11,8 @@
 #include "optimisers/optimisers"
 #include "communicators/communicators"
 
+#include <optional>
+
 typedef std::pair<int, Point> intPoint;
 
 class Robot {
@@ -50,6 +52,8 @@ public:
     bool certificateAvailable = false;
     std::uint64_t certificateSnapshotVersion = 0;
     std::uint64_t certificateAllocationVersion = 0;
+    std::optional<cbf2026::EndpointCertificateSnapshot>
+        localCertificateSnapshot;
 
     std::string cvtExplorationMode;
     double cvtFrontFocusDistance;
@@ -453,7 +457,12 @@ public:
         cbfNoSlack.cbfs[commCBF.name] = commCBF;
     }
 
-    json fixedLocalizationReferences() const {
+    json fixedLocalizationReferencesFor(int ownerId) const {
+        if (ownerId <= 0 || ownerId > n) {
+            throw std::invalid_argument(
+                "fixed localization owner is outside the mission"
+            );
+        }
         json references = {
             {"anchorIds", json::array()},
             {"baseIds", json::array()}
@@ -463,24 +472,79 @@ public:
             settings["cbfs"]["without-slack"]["comm-fixed"];
         const int minOffset =
             commConfig.value("min-neighbour-id-offset", -2);
+        const int maxOffset =
+            commConfig.value("max-neighbour-id-offset", 0);
+        const int ownerLocalIndex = getIdInPart(ownerId);
         const int maximumBaseIndex =
-            -idInMyPart - minOffset;
+            -ownerLocalIndex - minOffset;
+        const int ownerPartId = getPartId(ownerId);
+        const auto& ownerBaseIds =
+            settings["formation"]["bases-id"].at(ownerPartId - 1);
 
-        for (std::size_t index = 0; index < myBasesId.size(); ++index) {
+        for (std::size_t index = 0; index < ownerBaseIds.size(); ++index) {
             if (static_cast<int>(index) > maximumBaseIndex) {
                 continue;
             }
-            references["baseIds"].push_back(myBasesId[index]);
+            references["baseIds"].push_back(ownerBaseIds[index]);
         }
 
-        for (int otherId : myNeighboursId) {
-            if (!isSamePartAsMe(otherId)) {
+        for (int otherId = 1; otherId <= n; ++otherId) {
+            if (getPartId(otherId) != ownerPartId) {
                 continue;
             }
-            if (getIdInPart(otherId) >= idInMyPart) {
+            if (getIdInPart(otherId) >= ownerLocalIndex) {
+                continue;
+            }
+            if (otherId < ownerId + minOffset
+                || otherId > ownerId + maxOffset) {
                 continue;
             }
             references["anchorIds"].push_back(otherId);
+        }
+        return references;
+    }
+
+    json fixedLocalizationReferences() const {
+        return fixedLocalizationReferencesFor(id);
+    }
+
+    cbf2026::BarrierEdgeRegistry fixedBarrierEdgeRegistry() const {
+        std::vector<cbf2026::FixedLocalizationReference> references;
+        for (int ownerId = 1; ownerId <= n; ++ownerId) {
+            const json ownerReferences =
+                fixedLocalizationReferencesFor(ownerId);
+            for (const json& baseId : ownerReferences.at("baseIds")) {
+                references.push_back({
+                    ownerId, baseId.get<int>(), true
+                });
+            }
+            for (const json& referenceId :
+                 ownerReferences.at("anchorIds")) {
+                references.push_back({
+                    ownerId, referenceId.get<int>(), false
+                });
+            }
+        }
+        return cbf2026::BarrierEdgeRegistry(n, references);
+    }
+
+    json incidentFixedLocalizationReferences() const {
+        json references = {
+            {"anchorIds", json::array()},
+            {"baseIds", json::array()}
+        };
+        const auto registry = fixedBarrierEdgeRegistry();
+        for (const auto& edge : registry.incidentEdges(id)) {
+            if (edge.kind != cbf2026::EdgeKind::Localization) {
+                continue;
+            }
+            if (edge.baseId >= 0) {
+                references["baseIds"].push_back(edge.baseId);
+                continue;
+            }
+            references["anchorIds"].push_back(
+                edge.low == id ? edge.high : edge.low
+            );
         }
         return references;
     }
@@ -559,6 +623,7 @@ public:
     void getCovariance(const json& config) {
         const bool theoremAligned = usesAnalyticTopologicalRateCertificate();
         certificateAvailable = false;
+        localCertificateSnapshot.reset();
         if (!enablePositionCovariance) {
             return;
         }
@@ -756,8 +821,25 @@ public:
         rateCertificate = std::move(candidate);
         positionCovariance = rateCertificate.covariance;
         if (theoremAligned) {
-            currentUncertainty = rateCertificate.epsilon;
-            certificateAvailable = true;
+            try {
+                localCertificateSnapshot =
+                    cbf2026::makeEndpointCertificateSnapshot(
+                        rateCertificate,
+                        Eigen::Vector2d(
+                            currentPosition.x,
+                            currentPosition.y
+                        ),
+                        certificateAllocationVersion
+                    );
+                cbf2026::validateEndpointCertificateSnapshot(
+                    id, *localCertificateSnapshot
+                );
+                currentUncertainty = rateCertificate.epsilon;
+                certificateAvailable = true;
+            } catch (...) {
+                localCertificateSnapshot.reset();
+                throw;
+            }
         }
     }
 
@@ -807,7 +889,9 @@ public:
         // This should always be called, regardless of whether comm-fixed CBF is enabled
         // Uses the already-initialized myNeighboursId and myBasesId
 
-        const json references = fixedLocalizationReferences();
+        const json references = usesAnalyticTopologicalRateCertificate()
+            ? incidentFixedLocalizationReferences()
+            : fixedLocalizationReferences();
         myFormation = {
             {"id", id},
             {"anchorPoints", json::array()},
@@ -822,29 +906,34 @@ public:
         }
     }
 
-    cbf2026::EndpointCertificateSnapshot localEndpointCertificateSnapshot() {
+    const cbf2026::EndpointCertificateSnapshot&
+    localEndpointCertificateSnapshot() {
         if (!certificateAvailable
+            || !localCertificateSnapshot.has_value()
             || rateCertificate.robotId != id
             || rateCertificate.snapshotVersion
-               != certificateSnapshotVersion) {
+               != certificateSnapshotVersion
+            || localCertificateSnapshot->robotId != id
+            || localCertificateSnapshot->snapshotVersion
+               != certificateSnapshotVersion
+            || localCertificateSnapshot->allocationVersion
+               != certificateAllocationVersion) {
             certificateAvailable = false;
+            localCertificateSnapshot.reset();
             throw std::invalid_argument(
                 "local analytic endpoint certificate is unavailable"
             );
         }
-        const Point position = model->xy();
-        const auto snapshot = cbf2026::makeEndpointCertificateSnapshot(
-            rateCertificate,
-            Eigen::Vector2d(position.x, position.y),
-            certificateAllocationVersion
-        );
         try {
-            cbf2026::validateEndpointCertificateSnapshot(id, snapshot);
+            cbf2026::validateEndpointCertificateSnapshot(
+                id, *localCertificateSnapshot
+            );
         } catch (...) {
             certificateAvailable = false;
+            localCertificateSnapshot.reset();
             throw;
         }
-        return snapshot;
+        return *localCertificateSnapshot;
     }
 
     const cbf2026::EndpointCertificateSnapshot&
@@ -954,8 +1043,9 @@ public:
         const ClassKParameters parameters =
             readClassKParameters(config, 0.1, 1);
         const auto local = localEndpointCertificateSnapshot();
+        const json references = incidentFixedLocalizationReferences();
 
-        for (const json& baseIdJson : myFormation.at("baseIds")) {
+        for (const json& baseIdJson : references.at("baseIds")) {
             const int baseId = baseIdJson.get<int>();
             if (baseId < 0 || baseId >= static_cast<int>(bases.size())) {
                 throw std::invalid_argument(
@@ -993,7 +1083,7 @@ public:
             );
         }
 
-        for (const json& otherIdJson : myFormation.at("anchorIds")) {
+        for (const json& otherIdJson : references.at("anchorIds")) {
             const int otherId = otherIdJson.get<int>();
             const auto& other =
                 transportedEndpointCertificateSnapshot(otherId);

@@ -221,3 +221,101 @@ TEST_CASE("registry rejects invalid and duplicated mission edges") {
     CHECK_THROWS_AS(registry.incidentEdges(0), std::invalid_argument);
     CHECK_THROWS_AS(registry.incidentEdges(3), std::invalid_argument);
 }
+
+TEST_CASE("canonical edge APIs reject unsupported edge kinds") {
+    const auto unsupported = static_cast<cbf2026::EdgeKind>(2);
+
+    CHECK_THROWS_AS(
+        cbf2026::canonicalUavEdge(unsupported, 1, 2),
+        std::invalid_argument
+    );
+    CHECK_THROWS_AS(
+        cbf2026::validateCanonicalEdge({unsupported, 1, 2, -1}),
+        std::invalid_argument
+    );
+}
+
+TEST_CASE("fixed-reference and endpoint permutations preserve canonical rows") {
+    const std::vector<cbf2026::FixedLocalizationReference> references = {
+        {1, 0, true},
+        {1, 1, true},
+        {2, 0, true},
+        {2, 1, false},
+        {3, 1, false},
+        {3, 2, false},
+        {4, 2, false},
+        {4, 3, false}
+    };
+    std::vector<cbf2026::FixedLocalizationReference> permuted = references;
+    std::reverse(permuted.begin(), permuted.end());
+
+    const cbf2026::BarrierEdgeRegistry canonicalRegistry(4, references);
+    const cbf2026::BarrierEdgeRegistry permutedRegistry(4, permuted);
+    REQUIRE(canonicalRegistry.fixedLocalizationEdges()
+            == permutedRegistry.fixedLocalizationEdges());
+    REQUIRE(canonicalRegistry.collisionEdges()
+            == permutedRegistry.collisionEdges());
+
+    for (std::size_t index = 0;
+         index < canonicalRegistry.fixedLocalizationEdges().size();
+         ++index) {
+        const auto& canonicalEdge =
+            canonicalRegistry.fixedLocalizationEdges()[index];
+        const auto& permutedEdge =
+            permutedRegistry.fixedLocalizationEdges()[index];
+        const Eigen::Vector2d first(canonicalEdge.low, 1.0);
+        const Eigen::Vector2d second = canonicalEdge.baseId >= 0
+            ? Eigen::Vector2d(0.0, -canonicalEdge.baseId - 1.0)
+            : Eigen::Vector2d(canonicalEdge.high, -1.0);
+        const auto canonicalSnapshot = cbf2026::makeEdgeSnapshot(
+            canonicalEdge, first, second, 0.1,
+            canonicalEdge.baseId >= 0 ? 0.0 : 0.2,
+            0.7, 7, 11
+        );
+        const auto permutedSnapshot = cbf2026::makeEdgeSnapshot(
+            permutedEdge, first, second, 0.1,
+            permutedEdge.baseId >= 0 ? 0.0 : 0.2,
+            0.7, 7, 11
+        );
+        const double allocationI = canonicalEdge.baseId >= 0 ? 1.0 : 0.5;
+        const double allocationJ = canonicalEdge.baseId >= 0 ? 0.0 : 0.5;
+        const auto canonicalRows = cbf2026::allocatedRows(
+            canonicalSnapshot, allocationI, allocationJ
+        );
+        auto permutedRows = cbf2026::allocatedRows(
+            permutedSnapshot, allocationI, allocationJ
+        );
+        REQUIRE(canonicalRows.size() == permutedRows.size());
+        for (std::size_t rowIndex = 0;
+             rowIndex < canonicalRows.size();
+             ++rowIndex) {
+            CHECK(canonicalRows[rowIndex].edge
+                  == permutedRows[rowIndex].edge);
+            CHECK(canonicalRows[rowIndex].owner
+                  == permutedRows[rowIndex].owner);
+            CHECK(canonicalRows[rowIndex].coefficient
+                  == permutedRows[rowIndex].coefficient);
+            CHECK(canonicalRows[rowIndex].constant
+                  == permutedRows[rowIndex].constant);
+            CHECK(canonicalRows[rowIndex].allocation
+                  == permutedRows[rowIndex].allocation);
+            CHECK(canonicalRows[rowIndex].snapshotVersion
+                  == permutedRows[rowIndex].snapshotVersion);
+            CHECK(canonicalRows[rowIndex].allocationVersion
+                  == permutedRows[rowIndex].allocationVersion);
+        }
+        std::reverse(permutedRows.begin(), permutedRows.end());
+        const auto canonicalFull =
+            cbf2026::reconstructFullRow(canonicalRows);
+        const auto permutedFull =
+            cbf2026::reconstructFullRow(permutedRows);
+        CHECK(canonicalFull.edge == permutedFull.edge);
+        CHECK(canonicalFull.coefficientI == permutedFull.coefficientI);
+        CHECK(canonicalFull.coefficientJ == permutedFull.coefficientJ);
+        CHECK(canonicalFull.constant == permutedFull.constant);
+        CHECK(canonicalFull.snapshotVersion
+              == permutedFull.snapshotVersion);
+        CHECK(canonicalFull.allocationVersion
+              == permutedFull.allocationVersion);
+    }
+}
