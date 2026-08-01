@@ -410,3 +410,65 @@ class QualifiedLifecycleTests(unittest.TestCase):
                 self.assertIsNone(public["modeled_covariance"])
                 self.assertNotIn("truth_position", json.dumps(public))
                 self.assertIs(result["next_private_state"], prior.private_prior)
+
+    def test_cyclic_public_payload_canonicalizes_unavailable_and_keeps_private(self):
+        initial = self.initial_fresh()
+        prior = advance_qualified_prior(
+            initial["public_output"],
+            initial["next_private_state"],
+            [0.0, 0.0],
+            next_frame_index=1,
+            applied_command_frame=0,
+            mission_horizon_frames=10,
+            history_version=2,
+        )
+        cyclic = []
+        cyclic.append(cyclic)
+        public_input = dict(prior.public_prediction)
+        public_input["base_anchor_provenance"] = cyclic
+
+        try:
+            result = finalize_qualified_lifecycle(
+                self.unavailable_decision(),
+                PriorBundle(public_input, prior.private_prior, 2),
+                frame_index=1,
+                mission_horizon_frames=10,
+            )
+        except Exception as error:
+            outcome = type(error).__name__
+            result = None
+        else:
+            outcome = result["public_output"]["output_status"]
+
+        self.assertEqual(outcome, "unavailable")
+        self.assertIs(result["next_private_state"], prior.private_prior)
+
+    def test_oversized_public_integer_canonicalizes_unavailable_and_keeps_private(self):
+        initial = self.initial_fresh()
+        prior = advance_qualified_prior(
+            initial["public_output"],
+            initial["next_private_state"],
+            [0.0, 0.0],
+            next_frame_index=1,
+            applied_command_frame=0,
+            mission_horizon_frames=10,
+            history_version=2,
+        )
+        public_input = dict(prior.public_prediction)
+        public_input["estimate"] = [10 ** 10000, 0]
+
+        try:
+            result = finalize_qualified_lifecycle(
+                self.unavailable_decision(),
+                PriorBundle(public_input, prior.private_prior, 2),
+                frame_index=1,
+                mission_horizon_frames=10,
+            )
+        except Exception as error:
+            outcome = type(error).__name__
+            result = None
+        else:
+            outcome = result["public_output"]["output_status"]
+
+        self.assertEqual(outcome, "unavailable")
+        self.assertIs(result["next_private_state"], prior.private_prior)

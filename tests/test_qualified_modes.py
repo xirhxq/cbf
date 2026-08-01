@@ -130,12 +130,13 @@ class ModeClusteringTests(unittest.TestCase):
         self.assertEqual(integer_mode_id, canonical_mode_id(float_mode))
 
     def test_representative_and_mode_id_reject_malformed_coordinates_with_value_error(self):
-        malformed_estimates = (
-            ("-1490", "0"),
-            (True, 0.0),
-            (math.nan, 0.0),
-        )
-        for estimate in malformed_estimates:
+        malformed_estimates = {
+            "numeric_strings": ("-1490", "0"),
+            "boolean": (True, 0.0),
+            "nonfinite": (math.nan, 0.0),
+            "oversized_integer": (10 ** 10000, 0.0),
+        }
+        for name, estimate in malformed_estimates.items():
             candidate = LocalCandidate("bad", estimate, 1.0, {})
             mode = NumericalMode(("bad",), (candidate,), 0.0)
             outcomes = []
@@ -146,7 +147,7 @@ class ModeClusteringTests(unittest.TestCase):
                     outcomes.append(type(error).__name__)
                 else:
                     outcomes.append("accepted")
-            with self.subTest(estimate=estimate):
+            with self.subTest(name=name):
                 self.assertEqual(outcomes, ["ValueError", "ValueError"])
 
     def test_representative_precedence_is_complete_within_a_valid_cluster(self):
@@ -401,7 +402,13 @@ class DeploymentQualificationTests(unittest.TestCase):
             integer_outcome = "admissible" if integer_result.admissible else "rejected"
         self.assertEqual(integer_outcome, "admissible")
 
-        for estimate in (("-1490", "0"), (True, 0.0), (math.nan, 0.0)):
+        malformed_estimates = {
+            "numeric_strings": ("-1490", "0"),
+            "boolean": (True, 0.0),
+            "nonfinite": (math.nan, 0.0),
+            "oversized_integer": (10 ** 10000, 0.0),
+        }
+        for name, estimate in malformed_estimates.items():
             candidate = LocalCandidate("bad", estimate, 1.0, {})
             mode = NumericalMode(("bad",), (candidate,), 0.0)
             try:
@@ -410,7 +417,7 @@ class DeploymentQualificationTests(unittest.TestCase):
                 outcome = type(error).__name__
             else:
                 outcome = "accepted"
-            with self.subTest(estimate=estimate):
+            with self.subTest(name=name):
                 self.assertEqual(outcome, "ValueError")
 
     def test_publication_refuses_nonseparable_zero_and_multiple_modes(self):
@@ -513,7 +520,13 @@ class DeploymentQualificationTests(unittest.TestCase):
             type(value) is float for value in published.representative.estimate
         ))
 
-        for estimate in (("-1490", "0"), (True, 0.0), (math.nan, 0.0)):
+        malformed_estimates = {
+            "numeric_strings": ("-1490", "0"),
+            "boolean": (True, 0.0),
+            "nonfinite": (math.nan, 0.0),
+            "oversized_integer": (10 ** 10000, 0.0),
+        }
+        for name, estimate in malformed_estimates.items():
             candidate = LocalCandidate("bad", estimate, 1.0, {})
             mode = NumericalMode(("bad",), (candidate,), 0.0)
             clustering = ModeClustering(
@@ -528,7 +541,7 @@ class DeploymentQualificationTests(unittest.TestCase):
                 outcome = type(error).__name__
             else:
                 outcome = decision.status
-            with self.subTest(estimate=estimate):
+            with self.subTest(name=name):
                 self.assertEqual(outcome, "unavailable")
 
 
@@ -603,7 +616,13 @@ class HistoryQualificationTests(unittest.TestCase):
             integer_outcome = "admissible" if integer_result.admissible else "rejected"
         self.assertEqual(integer_outcome, "admissible")
 
-        for estimate in (("1", "0"), (True, 0.0), (math.nan, 0.0)):
+        malformed_estimates = {
+            "numeric_strings": ("1", "0"),
+            "boolean": (True, 0.0),
+            "nonfinite": (math.nan, 0.0),
+            "oversized_integer": (10 ** 10000, 0.0),
+        }
+        for name, estimate in malformed_estimates.items():
             candidate = replace(integer_candidate, attempt_id="bad", estimate=estimate)
             mode = NumericalMode(("bad",), (candidate,), 0.0)
             try:
@@ -617,7 +636,7 @@ class HistoryQualificationTests(unittest.TestCase):
                 outcome = type(error).__name__
             else:
                 outcome = "accepted"
-            with self.subTest(estimate=estimate):
+            with self.subTest(name=name):
                 self.assertEqual(outcome, "ValueError")
 
     def test_zero_or_multiple_history_modes_do_not_publish(self):

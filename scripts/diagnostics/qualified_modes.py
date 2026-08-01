@@ -399,7 +399,7 @@ def _runtime_payload_is_safe(value: object, active_ids: set[int]) -> bool:
     if value is None or isinstance(value, (str, bool)):
         return True
     if isinstance(value, Real):
-        return math.isfinite(float(value))
+        return _finite_scalar(value) is not None
     if isinstance(value, np.generic):
         return _runtime_payload_is_safe(value.item(), active_ids)
     if isinstance(value, DeploymentContract):
@@ -790,7 +790,10 @@ def enumerate_qualified_starts(
 def _finite_scalar(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, Real):
         return None
-    scalar = float(value)
+    try:
+        scalar = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
     return scalar if math.isfinite(scalar) else None
 
 

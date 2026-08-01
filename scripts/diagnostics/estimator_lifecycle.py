@@ -565,16 +565,38 @@ def _canonical_unavailable_reason(value: object) -> str | None:
     return value["reason"]
 
 
-def _runtime_public_payload_is_safe(value: object) -> bool:
+def _runtime_public_payload_is_safe(
+    value: object,
+    active_ids: set[int] | None = None,
+) -> bool:
+    if active_ids is None:
+        active_ids = set()
     if isinstance(value, Mapping):
-        return all(
-            isinstance(key, str)
-            and key not in FORBIDDEN_RUNTIME_KEYS
-            and _runtime_public_payload_is_safe(nested)
-            for key, nested in value.items()
-        )
+        identifier = id(value)
+        if identifier in active_ids:
+            return False
+        active_ids.add(identifier)
+        try:
+            return all(
+                isinstance(key, str)
+                and key not in FORBIDDEN_RUNTIME_KEYS
+                and _runtime_public_payload_is_safe(nested, active_ids)
+                for key, nested in value.items()
+            )
+        finally:
+            active_ids.remove(identifier)
     if isinstance(value, (tuple, list)):
-        return all(_runtime_public_payload_is_safe(item) for item in value)
+        identifier = id(value)
+        if identifier in active_ids:
+            return False
+        active_ids.add(identifier)
+        try:
+            return all(
+                _runtime_public_payload_is_safe(item, active_ids)
+                for item in value
+            )
+        finally:
+            active_ids.remove(identifier)
     if value is None or isinstance(value, (str, bool)):
         return True
     return _finite_real(value) is not None
@@ -583,7 +605,10 @@ def _runtime_public_payload_is_safe(value: object) -> bool:
 def _finite_real(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, Real):
         return None
-    scalar = float(value)
+    try:
+        scalar = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
     return scalar if math.isfinite(scalar) else None
 
 
