@@ -2,6 +2,8 @@
 #define CBF_COMMUNICATOR_BASE_HPP
 
 #include "utils.h"
+#include "cbf/AllocatedPairwiseCBF.hpp"
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 
@@ -31,6 +33,15 @@ public:
     virtual void sendUncertaintyRate(int id, double uncertaintyRate) = 0;
     virtual void receiveUncertaintyRate(int id, double uncertaintyRate) = 0;
 
+    virtual void sendEndpointCertificateSnapshot(
+        int id,
+        const cbf2026::EndpointCertificateSnapshot& snapshot
+    ) = 0;
+    virtual void receiveEndpointCertificateSnapshot(
+        int id,
+        const cbf2026::EndpointCertificateSnapshot& snapshot
+    ) = 0;
+
     void output() {
         for (auto &i : all) {
             std::cout << "Robot " << i << ": ";
@@ -53,6 +64,13 @@ public:
     std::unordered_map<int, double> _othersBatteryLevel;
     std::unordered_map<int, Eigen::Matrix2d> _othersPositionCovariance;
     std::unordered_map<int, double> _othersUncertaintyRate;
+    std::unordered_map<int, cbf2026::EndpointCertificateSnapshot>
+        _othersEndpointCertificateSnapshots;
+    std::unordered_map<int, double> _othersEpsilon;
+    std::unordered_map<int, double> _othersBarNu;
+    std::unordered_map<int, double> _othersCovarianceRateBound;
+    std::unordered_map<int, std::uint64_t> _othersCertificateSnapshotVersion;
+    std::unordered_map<int, std::uint64_t> _othersAllocationVersion;
 };
 
 #endif // CBF_COMMUNICATOR_BASE_HPP

@@ -56,6 +56,34 @@ public:
     void receiveUncertaintyRate(int id, double uncertaintyRate) override {
         _othersUncertaintyRate[id] = uncertaintyRate;
     }
+
+    void sendEndpointCertificateSnapshot(
+        int id,
+        const cbf2026::EndpointCertificateSnapshot& snapshot
+    ) override {
+        storeEndpointCertificateSnapshot(id, snapshot);
+    }
+
+    void receiveEndpointCertificateSnapshot(
+        int id,
+        const cbf2026::EndpointCertificateSnapshot& snapshot
+    ) override {
+        storeEndpointCertificateSnapshot(id, snapshot);
+    }
+
+private:
+    void storeEndpointCertificateSnapshot(
+        int id,
+        const cbf2026::EndpointCertificateSnapshot& snapshot
+    ) {
+        cbf2026::validateEndpointCertificateSnapshot(id, snapshot);
+        _othersEndpointCertificateSnapshots[id] = snapshot;
+        _othersEpsilon[id] = snapshot.epsilon;
+        _othersBarNu[id] = snapshot.barNu;
+        _othersCovarianceRateBound[id] = snapshot.covarianceRateBound;
+        _othersCertificateSnapshotVersion[id] = snapshot.snapshotVersion;
+        _othersAllocationVersion[id] = snapshot.allocationVersion;
+    }
 };
 
 #endif //CBF_COMMUNICATOR_CENTRAL_H

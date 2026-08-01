@@ -6,7 +6,9 @@
 #include "doctest/doctest.h"
 #include "Swarm.hpp"
 
+#include <array>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -104,6 +106,18 @@ json makeThreeRobotChainSettings() {
     return settings;
 }
 
+json makeTheoremSettings() {
+    json settings = makeDiagnosticSettings();
+    settings["cbfs"]["uncertainty-rate"]["mode"] =
+        "analytic-topological";
+    settings["cbfs"]["input-limits"] = {
+        {"on", true},
+        {"planar-component-max", 25.0},
+        {"yaw-rate-max", 0.35}
+    };
+    return settings;
+}
+
 json makeFourRobotFixedGraphSettings() {
     json settings = makeThreeRobotChainSettings();
     settings["num"] = 4;
@@ -181,6 +195,37 @@ void refreshDiagnosticUncertaintySnapshot(std::vector<std::unique_ptr<Robot>>& r
     exchangeDiagnosticData(robots);
 }
 
+cbf2026::NodeRateCertificate makeAxisRateCertificate(
+    int robotId,
+    std::uint64_t snapshotVersion,
+    double componentMax = 25.0
+) {
+    return cbf2026::computeNodeRateCertificate({
+        robotId,
+        1,
+        snapshotVersion,
+        componentMax,
+        {
+            {
+                {cbf2026::canonicalBaseReferenceId(0), 0,
+                 snapshotVersion, true,
+                 Eigen::Matrix2d::Zero(), 0.0, 0.0},
+                10.0,
+                Eigen::Vector2d::UnitX(),
+                1.0
+            },
+            {
+                {cbf2026::canonicalBaseReferenceId(1), 0,
+                 snapshotVersion, true,
+                 Eigen::Matrix2d::Zero(), 0.0, 0.0},
+                10.0,
+                Eigen::Vector2d::UnitY(),
+                1.0
+            }
+        }
+    });
+}
+
 }  // namespace
 
 TEST_CASE("positive backward uncertainty rate ignores decreases") {
@@ -206,6 +251,341 @@ TEST_CASE("communicator exchanges the current uncertainty rate") {
     CommunicatorCentral communicator(settings);
     communicator.receiveUncertaintyRate(3, 1.25);
     CHECK(communicator._othersUncertaintyRate.at(3) == doctest::Approx(1.25));
+}
+
+TEST_CASE("communicator atomically exchanges the complete endpoint certificate") {
+    json settings = makeDiagnosticSettings();
+    settings["id"] = 1;
+    CommunicatorCentral communicator(settings);
+    const auto certificate = cbf2026::computeNodeRateCertificate({
+        3,
+        1,
+        7,
+        25.0,
+        {
+            {
+                {cbf2026::canonicalBaseReferenceId(0), 0, 7, true,
+                 Eigen::Matrix2d::Zero(), 0.0, 0.0},
+                10.0,
+                Eigen::Vector2d::UnitX(),
+                1.0
+            },
+            {
+                {cbf2026::canonicalBaseReferenceId(1), 0, 7, true,
+                 Eigen::Matrix2d::Zero(), 0.0, 0.0},
+                10.0,
+                Eigen::Vector2d::UnitY(),
+                1.0
+            }
+        }
+    });
+    const auto snapshot = cbf2026::makeEndpointCertificateSnapshot(
+        certificate,
+        Eigen::Vector2d(4.0, 5.0),
+        11
+    );
+
+    communicator.receiveEndpointCertificateSnapshot(3, snapshot);
+
+    REQUIRE(communicator._othersEndpointCertificateSnapshots.count(3) == 1);
+    const auto& received =
+        communicator._othersEndpointCertificateSnapshots.at(3);
+    CHECK(received.robotId == 3);
+    CHECK(received.estimate == Eigen::Vector2d(4.0, 5.0));
+    CHECK(received.covariance == certificate.covariance);
+    CHECK(received.covarianceRateBound
+          == certificate.covarianceRateBound);
+    CHECK(received.epsilon == certificate.epsilon);
+    CHECK(received.barNu == certificate.epsilonRateBound);
+    CHECK(received.snapshotVersion == 7);
+    CHECK(received.allocationVersion == 11);
+    CHECK(communicator._othersEpsilon.at(3) == received.epsilon);
+    CHECK(communicator._othersBarNu.at(3) == received.barNu);
+    CHECK(communicator._othersCovarianceRateBound.at(3)
+          == received.covarianceRateBound);
+    CHECK(communicator._othersCertificateSnapshotVersion.at(3) == 7);
+    CHECK(communicator._othersAllocationVersion.at(3) == 11);
+}
+
+TEST_CASE("atomic endpoint transport rejects wrong identity and invalid fields") {
+    json settings = makeDiagnosticSettings();
+    settings["id"] = 1;
+    CommunicatorCentral communicator(settings);
+    const auto valid = cbf2026::makeEndpointCertificateSnapshot(
+        makeAxisRateCertificate(3, 7),
+        Eigen::Vector2d(4.0, 5.0),
+        11
+    );
+
+    auto invalid = valid;
+    invalid.robotId = 4;
+    CHECK_THROWS_AS(
+        communicator.receiveEndpointCertificateSnapshot(3, invalid),
+        std::invalid_argument
+    );
+    CHECK(communicator._othersEndpointCertificateSnapshots.empty());
+
+    invalid = valid;
+    invalid.covarianceRateBound = -1.0;
+    CHECK_THROWS_AS(
+        communicator.receiveEndpointCertificateSnapshot(3, invalid),
+        std::invalid_argument
+    );
+    CHECK(communicator._othersEndpointCertificateSnapshots.empty());
+
+    invalid = valid;
+    invalid.estimate[0] = std::numeric_limits<double>::quiet_NaN();
+    CHECK_THROWS_AS(
+        communicator.receiveEndpointCertificateSnapshot(3, invalid),
+        std::invalid_argument
+    );
+    CHECK(communicator._othersEndpointCertificateSnapshots.empty());
+}
+
+TEST_CASE("topological recursion consumes transported predecessor covariance rate") {
+    json settings = makeTheoremSettings();
+    Robot robot(2, settings);
+    robot.certificateSnapshotVersion = 7;
+    robot.certificateAllocationVersion = 11;
+
+    const auto slower = cbf2026::makeEndpointCertificateSnapshot(
+        makeAxisRateCertificate(1, 7, 5.0),
+        Eigen::Vector2d(0.0, 0.0),
+        11
+    );
+    const auto faster = cbf2026::makeEndpointCertificateSnapshot(
+        makeAxisRateCertificate(1, 7, 25.0),
+        Eigen::Vector2d(0.0, 0.0),
+        11
+    );
+    REQUIRE(slower.covariance == faster.covariance);
+    REQUIRE(slower.covarianceRateBound
+            < faster.covarianceRateBound);
+
+    robot.comm->receiveEndpointCertificateSnapshot(1, slower);
+    robot.getCovariance(
+        robot.settings["cbfs"]["without-slack"]["comm-fixed"]
+    );
+    const Eigen::Matrix2d slowerCovariance = robot.positionCovariance;
+    const double slowerBound = robot.rateCertificate.covarianceRateBound;
+
+    robot.comm->receiveEndpointCertificateSnapshot(1, faster);
+    robot.getCovariance(
+        robot.settings["cbfs"]["without-slack"]["comm-fixed"]
+    );
+
+    CHECK(robot.positionCovariance == slowerCovariance);
+    CHECK(robot.rateCertificate.covarianceRateBound > slowerBound);
+}
+
+TEST_CASE("theorem endpoint rows are byte-independent of neighbor commands") {
+    json settings = makeTheoremSettings();
+    settings["cbfs"]["without-slack"]["safety"]["mode"] = "pairwise";
+    Robot robot(2, settings);
+    robot.certificateSnapshotVersion = 7;
+    robot.certificateAllocationVersion = 11;
+    const auto predecessor = cbf2026::makeEndpointCertificateSnapshot(
+        makeAxisRateCertificate(1, 7),
+        Eigen::Vector2d(0.0, 0.0),
+        11
+    );
+    robot.comm->receiveEndpointCertificateSnapshot(1, predecessor);
+    robot.getCovariance(
+        robot.settings["cbfs"]["without-slack"]["comm-fixed"]
+    );
+    REQUIRE(robot.certificateAvailable);
+
+    VectorXd firstVelocity(2);
+    firstVelocity << 24.0, -17.0;
+    robot.comm->receiveVelocity2D(1, firstVelocity);
+    robot.setupFormation();
+    robot.setFixedCommCBF(
+        robot.settings["cbfs"]["without-slack"]["comm-fixed"]
+    );
+    robot.setSafetyCBF(
+        robot.settings["cbfs"]["without-slack"]["safety"]
+    );
+    const VectorXd x = robot.model->getX();
+    const auto firstLocalizationCoefficient =
+        robot.cbfNoSlack.cbfs.at("fixedCommCBF(#1)")
+            .constraintUCoe(robot.model->f(), robot.model->g(), x, 0.0);
+    const double firstLocalizationConstant =
+        robot.cbfNoSlack.cbfs.at("fixedCommCBF(#1)")
+            .constraintConstWithTime(
+                robot.model->f(), robot.model->g(), x, 0.0
+            );
+    const auto firstCollisionCoefficient =
+        robot.cbfNoSlack.cbfs.at("safetyCBF(#1)")
+            .constraintUCoe(robot.model->f(), robot.model->g(), x, 0.0);
+    const double firstCollisionConstant =
+        robot.cbfNoSlack.cbfs.at("safetyCBF(#1)")
+            .constraintConstWithTime(
+                robot.model->f(), robot.model->g(), x, 0.0
+            );
+
+    VectorXd secondVelocity(2);
+    secondVelocity << -25.0, 25.0;
+    robot.comm->receiveVelocity2D(1, secondVelocity);
+    robot.setFixedCommCBF(
+        robot.settings["cbfs"]["without-slack"]["comm-fixed"]
+    );
+    robot.setSafetyCBF(
+        robot.settings["cbfs"]["without-slack"]["safety"]
+    );
+    const auto secondLocalizationCoefficient =
+        robot.cbfNoSlack.cbfs.at("fixedCommCBF(#1)")
+            .constraintUCoe(robot.model->f(), robot.model->g(), x, 0.0);
+    const double secondLocalizationConstant =
+        robot.cbfNoSlack.cbfs.at("fixedCommCBF(#1)")
+            .constraintConstWithTime(
+                robot.model->f(), robot.model->g(), x, 0.0
+            );
+    const auto secondCollisionCoefficient =
+        robot.cbfNoSlack.cbfs.at("safetyCBF(#1)")
+            .constraintUCoe(robot.model->f(), robot.model->g(), x, 0.0);
+    const double secondCollisionConstant =
+        robot.cbfNoSlack.cbfs.at("safetyCBF(#1)")
+            .constraintConstWithTime(
+                robot.model->f(), robot.model->g(), x, 0.0
+            );
+
+    CHECK((firstLocalizationCoefficient.array()
+           == secondLocalizationCoefficient.array()).all());
+    CHECK(firstLocalizationConstant == secondLocalizationConstant);
+    CHECK((firstCollisionCoefficient.array()
+           == secondCollisionCoefficient.array()).all());
+    CHECK(firstCollisionConstant == secondCollisionConstant);
+    REQUIRE(secondLocalizationCoefficient.size() == 3);
+    REQUIRE(secondCollisionCoefficient.size() == 3);
+    CHECK(secondLocalizationCoefficient[2] == 0.0);
+    CHECK(secondCollisionCoefficient[2] == 0.0);
+
+    const double separation = std::sqrt(5.0);
+    const Eigen::Vector2d canonicalNormal(
+        -2.0 / separation,
+        -1.0 / separation
+    );
+    CHECK(secondLocalizationCoefficient.head<2>().isApprox(
+        canonicalNormal, 1e-12
+    ));
+    CHECK(secondCollisionCoefficient.head<2>().isApprox(
+        -canonicalNormal, 1e-12
+    ));
+    const double localizationBarrier =
+        100.0 - separation
+        - robot.rateCertificate.epsilon
+        - predecessor.epsilon;
+    const double collisionBarrier =
+        separation - 1.0
+        - robot.rateCertificate.epsilon
+        - predecessor.epsilon;
+    CHECK(secondLocalizationConstant == doctest::Approx(
+        -robot.rateCertificate.epsilonRateBound
+        + 0.5 * 0.1 * localizationBarrier
+    ).epsilon(1e-12));
+    CHECK(secondCollisionConstant == doctest::Approx(
+        -robot.rateCertificate.epsilonRateBound
+        + 0.5 * 0.1 * collisionBarrier
+    ).epsilon(1e-12));
+}
+
+TEST_CASE("theorem hard rows fail closed on missing or mismatched snapshots") {
+    json settings = makeTheoremSettings();
+    settings["cbfs"]["without-slack"]["safety"]["mode"] = "pairwise";
+    Robot robot(2, settings);
+    robot.certificateSnapshotVersion = 7;
+    robot.certificateAllocationVersion = 11;
+    const auto predecessor = cbf2026::makeEndpointCertificateSnapshot(
+        makeAxisRateCertificate(1, 7),
+        Eigen::Vector2d(0.0, 0.0),
+        11
+    );
+    robot.comm->receiveEndpointCertificateSnapshot(1, predecessor);
+    robot.getCovariance(
+        robot.settings["cbfs"]["without-slack"]["comm-fixed"]
+    );
+    robot.setupFormation();
+
+    robot.comm->_othersEndpointCertificateSnapshots.erase(1);
+    CHECK_THROWS_AS(
+        robot.setFixedCommCBF(
+            robot.settings["cbfs"]["without-slack"]["comm-fixed"]
+        ),
+        std::invalid_argument
+    );
+    CHECK_FALSE(robot.certificateAvailable);
+
+    robot.certificateAvailable = true;
+    robot.comm->_othersEndpointCertificateSnapshots[1] = predecessor;
+    robot.comm->_othersEndpointCertificateSnapshots[1].allocationVersion = 12;
+    CHECK_THROWS_AS(
+        robot.setSafetyCBF(
+            robot.settings["cbfs"]["without-slack"]["safety"]
+        ),
+        std::invalid_argument
+    );
+    CHECK_FALSE(robot.certificateAvailable);
+
+    robot.certificateAvailable = true;
+    robot.comm->_othersEndpointCertificateSnapshots[1] = predecessor;
+    robot.comm->_othersEndpointCertificateSnapshots[1].robotId = 2;
+    CHECK_THROWS_AS(
+        robot.setSafetyCBF(
+            robot.settings["cbfs"]["without-slack"]["safety"]
+        ),
+        std::invalid_argument
+    );
+    CHECK_FALSE(robot.certificateAvailable);
+}
+
+TEST_CASE("theorem Robot uses fixed localization edges and every collision pair") {
+    json settings = makeFourRobotFixedGraphSettings();
+    settings["cbfs"]["uncertainty-rate"]["mode"] =
+        "analytic-topological";
+    settings["cbfs"]["input-limits"] = {
+        {"on", true},
+        {"planar-component-max", 25.0},
+        {"yaw-rate-max", 0.35}
+    };
+    settings["cbfs"]["without-slack"]["safety"]["mode"] = "minimum";
+    Robot robot(4, settings);
+    robot.certificateSnapshotVersion = 7;
+    robot.certificateAllocationVersion = 11;
+    const std::array<Eigen::Vector2d, 3> estimates = {
+        Eigen::Vector2d(0.0, 0.0),
+        Eigen::Vector2d(2.0, 1.0),
+        Eigen::Vector2d(4.0, 3.0)
+    };
+    for (int otherId = 1; otherId <= 3; ++otherId) {
+        robot.comm->receiveEndpointCertificateSnapshot(
+            otherId,
+            cbf2026::makeEndpointCertificateSnapshot(
+                makeAxisRateCertificate(otherId, 7),
+                estimates[otherId - 1],
+                11
+            )
+        );
+    }
+    robot.getCovariance(
+        robot.settings["cbfs"]["without-slack"]["comm-fixed"]
+    );
+    REQUIRE(robot.myCovarianceFormation.at("anchorIds")
+            == json::array({1, 2, 3}));
+
+    robot.setupFormation();
+    robot.setFixedCommCBF(
+        robot.settings["cbfs"]["without-slack"]["comm-fixed"]
+    );
+    CHECK(robot.cbfNoSlack.cbfs.count("fixedCommCBF(#1)") == 0);
+    CHECK(robot.cbfNoSlack.cbfs.count("fixedCommCBF(#2)") == 1);
+    CHECK(robot.cbfNoSlack.cbfs.count("fixedCommCBF(#3)") == 1);
+
+    robot.setSafetyCBF(
+        robot.settings["cbfs"]["without-slack"]["safety"]
+    );
+    CHECK(robot.cbfNoSlack.cbfs.count("safetyCBF(#1)") == 1);
+    CHECK(robot.cbfNoSlack.cbfs.count("safetyCBF(#2)") == 1);
+    CHECK(robot.cbfNoSlack.cbfs.count("safetyCBF(#3)") == 1);
 }
 
 TEST_CASE("two-phase refresh publishes current covariance and rate before CBF construction") {

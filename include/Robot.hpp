@@ -3,6 +3,7 @@
 
 #include "utils.h"
 #include "cbf/cbf"
+#include "cbf/AllocatedPairwiseCBF.hpp"
 #include "cbf/CBFConfig.hpp"
 #include "cbf/FimRateCertificate.hpp"
 #include "world/world"
@@ -48,8 +49,7 @@ public:
         cbf2026::baseRateCertificate(0, 0);
     bool certificateAvailable = false;
     std::uint64_t certificateSnapshotVersion = 0;
-    std::unordered_map<int, cbf2026::NodeRateCertificate>
-        otherRateCertificates;
+    std::uint64_t certificateAllocationVersion = 0;
 
     std::string cvtExplorationMode;
     double cvtFrontFocusDistance;
@@ -514,11 +514,37 @@ public:
             }
         }
 
-        for (const auto& [otherId, otherPosition] : comm->_othersPos) {
-            if (!isSamePartAsMe(otherId)) continue;
-            if (getIdInPart(otherId) >= idInMyPart) continue;
-            if (otherPosition.distance_to(myPosition) > maxRange) continue;
-            appendUnique(references["anchorIds"], otherId);
+        if (usesAnalyticTopologicalRateCertificate()) {
+            for (const auto& [otherId, snapshot] :
+                 comm->_othersEndpointCertificateSnapshots) {
+                if (!isSamePartAsMe(otherId)) continue;
+                if (getIdInPart(otherId) >= idInMyPart) continue;
+                cbf2026::validateEndpointCertificateSnapshot(
+                    otherId, snapshot
+                );
+                if (snapshot.snapshotVersion
+                        != certificateSnapshotVersion
+                    || snapshot.allocationVersion
+                       != certificateAllocationVersion) {
+                    throw std::invalid_argument(
+                        "active localization certificate version mismatch"
+                    );
+                }
+                const Point otherPosition(
+                    snapshot.estimate.x(), snapshot.estimate.y()
+                );
+                if (otherPosition.distance_to(myPosition) > maxRange) {
+                    continue;
+                }
+                appendUnique(references["anchorIds"], otherId);
+            }
+        } else {
+            for (const auto& [otherId, otherPosition] : comm->_othersPos) {
+                if (!isSamePartAsMe(otherId)) continue;
+                if (getIdInPart(otherId) >= idInMyPart) continue;
+                if (otherPosition.distance_to(myPosition) > maxRange) continue;
+                appendUnique(references["anchorIds"], otherId);
+            }
         }
         return references;
     }
@@ -648,40 +674,48 @@ public:
         for (const json& anchorIdJson :
              certificateReferences.at("anchorIds")) {
             const int otherId = anchorIdJson.get<int>();
-            const auto positionIt = comm->_othersPos.find(otherId);
-            if (positionIt == comm->_othersPos.end()) {
-                throw std::invalid_argument(
-                    "#" + std::to_string(id)
-                    + " is missing active localization position for #"
-                    + std::to_string(otherId)
-                );
-            }
-
             if (theoremAligned) {
-                const auto certificateIt =
-                    otherRateCertificates.find(otherId);
-                if (certificateIt == otherRateCertificates.end()
-                    || certificateIt->second.robotId != otherId) {
+                const auto transportedIt =
+                    comm->_othersEndpointCertificateSnapshots.find(otherId);
+                if (transportedIt
+                    == comm->_othersEndpointCertificateSnapshots.end()) {
                     throw std::invalid_argument(
                         "#" + std::to_string(id)
-                        + " is missing predecessor rate certificate for #"
+                        + " is missing atomic predecessor certificate for #"
                         + std::to_string(otherId)
+                    );
+                }
+                cbf2026::validateEndpointCertificateSnapshot(
+                    otherId, transportedIt->second
+                );
+                const auto& transported = transportedIt->second;
+                if (transported.snapshotVersion
+                        != certificateSnapshotVersion
+                    || transported.allocationVersion
+                       != certificateAllocationVersion) {
+                    throw std::invalid_argument(
+                        "transported predecessor certificate version mismatch"
                     );
                 }
                 makeGeometry(
                     cbf2026::canonicalUavReferenceId(otherId),
                     getIdInPart(otherId),
                     false,
-                    positionIt->second,
-                    certificateIt->second.covariance,
-                    certificateIt->second.covarianceRateBound,
+                    Point(
+                        transported.estimate.x(),
+                        transported.estimate.y()
+                    ),
+                    transported.covariance,
+                    transported.covarianceRateBound,
                     uavSpeedBound,
-                    certificateIt->second.snapshotVersion
+                    transported.snapshotVersion
                 );
             } else {
+                const auto positionIt = comm->_othersPos.find(otherId);
                 const auto covarianceIt =
                     comm->_othersPositionCovariance.find(otherId);
-                if (covarianceIt
+                if (positionIt == comm->_othersPos.end()
+                    || covarianceIt
                     == comm->_othersPositionCovariance.end()) {
                     throw std::invalid_argument(
                         "#" + std::to_string(id)
@@ -788,6 +822,293 @@ public:
         }
     }
 
+    cbf2026::EndpointCertificateSnapshot localEndpointCertificateSnapshot() {
+        if (!certificateAvailable
+            || rateCertificate.robotId != id
+            || rateCertificate.snapshotVersion
+               != certificateSnapshotVersion) {
+            certificateAvailable = false;
+            throw std::invalid_argument(
+                "local analytic endpoint certificate is unavailable"
+            );
+        }
+        const Point position = model->xy();
+        const auto snapshot = cbf2026::makeEndpointCertificateSnapshot(
+            rateCertificate,
+            Eigen::Vector2d(position.x, position.y),
+            certificateAllocationVersion
+        );
+        try {
+            cbf2026::validateEndpointCertificateSnapshot(id, snapshot);
+        } catch (...) {
+            certificateAvailable = false;
+            throw;
+        }
+        return snapshot;
+    }
+
+    const cbf2026::EndpointCertificateSnapshot&
+    transportedEndpointCertificateSnapshot(int otherId) {
+        const auto snapshotIt =
+            comm->_othersEndpointCertificateSnapshots.find(otherId);
+        if (snapshotIt
+            == comm->_othersEndpointCertificateSnapshots.end()) {
+            certificateAvailable = false;
+            throw std::invalid_argument(
+                "required transported endpoint certificate is unavailable"
+            );
+        }
+        try {
+            cbf2026::validateEndpointCertificateSnapshot(
+                otherId, snapshotIt->second
+            );
+        } catch (...) {
+            certificateAvailable = false;
+            throw;
+        }
+        if (snapshotIt->second.snapshotVersion
+                != certificateSnapshotVersion
+            || snapshotIt->second.allocationVersion
+               != certificateAllocationVersion) {
+            certificateAvailable = false;
+            throw std::invalid_argument(
+                "transported endpoint certificate version mismatch"
+            );
+        }
+        return snapshotIt->second;
+    }
+
+    double allocatedAlphaValue(
+        const ClassKParameters& parameters,
+        double barrier
+    ) const {
+        if (!std::isfinite(parameters.coefficient)
+            || parameters.coefficient < 0.0
+            || parameters.power <= 0
+            || parameters.power % 2 == 0
+            || !std::isfinite(barrier)) {
+            throw std::invalid_argument(
+                "allocated row class-K data is invalid"
+            );
+        }
+        const double value =
+            parameters.coefficient * std::pow(barrier, parameters.power);
+        if (!std::isfinite(value)) {
+            throw std::invalid_argument(
+                "allocated row class-K value is nonfinite"
+            );
+        }
+        return value;
+    }
+
+    void installAllocatedEndpointCBF(
+        const std::string& name,
+        const cbf2026::EndpointRow& row,
+        double barrier,
+        double alphaValue,
+        const ClassKParameters& parameters
+    ) {
+        cbf2026::endpointRowToModelControl(row, model->uSize());
+        CBF endpointCBF;
+        endpointCBF.name = name;
+        endpointCBF.h = [barrier](VectorXd, double) {
+            return barrier;
+        };
+        endpointCBF.dhdx_analytical = [row](
+            VectorXd x,
+            double
+        ) {
+            VectorXd gradient = VectorXd::Zero(x.size());
+            if (x.size() < 2) {
+                throw std::invalid_argument(
+                    "allocated endpoint state has fewer than two axes"
+                );
+            }
+            gradient.head<2>() = row.coefficient;
+            return gradient;
+        };
+        endpointCBF.dhdt_analytical = [
+            constant = row.constant,
+            alphaValue
+        ](VectorXd, double) {
+            return constant - alphaValue;
+        };
+        endpointCBF.setAlphaClassK(
+            parameters.coefficient, parameters.power
+        );
+        cbfNoSlack.cbfs[name] = endpointCBF;
+    }
+
+    void setAllocatedFixedCommCBF(const json& config) {
+        if (!config.value("consider-uncertainty", true)) {
+            throw std::invalid_argument(
+                "theorem-aligned localization requires uncertainty tightening"
+            );
+        }
+        const double maximumRange = config.at("max-range").get<double>();
+        if (!std::isfinite(maximumRange) || maximumRange <= 0.0) {
+            throw std::invalid_argument(
+                "localization range must be finite and positive"
+            );
+        }
+        const ClassKParameters parameters =
+            readClassKParameters(config, 0.1, 1);
+        const auto local = localEndpointCertificateSnapshot();
+
+        for (const json& baseIdJson : myFormation.at("baseIds")) {
+            const int baseId = baseIdJson.get<int>();
+            if (baseId < 0 || baseId >= static_cast<int>(bases.size())) {
+                throw std::invalid_argument(
+                    "fixed base localization edge has an invalid base ID"
+                );
+            }
+            const Point basePosition = bases.at(baseId);
+            const auto edge =
+                cbf2026::canonicalBaseLocalizationEdge(id, baseId);
+            const auto geometry = cbf2026::makeEdgeSnapshot(
+                edge,
+                local.estimate,
+                Eigen::Vector2d(basePosition.x, basePosition.y),
+                local.barNu,
+                0.0,
+                0.0,
+                certificateSnapshotVersion,
+                certificateAllocationVersion
+            );
+            const double barrier =
+                maximumRange - geometry.separation - local.epsilon;
+            const double alphaValue =
+                allocatedAlphaValue(parameters, barrier);
+            auto snapshot = geometry;
+            snapshot.alpha = alphaValue;
+            const auto rows = cbf2026::allocatedRows(
+                snapshot, 1.0, 0.0
+            );
+            installAllocatedEndpointCBF(
+                "fixedCommCBF(base-" + std::to_string(baseId) + ")",
+                rows.front(),
+                barrier,
+                alphaValue,
+                parameters
+            );
+        }
+
+        for (const json& otherIdJson : myFormation.at("anchorIds")) {
+            const int otherId = otherIdJson.get<int>();
+            const auto& other =
+                transportedEndpointCertificateSnapshot(otherId);
+            const auto edge = cbf2026::canonicalUavEdge(
+                cbf2026::EdgeKind::Localization, id, otherId
+            );
+            const auto& first = id == edge.low ? local : other;
+            const auto& second = id == edge.low ? other : local;
+            auto snapshot = cbf2026::makeEdgeSnapshot(
+                edge,
+                first.estimate,
+                second.estimate,
+                first.barNu,
+                second.barNu,
+                0.0,
+                certificateSnapshotVersion,
+                certificateAllocationVersion
+            );
+            const double barrier =
+                maximumRange - snapshot.separation
+                - first.epsilon - second.epsilon;
+            const double alphaValue =
+                allocatedAlphaValue(parameters, barrier);
+            snapshot.alpha = alphaValue;
+            const auto rows = cbf2026::allocatedRows(
+                snapshot, 0.5, 0.5
+            );
+            const auto rowIt = std::find_if(
+                rows.begin(), rows.end(),
+                [this](const cbf2026::EndpointRow& row) {
+                    return row.owner == id;
+                }
+            );
+            if (rowIt == rows.end()) {
+                throw std::invalid_argument(
+                    "allocated localization row is missing its owner"
+                );
+            }
+            installAllocatedEndpointCBF(
+                "fixedCommCBF(#" + std::to_string(otherId) + ")",
+                *rowIt,
+                barrier,
+                alphaValue,
+                parameters
+            );
+        }
+    }
+
+    void setAllocatedSafetyCBF(const json& config) {
+        if (!config.value("consider-uncertainty", true)) {
+            throw std::invalid_argument(
+                "theorem-aligned collision rows require uncertainty tightening"
+            );
+        }
+        const double safeDistance = config.at("safe-distance").get<double>();
+        if (!std::isfinite(safeDistance) || safeDistance < 0.0) {
+            throw std::invalid_argument(
+                "safe distance must be finite and nonnegative"
+            );
+        }
+        const ClassKParameters parameters =
+            readClassKParameters(config, 0.1, 1);
+        const auto local = localEndpointCertificateSnapshot();
+        for (const json& otherIdJson : settings.at("all")) {
+            const int otherId = otherIdJson.get<int>();
+            if (otherId == id) {
+                continue;
+            }
+            const auto& other =
+                transportedEndpointCertificateSnapshot(otherId);
+            const auto edge = cbf2026::canonicalUavEdge(
+                cbf2026::EdgeKind::Collision, id, otherId
+            );
+            const auto& first = id == edge.low ? local : other;
+            const auto& second = id == edge.low ? other : local;
+            auto snapshot = cbf2026::makeEdgeSnapshot(
+                edge,
+                first.estimate,
+                second.estimate,
+                first.barNu,
+                second.barNu,
+                0.0,
+                certificateSnapshotVersion,
+                certificateAllocationVersion
+            );
+            const double barrier =
+                snapshot.separation - safeDistance
+                - first.epsilon - second.epsilon;
+            const double alphaValue =
+                allocatedAlphaValue(parameters, barrier);
+            snapshot.alpha = alphaValue;
+            const auto rows = cbf2026::allocatedRows(
+                snapshot, 0.5, 0.5
+            );
+            const auto rowIt = std::find_if(
+                rows.begin(), rows.end(),
+                [this](const cbf2026::EndpointRow& row) {
+                    return row.owner == id;
+                }
+            );
+            if (rowIt == rows.end()) {
+                throw std::invalid_argument(
+                    "allocated collision row is missing its owner"
+                );
+            }
+            installAllocatedEndpointCBF(
+                "safetyCBF(#" + std::to_string(otherId) + ")",
+                *rowIt,
+                barrier,
+                alphaValue,
+                parameters
+            );
+        }
+    }
+
     void setFixedCommCBF(json& config) {
         // This function only creates the CBF constraints
         // Formation information is already set by setupFormation()
@@ -805,6 +1126,10 @@ public:
                 "analytic topological rate certificate is unavailable"
             );
         }
+        if (useAnalyticRate) {
+            setAllocatedFixedCommCBF(config);
+            return;
+        }
 
         for (auto &baseId : myFormation["baseIds"]) {
             int id = baseId.get<int>();
@@ -821,35 +1146,17 @@ public:
             formationPoints.push_back(comm->_othersPos[otherId]);
             formationVels.push_back(comm->_othersVel[otherId]);
             anchorCBFNames.push_back("#" + std::to_string(otherId));
-            if (useAnalyticRate) {
-                const auto certificateIt =
-                    otherRateCertificates.find(otherId);
-                if (certificateIt == otherRateCertificates.end()
-                    || certificateIt->second.snapshotVersion
-                       != rateCertificate.snapshotVersion) {
-                    throw std::invalid_argument(
-                        "same-version neighbor rate certificate is unavailable"
-                    );
-                }
-                formationUncertainties.push_back(
-                    certificateIt->second.epsilon
-                );
-                formationUncertaintyRates.push_back(
-                    certificateIt->second.epsilonRateBound
-                );
-            } else {
-                formationUncertainties.push_back(
-                    uncertaintyFromCovarianceFunction(
-                        comm->_othersPositionCovariance[otherId]
-                    )
-                );
-                auto rateIt = comm->_othersUncertaintyRate.find(otherId);
-                formationUncertaintyRates.push_back(
-                    rateIt == comm->_othersUncertaintyRate.end()
-                    ? 0.0
-                    : rateIt->second
-                );
-            }
+            formationUncertainties.push_back(
+                uncertaintyFromCovarianceFunction(
+                    comm->_othersPositionCovariance[otherId]
+                )
+            );
+            auto rateIt = comm->_othersUncertaintyRate.find(otherId);
+            formationUncertaintyRates.push_back(
+                rateIt == comm->_othersUncertaintyRate.end()
+                ? 0.0
+                : rateIt->second
+            );
         }
 
         const double myUncertainty = useAnalyticRate
@@ -961,6 +1268,10 @@ public:
                 "analytic topological rate certificate is unavailable"
             );
         }
+        if (useAnalyticRate) {
+            setAllocatedSafetyCBF(config);
+            return;
+        }
         const double myUncertainty = useAnalyticRate
             ? rateCertificate.epsilon
             : currentUncertainty;
@@ -987,34 +1298,19 @@ public:
 
             double otherUncertainty = 0.0;
             double otherUncertaintyRate = 0.0;
-            if (useAnalyticRate) {
-                const auto certificateIt =
-                    otherRateCertificates.find(otherId);
-                if (certificateIt == otherRateCertificates.end()
-                    || certificateIt->second.snapshotVersion
-                       != rateCertificate.snapshotVersion) {
-                    throw std::invalid_argument(
-                        "same-version neighbor rate certificate is unavailable"
+            auto covarianceIt =
+                comm->_othersPositionCovariance.find(otherId);
+            if (enablePositionCovariance &&
+                covarianceIt
+                != comm->_othersPositionCovariance.end()) {
+                otherUncertainty =
+                    uncertaintyFromCovarianceFunction(
+                        covarianceIt->second
                     );
-                }
-                otherUncertainty = certificateIt->second.epsilon;
-                otherUncertaintyRate =
-                    certificateIt->second.epsilonRateBound;
-            } else {
-                auto covarianceIt =
-                    comm->_othersPositionCovariance.find(otherId);
-                if (enablePositionCovariance &&
-                    covarianceIt
-                    != comm->_othersPositionCovariance.end()) {
-                    otherUncertainty =
-                        uncertaintyFromCovarianceFunction(
-                            covarianceIt->second
-                        );
-                }
-                auto rateIt = comm->_othersUncertaintyRate.find(otherId);
-                if (rateIt != comm->_othersUncertaintyRate.end()) {
-                    otherUncertaintyRate = rateIt->second;
-                }
+            }
+            auto rateIt = comm->_othersUncertaintyRate.find(otherId);
+            if (rateIt != comm->_othersUncertaintyRate.end()) {
+                otherUncertaintyRate = rateIt->second;
             }
 
             Point otherVelocity(0.0, 0.0);

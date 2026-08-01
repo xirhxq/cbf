@@ -251,6 +251,7 @@ TEST_CASE("theorem hard row uses analytic epsilon rate not backward history") {
             }
         }
     });
+    robot.certificateSnapshotVersion = 7;
     robot.certificateAvailable = true;
     robot.currentUncertainty = robot.rateCertificate.epsilon;
     robot.setupFormation();
@@ -386,7 +387,14 @@ TEST_CASE("theorem recursion consumes predecessor covariance rate certificate") 
     REQUIRE(slowerPredecessor.covarianceRateBound
             < fasterPredecessor.covarianceRateBound);
 
-    robot.otherRateCertificates[1] = slowerPredecessor;
+    robot.comm->receiveEndpointCertificateSnapshot(
+        1,
+        cbf2026::makeEndpointCertificateSnapshot(
+            slowerPredecessor,
+            Eigen::Vector2d(0.0, 0.0),
+            robot.certificateAllocationVersion
+        )
+    );
     robot.uncertaintyRate = 10000.0;
     robot.getCovariance(
         robot.settings["cbfs"]["without-slack"]["comm-fixed"]
@@ -394,7 +402,14 @@ TEST_CASE("theorem recursion consumes predecessor covariance rate certificate") 
     const Eigen::Matrix2d slowerCovariance = robot.positionCovariance;
     const double slowerBound = robot.rateCertificate.covarianceRateBound;
 
-    robot.otherRateCertificates[1] = fasterPredecessor;
+    robot.comm->receiveEndpointCertificateSnapshot(
+        1,
+        cbf2026::makeEndpointCertificateSnapshot(
+            fasterPredecessor,
+            Eigen::Vector2d(0.0, 0.0),
+            robot.certificateAllocationVersion
+        )
+    );
     robot.uncertaintyRate = 0.0;
     robot.getCovariance(
         robot.settings["cbfs"]["without-slack"]["comm-fixed"]
