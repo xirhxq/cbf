@@ -2,8 +2,8 @@
 
 Date: 2026-08-01
 
-Status: independent written-specification review passed; awaiting researcher
-review
+Status: independent written-specification review passed and researcher
+approved for implementation planning on 2026-08-01
 
 Independent review:
 docs/superpowers/specs/reviews/2026-08-01-cbf2026-qualified-modes-hybrid-distributed-cbf-design-review.md

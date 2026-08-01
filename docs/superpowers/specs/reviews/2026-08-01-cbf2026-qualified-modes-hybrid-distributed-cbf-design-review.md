@@ -163,3 +163,13 @@ specification.
 This PASS approves the written design for researcher review. It is not
 implementation evidence, a Monte Carlo result, a paper-readiness verdict, or
 authorization to reinterpret the failed v2 run.
+
+## Researcher approval record
+
+The researcher approved this reviewed specification on 2026-08-01. After
+approval, only the specification header status was changed from awaiting
+researcher review to approved for implementation planning; no technical
+requirement, equation, gate, universe, threshold, or completion criterion was
+changed. The implementation plan records the post-approval file identity.
+The post-approval specification is 43530 bytes with SHA-256
+`ced4824b0cb8b2919579469e876650aa45e71c26f1b5853ddf2633550822127b`.
