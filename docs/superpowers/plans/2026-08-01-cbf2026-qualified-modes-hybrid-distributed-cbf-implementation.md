@@ -2209,6 +2209,279 @@ update, and neither execution command has been run.
 
 ---
 
+### Operative Task 10/11 override: consumed development-v3 and development-v4 recovery
+
+This append-only override supersedes every earlier statement that
+development-v3 remains executable. The exact v3 four-artifact authorization
+child is `16c0aca90f578259b16a75659433ad12841ae10e`, and production postcommit
+authorization validation passed. The registered v3 runner was then invoked
+exactly once. It terminated before identity collection, schedule
+materialization, root claiming, or scientific computation with
+`No module named 'scripts'`, because the protocol-frozen direct-script entry
+point could parse arguments but could not resolve repository-level absolute
+imports. Both v3 execution roots remain absent. The 3,470-byte, 75-line
+immutable failure record is
+`docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v3-launch-failure.md`
+with SHA-256
+`54f78e86c4b1dc9eff1a031a8ed2121caff305afc1892eddc28212fc492a2818`.
+Development-v3 is consumed and may not be retried, repaired in place,
+overwritten, amended, or reinterpreted.
+
+- [x] **V4 Recovery Step 1: Diagnose and archive the v3 launch failure**
+
+An independent read-only audit reproduced the direct-script import failure
+from the repository cwd with `PYTHONPATH` removed. It verified that failure
+precedes both output-root allocation and all scientific work. The top-level
+runner/analyzer and confirmatory smoke commands require module execution from
+the registered repository cwd. The isolated replay child retains its absolute
+script path because `replay_qualified_estimator.py` already bootstraps the
+repository root before importing `scripts.*` and deliberately runs from a
+producer-isolated cwd.
+
+- [x] **V4 Recovery Step 2: Repair the CLI contract under TDD**
+
+Commit `edb9bd00ee00a98510dfe106bf3ed4ef9fede281` (parent
+`e7a9bde54172f61216475e37b69524e987daf1a6`, tree
+`55cb8e6f6db2998b37d33cabb43f25ac5534d461`) changes exactly the registrar,
+runner, analyzer, and their three test modules. Every registered top-level
+development, confirmatory, and smoke command now uses
+`conda run -n cbf_env python -m scripts.diagnostics...`; the runner and
+analyzer independently reconstruct and require the same argv. Development
+versions v1, v2, and v3 are explicitly rejected; only v4 uses the new absent
+raw/analysis roots. Confirmatory remains version v1. Seeds, frame counts,
+thresholds, scientific schedules, estimator/controller semantics,
+authorization topology, no-retry policy, and 8/6/2 GB disk gates are
+unchanged.
+
+The focused four-module suite passed 166/166, the five-module suite passed
+186/186, all eight inspected source/test files passed `py_compile`, and
+`git diff --check` passed. Complete discovery was 1,166 total = 1,153 passed
++ the unchanged 5 failures + unchanged 8 external/legacy errors. Independent
+source review returned C0/I0/M0. Both v4 roots remain absent.
+
+- [ ] **V4 Recovery Step 3: Commit the documentation closure**
+
+Commit this updated plan, the implementation report, and its appended
+independent review together as the only documentation-closure commit after
+`edb9bd0...`. The registrar must discover and bind that future exact clean
+HEAD. Do not generate any v4 lifecycle artifact before this commit.
+
+- [ ] **V4 Recovery Step 4: Generate the exact development-v4 protocol**
+
+Run exactly once from the clean documentation-closure commit, with both v4
+roots and all four v4 lifecycle paths absent:
+
+```bash
+conda run -n cbf_env python -m \
+  scripts.diagnostics.register_qualified_closure_campaign \
+  --kind development --version v4 \
+  --implementation-report docs/diagnostics/2026-08-01-cbf2026-qualified-closure-implementation.md \
+  --implementation-review docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-implementation-review.md \
+  --binary build-diagnostic/Swarm \
+  --base-config config/config.json \
+  --primary-config config/diagnostics/qualified_mode_hybrid_dcbf_development_v1.json \
+  --ablation-config config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v1.json \
+  --trajectory-seeds 2026080101:2026080110 \
+  --range-noise-seeds 2026081101:2026081110 \
+  --frames 1000 \
+  --raw-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v4 \
+  --analysis-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v4 \
+  --protocol-json docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v4-protocol.json \
+  --protocol-md docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v4-protocol.md
+```
+
+- [ ] **V4 Recovery Step 5: Independently preflight and authorize v4**
+
+Create exactly these two files only after an independent C0/I0/M0 preflight:
+
+```text
+docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v4-preflight.md
+docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v4-authorization.json
+```
+
+Recompute every protocol/source/blob/allowed-untracked/build/config/dependency,
+seed, complete schedule-envelope, threshold, module argv, and root-absence
+identity. The authorization uses the exact ten-field schema, kind
+`development`, version `v4`, date `2026-08-02`, exact UTF-8 user text `批准`,
+and text SHA-256
+`8cbe697b157364a5b13646285b38409dc53ec5287deeb7913493e65b275cd14d`.
+
+- [ ] **V4 Recovery Step 6: Commit and validate the exact four-artifact child**
+
+The sole direct child of the registered documentation closure must add only
+the v4 protocol JSON, protocol Markdown, preflight Markdown, and authorization
+JSON. Production postcommit validation must pass while both v4 roots remain
+absent. Any failure consumes v4 and forbids retry.
+
+```bash
+git add docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v4-protocol.json \
+  docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v4-protocol.md \
+  docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v4-preflight.md \
+  docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v4-authorization.json
+git commit -m "docs(cbf2026): authorize qualified closure development v4"
+```
+
+- [ ] **V4 Recovery Step 7: Execute the exact development-v4 runner once**
+
+Use only the protocol-serialized argv; its required expansion is:
+
+```bash
+conda run -n cbf_env python -m \
+  scripts.diagnostics.run_qualified_closure_campaign \
+  --kind development --version v4 \
+  --protocol docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v4-protocol.json \
+  --authorization docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v4-authorization.json \
+  --binary build-diagnostic/Swarm \
+  --base-config config/config.json \
+  --primary-config config/diagnostics/qualified_mode_hybrid_dcbf_development_v1.json \
+  --ablation-config config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v1.json \
+  --trajectory-seeds 2026080101:2026080110 \
+  --range-noise-seeds 2026081101:2026081110 \
+  --frames 1000 \
+  --output-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v4
+```
+
+- [ ] **V4 Recovery Step 8: Analyze the terminal raw bundle once**
+
+Only after the runner has published a terminal raw manifest, execute the
+protocol-serialized analyzer argv exactly once:
+
+```bash
+conda run -n cbf_env python -m \
+  scripts.diagnostics.analyze_qualified_closure_campaign \
+  --kind development --version v4 \
+  --protocol docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v4-protocol.json \
+  --authorization docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v4-authorization.json \
+  --input-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v4 \
+  --ablation-config config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v1.json \
+  --output-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v4
+```
+
+- [ ] **V4 Recovery Step 9: Review and freeze the result**
+
+Create the v4 terminal report and independent review only after execution:
+
+```text
+docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v4.md
+docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v4-review.md
+```
+
+Independently recompute all identities, schedules, denominators, mode and
+containment outcomes, rate inequalities, rows, resets, input/QP/distance
+gates, and mission success. Preserve any terminal failure without retry.
+Only a reproduced development-v4 PASS with C0/I0 may open Task 12; every
+earlier Task 12 reference to development-v3 is superseded by development-v4.
+Confirmatory itself remains scientific protocol v1 and is not authorized by
+this override.
+
+#### Operative Task 12 dependency and module-entrypoint override
+
+This paragraph supersedes the later Task 12 prose wherever it names a
+development-v3 dependency or a direct `.py` top-level entry point. Those
+later v3/direct-script lines are historical and non-executable. Task 12 may
+consume only these terminal reviewed development-v4 artifacts:
+
+```text
+docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v4-protocol.json
+docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v4.md
+docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v4-review.md
+```
+
+Confirmatory remains scientific protocol version v1 with the existing six
+confirmatory roots and unchanged seeds/universes. From a clean committed v4
+PASS+C0/I0 parent, the exact registrar command is:
+
+```bash
+conda run -n cbf_env python -m \
+  scripts.diagnostics.register_qualified_closure_campaign \
+  --kind confirmatory --version v1 \
+  --development-protocol docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v4-protocol.json \
+  --development-report docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v4.md \
+  --development-review docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v4-review.md \
+  --binary build-diagnostic/Swarm \
+  --base-config config/config.json \
+  --primary-config config/diagnostics/qualified_mode_hybrid_dcbf_development_v1.json \
+  --ablation-config config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v1.json \
+  --trajectory-seeds 2026082001:2026082060 \
+  --range-noise-seeds 2026083001:2026083060 \
+  --smoke-trajectory-seed 2026089001 \
+  --smoke-range-noise-seed 2026089101 \
+  --smoke-frames 20 --frames 1000 \
+  --smoke-a-raw-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-confirmatory-smoke-v1-a \
+  --smoke-a-analysis-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-confirmatory-smoke-v1-a-analysis \
+  --smoke-b-raw-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-confirmatory-smoke-v1-b \
+  --smoke-b-analysis-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-confirmatory-smoke-v1-b-analysis \
+  --raw-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-confirmatory/v1 \
+  --analysis-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-confirmatory-analysis/v1 \
+  --protocol-json docs/diagnostics/2026-08-01-cbf2026-qualified-closure-confirmatory-v1-protocol.json \
+  --protocol-md docs/diagnostics/2026-08-01-cbf2026-qualified-closure-confirmatory-v1-protocol.md
+```
+
+After the exact confirmatory four-artifact child passes postcommit validation,
+the protocol-frozen smoke commands are exactly:
+
+```bash
+conda run -n cbf_env python -m scripts.diagnostics.run_qualified_closure_campaign \
+  --kind confirmatory-smoke --smoke-id a \
+  --protocol docs/diagnostics/2026-08-01-cbf2026-qualified-closure-confirmatory-v1-protocol.json \
+  --authorization docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-confirmatory-v1-authorization.json \
+  --binary build-diagnostic/Swarm --base-config config/config.json \
+  --primary-config config/diagnostics/qualified_mode_hybrid_dcbf_development_v1.json \
+  --ablation-config config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v1.json \
+  --trajectory-seeds 2026089001:2026089001 \
+  --range-noise-seeds 2026089101:2026089101 --frames 20 \
+  --output-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-confirmatory-smoke-v1-a
+conda run -n cbf_env python -m scripts.diagnostics.analyze_qualified_closure_campaign \
+  --kind confirmatory-smoke --version v1 --smoke-id a \
+  --protocol docs/diagnostics/2026-08-01-cbf2026-qualified-closure-confirmatory-v1-protocol.json \
+  --authorization docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-confirmatory-v1-authorization.json \
+  --input-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-confirmatory-smoke-v1-a \
+  --output-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-confirmatory-smoke-v1-a-analysis
+conda run -n cbf_env python -m scripts.diagnostics.run_qualified_closure_campaign \
+  --kind confirmatory-smoke --smoke-id b \
+  --protocol docs/diagnostics/2026-08-01-cbf2026-qualified-closure-confirmatory-v1-protocol.json \
+  --authorization docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-confirmatory-v1-authorization.json \
+  --binary build-diagnostic/Swarm --base-config config/config.json \
+  --primary-config config/diagnostics/qualified_mode_hybrid_dcbf_development_v1.json \
+  --ablation-config config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v1.json \
+  --trajectory-seeds 2026089001:2026089001 \
+  --range-noise-seeds 2026089101:2026089101 --frames 20 \
+  --output-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-confirmatory-smoke-v1-b
+conda run -n cbf_env python -m scripts.diagnostics.analyze_qualified_closure_campaign \
+  --kind confirmatory-smoke --version v1 --smoke-id b \
+  --protocol docs/diagnostics/2026-08-01-cbf2026-qualified-closure-confirmatory-v1-protocol.json \
+  --authorization docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-confirmatory-v1-authorization.json \
+  --input-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-confirmatory-smoke-v1-b \
+  --output-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-confirmatory-smoke-v1-b-analysis
+```
+
+Only after both smoke analyses pass the frozen semantic comparison may the
+scientific commands run once each:
+
+```bash
+conda run -n cbf_env python -m scripts.diagnostics.run_qualified_closure_campaign \
+  --kind confirmatory --version v1 \
+  --protocol docs/diagnostics/2026-08-01-cbf2026-qualified-closure-confirmatory-v1-protocol.json \
+  --authorization docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-confirmatory-v1-authorization.json \
+  --binary build-diagnostic/Swarm --base-config config/config.json \
+  --primary-config config/diagnostics/qualified_mode_hybrid_dcbf_development_v1.json \
+  --ablation-config config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v1.json \
+  --trajectory-seeds 2026082001:2026082060 \
+  --range-noise-seeds 2026083001:2026083060 --frames 1000 \
+  --output-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-confirmatory/v1
+conda run -n cbf_env python -m scripts.diagnostics.analyze_qualified_closure_campaign \
+  --kind confirmatory --version v1 \
+  --protocol docs/diagnostics/2026-08-01-cbf2026-qualified-closure-confirmatory-v1-protocol.json \
+  --authorization docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-confirmatory-v1-authorization.json \
+  --input-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-confirmatory/v1 \
+  --output-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-confirmatory-analysis/v1
+```
+
+No command in this Task 12 override is authorized by the development-v4
+approval. It records the future exact contract only.
+
+---
+
 ### Historical Task 11: Development v2 — superseded and never executed
 
 The entire v2 block below is retained only as the pre-postcommit-validation

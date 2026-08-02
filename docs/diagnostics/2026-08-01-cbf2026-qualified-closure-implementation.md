@@ -709,3 +709,97 @@ protocol pair, preflight, authorization, raw root, and analysis root all
 remain absent. There is no new empirical result. Any failed v3 gate is
 once-only and must retain v3 unchanged; it requires a newly reviewed,
 non-colliding development version rather than retry or reinterpretation.
+
+## Development-v3 launch failure and operative development-v4 recovery
+
+This append-only section supersedes the preceding prospective statement that
+the v3 lifecycle artifacts were absent or executable. It does not alter the
+archived v1/v2/v3 records. The v3 documentation parent was
+`70affe063e358a22c2139984429e741ff5a03023`, and its sole direct child
+`16c0aca90f578259b16a75659433ad12841ae10e` added exactly the protocol JSON,
+protocol Markdown, independent preflight, and authorization. Production
+postcommit authorization validation passed. The four immutable v3 hashes are:
+
+```text
+8359bc7beffb676208a50f770a43817dbd71fc551dd8687790caecaef49f7c2b  protocol JSON
+21f59658bfa7ad051f936e497ff45e583fefa2fa75b0e166db7127ca3d62cab2  protocol Markdown
+a810d91cd01f8c0583e05182335300c8ddc81964a270fce72c9e7245c54eef3c  independent preflight
+f1f3494e881e37711092be6243252c5ddd46464e526045d9f800101fd8fb0661  authorization JSON
+```
+
+The exact registered v3 runner was invoked once. It stopped immediately with
+`qualified campaign failed: No module named 'scripts'`. Failure occurred in
+the first runtime absolute import during registration validation: direct
+script execution placed `scripts/diagnostics`, rather than the repository
+root, on `sys.path`. The failure preceded implementation-identity collection,
+schedule construction, output-root claiming, every Swarm process, every
+measurement/replay producer, and all empirical computation. Both v3 roots
+therefore remain absent. Commit `e7a9bde54172f61216475e37b69524e987daf1a6`
+archives the exact 3,470-byte, 75-line failure record at
+`docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v3-launch-failure.md`;
+its SHA-256 is
+`54f78e86c4b1dc9eff1a031a8ed2121caff305afc1892eddc28212fc492a2818`.
+Development-v3 is consumed and cannot be rerun or repaired in place.
+
+An independent audit established that repository-cwd module invocation is the
+smallest safe correction for top-level runner/analyzer and smoke commands.
+The internal replay child remains an absolute direct script because it already
+adds the repository root before imports and intentionally executes from an
+isolated producer cwd. The TDD repair is commit
+`edb9bd00ee00a98510dfe106bf3ed4ef9fede281` with parent
+`e7a9bde54172f61216475e37b69524e987daf1a6` and tree
+`55cb8e6f6db2998b37d33cabb43f25ac5534d461`. It changes exactly six files:
+
+```text
+scripts/diagnostics/analyze_qualified_closure_campaign.py
+scripts/diagnostics/register_qualified_closure_campaign.py
+scripts/diagnostics/run_qualified_closure_campaign.py
+tests/test_analyze_qualified_closure_campaign.py
+tests/test_register_qualified_closure_campaign.py
+tests/test_run_qualified_closure_campaign.py
+```
+
+All protocol-frozen development, confirmatory, and smoke runner/analyzer argv
+arrays now use `conda run -n cbf_env python -m scripts.diagnostics...` from
+the registered repository cwd. Runtime reconstruction requires the identical
+tokens. Development v1/v2/v3 are rejected, only v4 is current, and
+confirmatory stays v1. The new roots are exactly:
+
+```text
+/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v4
+/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v4
+```
+
+Seeds `2026080101..2026080110` and `2026081101..2026081110`, 1,000 frames,
+500 s horizon, thresholds, scientific schedules, estimator/controller
+semantics, authorization topology, no-retry behavior, and the 8 GB launch /
+6 GB hard-stop / 2 GB cache policy are unchanged.
+
+The TDD record reproduced both direct-script failures with `PYTHONPATH`
+removed and no root creation, then proved the module commands reach a
+controlled registration error without `ModuleNotFoundError`. The focused
+registrar/runner/analyzer/replay suite passed 166/166; the five-module suite
+passed 186/186. Eight inspected source/test files passed `py_compile`, and
+`git diff --check` passed. Full discovery reported 1,166 total = 1,153 passed
++ the same 5 legacy failures + the same 8 legacy/external errors, with no new
+nonpassing test. Independent source review returned C0/I0/M0. At documentation
+time all development v1/v2/v3/v4 raw and analysis roots are absent,
+`ENABLE_GUROBI:BOOL=ON`, `build-diagnostic/Swarm` is executable, and about
+15.5 million KiB remain free on `/private/tmp`.
+
+The final operative recovery plan is
+`docs/superpowers/plans/2026-08-01-cbf2026-qualified-modes-hybrid-distributed-cbf-implementation.md`,
+178,976 bytes / 3,243 lines, SHA-256
+`f3cb2c0c9bc047e1873ca27c2ce56cd5ab5732ade0264c3ce8f90c80b7979fbb`.
+It supersedes every earlier command or dependency that calls v3 executable,
+and it explicitly replaces Task 12's later v3 dependencies and direct `.py`
+examples with development-v4 inputs and exact confirmatory-v1 module commands.
+
+No v4 protocol, preflight, authorization, execution root, result, or review
+exists at this report update. After this report, the plan, and the independent
+implementation review are committed together, the only exact registrar
+command is the plan's development-v4 module command. A later sole direct child
+must add exactly the four v4 lifecycle artifacts and pass production
+postcommit validation. Only then may the protocol-bound module runner execute
+once, followed by the module analyzer once after a terminal raw manifest.
+Only a reproduced v4 PASS with C0/I0 may open confirmatory-v1.

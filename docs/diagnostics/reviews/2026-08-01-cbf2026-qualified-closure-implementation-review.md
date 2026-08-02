@@ -845,3 +845,111 @@ and this appended review as the prerequisite documentation closure: **Yes**.
 Ready to create a v3 protocol or authorization before that commit: **No**.
 
 Ready to execute development-v3, smoke, or confirmatory now: **No**.
+
+## Development-v3 launch failure to development-v4 recovery review
+
+### Scope and immutable chronology
+
+This append-only independent pass supersedes the preceding prospective v3
+execution decision without modifying any earlier lifecycle evidence. It
+reviews the exact v3 launch failure, its six-file TDD correction, and the
+operative development-v4 report/plan closure.
+
+The v3 exact four-artifact child
+`16c0aca90f578259b16a75659433ad12841ae10e` passed production postcommit
+authorization validation. Its runner was invoked once and failed with
+`No module named 'scripts'` before implementation identity collection,
+schedule construction, output-root claiming, or any scientific producer. The
+independent audit traced the failure to direct-script `sys.path` semantics and
+confirmed both v3 roots remain absent. The immutable failure record is commit
+`e7a9bde54172f61216475e37b69524e987daf1a6`, file SHA-256
+`54f78e86c4b1dc9eff1a031a8ed2121caff305afc1892eddc28212fc492a2818`,
+3,470 bytes / 75 lines. Development-v3 is therefore consumed and no retry,
+repair-in-place, root reuse, or retrospective scientific interpretation is
+permitted.
+
+### Six-file v4 CLI correction
+
+Commit `edb9bd00ee00a98510dfe106bf3ed4ef9fede281` has parent
+`e7a9bde54172f61216475e37b69524e987daf1a6`, tree
+`55cb8e6f6db2998b37d33cabb43f25ac5534d461`, and exactly the registrar,
+runner, analyzer, and their three test modules in its diff. Review found:
+
+- every frozen development, confirmatory, and smoke top-level runner/analyzer
+  argv uses `conda run -n cbf_env python -m scripts.diagnostics...`;
+- runner and analyzer independently reconstruct the exact same tokens;
+- the absolute replay child remains correct because its existing bootstrap
+  restores the repository root before imports under its isolated cwd;
+- development v1/v2/v3 are explicitly rejected, development-v4 alone owns
+  the fresh v4 roots, and confirmatory remains v1;
+- seeds, frames, thresholds, scientific semantics, authorization topology,
+  no-retry behavior, and 8/6/2 GB disk gates are unchanged; and
+- real subprocess regressions remove `PYTHONPATH`, reach controlled
+  registration failures without `ModuleNotFoundError`, and prove no output
+  root is claimed.
+
+Fresh verification passed 166/166 registrar/runner/analyzer/replay tests and
+186/186 after adding the estimator analysis module. All eight inspected
+source/test files passed `py_compile`; `git diff --check` passed. Full Python
+discovery was 1,166 total = 1,153 passed + the unchanged 5 legacy failures +
+unchanged 8 legacy/external errors. The same thirteen outcomes were present in
+the 1,162-test pre-fix baseline; there is no new failure or error. The suite is
+not described as wholly green and those historical failures are not waived.
+
+The independent code-review subagent separately reran the 166-test suite and
+reported Critical 0 / Important 0 / Minor 0. It found no mismatch in the
+module entry points, v4 lifecycle isolation, replay bootstrap, scientific
+bindings, authorization/no-retry policy, or disk gates.
+
+### Final documentation identities and execution boundary
+
+The reviewed operative plan working identity is:
+
+```text
+f3cb2c0c9bc047e1873ca27c2ce56cd5ab5732ade0264c3ce8f90c80b7979fbb  178,976 bytes / 3,243 lines  docs/superpowers/plans/2026-08-01-cbf2026-qualified-modes-hybrid-distributed-cbf-implementation.md
+```
+
+The reviewed implementation report working identity is:
+
+```text
+80a68310cc798d517d5ee391a41dea274b03dafa68c86e506cb55aca9ad2fb19   43,086 bytes /   805 lines  docs/diagnostics/2026-08-01-cbf2026-qualified-closure-implementation.md
+```
+
+These working-document identities are evidence for this closure, not future
+protocol identities. The three documents must now be committed together as a
+clean documentation-closure commit after `edb9bd0...`. The registrar must
+bind that future exact commit. Only its sole direct child adding exactly the
+v4 protocol JSON, protocol Markdown, independent C0/I0/M0 preflight, and
+ten-field authorization JSON may authorize execution. Production postcommit
+validation must pass and both v4 roots must remain absent before launch.
+
+The operative plan's runner/analyzer commands use module invocation, version
+v4, the two non-colliding v4 roots, unchanged development configs, the exact
+two ten-seed ranges, and 1,000 frames. Every earlier v3 execution command is
+historical and forbidden. No v4 lifecycle artifact, root, result, review, or
+campaign was created by this documentation review. Confirmatory remains
+closed until development-v4 has a terminal independently reproduced PASS with
+C0/I0.
+
+The first documentation pass found two Important inconsistencies: the later
+Task 12 block still named development-v3 inputs, and its smoke/scientific
+examples still used direct `.py` entry points. The final plan closes both
+findings with an explicit append-only operative Task 12 override. It names the
+v4 protocol/report/review dependencies, declares the later v3/direct-script
+lines historical and non-executable, and records complete module-form
+registrar, smoke A/B runner/analyzer, and scientific runner/analyzer commands.
+The final plan/report hashes above were recomputed after that remediation.
+There is no remaining command or dependency ambiguity in the operative
+override; the earlier text is preserved only as historical chronology.
+
+### Final verdict
+
+Critical: `0`; Important: `0`; Minor: `0`.
+
+Ready to commit only the final plan, implementation report, and this review as
+the prerequisite documentation closure: **Yes**.
+
+Ready to generate the development-v4 protocol before that commit: **No**.
+
+Ready to execute development-v4, smoke, or confirmatory before the exact
+four-artifact child passes production postcommit validation: **No**.
