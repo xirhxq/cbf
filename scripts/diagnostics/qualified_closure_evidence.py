@@ -2326,7 +2326,16 @@ def _valid_qp(qp: object) -> bool:
     )
 
 
-def _valid_hard_problem(problem: object, owner: int) -> bool:
+def _valid_hard_problem(
+    problem: object,
+    owner: int,
+    *,
+    strict_continuous: bool = False,
+) -> bool:
+    continuous = (
+        lambda value: type(value) is float and math.isfinite(value)
+        if strict_continuous else _finite_number(value)
+    )
     if not isinstance(problem, dict) or set(problem) != {
         "owner",
         "control_size",
@@ -2345,8 +2354,8 @@ def _valid_hard_problem(problem: object, owner: int) -> bool:
         or owner <= 0
         or not _int32(problem["control_size"])
         or problem["control_size"] != 3
-        or not _finite_number(problem["planar_component_max"])
-        or not _finite_number(problem["yaw_rate_max"])
+        or not continuous(problem["planar_component_max"])
+        or not continuous(problem["yaw_rate_max"])
         or not _uint64(problem["snapshot_version"])
         or problem["snapshot_version"] == 0
         or not _uint64(problem["allocation_version"])
@@ -2364,8 +2373,8 @@ def _valid_hard_problem(problem: object, owner: int) -> bool:
             or set(bound) != {"control_index", "coefficient", "limit"}
             or not _int32(bound["control_index"])
             or not 0 <= bound["control_index"] < problem["control_size"]
-            or not _finite_number(bound["coefficient"])
-            or not _finite_number(bound["limit"])
+            or not continuous(bound["coefficient"])
+            or not continuous(bound["limit"])
         ):
             return False
     for row in rows:
@@ -2393,11 +2402,18 @@ def _valid_hard_problem(problem: object, owner: int) -> bool:
             or not 1 <= edge["low"] <= 14
             or not 1 <= edge["high"] <= 14
             or edge["base_id"] not in {-1, 0, 1, 2}
+            or not _int32(row["owner"])
             or row["owner"] != owner
             or not _nonempty_string(row["name"])
-            or not _vector(row["coefficients"], problem["control_size"])
-            or not _finite_number(row["constant"])
-            or not _finite_number(row["post_reset_barrier"])
+            or not (
+                _vector(row["coefficients"], problem["control_size"])
+                and (
+                    not strict_continuous
+                    or all(type(value) is float for value in row["coefficients"])
+                )
+            )
+            or not continuous(row["constant"])
+            or not continuous(row["post_reset_barrier"])
             or not _uint64(row["snapshot_version"])
             or not _uint64(row["allocation_version"])
         ):
@@ -2675,8 +2691,14 @@ def _valid_node(node: object, snapshot_version: int, allocation_version: int) ->
         and _vector(node["applied_command"], 3)
         and _valid_qp(node["normal_qp"])
         and _valid_qp(node["hard_only_qp"])
-        and _valid_hard_problem(node["normal_problem"], node["robot_id"])
-        and _valid_hard_problem(node["hard_only_problem"], node["robot_id"])
+        and _valid_hard_problem(
+            node["normal_problem"], node["robot_id"],
+            strict_continuous="hard_interior_selection" in node,
+        )
+        and _valid_hard_problem(
+            node["hard_only_problem"], node["robot_id"],
+            strict_continuous="hard_interior_selection" in node,
+        )
         and (
             "hard_interior_selection" not in node
             or _valid_hard_interior_selection(node["hard_interior_selection"])

@@ -625,6 +625,21 @@ class SwarmEvidenceStdoutTests(unittest.TestCase):
                     integral_tokens, endpoint0, 232, 119
                 ).integrity_errors
             )
+            hard_only_integer = copy.deepcopy(controller0)
+            hard_only_integer["runtime"]["nodes"][0]["hard_only_problem"][
+                "planar_component_max"
+            ] = 25
+            self.assertFalse(validate_controller_primitive_schema(hard_only_integer))
+            self.assertTrue(
+                reconstruct_controller_primitives(
+                    hard_only_integer, endpoint0, 232, 119
+                ).integrity_errors
+            )
+            from scripts.diagnostics.analyze_qualified_closure_campaign import (
+                _controller_frame_metrics,
+            )
+            with self.assertRaises(ValueError):
+                _controller_frame_metrics(hard_only_integer, endpoint0)
             yaw = copy.deepcopy(controller0)
             yaw["runtime"]["nodes"][0]["normal_problem"]["rows"][0][
                 "coefficients"

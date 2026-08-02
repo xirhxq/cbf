@@ -237,6 +237,27 @@ class ControllerPrimitiveSchemaTests(unittest.TestCase):
         policy["minimum_original_hard_residual_mps"] = 2
         self.assertFalse(evidence_schema._valid_hard_interior_selection(policy))
 
+    def test_v2_strict_problem_rejects_integer_continuous_fields_only(self):
+        mutations = (
+            lambda problem: problem.__setitem__("planar_component_max", 25),
+            lambda problem: problem.__setitem__("yaw_rate_max", 0),
+            lambda problem: problem["bounds"][0].__setitem__("coefficient", 1),
+            lambda problem: problem["bounds"][0].__setitem__("limit", 25),
+            lambda problem: problem["rows"][0]["coefficients"].__setitem__(0, -1),
+            lambda problem: problem["rows"][0].__setitem__("constant", 2),
+            lambda problem: problem["rows"][0].__setitem__("post_reset_barrier", 3),
+        )
+        for mutate in mutations:
+            with self.subTest(mutate=mutate):
+                problem = bounded_hard_problem(
+                    1, localization_problem_row(2.0), "strict-problem"
+                )
+                mutate(problem)
+                self.assertTrue(evidence_schema._valid_hard_problem(problem, 1))
+                self.assertFalse(evidence_schema._valid_hard_problem(
+                    problem, 1, strict_continuous=True
+                ))
+
     def test_reduced_controller_universe_is_rejected_but_endpoint_is_complete(self):
         reference = {
             "canonical_reference_id": -1,
