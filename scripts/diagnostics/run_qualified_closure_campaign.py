@@ -30,10 +30,10 @@ START_FREE_BYTES = 8_000_000_000
 STOP_FREE_BYTES = 6_000_000_000
 CACHE_CAP_BYTES = 2_000_000_000
 DEVELOPMENT_RAW_ROOT = Path(
-    "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v2"
+    "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v3"
 )
 DEVELOPMENT_ANALYSIS_ROOT = Path(
-    "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v2"
+    "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v3"
 )
 
 
@@ -145,7 +145,7 @@ def development_schedule() -> list[dict]:
     """Return the frozen ten-mission development schedule."""
     return [
         {
-            "campaign_id": "development-v2",
+            "campaign_id": "development-v3",
             "mission_id": f"mission-{index:02d}",
             "trajectory_seed": trajectory_seed,
             "range_noise_seed": range_noise_seed,
@@ -2049,9 +2049,9 @@ def _schedule_from_arguments(arguments) -> list[dict]:
         expected_noise = list(range(2026081101, 2026081111))
         if trajectory != expected_trajectory or noise != expected_noise:
             raise ValueError("development seed schedule is not the registered schedule")
-        if arguments.frames != 1000 or arguments.version != "v2":
-            raise ValueError("development run requires version v2 and 1000 frames")
-        campaign_id = "development-v2"
+        if arguments.frames != 1000 or arguments.version != "v3":
+            raise ValueError("development run requires version v3 and 1000 frames")
+        campaign_id = "development-v3"
     elif arguments.kind == "confirmatory":
         expected_trajectory = list(range(2026082001, 2026082061))
         expected_noise = list(range(2026083001, 2026083061))

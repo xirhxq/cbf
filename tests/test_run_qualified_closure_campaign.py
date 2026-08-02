@@ -255,11 +255,11 @@ class RunnerScheduleTests(unittest.TestCase):
 
         self.assertEqual(
             DEVELOPMENT_RAW_ROOT,
-            Path("/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v2"),
+            Path("/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v3"),
         )
         self.assertEqual(
             DEVELOPMENT_ANALYSIS_ROOT,
-            Path("/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v2"),
+            Path("/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v3"),
         )
         self.assertEqual(len(schedule), 10)
         self.assertEqual(
@@ -271,7 +271,7 @@ class RunnerScheduleTests(unittest.TestCase):
             list(range(2026081101, 2026081111)),
         )
         self.assertTrue(all(
-            mission["campaign_id"] == "development-v2"
+            mission["campaign_id"] == "development-v3"
             and mission["frames"] == 1000
             and mission["horizon_s"] == 500.0
             and mission["conditions"]
@@ -279,19 +279,21 @@ class RunnerScheduleTests(unittest.TestCase):
             for mission in schedule
         ))
 
-    def test_development_v2_schedule_is_required_while_confirmatory_remains_v1(self):
+    def test_development_v3_schedule_is_required_while_confirmatory_remains_v1(self):
         development = argparse.Namespace(
-            kind="development", version="v2", smoke_id=None,
+            kind="development", version="v3", smoke_id=None,
             trajectory_seeds="2026080101:2026080110",
             range_noise_seeds="2026081101:2026081110", frames=1000,
         )
         self.assertTrue(all(
-            mission["campaign_id"] == "development-v2"
+            mission["campaign_id"] == "development-v3"
             for mission in _schedule_from_arguments(development)
         ))
-        development.version = "v1"
-        with self.assertRaisesRegex(ValueError, "development.*v2"):
-            _schedule_from_arguments(development)
+        for version in ("v1", "v2"):
+            with self.subTest(version=version):
+                development.version = version
+                with self.assertRaisesRegex(ValueError, "development.*v3"):
+                    _schedule_from_arguments(development)
 
         confirmatory = argparse.Namespace(
             kind="confirmatory", version="v1", smoke_id=None,
@@ -378,7 +380,7 @@ class RunnerScheduleTests(unittest.TestCase):
                 path.write_text("same bytes\n")
                 paths[name] = path
             arguments = argparse.Namespace(
-                kind="development", version="v2", smoke_id=None,
+                kind="development", version="v3", smoke_id=None,
                 protocol=root / "fixture-protocol.json",
                 authorization=root / "fixture-authorization.json",
                 binary=paths["Swarm"], base_config=paths["base.json"],
@@ -1622,7 +1624,7 @@ class CampaignCoordinatorTests(unittest.TestCase):
     def arguments(self, output_root):
         import argparse
         return argparse.Namespace(
-            kind="development", version="v2", smoke_id=None,
+            kind="development", version="v3", smoke_id=None,
             protocol=Path("protocol.json"), authorization=Path("authorization.json"),
             binary=Path("Swarm"), base_config=Path("config.json"),
             primary_config=Path("primary.json"), ablation_config=Path("ablation.json"),

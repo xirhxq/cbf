@@ -31,8 +31,8 @@ FROZEN_THRESHOLDS = {
 
 FROZEN_EXECUTION_ROOTS = {
     "development": {
-        "raw": "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v2",
-        "analysis": "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v2",
+        "raw": "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v3",
+        "analysis": "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v3",
     },
     "confirmatory": {
         "smoke_a_raw": "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-confirmatory-smoke-v1-a",
@@ -59,7 +59,7 @@ FROZEN_AUTHORIZATION_REQUIREMENTS = {
 }
 
 SUPPORTED_PROTOCOL_VERSIONS = {
-    "development": "v2",
+    "development": "v3",
     "confirmatory": "v1",
 }
 
@@ -79,7 +79,7 @@ def build_qualified_closure_protocol(**kwargs) -> dict:
         raise ValueError("only registered development/confirmatory protocols are supported")
     if version != SUPPORTED_PROTOCOL_VERSIONS[kind]:
         raise ValueError(
-            "development requires v2 and confirmatory requires v1"
+            "development requires v3 and confirmatory requires v1"
         )
     project_root = Path(kwargs["project_root"]).resolve()
     trajectory = _seed_list(kwargs.get("trajectory_seeds"), "trajectory")
@@ -843,11 +843,23 @@ def _verify_committed_registration_state(protocol: dict, observed: dict) -> None
     identities = {}
     for section in ("bindings", "review_artifacts", "tooling"):
         identities.update(protocol.get(section, {}))
+    allowed_untracked = set(repository.get("allowed_untracked_paths", ()))
     for label, identity in identities.items():
         path = Path(identity["path"])
         try:
             token = path.resolve().relative_to(project_root).as_posix()
         except ValueError:
+            continue
+        if token in allowed_untracked:
+            if (
+                path.is_symlink()
+                or not path.is_file()
+                or _sha256(path) != identity["sha256"]
+                or path.stat().st_size != identity["bytes"]
+            ):
+                raise ValueError(
+                    f"allowed-untracked implementation file differs: {label}"
+                )
             continue
         blob = _git_bytes(project_root, "show", f"{implementation}:{token}")
         if (

@@ -1019,13 +1019,13 @@ def validate_analysis_registration_contract(protocol, arguments):
         output_label = "analysis"
     if protocol.get("kind") != registered_kind:
         raise ValueError("analysis kind differs from registered protocol")
-    expected_version = "v2" if registered_kind == "development" else "v1"
+    expected_version = "v3" if registered_kind == "development" else "v1"
     if (
         arguments.version != expected_version
         or protocol.get("version") != arguments.version
     ):
         if registered_kind == "development":
-            raise ValueError("development analysis requires version v2")
+            raise ValueError("development analysis requires version v3")
         raise ValueError("analysis version differs from registered protocol")
     input_root = Path(arguments.input_root)
     output_root = Path(arguments.output_root)
@@ -1071,12 +1071,49 @@ def validate_analysis_registration_contract(protocol, arguments):
     else:
         registered_missions = protocol.get("schedule", {}).get("missions")
         analysis_protocol = protocol
+    campaign_id = (
+        f"confirmatory-smoke-{arguments.smoke_id}"
+        if smoke
+        else f"{registered_kind}-{expected_version}"
+    )
+    registered_schedule = _registered_schedule_envelope(
+        registered_missions, campaign_id=campaign_id
+    )
     return {
         "claimed_root": claimed_root,
         "output_label": output_label,
         "registered_missions": registered_missions,
+        "registered_schedule": registered_schedule,
         "analysis_protocol": analysis_protocol,
     }
+
+
+def _registered_schedule_envelope(registered_missions, *, campaign_id):
+    """Derive the full trusted raw schedule envelope from registered missions."""
+    expected_fields = {
+        "mission_id", "trajectory_seed", "range_noise_seed", "frames",
+    }
+    if not isinstance(registered_missions, list) or not isinstance(campaign_id, str):
+        raise ValueError("registered mission schedule is invalid")
+    schedule = []
+    for mission in registered_missions:
+        if (
+            not isinstance(mission, dict)
+            or set(mission) != expected_fields
+            or not isinstance(mission.get("mission_id"), str)
+            or type(mission.get("trajectory_seed")) is not int
+            or type(mission.get("range_noise_seed")) is not int
+            or type(mission.get("frames")) is not int
+            or mission["frames"] <= 0
+        ):
+            raise ValueError("registered mission schedule is invalid")
+        schedule.append({
+            "campaign_id": campaign_id,
+            **mission,
+            "horizon_s": mission["frames"] / 2.0,
+            "conditions": ["dynamic_primary", "fixed_fim_ablation"],
+        })
+    return schedule
 
 
 def _validate_runtime_analyzer_argv(protocol, arguments) -> None:
@@ -1140,7 +1177,7 @@ def analyze_campaign_from_arguments(arguments) -> int:
 
 
 def _preflight_raw_campaign(
-    input_root, registered_missions, *, protocol_sha256, authorization_sha256
+    input_root, registered_schedule, *, protocol_sha256, authorization_sha256
 ):
     """Validate terminal raw identities before claiming analysis output."""
     campaign_manifest = _read_json(
@@ -1165,7 +1202,7 @@ def _preflight_raw_campaign(
         or campaign_manifest.get("schedule_bytes")
             != (input_root / "schedule.json").stat().st_size
         or type(campaign_manifest.get("mission_count")) is not int
-        or campaign_manifest["mission_count"] != len(registered_missions)
+        or campaign_manifest["mission_count"] != len(registered_schedule)
         or type(campaign_manifest.get("completed_mission_count")) is not int
         or not 0 <= campaign_manifest["completed_mission_count"]
             <= campaign_manifest["mission_count"]
@@ -1197,7 +1234,7 @@ def _preflight_raw_campaign(
         or schedule_doc["schema_version"]
             != "cbf2026-qualified-campaign-schedule-v1"
         or type(schedule_doc["mission_count"]) is not int
-        or schedule_doc["mission_count"] != len(registered_missions)
+        or schedule_doc["mission_count"] != len(registered_schedule)
         or not isinstance(schedule_doc["missions"], list)
         or schedule_doc["mission_count"] != len(schedule_doc["missions"])
     ):
@@ -1211,27 +1248,17 @@ def _preflight_raw_campaign(
         for row in schedule_doc["missions"]
     ):
         raise ValueError("raw schedule mission schema is not exact")
-    observed = [
-        {
-            "mission_id": row.get("mission_id"),
-            "trajectory_seed": row.get("trajectory_seed"),
-            "range_noise_seed": row.get("range_noise_seed"),
-            "frames": row.get("frames"),
-        }
-        for row in schedule_doc["missions"]
-    ]
-    if observed != registered_missions:
+    if schedule_doc["missions"] != registered_schedule:
         raise ValueError("raw schedule differs from registered protocol")
     mission_identities = campaign_manifest.get("mission_manifest_identities")
     if (
         not isinstance(mission_identities, dict)
         or set(mission_identities)
-            != {mission["mission_id"] for mission in registered_missions}
+            != {mission["mission_id"] for mission in registered_schedule}
     ):
         raise ValueError("campaign mission-manifest universe is invalid")
-    for registered_mission, frozen_mission in zip(
-        registered_missions, schedule_doc["missions"], strict=True
-    ):
+    for frozen_mission in registered_schedule:
+        registered_mission = frozen_mission
         root = input_root / registered_mission["mission_id"]
         manifest = _read_json(root / "manifest.json", "mission manifest")
         identity = mission_identities[registered_mission["mission_id"]]
@@ -1277,7 +1304,7 @@ def _analyze_claimed_campaign(
 ) -> int:
     _preflight_raw_campaign(
         input_root,
-        contract["registered_missions"],
+        contract["registered_schedule"],
         protocol_sha256=_sha256(arguments.protocol),
         authorization_sha256=_sha256(arguments.authorization),
     )
@@ -1285,17 +1312,8 @@ def _analyze_claimed_campaign(
     if campaign_manifest.get("terminal") is not True:
         raise ValueError("raw campaign is not terminal")
     schedule_doc = _read_json(input_root / "schedule.json", "campaign schedule")
-    registered = contract["registered_missions"]
-    observed_schedule = [
-        {
-            "mission_id": row.get("mission_id"),
-            "trajectory_seed": row.get("trajectory_seed"),
-            "range_noise_seed": row.get("range_noise_seed"),
-            "frames": row.get("frames"),
-        }
-        for row in schedule_doc.get("missions", [])
-    ]
-    if observed_schedule != registered:
+    registered = contract["registered_schedule"]
+    if schedule_doc.get("missions") != registered:
         raise ValueError("raw schedule differs from registered protocol")
 
     with tempfile.TemporaryDirectory(prefix="qualified-analysis-spool-") as directory:
@@ -1304,7 +1322,7 @@ def _analyze_claimed_campaign(
         try:
             report = _stream_raw_campaign(
                 input_root, contract["analysis_protocol"],
-                schedule_doc["missions"], database,
+                registered, database,
                 disk_guard=lambda: _enforce_analysis_disk_policy(
                     output_root.parent, spool_root
                 ),

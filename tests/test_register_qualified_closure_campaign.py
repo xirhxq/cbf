@@ -35,8 +35,8 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
         self.project.mkdir()
         self.frozen_roots = {
             "development": {
-                "raw": str(self.root / "raw" / "v2"),
-                "analysis": str(self.root / "analysis" / "v2"),
+                "raw": str(self.root / "raw" / "v3"),
+                "analysis": str(self.root / "analysis" / "v3"),
             },
             "confirmatory": {
                 "smoke_a_raw": str(self.root / "outputs" / "smoke-a-raw"),
@@ -297,7 +297,7 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
         markdown_path = publication / "fixture-protocol.md"
         protocol = self.authoritative(
             json_path=protocol_path, markdown_path=markdown_path,
-            kind="development", version="v2",
+            kind="development", version="v3",
         )
         protocol["repository"] = registrar._repository_identity(self.project)
         protocol["semantic_sha256"] = registrar._semantic_sha256(protocol)
@@ -312,12 +312,12 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
             "# Independent preflight\n\nC0/I0/M0. Exact registered identities pass.\n",
             encoding="utf-8",
         )
-        authorization_text = "Continue with the registered development-v2 execution."
+        authorization_text = "Continue with the registered development-v3 execution."
         authorization = {
             "schema_version": "cbf2026-qualified-authorization-v1",
             "authorized": True,
             "kind": "development",
-            "version": "v2",
+            "version": "v3",
             "protocol_sha256": hashlib.sha256(
                 protocol_path.read_bytes()
             ).hexdigest(),
@@ -482,10 +482,114 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
             bundle["protocol"]["repository"]["head"],
         )
 
-    def test_failed_development_v1_is_consumed_and_v2_is_non_colliding(self):
+    def test_exact_four_artifact_child_accepts_registered_untracked_build(self):
+        """The frozen build may be allowed-untracked while source stays committed."""
+        (self.project / ".gitignore").write_text("ignored-build.bin\n")
+        self.git("init", "-q")
+        self.git("add", ".")
+        self.git("commit", "-qm", "implementation")
+
+        build = self.project / "build-diagnostic"
+        build.mkdir()
+        binary = build / "Swarm"
+        cmake_cache = build / "CMakeCache.txt"
+        binary.write_bytes(b"frozen untracked executable\n")
+        cmake_cache.write_text("ENABLE_GUROBI:BOOL=ON\n", encoding="utf-8")
+
+        publication = self.project / "docs" / "diagnostics"
+        protocol_path = publication / "fixture-protocol.json"
+        markdown_path = publication / "fixture-protocol.md"
+        protocol = self.authoritative(
+            json_path=protocol_path,
+            markdown_path=markdown_path,
+            kind="development",
+            version="v3",
+        )
+        protocol["bindings"]["binary"] = registrar._file_identity(binary)
+        protocol["bindings"]["dependencies"] = registrar._file_identity(cmake_cache)
+        protocol["build"]["cmake_cache"] = registrar._file_identity(cmake_cache)
+        protocol["repository"] = registrar._repository_identity(self.project)
+        commands = registrar._registered_argv(protocol)
+        protocol["runner_argv"] = commands["runner"]
+        protocol["analyzer_argv"] = commands["analyzer"]
+        protocol["semantic_sha256"] = registrar._semantic_sha256(protocol)
+        with self.binding_probes(protocol):
+            publish_protocol(protocol, protocol_path, markdown_path)
+
+        review_root = publication / "reviews"
+        review_root.mkdir(parents=True)
+        preflight_path = review_root / "fixture-preflight.md"
+        authorization_path = review_root / "fixture-authorization.json"
+        preflight_path.write_text("# Independent preflight\n\nC0/I0/M0.\n")
+        authorization_text = "Continue with the registered development-v3 execution."
+        authorization = {
+            "schema_version": "cbf2026-qualified-authorization-v1",
+            "authorized": True,
+            "kind": "development",
+            "version": "v3",
+            "protocol_sha256": hashlib.sha256(protocol_path.read_bytes()).hexdigest(),
+            "implementation_identity": protocol["repository"]["head"],
+            "preflight_sha256": hashlib.sha256(preflight_path.read_bytes()).hexdigest(),
+            "user_authorization_date": "2026-08-02",
+            "user_authorization_text": authorization_text,
+            "user_authorization_text_sha256": hashlib.sha256(
+                authorization_text.encode("utf-8")
+            ).hexdigest(),
+        }
+        authorization_path.write_text(
+            json.dumps(authorization, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        bundle = {
+            "protocol": protocol,
+            "protocol_path": protocol_path,
+            "markdown_path": markdown_path,
+            "preflight_path": preflight_path,
+            "authorization_path": authorization_path,
+        }
+        self.commit_registered_bundle(bundle)
+
+        self.assertEqual(
+            protocol["repository"]["allowed_untracked_paths"],
+            ["build-diagnostic/CMakeCache.txt", "build-diagnostic/Swarm"],
+        )
+        with self.binding_probes(protocol):
+            validated = validate_authorization_binding(
+                protocol_path, authorization_path,
+            )
+        self.assertTrue(validated["authorized"])
+
+        original_binary = binary.read_bytes()
+        binary.write_bytes(b"tampered frozen executable\n")
+        with self.binding_probes(protocol):
+            with self.assertRaisesRegex(ValueError, "binding mutated|allowed-untracked"):
+                validate_authorization_binding(protocol_path, authorization_path)
+        binary.write_bytes(original_binary)
+
+        extra_build_member = build / "unregistered.cache"
+        extra_build_member.write_bytes(b"not registered")
+        with self.binding_probes(protocol):
+            with self.assertRaisesRegex(ValueError, "protected paths"):
+                validate_authorization_binding(protocol_path, authorization_path)
+        extra_build_member.unlink()
+
+        ignored_build = self.project / "ignored-build.bin"
+        ignored_build.write_bytes(b"not a registered allowed-untracked file")
+        non_allowlisted = copy.deepcopy(protocol)
+        non_allowlisted["bindings"]["binary"] = registrar._file_identity(
+            ignored_build
+        )
+        with self.assertRaisesRegex(ValueError, "registered Git state is unavailable"):
+            registrar._verify_committed_registration_state(
+                non_allowlisted,
+                registrar._repository_identity(self.project),
+            )
+
+    def test_failed_development_v1_v2_are_consumed_and_v3_is_non_colliding(self):
         historical_v1 = self.root / "development-v1-protocol.json"
+        historical_v2 = self.root / "development-v2-protocol.json"
         historical_bytes = b'{"terminal":"failed"}\n'
         historical_v1.write_bytes(historical_bytes)
+        historical_v2.write_bytes(historical_bytes)
         development_arguments = {
             "count": 10,
             "kind": "development",
@@ -497,15 +601,18 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
             },
         }
 
-        with self.assertRaisesRegex(ValueError, "development.*v2"):
-            self.build(version="v1", **development_arguments)
-        protocol = self.build(version="v2", **development_arguments)
+        for version in ("v1", "v2"):
+            with self.subTest(version=version):
+                with self.assertRaisesRegex(ValueError, "development.*v3"):
+                    self.build(version=version, **development_arguments)
+        protocol = self.build(version="v3", **development_arguments)
 
         self.assertEqual(historical_v1.read_bytes(), historical_bytes)
-        self.assertEqual(protocol["version"], "v2")
+        self.assertEqual(historical_v2.read_bytes(), historical_bytes)
+        self.assertEqual(protocol["version"], "v3")
         self.assertEqual(protocol["roots"], self.frozen_roots["development"])
-        self.assertTrue(protocol["roots"]["raw"].endswith("/v2"))
-        self.assertTrue(protocol["roots"]["analysis"].endswith("/v2"))
+        self.assertTrue(protocol["roots"]["raw"].endswith("/v3"))
+        self.assertTrue(protocol["roots"]["analysis"].endswith("/v3"))
 
     def test_uncommitted_artifacts_cannot_authorize_execution(self):
         bundle = self.prepare_registered_bundle()
@@ -896,7 +1003,7 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
 
     def test_development_analyzer_argv_binds_version_and_ablation(self):
         arguments = argparse.Namespace(
-            kind="development", version="v2",
+            kind="development", version="v3",
             protocol_json=Path("docs/diagnostics/development-protocol.json"),
             ablation_config=Path("config/diagnostics/ablation.json"),
             raw_root=Path("/private/tmp/development-raw"),
@@ -906,7 +1013,7 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
         self.assertEqual(registrar._analyzer_argv(arguments), [
             "conda", "run", "-n", "cbf_env", "python",
             "scripts/diagnostics/analyze_qualified_closure_campaign.py",
-            "--kind", "development", "--version", "v2",
+            "--kind", "development", "--version", "v3",
             "--protocol", "docs/diagnostics/development-protocol.json",
             "--authorization",
             "docs/diagnostics/reviews/development-authorization.json",
@@ -1048,7 +1155,7 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
         output = self.root / "registered"
         output.mkdir()
         arguments = argparse.Namespace(
-            kind="development", version="v2",
+            kind="development", version="v3",
             implementation_report=report, implementation_review=review,
             development_protocol=None, development_report=None,
             development_review=None, binary=binary, base_config=base,
@@ -1059,8 +1166,8 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
             smoke_frames=None, smoke_a_raw_root=None,
             smoke_a_analysis_root=None, smoke_b_raw_root=None,
             smoke_b_analysis_root=None,
-            raw_root=self.root / "raw" / "v2",
-            analysis_root=self.root / "analysis" / "v2",
+            raw_root=self.root / "raw" / "v3",
+            analysis_root=self.root / "analysis" / "v3",
             protocol_json=output / "fixture-protocol.json",
             protocol_md=output / "fixture-protocol.md",
         )

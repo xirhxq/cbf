@@ -76,7 +76,7 @@ def write_development_registration(root, raw, analysis):
         "position_covariance": {"reference-selection": "fixed-cbf-only"}
     }))
     protocol = build_qualified_closure_protocol(
-        kind="development", version="v2", project_root=project,
+        kind="development", version="v3", project_root=project,
         trajectory_seeds=list(range(2026080101, 2026080111)),
         range_noise_seeds=list(range(2026081101, 2026081111)), frames=1000,
         roots={"raw": raw, "analysis": analysis},
@@ -150,7 +150,7 @@ def write_development_registration(root, raw, analysis):
     authorization_path.parent.mkdir()
     authorization_path.write_text(json.dumps({
         "schema_version": "cbf2026-qualified-authorization-v1",
-        "authorized": True, "kind": "development", "version": "v2",
+        "authorized": True, "kind": "development", "version": "v3",
         "protocol_sha256": hashlib.sha256(protocol_path.read_bytes()).hexdigest(),
         "implementation_identity": repository["head"],
     }))
@@ -1011,7 +1011,7 @@ class RawManifestSchemaTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="qualified-missing-stream-") as directory:
             root = Path(directory)
             mission = {
-                "campaign_id": "development-v1",
+                "campaign_id": "development-v3",
                 "mission_id": "mission-01",
                 "trajectory_seed": 2026080101,
                 "range_noise_seed": 2026081101,
@@ -1086,10 +1086,62 @@ class RawManifestSchemaTests(unittest.TestCase):
             campaign_path.write_text(json.dumps(campaign))
             _preflight_raw_campaign(
                 root,
-                registered,
+                [mission],
                 protocol_sha256=campaign["protocol_sha256"],
                 authorization_sha256=campaign["authorization_sha256"],
             )
+
+            mission_manifest_doc = json.loads(mission_manifest.read_text())
+
+            def publish_consistent_schedule(candidate):
+                schedule_path.write_text(json.dumps({
+                    "schema_version": "cbf2026-qualified-campaign-schedule-v1",
+                    "mission_count": 1,
+                    "missions": [candidate],
+                }))
+                mission_manifest.write_text(json.dumps({
+                    **mission_manifest_doc,
+                    "mission": candidate,
+                }))
+                rewritten = {
+                    **campaign,
+                    "schedule_sha256": hashlib.sha256(
+                        schedule_path.read_bytes()
+                    ).hexdigest(),
+                    "schedule_bytes": schedule_path.stat().st_size,
+                    "mission_manifest_identities": {
+                        "mission-01": {
+                            "sha256": hashlib.sha256(
+                                mission_manifest.read_bytes()
+                            ).hexdigest(),
+                            "bytes": mission_manifest.stat().st_size,
+                        }
+                    },
+                }
+                campaign_path.write_text(json.dumps(rewritten))
+
+            consistent_tampers = (
+                {**mission, "campaign_id": "development-v2"},
+                {**mission, "horizon_s": 123.0},
+                {
+                    **mission,
+                    "conditions": ["fixed_fim_ablation", "dynamic_primary"],
+                },
+            )
+            for candidate in consistent_tampers:
+                with self.subTest(candidate=candidate):
+                    publish_consistent_schedule(candidate)
+                    with self.assertRaisesRegex(
+                        ValueError, "raw schedule differs from registered protocol"
+                    ):
+                        _preflight_raw_campaign(
+                            root,
+                            [mission],
+                            protocol_sha256=campaign["protocol_sha256"],
+                            authorization_sha256=campaign["authorization_sha256"],
+                        )
+
+            publish_consistent_schedule(mission)
 
             for field, value in (
                 ("completed_mission_count", False),
@@ -1103,7 +1155,7 @@ class RawManifestSchemaTests(unittest.TestCase):
                     ):
                         _preflight_raw_campaign(
                             root,
-                            registered,
+                            [mission],
                             protocol_sha256=campaign["protocol_sha256"],
                             authorization_sha256=campaign["authorization_sha256"],
                         )
@@ -1228,19 +1280,24 @@ class AnalyzerCliTests(unittest.TestCase):
             ablation = root / "ablation.json"
             ablation.write_text("{}\n")
             arguments = argparse.Namespace(
-                kind="development", version="v2", smoke_id=None,
+                kind="development", version="v3", smoke_id=None,
                 protocol=root / "fixture-protocol.json",
                 authorization=root / "fixture-authorization.json",
                 input_root=raw, output_root=output,
                 ablation_config=ablation,
             )
             protocol = {
-                "kind": "development", "version": "v2",
+                "kind": "development", "version": "v3",
                 "roots": {
                     "raw": str(raw.resolve()),
                     "analysis": str(output.resolve()),
                 },
-                "schedule": {"missions": []},
+                "schedule": {"missions": [{
+                    "mission_id": "mission-01",
+                    "trajectory_seed": 2026080101,
+                    "range_noise_seed": 2026081101,
+                    "frames": 1000,
+                }]},
                 "bindings": {"ablation_config": {
                     "path": str(ablation.resolve()),
                     "sha256": hashlib.sha256(ablation.read_bytes()).hexdigest(),
@@ -1248,7 +1305,16 @@ class AnalyzerCliTests(unittest.TestCase):
                 }},
                 "analyzer_argv": _runtime_analyzer_argv(arguments),
             }
-            validate_analysis_registration_contract(protocol, arguments)
+            contract = validate_analysis_registration_contract(protocol, arguments)
+            self.assertEqual(contract["registered_schedule"], [{
+                "campaign_id": "development-v3",
+                "mission_id": "mission-01",
+                "trajectory_seed": 2026080101,
+                "range_noise_seed": 2026081101,
+                "frames": 1000,
+                "horizon_s": 500.0,
+                "conditions": ["dynamic_primary", "fixed_fim_ablation"],
+            }])
 
             substitute = root / "same-content-ablation.json"
             substitute.write_text("{}\n")
@@ -1259,16 +1325,18 @@ class AnalyzerCliTests(unittest.TestCase):
             arguments.version = None
             with self.assertRaisesRegex(ValueError, "version"):
                 validate_analysis_registration_contract(protocol, arguments)
-            arguments.version = "v2"
+            arguments.version = "v3"
             protocol["analyzer_argv"] = [*protocol["analyzer_argv"], "--extra"]
             with self.assertRaisesRegex(ValueError, "analyzer argv"):
                 validate_analysis_registration_contract(protocol, arguments)
 
             protocol["analyzer_argv"] = _runtime_analyzer_argv(arguments)
-            arguments.version = "v1"
-            protocol["version"] = "v1"
-            with self.assertRaisesRegex(ValueError, "development.*v2"):
-                validate_analysis_registration_contract(protocol, arguments)
+            for version in ("v1", "v2"):
+                with self.subTest(version=version):
+                    arguments.version = version
+                    protocol["version"] = version
+                    with self.assertRaisesRegex(ValueError, "development.*v3"):
+                        validate_analysis_registration_contract(protocol, arguments)
 
     def test_mission_success_is_derived_from_completion_and_local_evidence(self):
         mission = {"frames": 1000}
@@ -1403,9 +1471,54 @@ class AnalyzerCliTests(unittest.TestCase):
                 "mission_id": "mission-01", "trajectory_seed": 2026089001,
                 "range_noise_seed": 2026089101, "frames": 20,
             }])
+            self.assertEqual(contract["registered_schedule"], [{
+                "campaign_id": "confirmatory-smoke-a",
+                "mission_id": "mission-01", "trajectory_seed": 2026089001,
+                "range_noise_seed": 2026089101, "frames": 20,
+                "horizon_s": 10.0,
+                "conditions": ["dynamic_primary", "fixed_fim_ablation"],
+            }])
             arguments.input_root = root / "raw-b"
             with self.assertRaisesRegex(ValueError, "input root"):
                 validate_analysis_registration_contract(protocol, arguments)
+
+    def test_confirmatory_contract_derives_full_v1_schedule_envelope(self):
+        with tempfile.TemporaryDirectory(prefix="qualified-confirmatory-analysis-") as directory:
+            root = Path(directory)
+            arguments = argparse.Namespace(
+                kind="confirmatory", version="v1", smoke_id=None,
+                protocol=root / "protocol.json",
+                authorization=root / "authorization.json",
+                ablation_config=None,
+                input_root=root / "raw", output_root=root / "analysis",
+            )
+            protocol = {
+                "kind": "confirmatory",
+                "version": "v1",
+                "roots": {
+                    "raw": str(arguments.input_root.resolve()),
+                    "analysis": str(arguments.output_root.resolve()),
+                },
+                "schedule": {"missions": [{
+                    "mission_id": "mission-01",
+                    "trajectory_seed": 2026082001,
+                    "range_noise_seed": 2026083001,
+                    "frames": 1000,
+                }]},
+                "analyzer_argv": _runtime_analyzer_argv(arguments),
+            }
+
+            contract = validate_analysis_registration_contract(protocol, arguments)
+
+            self.assertEqual(contract["registered_schedule"], [{
+                "campaign_id": "confirmatory-v1",
+                "mission_id": "mission-01",
+                "trajectory_seed": 2026082001,
+                "range_noise_seed": 2026083001,
+                "frames": 1000,
+                "horizon_s": 500.0,
+                "conditions": ["dynamic_primary", "fixed_fim_ablation"],
+            }])
 
     def test_terminal_raw_member_tamper_terminalizes_claimed_analysis_root(self):
         with tempfile.TemporaryDirectory(prefix="qualified-analyzer-cli-") as directory:
@@ -1418,7 +1531,7 @@ class AnalyzerCliTests(unittest.TestCase):
             missions = []
             for row in protocol["schedule"]["missions"]:
                 missions.append({
-                    "campaign_id": "development-v2", **row,
+                    "campaign_id": "development-v3", **row,
                     "horizon_s": 500.0,
                     "conditions": ["dynamic_primary", "fixed_fim_ablation"],
                 })
@@ -1457,7 +1570,7 @@ class AnalyzerCliTests(unittest.TestCase):
             ):
                 returncode = analyzer_main([
                     "--kind", "development",
-                    "--version", "v2",
+                    "--version", "v3",
                     "--protocol", str(protocol_path),
                     "--authorization", str(authorization_path),
                     "--ablation-config", ablation_token,
@@ -1481,7 +1594,7 @@ class AnalyzerCliTests(unittest.TestCase):
             missions = []
             for row in protocol["schedule"]["missions"]:
                 mission = {
-                    "campaign_id": "development-v2", **row, "horizon_s": 500.0,
+                    "campaign_id": "development-v3", **row, "horizon_s": 500.0,
                     "conditions": ["dynamic_primary", "fixed_fim_ablation"],
                 }
                 missions.append(mission)
@@ -1529,7 +1642,7 @@ class AnalyzerCliTests(unittest.TestCase):
             ):
                 returncode = analyzer_main([
                     "--kind", "development",
-                    "--version", "v2",
+                    "--version", "v3",
                     "--protocol", str(protocol_path),
                     "--authorization", str(authorization_path),
                     "--ablation-config", ablation_token,
