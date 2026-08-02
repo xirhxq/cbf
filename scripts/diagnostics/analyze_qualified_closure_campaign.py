@@ -1019,7 +1019,13 @@ def validate_analysis_registration_contract(protocol, arguments):
         output_label = "analysis"
     if protocol.get("kind") != registered_kind:
         raise ValueError("analysis kind differs from registered protocol")
-    if arguments.version != "v1" or protocol.get("version") != arguments.version:
+    expected_version = "v2" if registered_kind == "development" else "v1"
+    if (
+        arguments.version != expected_version
+        or protocol.get("version") != arguments.version
+    ):
+        if registered_kind == "development":
+            raise ValueError("development analysis requires version v2")
         raise ValueError("analysis version differs from registered protocol")
     input_root = Path(arguments.input_root)
     output_root = Path(arguments.output_root)

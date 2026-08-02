@@ -31,6 +31,7 @@ from scripts.diagnostics.run_qualified_closure_campaign import (
     _validate_runtime_measurement_row,
     _SwarmStreamState,
     _runtime_runner_argv,
+    _schedule_from_arguments,
     _observed_failed_mission_keys,
     _serialize_frozen_key,
     materialize_primary_config,
@@ -254,11 +255,11 @@ class RunnerScheduleTests(unittest.TestCase):
 
         self.assertEqual(
             DEVELOPMENT_RAW_ROOT,
-            Path("/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v1"),
+            Path("/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v2"),
         )
         self.assertEqual(
             DEVELOPMENT_ANALYSIS_ROOT,
-            Path("/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v1"),
+            Path("/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v2"),
         )
         self.assertEqual(len(schedule), 10)
         self.assertEqual(
@@ -270,12 +271,40 @@ class RunnerScheduleTests(unittest.TestCase):
             list(range(2026081101, 2026081111)),
         )
         self.assertTrue(all(
-            mission["frames"] == 1000
+            mission["campaign_id"] == "development-v2"
+            and mission["frames"] == 1000
             and mission["horizon_s"] == 500.0
             and mission["conditions"]
                 == ["dynamic_primary", "fixed_fim_ablation"]
             for mission in schedule
         ))
+
+    def test_development_v2_schedule_is_required_while_confirmatory_remains_v1(self):
+        development = argparse.Namespace(
+            kind="development", version="v2", smoke_id=None,
+            trajectory_seeds="2026080101:2026080110",
+            range_noise_seeds="2026081101:2026081110", frames=1000,
+        )
+        self.assertTrue(all(
+            mission["campaign_id"] == "development-v2"
+            for mission in _schedule_from_arguments(development)
+        ))
+        development.version = "v1"
+        with self.assertRaisesRegex(ValueError, "development.*v2"):
+            _schedule_from_arguments(development)
+
+        confirmatory = argparse.Namespace(
+            kind="confirmatory", version="v1", smoke_id=None,
+            trajectory_seeds="2026082001:2026082060",
+            range_noise_seeds="2026083001:2026083060", frames=1000,
+        )
+        self.assertTrue(all(
+            mission["campaign_id"] == "confirmatory-v1"
+            for mission in _schedule_from_arguments(confirmatory)
+        ))
+        confirmatory.version = "v2"
+        with self.assertRaisesRegex(ValueError, "confirmatory.*v1"):
+            _schedule_from_arguments(confirmatory)
 
     def test_full_schedule_is_no_replace_and_serialized_before_launch(self):
         with tempfile.TemporaryDirectory(
@@ -349,7 +378,7 @@ class RunnerScheduleTests(unittest.TestCase):
                 path.write_text("same bytes\n")
                 paths[name] = path
             arguments = argparse.Namespace(
-                kind="development", version="v1", smoke_id=None,
+                kind="development", version="v2", smoke_id=None,
                 protocol=root / "fixture-protocol.json",
                 authorization=root / "fixture-authorization.json",
                 binary=paths["Swarm"], base_config=paths["base.json"],
@@ -1593,7 +1622,7 @@ class CampaignCoordinatorTests(unittest.TestCase):
     def arguments(self, output_root):
         import argparse
         return argparse.Namespace(
-            kind="development", version="v1", smoke_id=None,
+            kind="development", version="v2", smoke_id=None,
             protocol=Path("protocol.json"), authorization=Path("authorization.json"),
             binary=Path("Swarm"), base_config=Path("config.json"),
             primary_config=Path("primary.json"), ablation_config=Path("ablation.json"),

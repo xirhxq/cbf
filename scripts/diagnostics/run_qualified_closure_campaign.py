@@ -30,10 +30,10 @@ START_FREE_BYTES = 8_000_000_000
 STOP_FREE_BYTES = 6_000_000_000
 CACHE_CAP_BYTES = 2_000_000_000
 DEVELOPMENT_RAW_ROOT = Path(
-    "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v1"
+    "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v2"
 )
 DEVELOPMENT_ANALYSIS_ROOT = Path(
-    "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v1"
+    "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v2"
 )
 
 
@@ -145,7 +145,7 @@ def development_schedule() -> list[dict]:
     """Return the frozen ten-mission development schedule."""
     return [
         {
-            "campaign_id": "development-v1",
+            "campaign_id": "development-v2",
             "mission_id": f"mission-{index:02d}",
             "trajectory_seed": trajectory_seed,
             "range_noise_seed": range_noise_seed,
@@ -2049,17 +2049,17 @@ def _schedule_from_arguments(arguments) -> list[dict]:
         expected_noise = list(range(2026081101, 2026081111))
         if trajectory != expected_trajectory or noise != expected_noise:
             raise ValueError("development seed schedule is not the registered schedule")
-        if arguments.frames != 1000 or arguments.version != "v1":
-            raise ValueError("development run requires version v1 and 1000 frames")
-        campaign_id = "development-v1"
+        if arguments.frames != 1000 or arguments.version != "v2":
+            raise ValueError("development run requires version v2 and 1000 frames")
+        campaign_id = "development-v2"
     elif arguments.kind == "confirmatory":
         expected_trajectory = list(range(2026082001, 2026082061))
         expected_noise = list(range(2026083001, 2026083061))
         if trajectory != expected_trajectory or noise != expected_noise:
             raise ValueError("confirmatory seed schedule is not the registered schedule")
-        if arguments.frames != 1000 or not arguments.version:
-            raise ValueError("confirmatory run requires a version and 1000 frames")
-        campaign_id = f"confirmatory-{arguments.version}"
+        if arguments.frames != 1000 or arguments.version != "v1":
+            raise ValueError("confirmatory run requires version v1 and 1000 frames")
+        campaign_id = "confirmatory-v1"
     elif arguments.kind == "confirmatory-smoke":
         if trajectory != [2026089001] or noise != [2026089101]:
             raise ValueError("confirmatory-smoke seed schedule is not registered")

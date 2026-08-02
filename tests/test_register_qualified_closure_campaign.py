@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import tempfile
 import unittest
@@ -34,8 +35,8 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
         self.project.mkdir()
         self.frozen_roots = {
             "development": {
-                "raw": str(self.root / "raw" / "v1"),
-                "analysis": str(self.root / "analysis" / "v1"),
+                "raw": str(self.root / "raw" / "v2"),
+                "analysis": str(self.root / "analysis" / "v2"),
             },
             "confirmatory": {
                 "smoke_a_raw": str(self.root / "outputs" / "smoke-a-raw"),
@@ -107,27 +108,56 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
         arguments.update(overrides)
         return build_qualified_closure_protocol(**arguments)
 
-    def authoritative(self, *, json_path=None, markdown_path=None):
-        protocol = self.build()
+    def authoritative(
+        self, *, json_path=None, markdown_path=None,
+        kind="confirmatory", version="v1",
+    ):
+        development = kind == "development"
+        count = 10 if development else 60
+        trajectory_start = 2026080101 if development else 2026082001
+        range_start = 2026081101 if development else 2026083001
+        roots = {
+            label: Path(path)
+            for label, path in self.frozen_roots[kind].items()
+        }
+        protocol = self.build(
+            count=count, kind=kind, version=version, roots=roots,
+            trajectory_seeds=list(range(trajectory_start, trajectory_start + count)),
+            range_noise_seeds=list(range(range_start, range_start + count)),
+        )
         protocol_json = Path(json_path or self.root / "confirmatory-protocol.json")
         protocol_markdown = Path(
             markdown_path or self.root / "confirmatory-protocol.md"
         )
         arguments = argparse.Namespace(
-            kind="confirmatory", version="v1", protocol_json=protocol_json,
+            kind=kind, version=version, protocol_json=protocol_json,
             binary=self.files["Swarm"], base_config=self.files["config.json"],
             primary_config=self.files["primary.json"],
             ablation_config=self.files["ablation.json"],
-            trajectory_seeds="2026082001:2026082060",
-            range_noise_seeds="2026083001:2026083060", frames=1000,
+            trajectory_seeds=(
+                "2026080101:2026080110" if development
+                else "2026082001:2026082060"
+            ),
+            range_noise_seeds=(
+                "2026081101:2026081110" if development
+                else "2026083001:2026083060"
+            ), frames=1000,
             smoke_trajectory_seed=2026089001,
             smoke_range_noise_seed=2026089101, smoke_frames=20,
             raw_root=Path(protocol["roots"]["raw"]),
             analysis_root=Path(protocol["roots"]["analysis"]),
-            smoke_a_raw_root=Path(protocol["roots"]["smoke_a_raw"]),
-            smoke_a_analysis_root=Path(protocol["roots"]["smoke_a_analysis"]),
-            smoke_b_raw_root=Path(protocol["roots"]["smoke_b_raw"]),
-            smoke_b_analysis_root=Path(protocol["roots"]["smoke_b_analysis"]),
+            smoke_a_raw_root=(
+                None if development else Path(protocol["roots"]["smoke_a_raw"])
+            ),
+            smoke_a_analysis_root=(
+                None if development else Path(protocol["roots"]["smoke_a_analysis"])
+            ),
+            smoke_b_raw_root=(
+                None if development else Path(protocol["roots"]["smoke_b_raw"])
+            ),
+            smoke_b_analysis_root=(
+                None if development else Path(protocol["roots"]["smoke_b_analysis"])
+            ),
         )
         repository = {
             "root": str(self.project),
@@ -150,11 +180,28 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
         }
         protocol.update({
             "repository": repository,
-            "review_artifacts": {
-                "development_protocol": registrar._file_identity(self.files["source.py"]),
-                "development_report": registrar._file_identity(self.files["config.json"]),
-                "development_review": registrar._file_identity(self.files["schema.json"]),
-            },
+            "review_artifacts": (
+                {
+                    "implementation_report": registrar._file_identity(
+                        self.files["source.py"]
+                    ),
+                    "implementation_review": registrar._file_identity(
+                        self.files["schema.json"]
+                    ),
+                }
+                if development else
+                {
+                    "development_protocol": registrar._file_identity(
+                        self.files["source.py"]
+                    ),
+                    "development_report": registrar._file_identity(
+                        self.files["config.json"]
+                    ),
+                    "development_review": registrar._file_identity(
+                        self.files["schema.json"]
+                    ),
+                }
+            ),
             "build": {
                 "cmake_cache": registrar._file_identity(self.files["dependencies.txt"]),
                 "gurobi_enabled": True,
@@ -185,7 +232,8 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
         commands = registrar._registered_argv(protocol)
         protocol["runner_argv"] = commands["runner"]
         protocol["analyzer_argv"] = commands["analyzer"]
-        protocol["smoke_argv"] = commands["smoke"]
+        if kind == "confirmatory":
+            protocol["smoke_argv"] = commands["smoke"]
         protocol["semantic_sha256"] = registrar._semantic_sha256(protocol)
         return protocol
 
@@ -211,6 +259,105 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
         ):
             yield
 
+    @contextmanager
+    def binding_probes(self, protocol):
+        """Keep expensive non-Git identities deterministic in real Git tests."""
+        with (
+            mock.patch.object(
+                registrar, "_dependency_identity",
+                return_value=copy.deepcopy(protocol["build"]["binary_dependencies"]),
+            ),
+            mock.patch.object(
+                registrar, "_command_identity",
+                return_value=copy.deepcopy(protocol["build"]["conda_explicit"]),
+            ),
+        ):
+            yield
+
+    def git(self, *arguments, check=True):
+        environment = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "Test",
+            "GIT_AUTHOR_EMAIL": "test@example.invalid",
+            "GIT_COMMITTER_NAME": "Test",
+            "GIT_COMMITTER_EMAIL": "test@example.invalid",
+        }
+        return subprocess.run(
+            ["git", *arguments], cwd=self.project, check=check,
+            text=True, capture_output=True, env=environment,
+        )
+
+    def prepare_registered_bundle(self):
+        """Create the exact four uncommitted Task 10 lifecycle artifacts."""
+        self.git("init", "-q")
+        self.git("add", ".")
+        self.git("commit", "-qm", "implementation")
+        publication = self.project / "docs" / "diagnostics"
+        protocol_path = publication / "fixture-protocol.json"
+        markdown_path = publication / "fixture-protocol.md"
+        protocol = self.authoritative(
+            json_path=protocol_path, markdown_path=markdown_path,
+            kind="development", version="v2",
+        )
+        protocol["repository"] = registrar._repository_identity(self.project)
+        protocol["semantic_sha256"] = registrar._semantic_sha256(protocol)
+        with self.binding_probes(protocol):
+            publish_protocol(protocol, protocol_path, markdown_path)
+
+        review_root = publication / "reviews"
+        review_root.mkdir(parents=True)
+        preflight_path = review_root / "fixture-preflight.md"
+        authorization_path = review_root / "fixture-authorization.json"
+        preflight_path.write_text(
+            "# Independent preflight\n\nC0/I0/M0. Exact registered identities pass.\n",
+            encoding="utf-8",
+        )
+        authorization_text = "Continue with the registered development-v2 execution."
+        authorization = {
+            "schema_version": "cbf2026-qualified-authorization-v1",
+            "authorized": True,
+            "kind": "development",
+            "version": "v2",
+            "protocol_sha256": hashlib.sha256(
+                protocol_path.read_bytes()
+            ).hexdigest(),
+            "implementation_identity": protocol["repository"]["head"],
+            "preflight_sha256": hashlib.sha256(
+                preflight_path.read_bytes()
+            ).hexdigest(),
+            "user_authorization_date": "2026-08-02",
+            "user_authorization_text": authorization_text,
+            "user_authorization_text_sha256": hashlib.sha256(
+                authorization_text.encode("utf-8")
+            ).hexdigest(),
+        }
+        authorization_path.write_text(
+            json.dumps(authorization, sort_keys=True) + "\n", encoding="utf-8",
+        )
+        return {
+            "protocol": protocol,
+            "protocol_path": protocol_path,
+            "markdown_path": markdown_path,
+            "preflight_path": preflight_path,
+            "authorization_path": authorization_path,
+            "authorization": authorization,
+        }
+
+    def commit_registered_bundle(self, bundle, *extra_paths):
+        paths = [
+            bundle["protocol_path"], bundle["markdown_path"],
+            bundle["preflight_path"], bundle["authorization_path"],
+            *extra_paths,
+        ]
+        self.git("add", *(str(path.relative_to(self.project)) for path in paths))
+        self.git("commit", "-qm", "authorization artifacts")
+
+    def write_authorization(self, bundle, authorization=None):
+        authorization = authorization or bundle["authorization"]
+        bundle["authorization_path"].write_text(
+            json.dumps(authorization, sort_keys=True) + "\n", encoding="utf-8",
+        )
+
     def test_exact_protocol_schema_rejects_deleted_and_extra_fields_after_rehash(self):
         protocol = self.authoritative()
         with self.authoritative_probes(protocol):
@@ -226,9 +373,14 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
         nested_extra = copy.deepcopy(protocol)
         nested_extra["schedule"]["unregistered"] = 1
         mutations.append(nested_extra)
-        nested_missing = copy.deepcopy(protocol)
-        del nested_missing["authorization"]["must_bind_implementation_identity"]
-        mutations.append(nested_missing)
+        for field in (
+            "must_bind_implementation_identity",
+            "must_bind_preflight_sha256",
+            "must_bind_user_authorization",
+        ):
+            nested_missing = copy.deepcopy(protocol)
+            nested_missing["authorization"].pop(field, None)
+            mutations.append(nested_missing)
 
         for mutated in mutations:
             with self.subTest(keys=set(mutated)):
@@ -261,6 +413,8 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
         for section, field, value in (
             ("supervision", "line_stall_timeout_s", 301.0),
             ("authorization", "must_bind_implementation_identity", False),
+            ("authorization", "must_bind_preflight_sha256", False),
+            ("authorization", "must_bind_user_authorization", False),
         ):
             with self.subTest(section=section, field=field):
                 protocol = self.authoritative()
@@ -269,6 +423,20 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
                 with self.authoritative_probes(protocol):
                     with self.assertRaisesRegex(ValueError, "frozen contract"):
                         verify_registered_protocol(protocol)
+
+    def test_protocol_freezes_complete_authorization_requirements(self):
+        self.assertEqual(registrar.FROZEN_AUTHORIZATION_REQUIREMENTS, {
+            "required": True,
+            "must_bind_protocol_sha256": True,
+            "must_bind_implementation_identity": True,
+            "must_bind_preflight_sha256": True,
+            "must_bind_user_authorization": True,
+        })
+        protocol = self.authoritative()
+        self.assertEqual(
+            set(protocol["authorization"]),
+            set(registrar.FROZEN_AUTHORIZATION_REQUIREMENTS),
+        )
 
     def test_repository_identity_reports_untracked_relevant_files_but_allows_build_cache(self):
         repository = self.root / "status-repo"
@@ -298,16 +466,171 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
         self.assertEqual(identity.get("dirty_relevant_paths"), ["scripts/new.py"])
         self.assertEqual(identity.get("allowed_untracked_paths"), ["build-diagnostic/cache.bin"])
 
-    def test_verifier_rejects_post_registration_head_even_when_original_is_ancestor(self):
-        protocol = self.authoritative()
-        observed = copy.deepcopy(protocol["repository"])
-        observed["head"] = "e" * 40
-        observed["tree"] = "f" * 40
+    def test_exact_four_artifact_direct_child_authorizes_execution(self):
+        bundle = self.prepare_registered_bundle()
+        self.commit_registered_bundle(bundle)
 
-        with self.authoritative_probes(protocol):
-            with mock.patch.object(registrar, "_repository_identity", return_value=observed):
-                with self.assertRaisesRegex(ValueError, "exact current HEAD"):
-                    verify_registered_protocol(protocol)
+        with self.binding_probes(bundle["protocol"]):
+            verify_registered_protocol(bundle["protocol"])
+            validated = validate_authorization_binding(
+                bundle["protocol_path"], bundle["authorization_path"],
+            )
+
+        self.assertTrue(validated["authorized"])
+        self.assertEqual(
+            validated["implementation_identity"],
+            bundle["protocol"]["repository"]["head"],
+        )
+
+    def test_failed_development_v1_is_consumed_and_v2_is_non_colliding(self):
+        historical_v1 = self.root / "development-v1-protocol.json"
+        historical_bytes = b'{"terminal":"failed"}\n'
+        historical_v1.write_bytes(historical_bytes)
+        development_arguments = {
+            "count": 10,
+            "kind": "development",
+            "trajectory_seeds": list(range(2026080101, 2026080111)),
+            "range_noise_seeds": list(range(2026081101, 2026081111)),
+            "roots": {
+                label: Path(path)
+                for label, path in self.frozen_roots["development"].items()
+            },
+        }
+
+        with self.assertRaisesRegex(ValueError, "development.*v2"):
+            self.build(version="v1", **development_arguments)
+        protocol = self.build(version="v2", **development_arguments)
+
+        self.assertEqual(historical_v1.read_bytes(), historical_bytes)
+        self.assertEqual(protocol["version"], "v2")
+        self.assertEqual(protocol["roots"], self.frozen_roots["development"])
+        self.assertTrue(protocol["roots"]["raw"].endswith("/v2"))
+        self.assertTrue(protocol["roots"]["analysis"].endswith("/v2"))
+
+    def test_uncommitted_artifacts_cannot_authorize_execution(self):
+        bundle = self.prepare_registered_bundle()
+
+        with self.binding_probes(bundle["protocol"]):
+            with self.assertRaisesRegex(ValueError, "committed|artifact commit"):
+                validate_authorization_binding(
+                    bundle["protocol_path"], bundle["authorization_path"],
+                )
+
+    def test_direct_child_with_extra_path_is_rejected(self):
+        bundle = self.prepare_registered_bundle()
+        extra = self.project / "docs" / "diagnostics" / "unexpected.md"
+        extra.write_text("not part of the registered bundle\n", encoding="utf-8")
+        self.commit_registered_bundle(bundle, extra)
+
+        with self.binding_probes(bundle["protocol"]):
+            with self.assertRaisesRegex(ValueError, "exact.*artifact|artifact-only"):
+                validate_authorization_binding(
+                    bundle["protocol_path"], bundle["authorization_path"],
+                )
+
+    def test_direct_child_modifying_existing_source_is_rejected(self):
+        bundle = self.prepare_registered_bundle()
+        self.files["source.py"].write_text("changed source\n", encoding="utf-8")
+        self.commit_registered_bundle(bundle, self.files["source.py"])
+
+        with self.binding_probes(bundle["protocol"]):
+            with self.assertRaisesRegex(ValueError, "binding mutated|artifact-only"):
+                validate_authorization_binding(
+                    bundle["protocol_path"], bundle["authorization_path"],
+                )
+
+    def test_second_descendant_commit_is_rejected(self):
+        bundle = self.prepare_registered_bundle()
+        self.commit_registered_bundle(bundle)
+        self.git("commit", "--allow-empty", "-qm", "later documentation commit")
+
+        with self.binding_probes(bundle["protocol"]):
+            with self.assertRaisesRegex(ValueError, "direct child"):
+                validate_authorization_binding(
+                    bundle["protocol_path"], bundle["authorization_path"],
+                )
+
+    def test_non_descendant_head_is_rejected(self):
+        bundle = self.prepare_registered_bundle()
+        self.commit_registered_bundle(bundle)
+        implementation = bundle["protocol"]["repository"]["head"]
+        tree = self.git("rev-parse", f"{implementation}^{{tree}}").stdout.strip()
+        unrelated = self.git(
+            "commit-tree", tree, "-m", "unrelated history",
+        ).stdout.strip()
+        self.git("update-ref", "HEAD", unrelated)
+
+        with self.binding_probes(bundle["protocol"]):
+            with self.assertRaisesRegex(ValueError, "descendant"):
+                validate_authorization_binding(
+                    bundle["protocol_path"], bundle["authorization_path"],
+                )
+
+    def test_authorization_preflight_text_and_date_tamper_are_rejected(self):
+        bundle = self.prepare_registered_bundle()
+        self.commit_registered_bundle(bundle)
+        original = bundle["authorization_path"].read_bytes()
+        mutations = (
+            ("preflight_sha256", "0" * 64, "preflight SHA-256"),
+            ("user_authorization_text", "replacement approval", "authorization text"),
+            ("user_authorization_date", "02-08-2026", "authorization date"),
+        )
+        for field, value, error in mutations:
+            with self.subTest(field=field):
+                authorization = copy.deepcopy(bundle["authorization"])
+                authorization[field] = value
+                self.write_authorization(bundle, authorization)
+                with self.binding_probes(bundle["protocol"]):
+                    with self.assertRaisesRegex(ValueError, error):
+                        validate_authorization_binding(
+                            bundle["protocol_path"], bundle["authorization_path"],
+                        )
+                bundle["authorization_path"].write_bytes(original)
+
+    def test_committed_artifact_and_markdown_companion_tamper_are_rejected(self):
+        bundle = self.prepare_registered_bundle()
+        self.commit_registered_bundle(bundle)
+        original_authorization = bundle["authorization_path"].read_bytes()
+        authorization = copy.deepcopy(bundle["authorization"])
+        authorization["user_authorization_text"] = "different standing approval"
+        authorization["user_authorization_text_sha256"] = hashlib.sha256(
+            authorization["user_authorization_text"].encode("utf-8")
+        ).hexdigest()
+        self.write_authorization(bundle, authorization)
+        with self.binding_probes(bundle["protocol"]):
+            with self.assertRaisesRegex(ValueError, "Git blob|dirty relevant"):
+                validate_authorization_binding(
+                    bundle["protocol_path"], bundle["authorization_path"],
+                )
+        bundle["authorization_path"].write_bytes(original_authorization)
+
+        bundle["markdown_path"].write_text("replacement companion\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "companion Markdown"):
+            validate_authorization_binding(
+                bundle["protocol_path"], bundle["authorization_path"],
+            )
+
+    def test_dirty_tracked_and_untracked_relevant_paths_are_rejected(self):
+        bundle = self.prepare_registered_bundle()
+        self.commit_registered_bundle(bundle)
+        source = self.files["source.py"]
+        original_source = source.read_bytes()
+        source.write_text("dirty tracked source\n", encoding="utf-8")
+        with self.binding_probes(bundle["protocol"]):
+            with self.assertRaisesRegex(ValueError, "binding mutated|dirty relevant"):
+                validate_authorization_binding(
+                    bundle["protocol_path"], bundle["authorization_path"],
+                )
+        source.write_bytes(original_source)
+
+        scripts = self.project / "scripts"
+        scripts.mkdir()
+        (scripts / "injected.py").write_text("pass\n", encoding="utf-8")
+        with self.binding_probes(bundle["protocol"]):
+            with self.assertRaisesRegex(ValueError, "dirty relevant"):
+                validate_authorization_binding(
+                    bundle["protocol_path"], bundle["authorization_path"],
+                )
 
     def test_exact_sixty_pair_schedule_and_universes_are_bound(self):
         protocol = self.build()
@@ -573,7 +896,7 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
 
     def test_development_analyzer_argv_binds_version_and_ablation(self):
         arguments = argparse.Namespace(
-            kind="development", version="v1",
+            kind="development", version="v2",
             protocol_json=Path("docs/diagnostics/development-protocol.json"),
             ablation_config=Path("config/diagnostics/ablation.json"),
             raw_root=Path("/private/tmp/development-raw"),
@@ -583,7 +906,7 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
         self.assertEqual(registrar._analyzer_argv(arguments), [
             "conda", "run", "-n", "cbf_env", "python",
             "scripts/diagnostics/analyze_qualified_closure_campaign.py",
-            "--kind", "development", "--version", "v1",
+            "--kind", "development", "--version", "v2",
             "--protocol", "docs/diagnostics/development-protocol.json",
             "--authorization",
             "docs/diagnostics/reviews/development-authorization.json",
@@ -625,42 +948,31 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
                 registrar._dependency_identity(self.files["Swarm"])
 
     def test_authorization_must_bind_exact_protocol_bytes_and_kind(self):
-        protocol_path = self.root / "registered-protocol.json"
-        protocol = self.authoritative(
-            json_path=protocol_path, markdown_path=protocol_path.with_suffix(".md")
-        )
-        with self.authoritative_probes(protocol):
-            publish_protocol(protocol, protocol_path, protocol_path.with_suffix(".md"))
-        import hashlib
-        authorization_path = self.root / "authorization.json"
-        authorization = {
-            "schema_version": "cbf2026-qualified-authorization-v1",
-            "authorized": True,
-            "kind": "confirmatory",
-            "version": "v1",
-            "protocol_sha256": hashlib.sha256(
-                protocol_path.read_bytes()
-            ).hexdigest(),
-            "implementation_identity": protocol["repository"]["head"],
-        }
-        authorization_path.write_text(json.dumps(authorization))
+        bundle = self.prepare_registered_bundle()
+        self.commit_registered_bundle(bundle)
+        protocol = bundle["protocol"]
+        authorization = copy.deepcopy(bundle["authorization"])
 
-        with self.authoritative_probes(protocol):
+        with self.binding_probes(protocol):
             validated = validate_authorization_binding(
-                protocol_path, authorization_path
+                bundle["protocol_path"], bundle["authorization_path"]
             )
         self.assertTrue(validated["authorized"])
         authorization["implementation_identity"] = "f" * 40
-        authorization_path.write_text(json.dumps(authorization))
-        with self.authoritative_probes(protocol):
+        self.write_authorization(bundle, authorization)
+        with self.binding_probes(protocol):
             with self.assertRaisesRegex(ValueError, "implementation identity"):
-                validate_authorization_binding(protocol_path, authorization_path)
+                validate_authorization_binding(
+                    bundle["protocol_path"], bundle["authorization_path"]
+                )
         authorization["implementation_identity"] = protocol["repository"]["head"]
         authorization["protocol_sha256"] = "0" * 64
-        authorization_path.write_text(json.dumps(authorization))
-        with self.authoritative_probes(protocol):
+        self.write_authorization(bundle, authorization)
+        with self.binding_probes(protocol):
             with self.assertRaisesRegex(ValueError, "protocol SHA-256"):
-                validate_authorization_binding(protocol_path, authorization_path)
+                validate_authorization_binding(
+                    bundle["protocol_path"], bundle["authorization_path"]
+                )
 
     def test_authorization_rejects_missing_or_mismatched_protocol_companion(self):
         protocol_path = self.root / "paired-protocol.json"
@@ -736,7 +1048,7 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
         output = self.root / "registered"
         output.mkdir()
         arguments = argparse.Namespace(
-            kind="development", version="v1",
+            kind="development", version="v2",
             implementation_report=report, implementation_review=review,
             development_protocol=None, development_report=None,
             development_review=None, binary=binary, base_config=base,
@@ -747,8 +1059,8 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
             smoke_frames=None, smoke_a_raw_root=None,
             smoke_a_analysis_root=None, smoke_b_raw_root=None,
             smoke_b_analysis_root=None,
-            raw_root=self.root / "raw" / "v1",
-            analysis_root=self.root / "analysis" / "v1",
+            raw_root=self.root / "raw" / "v2",
+            analysis_root=self.root / "analysis" / "v2",
             protocol_json=output / "fixture-protocol.json",
             protocol_md=output / "fixture-protocol.md",
         )

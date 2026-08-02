@@ -7,6 +7,7 @@ import os
 import uuid
 import sys
 import subprocess
+from datetime import date
 from pathlib import Path
 
 
@@ -30,8 +31,8 @@ FROZEN_THRESHOLDS = {
 
 FROZEN_EXECUTION_ROOTS = {
     "development": {
-        "raw": "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v1",
-        "analysis": "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v1",
+        "raw": "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v2",
+        "analysis": "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v2",
     },
     "confirmatory": {
         "smoke_a_raw": "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-confirmatory-smoke-v1-a",
@@ -53,6 +54,20 @@ FROZEN_AUTHORIZATION_REQUIREMENTS = {
     "required": True,
     "must_bind_protocol_sha256": True,
     "must_bind_implementation_identity": True,
+    "must_bind_preflight_sha256": True,
+    "must_bind_user_authorization": True,
+}
+
+SUPPORTED_PROTOCOL_VERSIONS = {
+    "development": "v2",
+    "confirmatory": "v1",
+}
+
+AUTHORIZATION_FIELDS = {
+    "schema_version", "authorized", "kind", "version",
+    "protocol_sha256", "implementation_identity", "preflight_sha256",
+    "user_authorization_date", "user_authorization_text",
+    "user_authorization_text_sha256",
 }
 
 
@@ -60,8 +75,12 @@ def build_qualified_closure_protocol(**kwargs) -> dict:
     """Validate and bind one development or confirmatory protocol."""
     kind = kwargs.get("kind")
     version = kwargs.get("version")
-    if kind not in {"development", "confirmatory"} or version != "v1":
-        raise ValueError("only registered development/confirmatory v1 is supported")
+    if kind not in SUPPORTED_PROTOCOL_VERSIONS:
+        raise ValueError("only registered development/confirmatory protocols are supported")
+    if version != SUPPORTED_PROTOCOL_VERSIONS[kind]:
+        raise ValueError(
+            "development requires v2 and confirmatory requires v1"
+        )
     project_root = Path(kwargs["project_root"]).resolve()
     trajectory = _seed_list(kwargs.get("trajectory_seeds"), "trajectory")
     ranges = _seed_list(kwargs.get("range_noise_seeds"), "range-noise")
@@ -260,10 +279,13 @@ def verify_registered_protocol(protocol: dict, *, allowed_claimed_roots=()) -> N
                     raise ValueError(f"registered {section} binding mutated: {label}")
     repository = protocol.get("repository")
     observed = _repository_identity(Path(repository["root"]))
-    if observed["head"] != repository["head"]:
-        raise ValueError("registered implementation is not the exact current HEAD")
-    if _canonical_bytes(observed) != _canonical_bytes(repository):
-        raise ValueError("registered repository identity or relevant Git status mutated")
+    if observed["head"] == repository["head"]:
+        if _canonical_bytes(observed) != _canonical_bytes(repository):
+            raise ValueError(
+                "registered repository identity or relevant Git status mutated"
+            )
+    else:
+        _verify_committed_registration_state(protocol, observed)
     build = protocol.get("build")
     if build is not None:
         cmake = build.get("cmake_cache", {})
@@ -393,12 +415,17 @@ def validate_authorization_binding(
     authorization_path = Path(authorization_path)
     protocol = _json_object(protocol_path, "registered protocol")
     _validate_protocol_pair(protocol_path, protocol)
+    repository = protocol.get("repository")
+    if not isinstance(repository, dict):
+        raise ValueError("registered repository identity is invalid")
+    repository_root = Path(repository.get("root", ""))
+    expected_authorization = _absolute_registered_path(
+        _authorization_path(protocol_path), Path.cwd()
+    )
+    if _absolute_registered_path(authorization_path, Path.cwd()) != expected_authorization:
+        raise ValueError("authorization path is not the named registered artifact")
     authorization = _json_object(authorization_path, "authorization")
-    expected_fields = {
-        "schema_version", "authorized", "kind", "version",
-        "protocol_sha256", "implementation_identity",
-    }
-    if set(authorization) != expected_fields:
+    if set(authorization) != AUTHORIZATION_FIELDS:
         raise ValueError("authorization schema is not exact")
     if (
         authorization["schema_version"]
@@ -406,18 +433,41 @@ def validate_authorization_binding(
         or authorization["authorized"] is not True
         or authorization["kind"] != protocol.get("kind")
         or authorization["version"] != protocol.get("version")
-        or not isinstance(authorization["implementation_identity"], str)
-        or not authorization["implementation_identity"]
+        or not _lower_hex(authorization["protocol_sha256"], 64)
+        or not _lower_hex(authorization["implementation_identity"], 40)
+        or not _lower_hex(authorization["preflight_sha256"], 64)
+        or not _lower_hex(authorization["user_authorization_text_sha256"], 64)
     ):
         raise ValueError("authorization identity is invalid")
     if authorization["protocol_sha256"] != _sha256(protocol_path):
         raise ValueError("authorization protocol SHA-256 binding does not match")
-    repository = protocol.get("repository")
-    if (
-        isinstance(repository, dict)
-        and authorization["implementation_identity"] != repository.get("head")
-    ):
+    if authorization["implementation_identity"] != repository.get("head"):
         raise ValueError("authorization implementation identity does not match")
+    preflight_path = Path(_preflight_path(protocol_path))
+    if (
+        preflight_path.is_symlink()
+        or not preflight_path.is_file()
+        or authorization["preflight_sha256"] != _sha256(preflight_path)
+    ):
+        raise ValueError("authorization preflight SHA-256 binding does not match")
+    authorization_text = authorization["user_authorization_text"]
+    if (
+        not isinstance(authorization_text, str)
+        or not authorization_text
+        or hashlib.sha256(authorization_text.encode("utf-8")).hexdigest()
+            != authorization["user_authorization_text_sha256"]
+    ):
+        raise ValueError("authorization text binding does not match")
+    authorization_date = authorization["user_authorization_date"]
+    try:
+        parsed_date = date.fromisoformat(authorization_date)
+    except (TypeError, ValueError):
+        raise ValueError("authorization date is not canonical ISO YYYY-MM-DD") from None
+    if parsed_date.isoformat() != authorization_date:
+        raise ValueError("authorization date is not canonical ISO YYYY-MM-DD")
+    observed = _repository_identity(repository_root)
+    if observed["head"] == repository["head"]:
+        raise ValueError("authorization artifacts require a committed artifact commit")
     verify_registered_protocol(
         protocol, allowed_claimed_roots=allowed_claimed_roots
     )
@@ -704,6 +754,109 @@ def _repository_identity(project_root: Path) -> dict:
     }
 
 
+def _git_bytes(project_root: Path, *tokens: str) -> bytes:
+    result = subprocess.run(
+        ["git", *tokens], cwd=project_root,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError(
+            "registered Git state is unavailable: "
+            + result.stderr.decode("utf-8", errors="replace").strip()
+        )
+    return result.stdout
+
+
+def _registered_artifact_paths(protocol: dict) -> tuple[Path, ...]:
+    repository_root = Path(protocol["repository"]["root"])
+    protocol_path = _absolute_registered_path(
+        protocol["publication"]["json_path"], repository_root,
+    )
+    markdown_path = _absolute_registered_path(
+        protocol["publication"]["markdown_path"], repository_root,
+    )
+    return (
+        protocol_path,
+        markdown_path,
+        Path(_preflight_path(protocol_path)),
+        Path(_authorization_path(protocol_path)),
+    )
+
+
+def _verify_committed_registration_state(protocol: dict, observed: dict) -> None:
+    """Accept only the one add-only authorization commit after implementation."""
+    repository = protocol["repository"]
+    project_root = Path(repository["root"]).resolve()
+    implementation = repository["head"]
+    current = observed["head"]
+    ancestry = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", implementation, current],
+        cwd=project_root, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        check=False,
+    )
+    if ancestry.returncode != 0:
+        raise ValueError("registered HEAD is not a descendant of implementation")
+    parents = _git_bytes(
+        project_root, "rev-list", "--parents", "-n", "1", current,
+    ).decode("ascii", errors="strict").split()
+    if parents != [current, implementation]:
+        raise ValueError("registered artifact HEAD is not the direct child of implementation")
+
+    artifacts = _registered_artifact_paths(protocol)
+    relative = []
+    for path in artifacts:
+        try:
+            relative.append(path.resolve().relative_to(project_root).as_posix())
+        except ValueError:
+            raise ValueError("registered artifacts must remain inside repository") from None
+    expected_changes = sorted(("A", path) for path in relative)
+    diff = _git_bytes(
+        project_root, "diff", "--name-status", "--no-renames",
+        implementation, current,
+    ).decode("utf-8", errors="strict")
+    observed_changes = []
+    for line in diff.splitlines():
+        fields = line.split("\t")
+        if len(fields) != 2:
+            raise ValueError("registered artifact-only diff is malformed")
+        observed_changes.append((fields[0], fields[1]))
+    if sorted(observed_changes) != expected_changes:
+        raise ValueError(
+            "registered direct child must be an exact four-artifact add-only commit"
+        )
+
+    if (
+        observed.get("root") != repository.get("root")
+        or observed.get("dirty_tracked_paths")
+        or observed.get("dirty_relevant_paths")
+        or observed.get("allowed_untracked_paths")
+            != repository.get("allowed_untracked_paths")
+    ):
+        raise ValueError("registered repository has dirty relevant or protected paths")
+    for path, token in zip(artifacts, relative, strict=True):
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("registered artifact is not a regular live file")
+        blob = _git_bytes(project_root, "show", f"{current}:{token}")
+        if blob != path.read_bytes():
+            raise ValueError("registered artifact differs from exact HEAD Git blob")
+
+    identities = {}
+    for section in ("bindings", "review_artifacts", "tooling"):
+        identities.update(protocol.get(section, {}))
+    for label, identity in identities.items():
+        path = Path(identity["path"])
+        try:
+            token = path.resolve().relative_to(project_root).as_posix()
+        except ValueError:
+            continue
+        blob = _git_bytes(project_root, "show", f"{implementation}:{token}")
+        if (
+            hashlib.sha256(blob).hexdigest() != identity["sha256"]
+            or len(blob) != identity["bytes"]
+        ):
+            raise ValueError(f"implementation Git blob differs: {label}")
+
+
 def _file_identity(path: Path) -> dict:
     path = Path(path)
     return {
@@ -762,10 +915,18 @@ def _protocol_markdown_bytes(protocol: dict) -> bytes:
 
 
 def _validate_protocol_pair(protocol_path: Path, protocol: dict) -> None:
+    repository_root = Path(protocol.get("repository", {}).get("root", ""))
+    declared_json = _absolute_registered_path(
+        protocol.get("publication", {}).get("json_path", ""), repository_root,
+    )
+    markdown_path = _absolute_registered_path(
+        protocol.get("publication", {}).get("markdown_path", ""), repository_root,
+    )
+    if _absolute_registered_path(protocol_path, Path.cwd()) != declared_json:
+        raise ValueError("protocol path differs from registered publication path")
     expected_json = _canonical_bytes(protocol) + b"\n"
     if protocol_path.is_symlink() or protocol_path.read_bytes() != expected_json:
         raise ValueError("registered protocol JSON is not canonical")
-    markdown_path = protocol_path.with_suffix(".md")
     if (
         markdown_path.is_symlink()
         or not markdown_path.is_file()
@@ -884,6 +1045,23 @@ def _authorization_path(protocol_json) -> str:
     return str(protocol_path.parent / "reviews" / authorization_name)
 
 
+def _preflight_path(protocol_json) -> str:
+    protocol_path = Path(protocol_json)
+    name = protocol_path.name
+    if not name.endswith("-protocol.json"):
+        raise ValueError("protocol JSON name must end in -protocol.json")
+    preflight_name = name.removesuffix("-protocol.json") + "-preflight.md"
+    return str(protocol_path.parent / "reviews" / preflight_name)
+
+
+def _lower_hex(value, length: int) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == length
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
 def _has_symbolic_ancestor(path: Path) -> bool:
     lexical = Path(os.path.abspath(os.fspath(path)))
     return any(parent.is_symlink() for parent in lexical.parents)
@@ -937,7 +1115,7 @@ def _validate_exact_protocol_schema(protocol: dict) -> None:
     exact(protocol["thresholds"], set(FROZEN_THRESHOLDS), "threshold")
     exact(
         protocol["authorization"],
-        {"required", "must_bind_protocol_sha256", "must_bind_implementation_identity"},
+        set(FROZEN_AUTHORIZATION_REQUIREMENTS),
         "authorization",
     )
     exact(
@@ -1023,7 +1201,7 @@ def _verify_derived_protocol_contract(protocol: dict) -> None:
         protocol.get("schema_version")
             != "cbf2026-qualified-closure-protocol-v1"
         or kind not in {"development", "confirmatory"}
-        or protocol.get("version") != "v1"
+        or protocol.get("version") != SUPPORTED_PROTOCOL_VERSIONS.get(kind)
         or protocol.get("conditions")
             != ["dynamic_primary", "fixed_fim_ablation"]
         or protocol.get("no_retry") is not True

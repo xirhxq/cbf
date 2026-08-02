@@ -76,7 +76,7 @@ def write_development_registration(root, raw, analysis):
         "position_covariance": {"reference-selection": "fixed-cbf-only"}
     }))
     protocol = build_qualified_closure_protocol(
-        kind="development", version="v1", project_root=project,
+        kind="development", version="v2", project_root=project,
         trajectory_seeds=list(range(2026080101, 2026080111)),
         range_noise_seeds=list(range(2026081101, 2026081111)), frames=1000,
         roots={"raw": raw, "analysis": analysis},
@@ -150,7 +150,7 @@ def write_development_registration(root, raw, analysis):
     authorization_path.parent.mkdir()
     authorization_path.write_text(json.dumps({
         "schema_version": "cbf2026-qualified-authorization-v1",
-        "authorized": True, "kind": "development", "version": "v1",
+        "authorized": True, "kind": "development", "version": "v2",
         "protocol_sha256": hashlib.sha256(protocol_path.read_bytes()).hexdigest(),
         "implementation_identity": repository["head"],
     }))
@@ -176,6 +176,12 @@ def development_registration_patches(protocol):
         mock.patch.object(
             registrar, "_command_identity",
             return_value=copy.deepcopy(protocol["build"]["conda_explicit"]),
+        ),
+        mock.patch.object(
+            registrar, "validate_authorization_binding",
+            return_value={
+                "implementation_identity": protocol["repository"]["head"]
+            },
         ),
     ):
         yield
@@ -1222,14 +1228,14 @@ class AnalyzerCliTests(unittest.TestCase):
             ablation = root / "ablation.json"
             ablation.write_text("{}\n")
             arguments = argparse.Namespace(
-                kind="development", version="v1", smoke_id=None,
+                kind="development", version="v2", smoke_id=None,
                 protocol=root / "fixture-protocol.json",
                 authorization=root / "fixture-authorization.json",
                 input_root=raw, output_root=output,
                 ablation_config=ablation,
             )
             protocol = {
-                "kind": "development", "version": "v1",
+                "kind": "development", "version": "v2",
                 "roots": {
                     "raw": str(raw.resolve()),
                     "analysis": str(output.resolve()),
@@ -1253,9 +1259,15 @@ class AnalyzerCliTests(unittest.TestCase):
             arguments.version = None
             with self.assertRaisesRegex(ValueError, "version"):
                 validate_analysis_registration_contract(protocol, arguments)
-            arguments.version = "v1"
+            arguments.version = "v2"
             protocol["analyzer_argv"] = [*protocol["analyzer_argv"], "--extra"]
             with self.assertRaisesRegex(ValueError, "analyzer argv"):
+                validate_analysis_registration_contract(protocol, arguments)
+
+            protocol["analyzer_argv"] = _runtime_analyzer_argv(arguments)
+            arguments.version = "v1"
+            protocol["version"] = "v1"
+            with self.assertRaisesRegex(ValueError, "development.*v2"):
                 validate_analysis_registration_contract(protocol, arguments)
 
     def test_mission_success_is_derived_from_completion_and_local_evidence(self):
@@ -1406,7 +1418,7 @@ class AnalyzerCliTests(unittest.TestCase):
             missions = []
             for row in protocol["schedule"]["missions"]:
                 missions.append({
-                    "campaign_id": "development-v1", **row,
+                    "campaign_id": "development-v2", **row,
                     "horizon_s": 500.0,
                     "conditions": ["dynamic_primary", "fixed_fim_ablation"],
                 })
@@ -1445,7 +1457,7 @@ class AnalyzerCliTests(unittest.TestCase):
             ):
                 returncode = analyzer_main([
                     "--kind", "development",
-                    "--version", "v1",
+                    "--version", "v2",
                     "--protocol", str(protocol_path),
                     "--authorization", str(authorization_path),
                     "--ablation-config", ablation_token,
@@ -1469,7 +1481,7 @@ class AnalyzerCliTests(unittest.TestCase):
             missions = []
             for row in protocol["schedule"]["missions"]:
                 mission = {
-                    "campaign_id": "development-v1", **row, "horizon_s": 500.0,
+                    "campaign_id": "development-v2", **row, "horizon_s": 500.0,
                     "conditions": ["dynamic_primary", "fixed_fim_ablation"],
                 }
                 missions.append(mission)
@@ -1517,7 +1529,7 @@ class AnalyzerCliTests(unittest.TestCase):
             ):
                 returncode = analyzer_main([
                     "--kind", "development",
-                    "--version", "v1",
+                    "--version", "v2",
                     "--protocol", str(protocol_path),
                     "--authorization", str(authorization_path),
                     "--ablation-config", ablation_token,
