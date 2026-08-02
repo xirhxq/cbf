@@ -25,6 +25,13 @@ EXPECTED_V2_PATH = (
     Path(__file__).resolve().parents[2]
     / "config/diagnostics/qualified_initial_family_v2.json"
 )
+EXPECTED_V1_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "config/diagnostics/qualified_initial_family_v1.json"
+)
+EXPECTED_V1_FILE_SHA256 = (
+    "7fb8597cd89a41315cbd86ca87c0bc6e3ecb22ea3dcab8ee6278aca44743fe24"
+)
 V1_NAMESPACE = "cbf2026-v5-initial"
 EXPECTED_AUDIT_SEEDS = tuple(range(2026080201, 2026080301))
 EXPECTED_REGISTERED_SEEDS = tuple(range(2026080201, 2026080211))
@@ -41,6 +48,7 @@ class V6OneStepState:
 
     chronology: tuple[str, ...]
     current_positions_m: tuple[tuple[float, float], ...]
+    current_audit: v1.InitialStateAudit
     applied_planar_commands_mps: tuple[tuple[float, float], ...]
     next_positions_m: tuple[tuple[float, float], ...]
     next_certificates: tuple[v1.NodeCertificate, ...]
@@ -87,6 +95,37 @@ def _boolean(value: object, expected: bool, label: str) -> None:
         raise ValueError(f"{label} differs from the frozen contract")
 
 
+def _canonical_v1_family() -> dict:
+    try:
+        source = EXPECTED_V1_PATH.read_bytes()
+    except OSError as error:
+        raise ValueError("canonical v1 initial family is unavailable") from error
+    if hashlib.sha256(source).hexdigest() != EXPECTED_V1_FILE_SHA256:
+        raise ValueError("canonical v1 initial family file identity differs")
+    return v1.load_qualified_initial_family(EXPECTED_V1_PATH)
+
+
+def _require_same_json_tokens(actual: object, expected: object, label: str) -> None:
+    if type(actual) is not type(expected):
+        raise ValueError(f"{label} JSON token type differs from canonical v1")
+    if type(expected) is dict:
+        if set(actual) != set(expected):
+            raise ValueError(f"{label} JSON object identity differs from canonical v1")
+        for key in expected:
+            _require_same_json_tokens(actual[key], expected[key], f"{label}.{key}")
+        return
+    if type(expected) is list:
+        if len(actual) != len(expected):
+            raise ValueError(f"{label} JSON array identity differs from canonical v1")
+        for index, (actual_item, expected_item) in enumerate(zip(actual, expected)):
+            _require_same_json_tokens(
+                actual_item, expected_item, f"{label}[{index}]"
+            )
+        return
+    if actual != expected:
+        raise ValueError(f"{label} JSON token value differs from canonical v1")
+
+
 def _legacy_v1_family(family: Mapping) -> dict:
     """Build the exact v1 mathematical contract used as the frozen source."""
     legacy = {
@@ -126,8 +165,16 @@ def validate_qualified_v6_initial_family(family: Mapping) -> dict:
     ):
         raise ValueError("v6 initial family semantic SHA-256 does not match")
 
-    # The legacy projection proves every v1 field, template coordinate, graph
-    # cardinality, and static summary is still exactly the consumed contract.
+    # Compare the JSON token tree before the legacy mathematical validation:
+    # Python equality alone would otherwise conflate 0.0 with 0 and False with 0.
+    canonical_v1 = _canonical_v1_family()
+    for key in (
+        "template_positions_m", "perturbation", "deployment", "schedule",
+        "production_contract", "admission", "frozen_summary",
+    ):
+        _require_same_json_tokens(family[key], canonical_v1[key], key)
+
+    # The legacy projection then proves every mathematical v1 contract.
     legacy = _legacy_v1_family(family)
     if legacy["production_contract"]["class_k_coefficient"] != 0.1:
         raise ValueError("v6 class-K coefficient is not frozen")
@@ -291,7 +338,9 @@ def reconstruct_v6_one_step_state(
     commands = _normalize_commands(applied_planar_commands_mps, component_max)
     # Current-state reconstruction intentionally precedes the deterministic
     # SingleIntegrate2D update, even though its values are not a gate verdict.
-    v1._audit_positions(legacy, positions, seed=None)
+    current_audit = v1._audit_positions(legacy, positions, seed=None)
+    if not current_audit.accepted:
+        raise v1.InitialStateAdmissionError(current_audit)
     dt_s = checked["one_step_gate"]["dt_s"]
     next_positions = tuple(
         (point[0] + dt_s * command[0], point[1] + dt_s * command[1])
@@ -316,6 +365,7 @@ def reconstruct_v6_one_step_state(
             "solve-next-planar-radii",
         ),
         current_positions_m=positions,
+        current_audit=current_audit,
         applied_planar_commands_mps=commands,
         next_positions_m=next_positions,
         next_certificates=certificates,

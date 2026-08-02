@@ -6,6 +6,7 @@ from pathlib import Path
 
 from scripts.diagnostics.qualified_initial_state import (
     _materialize_seed_positions,
+    InitialStateAdmissionError,
     load_qualified_initial_family,
 )
 from scripts.diagnostics.qualified_v6_initial_state import (
@@ -21,6 +22,36 @@ from scripts.diagnostics.qualified_v6_initial_state import (
 ROOT = Path(__file__).resolve().parents[1]
 V1_PATH = ROOT / "config/diagnostics/qualified_initial_family_v1.json"
 V2_PATH = ROOT / "config/diagnostics/qualified_initial_family_v2.json"
+
+# Immutable retained development-v5 Mission-01 frame-zero evidence:
+# /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v5/
+# mission-01/swarm.jsonl.gz, SHA-256 below.  The fixture is copied here so this
+# mathematical regression never launches or depends on the historical binary.
+V5_COUNTEREXAMPLE_PROVENANCE = {
+    "campaign_id": "development-v5",
+    "condition": "dynamic_primary",
+    "trajectory_seed": 2026080201,
+    "range_noise_seed": 2026081201,
+    "frame_index": 0,
+    "schema_version": "cbf2026-qualified-evidence-v1",
+    "source_sha256": "4fb1ccfd3fbeb8168006f6d86d5a12350ab0dab43bbcab105aea1542d3c1be65",
+}
+V5_FRAME_ZERO_PLANAR_COMMANDS_BY_ROBOT = (
+    (1, (-1.1684117246282746, 2.4153004576023847)),
+    (2, (-0.6329247324648044, -1.6283379264469815)),
+    (3, (-4.011248209808141, -0.9719565315104042)),
+    (4, (-3.551592436649411, 0.3603419279486495)),
+    (5, (12.847260069533, -3.392015743447832)),
+    (6, (-11.361581193522856, -3.0610384105729906)),
+    (7, (-3.501930991539261, -4.372419114666091)),
+    (8, (-3.514287953519581, 0.7314340743815393)),
+    (9, (-3.6250519541692654, 0.5136528899624722)),
+    (10, (-10.983935873377126, 4.982867013103082)),
+    (11, (-2.743104460071617, 0.34624720143649057)),
+    (12, (-3.9203214897186136, -0.40654497881470775)),
+    (13, (-7.3908383141473095, 0.0026764753358534676)),
+    (14, (-4.952201068461996, 24.18197080343183)),
+)
 
 
 class QualifiedV6InitialFamilyTests(unittest.TestCase):
@@ -107,6 +138,28 @@ class QualifiedV6InitialFamilyTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     validate_qualified_v6_initial_family(candidate)
 
+    def test_v1_static_projection_requires_exact_recursive_json_token_types(self):
+        mutations = (
+            (("template_positions_m", 2, 1), 0),
+            (("production_contract", "planar_component_max_mps"), 25),
+            (("perturbation", "clamp"), 0),
+            (("production_contract", "formation_base_ids", 0, 0), True),
+            (("schedule", "audit_seed_count"), 100.0),
+            (("template_positions_m", 0), tuple(self.raw["template_positions_m"][0])),
+            (("frozen_summary", "audit", "minimum_barrier_edge"),
+             tuple(self.raw["frozen_summary"]["audit"]["minimum_barrier_edge"])),
+        )
+        for path, value in mutations:
+            with self.subTest(path=path, value=value):
+                candidate = copy.deepcopy(self.raw)
+                target = candidate
+                for key in path[:-1]:
+                    target = target[key]
+                target[path[-1]] = value
+                candidate["semantic_sha256"] = v6_family_semantic_sha256(candidate)
+                with self.assertRaises(ValueError):
+                    validate_qualified_v6_initial_family(candidate)
+
     def test_duplicate_keys_and_alternate_identity_fail_closed(self):
         source = V2_PATH.read_text(encoding="utf-8")
         duplicate = source.replace(
@@ -150,6 +203,7 @@ class OneStepReconstructionTests(unittest.TestCase):
         commands = tuple((0.0, 0.0) for _ in range(14))
         state = reconstruct_v6_one_step_state(self.family, self.positions, commands)
         self.assertEqual(state.current_positions_m, self.positions)
+        self.assertTrue(state.current_audit.accepted)
         self.assertEqual(state.applied_planar_commands_mps, commands)
         self.assertEqual(state.next_positions_m, self.positions)
         self.assertEqual(len(state.next_barriers), 119)
@@ -176,6 +230,35 @@ class OneStepReconstructionTests(unittest.TestCase):
             reconstruct_v6_one_step_state(
                 self.family, self.positions, commands, producer_passed=True
             )
+
+    def test_reconstruction_rejects_unadmitted_current_state_before_update(self):
+        shifted = list(self.positions)
+        shifted[2] = (shifted[2][0] + 2.0, shifted[2][1])
+        commands = tuple((0.0, 0.0) for _ in range(14))
+        with self.assertRaises(InitialStateAdmissionError) as caught:
+            reconstruct_v6_one_step_state(self.family, shifted, commands)
+        self.assertIn("deployment:3", caught.exception.audit.reasons)
+
+    def test_historical_v5_frame_zero_commands_reproduce_one_step_failure(self):
+        self.assertEqual(
+            tuple(robot_id for robot_id, _ in V5_FRAME_ZERO_PLANAR_COMMANDS_BY_ROBOT),
+            tuple(range(1, 15)),
+        )
+        self.assertEqual(V5_COUNTEREXAMPLE_PROVENANCE["campaign_id"], "development-v5")
+        commands = tuple(
+            command for _, command in V5_FRAME_ZERO_PLANAR_COMMANDS_BY_ROBOT
+        )
+        state = reconstruct_v6_one_step_state(self.family, self.positions, commands)
+        minimum_barrier = min(state.next_barriers, key=lambda item: item.value)
+        self.assertAlmostEqual(minimum_barrier.value, 37.24931436014771, places=12)
+        self.assertEqual(minimum_barrier.edge.token(), ("collision", 1, 7, -1))
+        self.assertAlmostEqual(
+            state.next_local_radii_mps[3], -0.017308452413388856, places=12
+        )
+        self.assertAlmostEqual(
+            state.next_local_radii_mps[11], -0.044958268439302146, places=12
+        )
+        self.assertFalse(hasattr(state, "passed"))
 
 
 if __name__ == "__main__":
