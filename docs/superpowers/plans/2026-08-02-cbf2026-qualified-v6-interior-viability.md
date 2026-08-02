@@ -34,7 +34,7 @@
 - The authorization JSON must bind the exact UTF-8 user text, its SHA-256, the exact protocol and preflight hashes, the exact registered implementation identity, date, kind, and version. Historical approvals, test fixtures, inferred intent, and review verdicts are invalid authorization.
 - The registered v6 runner and analyzer are each once-only. No retry, resume, overwrite, reinterpretation, or second analyzer invocation is allowed after their versioned roots are claimed.
 - Use `conda run -n cbf_env` for Python. Use `apply_patch` for source/document edits. Generated no-replace evidence artifacts may be emitted only by their tested producer.
-- This implementation scope never modifies the paper worktree, DRA worktree, submission files, or estimator implementation. The planning phase creates only the scoped plan/review commits; later execution may create only the scoped, reviewed commits explicitly suggested below and only after user approval.
+- Source-task workers never modify the paper worktree, DRA worktree, submission files, or estimator implementation. The primary agent may separately mirror an independently reviewed checkpoint into `/private/tmp/dra-cbf2026-diagnostic` under the researcher's standing DRA authorization; that documentation-only action has its own DRA commit/review, is not a source-plan artifact, and cannot authorize or substitute for any source gate, experiment, paper claim, or campaign execution.
 - Before every suggested commit, obtain explicit user approval as required by `AGENTS.md`. Never add `Co-Authored-By` lines.
 - Every implementation task uses a vertical TDD cycle: focused RED test with the intended assertion failure, minimal GREEN implementation, focused regression, full relevant regression, `git diff --check`, independent review, then a scoped commit only after explicit approval.
 - Every new standalone `tests/*.cpp` file starts with `#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN` before `doctest/doctest.h`. Rerun CMake after adding a new test source because the existing test glob lacks `CONFIGURE_DEPENDS`.
@@ -54,6 +54,7 @@ Planning baseline only:
 
 - Create `docs/superpowers/plans/reviews/2026-08-02-cbf2026-qualified-v6-interior-viability-plan-review.md`: independent review of this committed plan and its planning identities.
 - Create after Task 6: `docs/superpowers/plans/reviews/2026-08-02-cbf2026-qualified-v6-controller-margin-amendment-review.md`: independent review of the committed Task 6b amendment, including its one-candidate/no-retuning rule and execution prohibition.
+- Create after Task 6b implementation: `docs/superpowers/plans/reviews/2026-08-02-cbf2026-qualified-v6-controller-margin-implementation-review.md`: independent review of the frozen additive implementation commit and exact staged universe; this never overwrites the pre-implementation amendment review.
 
 Controller primitives and integration:
 
@@ -84,7 +85,7 @@ Frozen v6 initial family and one-step gate:
 - Create `tests/test_qualified_v6_initial_state.py`: v1/v2 positional identity, fixed universes, mutation rejection, and v5 counterexample fixture.
 - Create `scripts/diagnostics/audit_qualified_v6_one_step_viability.py`: bounded exact-binary producer for the once-only 100-seed development gate.
 - Create `tests/test_audit_qualified_v6_one_step_viability.py`: mocked orchestration, real one-seed subprocess integration, no-retry, and no-replace publication tests.
-- Create `config/diagnostics/qualified_initial_family_v3.json`: byte-identical 100-seed positions and gate thresholds with only the additive controller-policy identity changed to the pre-registered v2 margin policy.
+- Create `config/diagnostics/qualified_initial_family_v3.json`: byte-identical 100-seed positions and gate thresholds; relative to v2, only the additive controller-policy identity, family schema version, and recomputed semantic hash change.
 - Modify `scripts/diagnostics/qualified_v6_initial_state.py`, `scripts/diagnostics/audit_qualified_v6_one_step_viability.py`, and their tests: retain historical v2/v1-policy validation while binding qualifying execution to the exact v3/v2-policy bytes and gate-v2 schema.
 
 Lifecycle and immutable predecessor binding:
@@ -836,6 +837,7 @@ The candidate below is chosen once from the pre-existing frozen 100-seed current
 
 **Files:**
 - Create before implementation: `docs/superpowers/plans/reviews/2026-08-02-cbf2026-qualified-v6-controller-margin-amendment-review.md`
+- Create after the implementation commit: `docs/superpowers/plans/reviews/2026-08-02-cbf2026-qualified-v6-controller-margin-implementation-review.md`
 - Create: `config/diagnostics/qualified_mode_hybrid_dcbf_development_v3.json`
 - Create: `config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v3.json`
 - Create: `config/diagnostics/qualified_initial_family_v3.json`
@@ -862,7 +864,7 @@ The candidate below is chosen once from the pre-existing frozen 100-seed current
 }
 ```
 
-The v3 overlays must otherwise be structurally and numerically identical to their v2 predecessors. Both hard classes remain `alpha.coe=0.1`, `alpha.pow=1`; component bounds remain `+/-25 m/s`; yaw remains excluded from `rho`; `k_delta=10`, task/slack objective, hard rows, allocated ownership, fixed hard-CBF graph, dynamic-lower-index primary FIM graph, fixed-FIM ablation graph, and distributed execution remain unchanged. The v3 initial family must materialize exactly the same IEEE-754 positions, ordered 100 audit seeds, first 10 registered seeds, `dt=0.5 s`, barrier threshold `>0`, radius threshold `>=0.05`, and no clamp/resample/retry fields as v2.
+The v3 overlays must otherwise be structurally and numerically identical to their v2 predecessors. Both hard classes remain `alpha.coe=0.1`, `alpha.pow=1`; component bounds remain `+/-25 m/s`; yaw remains excluded from `rho`; `k_delta=10`, task/slack objective, hard rows, allocated ownership, fixed hard-CBF graph, dynamic-lower-index primary FIM graph, fixed-FIM ablation graph, and distributed execution remain unchanged. The v3 initial family freezes `schema_version=cbf2026-qualified-initial-family-v3` and retains `namespace=cbf2026-v6-initial`. Relative to v2, every JSON token except `schema_version`, `controller_policy`, and `semantic_sha256` is identical; the semantic SHA-256 is recomputed over canonical UTF-8 JSON after excluding only `semantic_sha256`, using sorted keys, no whitespace, `ensure_ascii=False`, and `allow_nan=False`. It materializes exactly the same IEEE-754 positions, ordered 100 audit seeds, first 10 registered seeds, `dt=0.5 s`, barrier threshold `>0`, radius threshold `>=0.05`, and no clamp/resample/retry fields as v2.
 
 The v1 policy and v2 config/family files remain accepted only as historical identities. Do not alter their bytes. Evidence reconstruction and analysis must select the exact `(mode, fraction, cap, tolerance)` tuple from the declared controller marker; mismatched markers, cross-version policy tuples, integers-for-floats, booleans, nonfinite values, missing fields, or extra fields fail closed. Qualifying one-step execution moves to gate schema `cbf2026-qualified-v6-one-step-viability-v2`, campaign ID `qualified-v6-one-step-development-gate-v2`, the canonical v3 primary overlay, and canonical v3 initial family. Injected operations remain irreversibly nonqualifying.
 
@@ -877,6 +879,8 @@ Required RED cases:
 5. Real-v3 fixture evidence independently reconstructs `rho`, `mu`, and applied residual. Cross-version marker/policy mutations fail schema, reconstruction, and analyzer validation; legacy v1 and historical v2 fixtures still pass their own exact contracts.
 6. Gate fake/unit tests bind exact v3 paths, gate-v2 schema, full retained recomputation evidence, and unchanged numerical predicate. Old v2 paths cannot qualify. No test may launch the real binary.
 
+Before any implementation dispatch, the amendment reviewer must use the committed pre-negative blob `f68cdc7:config/diagnostics/qualified_initial_family_v2.json` (SHA-256 `21d04b79e9e81ba867e28826ad43615120a4889d16e082d602e933a6a73177ef`), not a working-tree copy, to independently reconstruct all 100 seeds and 1400 current local problems. The review records the minimum `rho`, the saturation ratio, exact v2 primary/ablation/family blob hashes, and that those blobs predate the Task 6 negative integration. It must explicitly state that the observed next-radius value `0.045836701551219286` was not an input to choosing `0.131`.
+
 - [ ] **Step 2: Run focused RED, then implement the minimal additive version**
 
 Do not change the generic Chebyshev algorithm or its historical default. Select the policy constants explicitly from the validated marker/version. Apply the v2 floor to the same local allocated hard rows only; no neighbor command, joint QP, predictive constraint, new slack, or changed row enters the controller.
@@ -885,9 +889,32 @@ Do not change the generic Chebyshev algorithm or its historical default. Select 
 
 At minimum run the qualified-config, robust-construction, hybrid-guard, hard-interior, evidence reconstruction, analyzer, initial-family, and gate fake/unit suites. The gate's real-binary test class must be skipped or excluded. Rebuild `Swarm` only as a compilation check if source changes require it; do not execute it.
 
-- [ ] **Step 4: Independently review and commit before Task 7**
+- [ ] **Step 4: Freeze the exact implementation commit, then independently review it before Task 7**
 
-The reviewer must recompute the 100-seed/1400-problem result without trusting a stored summary; hash v1/v2 historical bytes before and after; verify the additive v3 diff does not change the graph, CBF rows, objective, component bounds, seeds, thresholds, or retry policy; verify no real-binary launch or formal artifact occurred; and return C0/I0/M0. Freeze the implementation commit/tree and exact source/config/family/test hashes in the review and DRA checkpoint.
+The implementation commit may stage exactly these 18 paths and no others:
+
+```text
+config/diagnostics/qualified_mode_hybrid_dcbf_development_v3.json
+config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v3.json
+config/diagnostics/qualified_initial_family_v3.json
+include/Robot.hpp
+include/cbf/HybridCertificateGuard.hpp
+scripts/diagnostics/qualified_config.py
+scripts/diagnostics/qualified_closure_evidence.py
+scripts/diagnostics/analyze_qualified_closure_campaign.py
+scripts/diagnostics/qualified_v6_initial_state.py
+scripts/diagnostics/audit_qualified_v6_one_step_viability.py
+tests/testRobustConstraintConstruction.cpp
+tests/testHybridCertificateGuard.cpp
+tests/test_qualified_config.py
+tests/test_qualified_closure_evidence.py
+tests/test_analyze_qualified_closure_campaign.py
+tests/test_qualified_v6_initial_state.py
+tests/test_audit_qualified_v6_one_step_viability.py
+tests/test_swarm_evidence_stream.py
+```
+
+Commit this exact staged universe as `feat(cbf): preregister v6 controller margin`, freeze its commit/tree, and then create the separate post-implementation review at `docs/superpowers/plans/reviews/2026-08-02-cbf2026-qualified-v6-controller-margin-implementation-review.md`. The reviewer recomputes the 100-seed/1400-problem result without trusting a stored summary; hashes v1/v2 historical bytes before and after; verifies the additive v3 diff does not change the graph, CBF rows, objective, component bounds, seeds, thresholds, or retry policy; verifies no real-binary launch or formal artifact occurred; and returns C0/I0/M0. Any review fix uses a new scoped fix commit and a scoped re-review. After final PASS, commit only the review artifact as `docs(cbf2026): review v6 controller margin implementation`; never edit the already committed pre-implementation amendment review.
 
 This task establishes a stronger *current-row command-selection margin*. It does not prove that the next-state radius is bounded below, recursive feasibility, sampled-data safety, or long-horizon localization accuracy. Those remain empirical questions for the unchanged one-step gate and later Monte Carlo campaign.
 
@@ -902,7 +929,7 @@ This task establishes a stronger *current-row command-selection margin*. It does
 - Modify: `tests/test_run_qualified_closure_campaign.py`
 
 **Interfaces:**
-- Consumes: passed gate-artifact schema, v6 predecessor identity, v2 configs/family, existing protocol-v2 authorization model.
+- Consumes: passed gate-v2 artifact schema/path, v6 predecessor identity, exact v3 primary/ablation overlays, exact v3 initial family, both committed Task 6b review artifacts, the frozen Task 6b implementation commit/tree, and the existing protocol-v2 authorization model.
 - Produces: production registration support for `kind=development, version=v6` that refuses absent/failed/mismatched gate evidence, plus a pure `validate_authorization_payload(...)` helper for precommit field/hash checks that deliberately does not inspect Git topology; it does not itself create production artifacts in this task.
 
 - [ ] **Step 1: Add RED lifecycle tests**
@@ -918,6 +945,11 @@ def test_v6_protocol_binds_exact_gate_family_configs_and_predecessor(self):
     protocol = self.build_v6(gate=self.passed_gate())
     self.assertEqual(protocol["version"], "v6")
     self.assertEqual(protocol["development_gate"]["status"], "completed")
+    self.assertEqual(protocol["development_gate"]["schema_version"], "cbf2026-qualified-v6-one-step-viability-v2")
+    self.assertEqual(protocol["development_gate"]["campaign_id"], "qualified-v6-one-step-development-gate-v2")
+    self.assertEqual(protocol["primary_config_path"], "config/diagnostics/qualified_mode_hybrid_dcbf_development_v3.json")
+    self.assertEqual(protocol["ablation_config_path"], "config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v3.json")
+    self.assertEqual(protocol["initial_family_path"], "config/diagnostics/qualified_initial_family_v3.json")
     self.assertEqual(protocol["schedule"]["trajectory_seeds"], list(range(2026080201, 2026080211)))
 
 def test_v6_runtime_rejects_historical_or_inferred_authorization(self):
@@ -1199,7 +1231,7 @@ Expected: production validation proves current HEAD is the sole direct exact-fou
 
 **Interfaces:**
 - Consumes: exact authorized runner/analyzer argv serialized by the protocol.
-- Produces: terminal raw/analysis roots, one evidence-bounded report, and independent review; no paper or DRA mutation.
+- Produces: terminal raw/analysis roots, one evidence-bounded report, and independent source review; no paper mutation. Any DRA synchronization is the separate documentation-only action defined by the global constraint and is not performed by the runner, analyzer, or source-task worker.
 
 - [ ] **Step 1: Run final RED preconditions**
 
@@ -1260,7 +1292,7 @@ git add docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v6.md 
 git commit -m "docs(cbf2026): record v6 closure evidence"
 ```
 
-This source plan ends at independently reviewed source evidence. Process/checkpoint documentation may be mirrored into DRA under the researcher's separate standing authorization; paper claims and figures remain unchanged until the corresponding source evidence is independently reviewed.
+This source plan ends at independently reviewed source evidence. Under the researcher's separate standing authorization, the primary agent may append the reviewed checkpoint to `/private/tmp/dra-cbf2026-diagnostic` on `main`, limited to `meta-log/2026-08-01-cbf2026-qualified-mode-hybrid-dcbf.md`, `papers/cbf2026/sources.md`, `papers/cbf2026/open-questions.md`, and `papers/cbf2026/timeline.md`, followed by a separate DRA documentation review/commit. That DRA action is outside the source staged universe and source completion matrix; it cannot authorize execution or strengthen a scientific claim. Paper claims and figures remain unchanged until the corresponding source evidence is independently reviewed.
 
 ## Final Verification Matrix
 
@@ -1289,7 +1321,6 @@ fresh verbatim user authorization after protocol/preflight
 runner invoked once; analyzer invoked once
 v6 roots terminal and immutable
 terminal report/review distinguish theorem, one-step gate, and empirical campaign
-DRA checkpoints distinguish historical negative evidence, pre-registered policy, and formal results
 paper unchanged until the relevant independently reviewed evidence exists
 ```
 
