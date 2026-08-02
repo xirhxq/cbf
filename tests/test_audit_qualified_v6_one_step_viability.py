@@ -414,6 +414,167 @@ class QualifiedV6OneStepOrchestrationTests(unittest.TestCase):
             seed_universe=(FROZEN_SEEDS[0],),
         )
 
+    def qualifying_one(self, operations):
+        operations.claim = self.claim
+        with mock.patch.object(
+            producer, "SubprocessOneStepOperations", return_value=operations
+        ):
+            return _audit_seed_sequence(
+                binary=ROOT / "build-diagnostic/Swarm",
+                base_config=ROOT / "config/config.json",
+                primary_config=ROOT
+                / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v2.json",
+                initial_family=ROOT
+                / "config/diagnostics/qualified_initial_family_v2.json",
+                claim=self.claim,
+                output=self.output,
+                project_root=ROOT,
+                seed_universe=(FROZEN_SEEDS[0],),
+                operations=None,
+            )
+
+    def test_repository_tree_is_resolved_from_the_frozen_head(self):
+        frozen_head = "a" * 40
+        frozen_tree = "b" * 40
+        stale_tree = "c" * 40
+
+        def fake_git(arguments, **_kwargs):
+            command = tuple(arguments)
+            outputs = {
+                ("git", "rev-parse", "--show-toplevel"): str(ROOT),
+                ("git", "rev-parse", "HEAD"): frozen_head,
+                ("git", "rev-parse", "HEAD^{tree}"): stale_tree,
+                ("git", "rev-parse", f"{frozen_head}^{{tree}}"): frozen_tree,
+            }
+            if command not in outputs:
+                raise AssertionError(f"unexpected Git command: {command}")
+            return SimpleNamespace(
+                returncode=0,
+                stdout=outputs[command] + "\n",
+                stderr="",
+            )
+
+        with mock.patch.object(producer.subprocess, "run", side_effect=fake_git):
+            identity = producer._repository_identity(ROOT)
+
+        self.assertEqual(identity["head"], frozen_head)
+        self.assertEqual(identity["tree"], frozen_tree)
+
+    def test_qualifying_rejects_alternate_producer_path_before_claim(self):
+        copied_producer = self.root / "copied_producer.py"
+        shutil.copyfile(Path(producer.__file__), copied_producer)
+        operations = FakeOperations()
+        with mock.patch.object(producer, "__file__", str(copied_producer)):
+            with self.assertRaisesRegex(
+                ValueError, "implementation path is not canonical"
+            ):
+                self.qualifying_one(operations)
+        self.assertEqual(operations.launched_seeds, [])
+        self.assertFalse(self.claim.exists())
+        self.assertFalse(self.output.exists())
+
+    def test_qualifying_rejects_live_producer_bytes_not_in_recorded_head(self):
+        original_reader = producer._read_stable_regular_file
+        canonical_producer = Path(producer.__file__).resolve()
+
+        def dirty_live_reader(path, label):
+            raw, identity = original_reader(path, label)
+            if Path(path).resolve() == canonical_producer:
+                raw = raw + b"\n# uncommitted producer mutation\n"
+                identity = {
+                    "path": str(canonical_producer),
+                    "bytes": len(raw),
+                    "sha256": hashlib.sha256(raw).hexdigest(),
+                }
+            return raw, identity
+
+        operations = FakeOperations()
+        with mock.patch.object(
+            producer,
+            "_read_stable_regular_file",
+            side_effect=dirty_live_reader,
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "implementation differs from recorded HEAD blob"
+            ):
+                self.qualifying_one(operations)
+        self.assertEqual(operations.launched_seeds, [])
+        self.assertFalse(self.claim.exists())
+        self.assertFalse(self.output.exists())
+
+    def test_claim_write_return_identity_mismatch_is_fail_stop_before_launch(self):
+        original_publish = producer._write_json_no_replace
+
+        def wrong_return_identity(path, payload):
+            identity = original_publish(path, payload)
+            if Path(path) == self.claim:
+                identity = dict(identity)
+                identity["sha256"] = "0" * 64
+            return identity
+
+        operations = FakeOperations()
+        with mock.patch.object(
+            producer,
+            "_write_json_no_replace",
+            side_effect=wrong_return_identity,
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "published claim identity"
+            ):
+                self.audit_one(operations)
+        self.assertEqual(operations.launched_seeds, [])
+        self.assertTrue(self.claim.is_file())
+        self.assertFalse(self.output.exists())
+
+    def test_claim_post_write_return_mutation_is_fail_stop_before_launch(self):
+        original_publish = producer._write_json_no_replace
+
+        def mutate_after_return(path, payload):
+            identity = original_publish(path, payload)
+            if Path(path) == self.claim:
+                Path(path).write_bytes(Path(path).read_bytes() + b" ")
+            return identity
+
+        operations = FakeOperations()
+        with mock.patch.object(
+            producer,
+            "_write_json_no_replace",
+            side_effect=mutate_after_return,
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "published claim identity"
+            ):
+                self.audit_one(operations)
+        self.assertEqual(operations.launched_seeds, [])
+        self.assertTrue(self.claim.is_file())
+        self.assertFalse(self.output.exists())
+
+    def test_terminal_output_post_return_byte_mutation_is_fail_stop(self):
+        original_publish = producer._write_json_no_replace
+
+        def mutate_terminal_bytes(path, payload):
+            identity = original_publish(path, payload)
+            if Path(path) == self.output:
+                parsed = json.loads(Path(path).read_text(encoding="utf-8"))
+                Path(path).write_text(
+                    json.dumps(parsed, indent=2) + "\n", encoding="utf-8"
+                )
+            return identity
+
+        operations = FakeOperations()
+        with mock.patch.object(
+            producer,
+            "_write_json_no_replace",
+            side_effect=mutate_terminal_bytes,
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "published terminal output identity"
+            ):
+                self.audit_one(operations)
+        self.assertEqual(operations.launched_seeds, [FROZEN_SEEDS[0]])
+        self.assertTrue(self.claim.is_file())
+        self.assertTrue(self.output.is_file())
+
     def test_injected_operations_are_irreversibly_nonqualifying(self):
         result = self.audit_one(FakeOperations())
         claim = json.loads(self.claim.read_text(encoding="utf-8"))

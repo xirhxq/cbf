@@ -192,10 +192,42 @@ def _repository_identity(project_root: Path) -> dict:
 
     if Path(git("rev-parse", "--show-toplevel")).resolve() != root:
         raise ValueError("project root must equal the Git worktree root")
+    head = git("rev-parse", "HEAD")
     return {
         "root": str(root),
-        "head": git("rev-parse", "HEAD"),
-        "tree": git("rev-parse", "HEAD^{tree}"),
+        "head": head,
+        "tree": git("rev-parse", f"{head}^{{tree}}"),
+    }
+
+
+def _qualifying_implementation_identity(
+    project_root: Path, repository: Mapping
+) -> dict:
+    relative_path = Path(
+        "scripts/diagnostics/audit_qualified_v6_one_step_viability.py"
+    )
+    canonical_path = Path(project_root).resolve() / relative_path
+    live_bytes, live_identity = _read_stable_regular_file(
+        canonical_path, "one-step implementation"
+    )
+    completed = subprocess.run(
+        ["git", "show", f"{repository['head']}:{relative_path.as_posix()}"],
+        cwd=Path(project_root).resolve(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise ValueError("recorded HEAD implementation blob unavailable: " + detail)
+    if live_bytes != completed.stdout:
+        raise ValueError("one-step implementation differs from recorded HEAD blob")
+    return {
+        "path": live_identity["path"],
+        "repository_path": relative_path.as_posix(),
+        "repository_head": repository["head"],
+        "bytes": live_identity["bytes"],
+        "sha256": live_identity["sha256"],
     }
 
 
@@ -206,11 +238,15 @@ def _collect_bound_identities(
     primary_config: Path,
     initial_family: Path,
     project_root: Path,
+    qualifying: bool = False,
 ) -> dict:
+    repository = _repository_identity(project_root)
     return {
-        "repository": _repository_identity(project_root),
-        "implementation": _regular_file_identity(
-            Path(__file__), "one-step implementation"
+        "repository": repository,
+        "implementation": (
+            _qualifying_implementation_identity(project_root, repository)
+            if qualifying
+            else _regular_file_identity(Path(__file__), "one-step implementation")
         ),
         "binary": _regular_file_identity(binary, "Swarm binary"),
         "base_config": _regular_file_identity(base_config, "base config"),
@@ -270,6 +306,36 @@ def _write_json_no_replace(path: Path, payload: Mapping) -> dict:
         "bytes": len(encoded),
         "sha256": hashlib.sha256(encoded).hexdigest(),
     }
+
+
+def _verify_json_publication(
+    path: Path, payload: Mapping, write_identity: object, label: str
+) -> tuple[bytes, dict]:
+    expected_bytes = _canonical_json_bytes(payload) + b"\n"
+    expected_identity = {
+        "path": str(Path(path).resolve()),
+        "bytes": len(expected_bytes),
+        "sha256": hashlib.sha256(expected_bytes).hexdigest(),
+    }
+    reopened_bytes, reopened_identity = _read_stable_regular_file(path, label)
+    if (
+        type(write_identity) is not dict
+        or write_identity != expected_identity
+        or reopened_identity != expected_identity
+        or reopened_bytes != expected_bytes
+    ):
+        raise IdentityBindingError(
+            f"published {label} identity differs from canonical payload"
+        )
+    return expected_bytes, expected_identity
+
+
+def _require_verified_publication(
+    path: Path, expected_bytes: bytes, expected_identity: Mapping, label: str
+) -> None:
+    observed_bytes, observed_identity = _read_stable_regular_file(path, label)
+    if observed_identity != expected_identity or observed_bytes != expected_bytes:
+        raise IdentityBindingError(f"{label} identity changed")
 
 
 def _deep_merge(base: Mapping, overlay: Mapping) -> dict:
@@ -750,12 +816,15 @@ def _require_qualifying_canonical_paths(
         / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v2.json",
         "initial_family": project_root
         / "config/diagnostics/qualified_initial_family_v2.json",
+        "implementation": project_root
+        / "scripts/diagnostics/audit_qualified_v6_one_step_viability.py",
     }
     observed = {
         "binary": Path(binary),
         "base_config": Path(base_config),
         "primary_config": Path(primary_config),
         "initial_family": Path(initial_family),
+        "implementation": Path(__file__),
     }
     for label, canonical in expected.items():
         if observed[label].resolve(strict=False) != canonical.resolve(strict=False):
@@ -819,6 +888,7 @@ def _audit_seed_sequence(
         primary_config=primary_config,
         initial_family=initial_family,
         project_root=project_root,
+        qualifying=qualifying,
     )
     identities = copy.deepcopy(observed_identities)
     identities["base_config"] = base_buffer_identity
@@ -866,8 +936,11 @@ def _audit_seed_sequence(
             "or recursive feasibility"
         ),
     }
-    _write_json_no_replace(claim, claim_payload)
-    claimed_sha256 = _sha256(claim)
+    claim_write_identity = _write_json_no_replace(claim, claim_payload)
+    claimed_bytes, claimed_identity = _verify_json_publication(
+        claim, claim_payload, claim_write_identity, "claim"
+    )
+    claimed_sha256 = claimed_identity["sha256"]
     launch_count = 0
     retry_count = 0
     results: list[dict] = []
@@ -884,8 +957,12 @@ def _audit_seed_sequence(
                 primary_config=primary_config,
                 initial_family=initial_family,
                 project_root=project_root,
+                qualifying=qualifying,
             ) != identities:
                 raise ValueError("bound identity changed after claim publication")
+            _require_verified_publication(
+                claim, claimed_bytes, claimed_identity, "immutable claim"
+            )
             for seed in seeds:
                 temporary = Path(
                     temporary_material.enter_context(
@@ -920,14 +997,16 @@ def _audit_seed_sequence(
                         family=family,
                     )
                 )
-                if _sha256(claim) != claimed_sha256:
-                    raise ValueError("immutable claim identity changed")
+                _require_verified_publication(
+                    claim, claimed_bytes, claimed_identity, "immutable claim"
+                )
                 if _collect_bound_identities(
                     binary=binary,
                     base_config=base_config,
                     primary_config=primary_config,
                     initial_family=initial_family,
                     project_root=project_root,
+                    qualifying=qualifying,
                 ) != identities:
                     raise ValueError("bound identity changed during execution")
         except IdentityBindingError:
@@ -957,15 +1036,16 @@ def _audit_seed_sequence(
         registered_summary = _summary(results, tuple(
             seed for seed in seeds if seed in REGISTERED_SEEDS
         ))
-        observed_claim_sha = _sha256(claim)
-        if observed_claim_sha != claimed_sha256:
-            raise ValueError("immutable claim identity changed before terminal publication")
+        _require_verified_publication(
+            claim, claimed_bytes, claimed_identity, "immutable claim"
+        )
         terminal_identities = _collect_bound_identities(
             binary=binary,
             base_config=base_config,
             primary_config=primary_config,
             initial_family=initial_family,
             project_root=project_root,
+            qualifying=qualifying,
         )
         if terminal_identities != identities:
             raise ValueError("bound identity changed before terminal publication")
@@ -1002,12 +1082,16 @@ def _audit_seed_sequence(
             "retry_count": retry_count,
             "boundary": claim_payload["boundary"],
         }
-        _write_json_no_replace(output, output_payload)
-        if _sha256(claim) != output_payload["claim_sha256"]:
-            raise ValueError("terminal output does not cross-bind the exact claim")
-        observed_output = _read_json_object(output, "terminal output")
-        if observed_output != output_payload:
-            raise ValueError("terminal output publication is partial or altered")
+        output_write_identity = _write_json_no_replace(output, output_payload)
+        _verify_json_publication(
+            output,
+            output_payload,
+            output_write_identity,
+            "terminal output",
+        )
+        _require_verified_publication(
+            claim, claimed_bytes, claimed_identity, "immutable claim"
+        )
     return output_payload
 
 
