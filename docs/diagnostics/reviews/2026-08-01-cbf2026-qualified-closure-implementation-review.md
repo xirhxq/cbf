@@ -695,3 +695,153 @@ Finding summary: the failed-v1 evidence is immutable and non-executable;
 `eafa68c...` closes the authorization lifecycle; the final report and plan
 close all recovery-document findings; and no protocol, authorization, result,
 or campaign state has been created.
+
+## Development-v2 failure to development-v3 recovery conformance review
+
+### Scope and exact identities
+
+This independent append-only pass reviews the postcommit development-v2 gate
+failure, its six-file TDD repair, and the final development-v3 recovery
+report/plan. The reviewed working-document identities are:
+
+```text
+ffcf158ec6ed89fd313d8ae6479e1339f23b570fda502a637239c2bc4864feb1  163,543 bytes / 2,970 lines  docs/superpowers/plans/2026-08-01-cbf2026-qualified-modes-hybrid-distributed-cbf-implementation.md
+1858044715147522398c7a43b42418a6e5ce7ac29a00b6ec081382e5e5f67672   37,754 bytes /   711 lines  docs/diagnostics/2026-08-01-cbf2026-qualified-closure-implementation.md
+```
+
+The report embeds the exact final plan SHA-256. These are documentation
+working identities, not protocol, authorization, result, or campaign
+identities. The code-fix identity is
+`64f64d00a1fd6b7ab01760e340eca883be58f338`, with parent
+`02f0f13ce1b3803b84840221221694ab02d2441d` and tree
+`b2c7cc555e5ee6c684ac6fb2eb14d44157c5f9dd`.
+
+### Development-v2 chronology and immutable evidence
+
+Commit `857de7ee8dd563fdd5fa15b6860ed54da6758b37` is the exact
+documentation parent. Its sole direct child
+`ae7f68c547eaccfb5c4be0b44a08895ab8beeb36` adds exactly four paths and
+no modification, deletion, rename, or extra path:
+
+```text
+A  docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v2-protocol.json
+A  docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v2-protocol.md
+A  docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v2-authorization.json
+A  docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v2-preflight.md
+```
+
+Their live hashes remain respectively `fd138abf...`, `1102a7a...`,
+`aa075688...`, and `c790cd2...`, byte-identical to the committed artifacts.
+Mandatory production postcommit validation accepted the topology and these
+bindings, then failed before root allocation because it incorrectly attempted
+to read the registered allowed-untracked `build-diagnostic/Swarm` as a parent
+Git blob.
+
+Commit `02f0f13ce1b3803b84840221221694ab02d2441d` adds only the 3,711-byte,
+91-line failure archive
+`docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v2-postcommit-validation.md`.
+Its SHA-256 is exactly
+`815988e3149d6adcffb61d323e242905ae3e89a145eb37560abf1b47de9fb235`.
+The plan and report consistently treat all development-v1 and development-v2
+protocols, authorizations, commands, roots, and prospective result paths as
+historical, consumed, immutable, and non-executable. Neither failed version
+may be retried, amended, overwritten, repaired in place, reinterpreted, or
+consumed by a later scientific gate.
+
+### Six-file TDD repair and verification
+
+The complete `02f0f13...64f64d0` diff changes exactly the registrar, runner,
+analyzer, and their matching three test modules:
+
+```text
+scripts/diagnostics/analyze_qualified_closure_campaign.py
+scripts/diagnostics/register_qualified_closure_campaign.py
+scripts/diagnostics/run_qualified_closure_campaign.py
+tests/test_analyze_qualified_closure_campaign.py
+tests/test_register_qualified_closure_campaign.py
+tests/test_run_qualified_closure_campaign.py
+```
+
+The registrar exception is narrowly bounded: only exact path tokens already
+recorded in `repository.allowed_untracked_paths` bypass parent Git-blob
+lookup. Such files must still be live regular files, remain registered as
+allowed-untracked, and match their exact path, SHA-256, byte count, build, and
+dependency identities. Every tracked source, configuration, report, review,
+and tool remains checked against its registered implementation-parent blob.
+
+The analyzer no longer projects only four fields out of an observed raw
+schedule. It independently derives the complete trusted schedule envelope
+from the registered missions, including campaign ID, mission ID, both seeds,
+frame count, horizon, and the exact two-condition list, then requires exact
+schedule and mission-manifest equality before analysis allocation. The same
+derivation covers development-v3, confirmatory-v1, and both
+confirmatory-smoke identities.
+
+The archived regression evidence contains the intended RED failures followed
+by GREEN for a genuinely untracked registered binary and for three full-
+schedule tamper cases. Fresh review execution of the five-module campaign
+suite passed 173/173. The independent Standards axis separately reran the
+three changed campaign modules at 144/144. The three production scripts passed `py_compile`, and
+the working diff passed `git diff --check`. The recorded complete discovery
+is 1,162 total = 1,149 passed + the unchanged 5 legacy failures + unchanged 8
+external/legacy errors, with 0 skipped. These are the exact same 13 historical
+nonpassing outcomes; the report does not call the complete suite green or
+waive them. The final scoped source review records C0/I0/M0.
+
+### Operative command, path, and dependency audit
+
+Every current development registrar, runner, and analyzer command in both the
+plan and report uses version `v3`, the v3 protocol/authorization paths, and
+only these non-colliding roots:
+
+```text
+/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v3
+/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v3
+```
+
+Their token order, configuration paths, seed ranges, 1,000 frames, and
+protocol-bound raw/analysis roles agree with the reviewed production argv
+builders. The retained v1/v2 command blocks are explicitly historical and
+forbidden from execution; Task 11 states that development-v3 is the only
+operative development task.
+
+Before any v3 registration, the final implementation report, final recovery
+plan, and this independent review must be committed together in one clean
+documentation-closure commit after `64f64d0...`. The registrar must discover
+and bind that future exact HEAD as `protocol.repository.head`; it must not
+bind the code-fix commit directly. The later authorization commit must be the
+sole direct child of that future documentation closure and must add exactly
+the v3 protocol JSON, protocol Markdown, independent C0/I0/M0 preflight, and
+ten-field authorization JSON, with no other path. Production postcommit
+validation must pass before either root is allocated.
+
+Task 11 then permits one v3 runner and one v3 analyzer invocation. It requires
+the named terminal v3 report and independent review, a separately committed
+DRA update, an independently reproduced PASS, and C0/I0 before Task 12 may
+open. Task 12's recovery override and registrar command consume only the
+development-v3 protocol, terminal report, and review; they do not consume
+development-v1 or development-v2. Confirmatory itself correctly remains
+scientific protocol version `v1`.
+
+### No-campaign state and final decision
+
+All development-v1, development-v2, and development-v3 qualified-closure raw
+and analysis roots are absent. All six named v3 lifecycle/result/review
+artifacts are absent. The v2 result/review paths are also absent. No v3
+protocol, preflight, authorization, result, review, DRA PASS gate, or campaign
+was created by this review; no registrar, runner, analyzer, root, commit, or
+DRA mutation was performed.
+
+The Standards axis finds no actionable repository-conformance defect in the
+six-file fix or its evidence. The Specification axis finds the final plan and
+report internally consistent with the immutable v2 failure, the future v3
+authorization lifecycle, and the Task 11/12 gates.
+
+Critical: `0`; Important: `0`; Minor: `0`.
+
+Ready to commit only the final implementation report, final recovery plan,
+and this appended review as the prerequisite documentation closure: **Yes**.
+
+Ready to create a v3 protocol or authorization before that commit: **No**.
+
+Ready to execute development-v3, smoke, or confirmatory now: **No**.
