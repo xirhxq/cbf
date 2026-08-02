@@ -73,6 +73,10 @@ class ChildLaunchFailure(RuntimeError):
         super().__init__(reason if not detail else f"{reason}: {detail}")
 
 
+class IdentityBindingError(ValueError):
+    """Fail-stop identity violation: claim remains and no output is published."""
+
+
 def _canonical_json_bytes(value: object) -> bytes:
     return json.dumps(
         value,
@@ -83,41 +87,8 @@ def _canonical_json_bytes(value: object) -> bytes:
     ).encode("utf-8")
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict:
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError(f"duplicate JSON key: {key}")
-        result[key] = value
-    return result
-
-
-def _read_json_object(path: Path, label: str) -> dict:
-    path = Path(path)
-    if path.is_symlink() or not path.is_file():
-        raise ValueError(f"{label} must be a regular file")
-    try:
-        value = json.loads(
-            path.read_text(encoding="utf-8"),
-            object_pairs_hook=_reject_duplicate_keys,
-        )
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise ValueError(f"{label} is not valid UTF-8 JSON") from error
-    if not isinstance(value, dict):
-        raise ValueError(f"{label} must be a JSON object")
-    return value
-
-
-def _read_bound_json(path: Path, label: str) -> tuple[dict, dict]:
-    """Parse and identify one immutable byte buffer from one file descriptor."""
+def _read_stable_regular_file(path: Path, label: str) -> tuple[bytes, dict]:
+    """Read and identify one stable regular-file buffer from one descriptor."""
     path = Path(path)
     if path.is_symlink():
         raise ValueError(f"{label} must be a regular file")
@@ -139,21 +110,53 @@ def _read_bound_json(path: Path, label: str) -> tuple[dict, dict]:
                 break
             chunks.append(chunk)
         after = os.fstat(descriptor)
-        if (
-            before.st_dev,
-            before.st_ino,
-            before.st_size,
-            before.st_mtime_ns,
-        ) != (
-            after.st_dev,
-            after.st_ino,
-            after.st_size,
-            after.st_mtime_ns,
+        stable_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if tuple(getattr(before, field) for field in stable_fields) != tuple(
+            getattr(after, field) for field in stable_fields
         ):
-            raise ValueError(f"{label} changed during its bound read")
+            raise ValueError(f"{label} changed during its stable read")
     finally:
         os.close(descriptor)
     raw = b"".join(chunks)
+    if len(raw) != before.st_size:
+        raise ValueError(f"{label} changed during its stable read")
+    return raw, {
+        "path": str(path.resolve()),
+        "bytes": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+    }
+
+
+def _sha256(path: Path) -> str:
+    return _read_stable_regular_file(path, "bound file")[1]["sha256"]
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def _read_json_object(path: Path, label: str) -> dict:
+    raw, _identity = _read_stable_regular_file(path, label)
+    try:
+        value = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"{label} is not valid UTF-8 JSON") from error
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be a JSON object")
+    return value
+
+
+def _read_bound_json(path: Path, label: str) -> tuple[dict, dict]:
+    """Parse and identify one immutable byte buffer from one file descriptor."""
+    raw, identity = _read_stable_regular_file(path, label)
     try:
         value = json.loads(
             raw.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys
@@ -162,23 +165,11 @@ def _read_bound_json(path: Path, label: str) -> tuple[dict, dict]:
         raise ValueError(f"{label} is not valid UTF-8 JSON") from error
     if not isinstance(value, dict):
         raise ValueError(f"{label} must be a JSON object")
-    return value, {
-        "path": str(path.resolve()),
-        "bytes": len(raw),
-        "sha256": hashlib.sha256(raw).hexdigest(),
-    }
+    return value, identity
 
 
 def _regular_file_identity(path: Path, label: str) -> dict:
-    path = Path(path)
-    if path.is_symlink() or not path.is_file():
-        raise ValueError(f"{label} must be a regular file")
-    resolved = path.resolve()
-    return {
-        "path": str(resolved),
-        "bytes": resolved.stat().st_size,
-        "sha256": _sha256(resolved),
-    }
+    return _read_stable_regular_file(path, label)[1]
 
 
 def _repository_identity(project_root: Path) -> dict:
@@ -235,17 +226,17 @@ def _collect_bound_identities(
 def _require_publication_paths_absent(claim: Path, output: Path) -> None:
     claim = Path(claim)
     output = Path(output)
-    if claim.absolute() == output.absolute():
-        raise ValueError("claim and output must be distinct paths")
     for path, label in ((claim, "claim"), (output, "output")):
         if path.exists() or path.is_symlink():
             raise FileExistsError(f"{label} path must be absent: {path}")
         parent = path.parent
         if parent.is_symlink() or not parent.is_dir():
             raise ValueError(f"{label} parent must be an existing directory")
+    if claim.resolve(strict=False) == output.resolve(strict=False):
+        raise ValueError("claim and output must be distinct normalized targets")
 
 
-def _write_json_no_replace(path: Path, payload: Mapping) -> None:
+def _write_json_no_replace(path: Path, payload: Mapping) -> dict:
     """Write the final path directly with O_EXCL, then fsync file and parent."""
     path = Path(path)
     encoded = _canonical_json_bytes(payload) + b"\n"
@@ -261,6 +252,9 @@ def _write_json_no_replace(path: Path, payload: Mapping) -> None:
                 raise OSError("short no-replace JSON write")
             offset += written
         os.fsync(descriptor)
+        written_stat = os.fstat(descriptor)
+        if written_stat.st_size != len(encoded):
+            raise OSError("no-replace JSON size differs after write")
     finally:
         os.close(descriptor)
     parent_flags = os.O_RDONLY
@@ -271,6 +265,11 @@ def _write_json_no_replace(path: Path, payload: Mapping) -> None:
         os.fsync(parent_descriptor)
     finally:
         os.close(parent_descriptor)
+    return {
+        "path": str(path.resolve()),
+        "bytes": len(encoded),
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+    }
 
 
 def _deep_merge(base: Mapping, overlay: Mapping) -> dict:
@@ -290,7 +289,7 @@ def _materialize_seed_config(
     family: Mapping,
     seed: int,
     directory: Path,
-) -> tuple[Path, tuple[tuple[float, float], ...]]:
+) -> tuple[Path, tuple[tuple[float, float], ...], dict]:
     positions = materialize_v6_seed_positions(family, seed)
     config = _deep_merge(base, primary)
     config.setdefault("initial", {})["position"] = {
@@ -315,17 +314,20 @@ def _materialize_seed_config(
     for forbidden in ("campaign_root", "campaign-root", "campaign_root_path"):
         config.pop(forbidden, None)
     path = directory / "config.json"
-    _write_json_no_replace(path, config)
-    return path, positions
+    identity = _write_json_no_replace(path, config)
+    return path, positions, identity
 
 
-def _strict_number(value: object, label: str) -> float:
-    if type(value) not in (int, float) or isinstance(value, bool):
-        raise ValueError(f"{label} must be finite numeric data")
-    number = float(value)
-    if not math.isfinite(number):
-        raise ValueError(f"{label} must be finite numeric data")
-    return number
+def _strict_float(value: object, label: str) -> float:
+    if type(value) is not float or not math.isfinite(value):
+        raise ValueError(f"{label} must be an exact finite float")
+    return value
+
+
+def _strict_int(value: object, label: str, *, expected: int | None = None) -> int:
+    if type(value) is not int or (expected is not None and value != expected):
+        raise ValueError(f"{label} must be an exact integer")
+    return value
 
 
 def _evaluate_predicate(
@@ -336,23 +338,62 @@ def _evaluate_predicate(
     next_radii: Sequence[float],
 ) -> tuple[bool, tuple[str, ...]]:
     reasons: list[str] = []
-    if any(
-        abs(_strict_number(component, "applied command"))
-        > COMPONENT_MAX_MPS + NUMERIC_TOLERANCE
+    checked_commands = tuple(
+        tuple(_strict_float(component, "applied command") for component in command)
         for command in commands
+    )
+    checked_pairs = tuple(
+        (
+            _strict_float(residual, "applied original residual"),
+            _strict_float(floor, "enforced floor"),
+        )
+        for residual, floor in residual_floor_pairs
+    )
+    checked_barriers = tuple(
+        _strict_float(barrier, "next barrier") for barrier in next_barriers
+    )
+    checked_radii = tuple(
+        _strict_float(radius, "next local radius") for radius in next_radii
+    )
+    if any(
+        abs(component) > COMPONENT_MAX_MPS + NUMERIC_TOLERANCE
+        for command in checked_commands
         for component in command[:2]
     ):
         reasons.append("component_bound_violation")
     if any(
         residual < floor - NUMERIC_TOLERANCE
-        for residual, floor in residual_floor_pairs
+        for residual, floor in checked_pairs
     ):
         reasons.append("applied_residual_below_floor")
-    if any(barrier <= MINIMUM_NEXT_BARRIER_M for barrier in next_barriers):
+    if any(barrier <= MINIMUM_NEXT_BARRIER_M for barrier in checked_barriers):
         reasons.append("nonpositive_next_barrier")
-    if any(radius < MINIMUM_NEXT_LOCAL_RADIUS_MPS for radius in next_radii):
+    if any(radius < MINIMUM_NEXT_LOCAL_RADIUS_MPS for radius in checked_radii):
         reasons.append("small_next_local_radius")
     return not reasons, tuple(reasons)
+
+
+def _edge_payload(edge) -> dict:
+    return {
+        "kind": edge.kind,
+        "low": edge.low,
+        "high": edge.high,
+        "base_id": edge.base_id,
+    }
+
+
+def _certificate_payload(certificate) -> dict:
+    return {
+        "robot_id": certificate.robot_id,
+        "reference_ids": [
+            {"kind": kind, "id": reference_id}
+            for kind, reference_id in certificate.reference_ids
+        ],
+        "covariance": [list(row) for row in certificate.covariance],
+        "covariance_rate_bound": certificate.covariance_rate_bound,
+        "epsilon": certificate.epsilon,
+        "bar_nu": certificate.bar_nu,
+    }
 
 
 def _reconstruct_next_metrics(
@@ -384,17 +425,26 @@ def _reconstruct_next_metrics(
         tuple(row for row in rows if row.owner == robot_id)
         for robot_id in range(1, 15)
     )
-    radii = tuple(
-        solve_planar_hard_row_chebyshev(
-            v6_initial._local_hard_problem(
-                robot_id,
-                local_rows[robot_id - 1],
-                checked["controller_policy"]["planar_component_max_mps"],
-            )
-        ).radius_mps
+    local_problems = tuple(
+        v6_initial._local_hard_problem(
+            robot_id,
+            local_rows[robot_id - 1],
+            checked["controller_policy"]["planar_component_max_mps"],
+        )
         for robot_id in range(1, 15)
     )
-    return current_audit, barriers, radii
+    radii = tuple(
+        solve_planar_hard_row_chebyshev(problem).radius_mps
+        for problem in local_problems
+    )
+    return {
+        "current_audit": current_audit,
+        "next_positions_m": next_positions,
+        "next_certificates": certificates,
+        "next_barriers": barriers,
+        "next_local_problems": local_problems,
+        "next_radii_mps": radii,
+    }
 
 
 def _validate_operation_result(
@@ -402,6 +452,7 @@ def _validate_operation_result(
     *,
     seed: int,
     config_path: Path,
+    expected_config_identity: Mapping,
     expected_positions: tuple[tuple[float, float], ...],
     family: Mapping,
 ) -> dict:
@@ -413,12 +464,26 @@ def _validate_operation_result(
         "frame_zero_records",
     }:
         raise ValueError("seed operation result has an invalid exact schema")
-    if result["trajectory_seed"] != seed:
+    if _strict_int(result["trajectory_seed"], "operation trajectory seed") != seed:
         raise ValueError("seed operation returned the wrong seed")
-    observed_config_sha = _sha256(config_path)
-    if result["config_sha256"] != observed_config_sha:
-        raise ValueError("seed operation returned an altered config hash")
-    if result["attempt_count"] != 1 or result["retry_count"] != 0:
+    returned_config_sha = result["config_sha256"]
+    if (
+        type(returned_config_sha) is not str
+        or len(returned_config_sha) != 64
+        or any(character not in "0123456789abcdef" for character in returned_config_sha)
+    ):
+        raise ValueError("seed operation config identity is malformed")
+    postlaunch_config_identity = _regular_file_identity(
+        config_path, "materialized config"
+    )
+    if (
+        dict(expected_config_identity) != postlaunch_config_identity
+        or returned_config_sha != expected_config_identity["sha256"]
+    ):
+        raise IdentityBindingError("materialized config identity changed during launch")
+    attempt_count = _strict_int(result["attempt_count"], "operation attempt count")
+    retry_count = _strict_int(result["retry_count"], "operation retry count")
+    if attempt_count != 1 or retry_count != 0:
         raise ValueError("seed operation attempted a retry")
     records = result["frame_zero_records"]
     if not isinstance(records, list) or len(records) != 1:
@@ -433,25 +498,36 @@ def _validate_operation_result(
     }:
         raise ValueError("frame-zero record has an invalid exact schema")
     if (
-        frame["trajectory_seed"] != seed
-        or frame["frame_index"] != 0
+        _strict_int(frame["trajectory_seed"], "frame trajectory seed") != seed
+        or _strict_int(frame["frame_index"], "frame index") != 0
         or frame["complete"] is not True
     ):
         raise ValueError("frame-zero identity is missing, wrong, or incomplete")
+    if not isinstance(frame["current_positions_m"], list) or len(
+        frame["current_positions_m"]
+    ) != 14:
+        raise ValueError("frame-zero positions must contain exactly 14 vectors")
     positions = tuple(
-        tuple(_strict_number(value, "current position") for value in position)
+        tuple(_strict_float(value, "current position") for value in position)
         for position in frame["current_positions_m"]
+        if isinstance(position, list) and len(position) == 2
     )
-    if positions != expected_positions:
+    if len(positions) != 14 or positions != expected_positions:
         raise ValueError("frame-zero positions differ from the materialized seed")
     nodes = frame["nodes"]
     if not isinstance(nodes, list) or len(nodes) != 14:
         raise ValueError("frame-zero must contain exactly 14 nodes")
-    ordered = sorted(nodes, key=lambda node: node.get("robot_id", -1))
-    if [node.get("robot_id") for node in ordered] != list(range(1, 15)):
+    if any(not isinstance(node, Mapping) for node in nodes):
+        raise ValueError("frame-zero node is not an object")
+    robot_ids = [
+        _strict_int(node.get("robot_id"), "robot id") for node in nodes
+    ]
+    if sorted(robot_ids) != list(range(1, 15)):
         raise ValueError("frame-zero node identity differs")
+    ordered = [node for _robot_id, node in sorted(zip(robot_ids, nodes))]
     commands: list[tuple[float, float, float]] = []
     residual_floor_pairs: list[tuple[float, float]] = []
+    robot_payloads: list[dict] = []
     for node in ordered:
         if not isinstance(node, Mapping) or set(node) != {
             "robot_id",
@@ -464,7 +540,7 @@ def _validate_operation_result(
         if not isinstance(command_raw, list) or len(command_raw) != 3:
             raise ValueError("applied command must have exactly three components")
         command = tuple(
-            _strict_number(value, "applied command") for value in command_raw
+            _strict_float(value, "applied command") for value in command_raw
         )
         commands.append(command)
         problem = node["normal_problem"]
@@ -483,9 +559,9 @@ def _validate_operation_result(
             raise ValueError("hard-interior selection evidence is malformed")
         if policy["mode"] != "planar-chebyshev-fraction-cap-v1":
             raise ValueError("hard-interior selection mode differs")
-        fraction = _strict_number(policy["fraction"], "interior fraction")
-        cap = _strict_number(policy["cap_mps"], "interior cap")
-        tolerance = _strict_number(
+        fraction = _strict_float(policy["fraction"], "interior fraction")
+        cap = _strict_float(policy["cap_mps"], "interior cap")
+        tolerance = _strict_float(
             policy["feasibility_tolerance_mps"], "interior tolerance"
         )
         if (fraction, cap, tolerance) != (0.1, 0.1, 1e-9):
@@ -499,10 +575,10 @@ def _validate_operation_result(
             cap_mps=cap,
             tolerance_mps=tolerance,
         )
-        published_radius = _strict_number(
+        published_radius = _strict_float(
             policy["planar_chebyshev_radius_mps"], "published interior radius"
         )
-        floor = _strict_number(policy["enforced_floor_mps"], "enforced floor")
+        floor = _strict_float(policy["enforced_floor_mps"], "enforced floor")
         if not math.isclose(
             published_radius,
             independent_interior.radius_mps,
@@ -525,13 +601,13 @@ def _validate_operation_result(
             coefficients = row["coefficients"]
             if not isinstance(coefficients, list) or len(coefficients) != 3:
                 raise ValueError("normal hard row coefficient count differs")
-            residual = _strict_number(row["constant"], "hard row constant") + sum(
-                _strict_number(coefficient, "hard row coefficient") * component
+            residual = _strict_float(row["constant"], "hard row constant") + sum(
+                _strict_float(coefficient, "hard row coefficient") * component
                 for coefficient, component in zip(coefficients, command)
             )
             node_residuals.append(residual)
             residual_floor_pairs.append((residual, floor))
-        published_minimum = _strict_number(
+        published_minimum = _strict_float(
             policy["minimum_original_hard_residual_mps"],
             "published minimum original hard residual",
         )
@@ -544,14 +620,23 @@ def _validate_operation_result(
             raise ValueError(
                 "published minimum original hard residual differs from reconstruction"
             )
+        robot_payloads.append({
+            "robot_id": node["robot_id"],
+            "applied_command": list(command),
+            "normal_problem": copy.deepcopy(dict(problem)),
+            "hard_interior_selection": copy.deepcopy(dict(policy)),
+        })
 
-    current_audit, next_barriers, next_radii = _reconstruct_next_metrics(
+    reconstruction = _reconstruct_next_metrics(
         family, positions, commands
     )
+    current_audit = reconstruction["current_audit"]
+    next_barriers = reconstruction["next_barriers"]
+    next_radii = reconstruction["next_radii_mps"]
     if len(next_barriers) != 119 or len(next_radii) != 14:
         raise ValueError("independent one-step reconstruction cardinality differs")
-    barriers = tuple(float(item.value) for item in next_barriers)
-    radii = tuple(float(value) for value in next_radii)
+    barriers = tuple(_strict_float(item.value, "next barrier") for item in next_barriers)
+    radii = tuple(_strict_float(value, "next local radius") for value in next_radii)
     passed, reasons = _evaluate_predicate(
         commands=commands,
         residual_floor_pairs=residual_floor_pairs,
@@ -564,7 +649,7 @@ def _validate_operation_result(
         "status": "passed" if passed else "failed",
         "passed": passed,
         "reasons": list(reasons),
-        "config_sha256": observed_config_sha,
+        "config_sha256": expected_config_identity["sha256"],
         "positions_sha256": current_audit.positions_sha256,
         "minimum_applied_original_residual_mps": min(
             residual for residual, _floor in residual_floor_pairs
@@ -579,6 +664,33 @@ def _validate_operation_result(
         "minimum_next_local_radius_mps": min(radii),
         "barrier_count": len(barriers),
         "local_radius_count": len(radii),
+        "recomputation_evidence": {
+            "current_positions_m": [list(position) for position in positions],
+            "robots": robot_payloads,
+            "next_positions_m": [
+                list(position) for position in reconstruction["next_positions_m"]
+            ],
+            "next_dynamic_fim_certificates": [
+                _certificate_payload(certificate)
+                for certificate in reconstruction["next_certificates"]
+            ],
+            "next_barriers": [
+                {"edge": _edge_payload(barrier.edge), "value_m": barrier.value}
+                for barrier in next_barriers
+            ],
+            "next_local_problems": [
+                {
+                    "robot_id": robot_id,
+                    "problem": copy.deepcopy(problem),
+                    "radius_mps": radius,
+                }
+                for robot_id, problem, radius in zip(
+                    range(1, 15),
+                    reconstruction["next_local_problems"],
+                    radii,
+                )
+            ],
+        },
     }
 
 
@@ -615,6 +727,43 @@ def _temporary_parent(claim: Path) -> Path:
     return parent
 
 
+def _execution_provenance(operations: OneStepOperations | None) -> tuple[str, bool]:
+    return (
+        ("exact-binary-subprocess", True)
+        if operations is None
+        else ("injected-operations-test-only", False)
+    )
+
+
+def _require_qualifying_canonical_paths(
+    *,
+    binary: Path,
+    base_config: Path,
+    primary_config: Path,
+    initial_family: Path,
+    project_root: Path,
+) -> None:
+    expected = {
+        "binary": project_root / "build-diagnostic/Swarm",
+        "base_config": project_root / "config/config.json",
+        "primary_config": project_root
+        / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v2.json",
+        "initial_family": project_root
+        / "config/diagnostics/qualified_initial_family_v2.json",
+    }
+    observed = {
+        "binary": Path(binary),
+        "base_config": Path(base_config),
+        "primary_config": Path(primary_config),
+        "initial_family": Path(initial_family),
+    }
+    for label, canonical in expected.items():
+        if observed[label].resolve(strict=False) != canonical.resolve(strict=False):
+            raise ValueError(
+                f"qualifying exact-binary {label} path is not canonical"
+            )
+
+
 def _audit_seed_sequence(
     *,
     binary: Path,
@@ -639,6 +788,15 @@ def _audit_seed_sequence(
     ):
         raise ValueError("seed universe is not an ordered unique frozen subset")
     _require_publication_paths_absent(claim, output)
+    execution_provenance, qualifying = _execution_provenance(operations)
+    if qualifying:
+        _require_qualifying_canonical_paths(
+            binary=binary,
+            base_config=base_config,
+            primary_config=primary_config,
+            initial_family=initial_family,
+            project_root=project_root,
+        )
     base, base_buffer_identity = _read_bound_json(base_config, "base config")
     primary, primary_buffer_identity = _read_bound_json(
         primary_config, "primary config"
@@ -690,6 +848,8 @@ def _audit_seed_sequence(
             "implementation", "binary", "base_config", "primary_config", "initial_family"
         )},
         "seed_universe": list(seeds),
+        "execution_provenance": execution_provenance,
+        "qualifying": qualifying,
         "gate": {
             "dt_s": 0.5,
             "minimum_next_barrier_m": 0.0,
@@ -735,7 +895,7 @@ def _audit_seed_sequence(
                         )
                     )
                 )
-                config_path, positions = _materialize_seed_config(
+                config_path, positions, config_identity = _materialize_seed_config(
                     base=base,
                     primary=primary,
                     family=family,
@@ -755,6 +915,7 @@ def _audit_seed_sequence(
                         operation_result,
                         seed=seed,
                         config_path=config_path,
+                        expected_config_identity=config_identity,
                         expected_positions=positions,
                         family=family,
                     )
@@ -769,6 +930,8 @@ def _audit_seed_sequence(
                     project_root=project_root,
                 ) != identities:
                     raise ValueError("bound identity changed during execution")
+        except IdentityBindingError:
+            raise
         except Exception as error:
             failure_reason = (
                 error.reason if isinstance(error, ChildLaunchFailure)
@@ -786,7 +949,10 @@ def _audit_seed_sequence(
                     "reasons": [failure_reason or "terminal_failure"],
                 })
         results.sort(key=lambda row: row["seed"])
-        all_passed = failure_reason is None and all(row["passed"] for row in results)
+        predicate_passed = failure_reason is None and all(
+            row["passed"] for row in results
+        )
+        all_passed = qualifying and predicate_passed
         audit_summary = _summary(results, seeds)
         registered_summary = _summary(results, tuple(
             seed for seed in seeds if seed in REGISTERED_SEEDS
@@ -806,9 +972,19 @@ def _audit_seed_sequence(
         output_payload = {
             "schema_version": SCHEMA_VERSION,
             "terminal": True,
-            "status": "completed" if all_passed else "failed",
+            "status": (
+                "completed" if all_passed
+                else "failed" if qualifying
+                else "test_only"
+            ),
             "passed": all_passed,
-            "reason": "completed" if all_passed else (failure_reason or "predicate_failed"),
+            "predicate_passed": predicate_passed,
+            "reason": (
+                "completed" if all_passed
+                else (failure_reason or "predicate_failed") if qualifying
+                else "injected_operations_nonqualifying"
+            ),
+            "terminal_failure_reason": failure_reason,
             "claim_sha256": claimed_sha256,
             "claimed_identity_sha256": claimed_sha256,
             "source": identities["repository"],
@@ -817,6 +993,8 @@ def _audit_seed_sequence(
                 "implementation", "binary", "base_config", "primary_config", "initial_family"
             )},
             "seed_universe": list(seeds),
+            "execution_provenance": claim_payload["execution_provenance"],
+            "qualifying": claim_payload["qualifying"],
             "seed_results": results,
             "audit_summary": audit_summary,
             "registered_summary": registered_summary,
