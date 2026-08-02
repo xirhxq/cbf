@@ -70,3 +70,39 @@ review does not modify or authorize changes to the plan, code, tests,
 configuration, `build-diagnostic/`, v5 roots, or Git history.
 
 `git diff --check` is clean for the worktree changes after creating this review.
+
+## Scoped re-review
+
+This re-review is limited to I1--I4 above and the possibility that their fixes
+introduced a direct contradiction.  It does not reopen or expand the original
+review scope.
+
+| Item | Current value |
+|---|---|
+| plan-fix commit / `HEAD` | `488548a5300c24a286801641b0ad435229c8b164` |
+| tree | `1c71f149afb2dd374b7db82287d2b4320cf8823e` |
+| parent review commit | `993780c48d88cd0a4511041c5e7aab5fce1b08db` |
+| committed plan SHA-256 | `85655d67529c7806c29f6709acfa1cd13863f07bcca906f3ccab73b35f86c3c3` |
+| pre-re-review status | `?? build-diagnostic/` |
+
+- **I1 — ADDRESSED.** Task 1 now uses `manifest.json` for both immutable v5
+  roots (current plan lines 214--220), matching the observed terminal members.
+- **I2 — ADDRESSED.** The focused C++ test now expects `(0,-1)` (lines
+  323--332), which is an enumerated optimal vertex and the lexicographically
+  selected witness under the algorithm in lines 359--366.
+- **I3 — ADDRESSED.** Task 6 now creates and fsyncs an immutable
+  `O_CREAT|O_EXCL` claim before temporary configuration or child launch,
+  preserves it across hard interruption, rejects an existing claim, and binds
+  any terminal output to the claim SHA-256 (lines 724--797).  Task 8 declares,
+  passes, verifies, reviews, and commits that claim (lines 917--1029).  A
+  claim-only interruption explicitly blocks relaunch.
+- **I4 — ADDRESSED.** Task 7 now adds a pure, topology-free precommit payload
+  validator with RED/GREEN coverage (lines 834--895).  Task 9 uses only that
+  helper before the exact-four commit (lines 1083--1101), then invokes the
+  production `validate_authorization_binding` after commit and before any root
+  allocation (lines 1103--1118).
+
+No direct contradiction was found among these four repairs.  **Scoped verdict:
+PASS — Critical: 0, Important: 0, Minor: 0 (C0/I0/M0).**  This scoped verdict
+supersedes the original NON-PASS only for I1--I4 at committed plan identity
+`488548a5300c24a286801641b0ad435229c8b164`.
