@@ -326,6 +326,41 @@ class RunnerRootTests(unittest.TestCase):
         self.assertEqual(claimed, root)
         self.assertTrue(root.is_dir())
 
+    def test_preclaim_callback_cannot_win_by_creating_the_root(self):
+        root = self.base / "callback-created" / "v6"
+
+        def create_root():
+            root.mkdir(parents=True)
+
+        with self.assertRaisesRegex(FileExistsError, "must be absent"):
+            claim_campaign_root(
+                root,
+                self.project,
+                available_bytes_fn=lambda _path: 9_000_000_000,
+                identity_loader=create_root,
+            )
+        self.assertEqual(list(root.iterdir()), [])
+
+    def test_preclaim_callback_cannot_replace_parent_with_symlink(self):
+        parent = self.base / "claim-parent"
+        parent.mkdir()
+        redirected = self.base / "redirected"
+        redirected.mkdir()
+        root = parent / "v6"
+
+        def replace_parent():
+            parent.rmdir()
+            parent.symlink_to(redirected, target_is_directory=True)
+
+        with self.assertRaisesRegex(ValueError, "symbolic"):
+            claim_campaign_root(
+                root,
+                self.project,
+                available_bytes_fn=lambda _path: 9_000_000_000,
+                identity_loader=replace_parent,
+            )
+        self.assertFalse((redirected / "v6").exists())
+
 
 class RunnerDiskPolicyTests(unittest.TestCase):
     """Catch removal of the 6 GB hard floor and 2 GB cache ceiling."""
@@ -2891,6 +2926,254 @@ class RunnerV5InitialFamilyTests(unittest.TestCase):
         self.assertEqual(operations.events[:4], [
             "validated", "identities", ("schedule", 10), "initial-family-audit",
         ])
+
+
+class RunnerV6LifecycleTests(unittest.TestCase):
+    """Catch accidental reuse of v5 schedule/config semantics in v6."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="qualified-v6-runner-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.project = Path(__file__).resolve().parents[1]
+        self.family = (
+            self.project / "config/diagnostics/qualified_initial_family_v3.json"
+        )
+        self.base = self.project / "config/config.json"
+        self.primary = (
+            self.project
+            / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v3.json"
+        )
+        self.ablation = (
+            self.project
+            / "config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v3.json"
+        )
+
+    def arguments(self, **overrides):
+        values = {
+            "kind": "development", "version": "v6", "smoke_id": None,
+            "protocol": self.root / "protocol.json",
+            "authorization": self.root / "authorization.json",
+            "binary": self.root / "Swarm", "base_config": self.base,
+            "primary_config": self.primary, "ablation_config": self.ablation,
+            "initial_family": self.family,
+            "trajectory_seeds": "2026080201:2026080210",
+            "range_noise_seeds": "2026081301:2026081310",
+            "frames": 1000, "output_root": self.root / "raw/v6",
+        }
+        values.update(overrides)
+        return argparse.Namespace(**values)
+
+    def test_v6_schedule_freezes_successor_noise_seeds_and_v5_is_unchanged(self):
+        schedule = _schedule_from_arguments(self.arguments())
+        self.assertEqual(
+            [mission["trajectory_seed"] for mission in schedule],
+            list(range(2026080201, 2026080211)),
+        )
+        self.assertEqual(
+            [mission["range_noise_seed"] for mission in schedule],
+            list(range(2026081301, 2026081311)),
+        )
+        self.assertTrue(
+            all(mission["campaign_id"] == "development-v6" for mission in schedule)
+        )
+        with self.assertRaisesRegex(ValueError, "registered schedule"):
+            _schedule_from_arguments(self.arguments(
+                range_noise_seeds="2026081201:2026081210"
+            ))
+
+        v5 = _schedule_from_arguments(self.arguments(
+            version="v5",
+            initial_family=runner.INITIAL_FAMILY_PATH,
+            range_noise_seeds="2026081201:2026081210",
+            output_root=self.root / "raw/v5",
+        ))
+        self.assertEqual(v5[0]["campaign_id"], "development-v5")
+        self.assertEqual(v5[-1]["range_noise_seed"], 2026081210)
+
+    def test_v6_runtime_argv_is_exact_and_v5_argv_remains_byte_for_byte(self):
+        arguments = self.arguments()
+        argv = _runtime_runner_argv(arguments)
+        self.assertEqual(argv, [
+            "conda", "run", "-n", "cbf_env", "python", "-m",
+            "scripts.diagnostics.run_qualified_closure_campaign",
+            "--kind", "development", "--version", "v6",
+            "--protocol", str(arguments.protocol),
+            "--authorization", str(arguments.authorization),
+            "--binary", str(arguments.binary),
+            "--base-config", str(arguments.base_config),
+            "--primary-config", str(arguments.primary_config),
+            "--ablation-config", str(arguments.ablation_config),
+            "--initial-family", str(arguments.initial_family),
+            "--trajectory-seeds", "2026080201:2026080210",
+            "--range-noise-seeds", "2026081301:2026081310",
+            "--frames", "1000", "--output-root", str(arguments.output_root),
+        ])
+
+        old = self.arguments(
+            version="v5",
+            initial_family=runner.INITIAL_FAMILY_PATH,
+            range_noise_seeds="2026081201:2026081210",
+            output_root=self.root / "raw/v5",
+        )
+        old_argv = _runtime_runner_argv(old)
+        self.assertEqual(old_argv[old_argv.index("--version") + 1], "v5")
+        self.assertEqual(
+            old_argv[old_argv.index("--range-noise-seeds") + 1],
+            "2026081201:2026081210",
+        )
+        self.assertEqual(
+            old_argv[old_argv.index("--initial-family") + 1],
+            str(runner.INITIAL_FAMILY_PATH),
+        )
+
+    def test_v6_materialization_uses_exact_v3_policy_and_frozen_positions(self):
+        mission = _schedule_from_arguments(self.arguments())[0]
+        output = self.root / "mission/materialized.json"
+        materialized = materialize_primary_config(
+            self.base,
+            self.primary,
+            output,
+            mission,
+            initial_family_path=self.family,
+        )
+        self.assertEqual(
+            materialized["cbfs"]["hard-interior-selection"],
+            {
+                "mode": "planar-chebyshev-fraction-cap-v2",
+                "fraction": 0.131,
+                "cap-mps": 0.1,
+                "feasibility-tolerance-mps": 1e-9,
+            },
+        )
+        self.assertEqual(
+            materialized["qualified-controller"]["schema-version"],
+            "hard-interior-v3",
+        )
+        self.assertEqual(
+            materialized["evidence-stream"]["campaign-id"], "development-v6"
+        )
+        self.assertEqual(
+            materialized["initial"]["position"]["method"], "specified"
+        )
+        self.assertEqual(len(materialized["initial"]["position"]["positions"]), 14)
+
+    def test_v6_registration_failure_occurs_before_campaign_root_claim(self):
+        arguments = self.arguments()
+
+        class RejectingOperations:
+            def validate_registration(self, _arguments):
+                raise ValueError("one-step gate identity mismatch")
+
+        with self.assertRaisesRegex(ValueError, "one-step gate"):
+            execute_campaign(arguments, RejectingOperations())
+        self.assertFalse(arguments.output_root.exists())
+
+    def test_v6_preclaim_revalidation_failure_prevents_root_claim(self):
+        arguments = self.arguments()
+
+        class RaceOperations:
+            def validate_registration(self, _arguments):
+                return {"protocol_sha256": "p" * 64}
+
+            def collect_identities(self, _arguments):
+                return {"binary_sha256": "b" * 64}
+
+            def schedule_frozen(self, _schedule):
+                return None
+
+            def audit_initial_family(self, _arguments, _schedule):
+                return None
+
+            def reload_preclaim_identities(
+                self, _arguments, _schedule, _registration, _identities
+            ):
+                raise ValueError("injected preclaim protocol mutation")
+
+        with self.assertRaisesRegex(ValueError, "preclaim protocol mutation"):
+            execute_campaign(arguments, RaceOperations())
+        self.assertFalse(arguments.output_root.exists())
+
+    def test_production_preclaim_revalidation_repeats_every_frozen_input(self):
+        arguments = self.arguments()
+        schedule = _schedule_from_arguments(arguments)
+        operations = runner.ProductionOperations()
+        registration = {"protocol_sha256": "p" * 64}
+        identities = {"binary_sha256": "b" * 64}
+        operations.validate_registration = mock.Mock(return_value=registration)
+        operations.collect_identities = mock.Mock(return_value=identities)
+        operations.schedule_frozen = mock.Mock()
+        operations.audit_initial_family = mock.Mock()
+
+        operations.reload_preclaim_identities(
+            arguments, schedule, registration, identities
+        )
+
+        operations.validate_registration.assert_called_once_with(arguments)
+        operations.collect_identities.assert_called_once_with(arguments)
+        operations.schedule_frozen.assert_called_once_with(schedule)
+        operations.audit_initial_family.assert_called_once_with(arguments, schedule)
+
+    def test_v5_and_confirmatory_do_not_enable_preclaim_reload(self):
+        class StopBeforeClaim(RuntimeError):
+            pass
+
+        class CountingOperations:
+            def __init__(self):
+                self.validation_count = 0
+                self.identity_count = 0
+                self.reload_count = 0
+
+            def validate_registration(self, _arguments):
+                self.validation_count += 1
+                return {"protocol_sha256": "p" * 64}
+
+            def collect_identities(self, _arguments):
+                self.identity_count += 1
+                return {"binary_sha256": "b" * 64}
+
+            def schedule_frozen(self, _schedule):
+                return None
+
+            def audit_initial_family(self, _arguments, _schedule):
+                return None
+
+            def reload_preclaim_identities(self, *_arguments):
+                self.reload_count += 1
+
+        captured_loaders = []
+
+        def stop_claim(_root, _project, **kwargs):
+            captured_loaders.append(kwargs.get("identity_loader"))
+            raise StopBeforeClaim()
+
+        cases = (
+            self.arguments(
+                version="v5",
+                initial_family=runner.INITIAL_FAMILY_PATH,
+                range_noise_seeds="2026081201:2026081210",
+                output_root=self.root / "raw/v5",
+            ),
+            self.arguments(
+                kind="confirmatory-smoke", version=None, smoke_id="a",
+                initial_family=None,
+                trajectory_seeds="2026089001:2026089001",
+                range_noise_seeds="2026089101:2026089101",
+                frames=20, output_root=self.root / "smoke-a",
+            ),
+        )
+        for arguments in cases:
+            with self.subTest(kind=arguments.kind, version=arguments.version):
+                operations = CountingOperations()
+                with mock.patch.object(
+                    runner, "claim_campaign_root", side_effect=stop_claim
+                ):
+                    with self.assertRaises(StopBeforeClaim):
+                        execute_campaign(arguments, operations)
+                self.assertEqual(operations.validation_count, 1)
+                self.assertEqual(operations.identity_count, 1)
+                self.assertEqual(operations.reload_count, 0)
+                self.assertIsNone(captured_loaders[-1])
 
 
 if __name__ == "__main__":

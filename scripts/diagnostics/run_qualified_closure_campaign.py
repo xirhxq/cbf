@@ -39,6 +39,12 @@ INITIAL_FAMILY_PATH = (
     Path(__file__).resolve().parents[2]
     / "config" / "diagnostics" / "qualified_initial_family_v1.json"
 )
+V6_INITIAL_FAMILY_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "config" / "diagnostics" / "qualified_initial_family_v3.json"
+)
+V6_TRAJECTORY_SEEDS = tuple(range(2026080201, 2026080211))
+V6_RANGE_NOISE_SEEDS = tuple(range(2026081301, 2026081311))
 _INITIAL_AUDIT_CACHE = {}
 
 
@@ -236,10 +242,11 @@ def materialize_ablation_config(
 def _bind_v5_initial_positions(
     config: dict, mission: dict, *, initial_family_path: Path | None
 ) -> None:
-    if mission.get("campaign_id") != "development-v5":
+    campaign_id = mission.get("campaign_id")
+    if campaign_id not in {"development-v5", "development-v6"}:
         return
     if initial_family_path is None:
-        raise ValueError("development-v5 materialization requires initial-family")
+        raise ValueError(f"{campaign_id} materialization requires initial-family")
     positions = _load_v5_positions(initial_family_path, mission)
     config.setdefault("initial", {})["position"] = {
         "method": "specified",
@@ -276,12 +283,17 @@ def _read_json_object(path: Path, label: str) -> dict:
 
 
 def _derive_runtime_initial_state(path: Path):
-    from scripts.diagnostics.qualified_initial_state import (
-        audit_frozen_initial_family,
-        load_qualified_initial_family,
-    )
-
     path = Path(path)
+    if path.resolve() == V6_INITIAL_FAMILY_PATH.resolve():
+        from scripts.diagnostics.qualified_v6_initial_state import (
+            audit_frozen_v6_initial_family as audit_frozen_initial_family,
+            load_qualified_v6_initial_family as load_qualified_initial_family,
+        )
+    else:
+        from scripts.diagnostics.qualified_initial_state import (
+            audit_frozen_initial_family,
+            load_qualified_initial_family,
+        )
     before = sha256_path(path)
     family = load_qualified_initial_family(path)
     after = sha256_path(path)
@@ -340,15 +352,20 @@ def validate_new_campaign_root(
     if root.exists():
         raise FileExistsError(f"campaign root must be absent: {root}")
 
+    ancestor = root.parent
+    while not ancestor.exists():
+        if ancestor.is_symlink():
+            raise ValueError("campaign root parent must not be symbolic")
+        if ancestor.parent == ancestor:
+            raise FileNotFoundError(f"no existing ancestor for {root}")
+        ancestor = ancestor.parent
+    if ancestor.is_symlink():
+        raise ValueError("campaign root parent must not be symbolic")
+
     candidate = root.parent.resolve() / root.name
     if candidate == project_root or project_root in candidate.parents:
         raise ValueError("campaign root must resolve outside the repository")
 
-    ancestor = root.parent
-    while not ancestor.exists():
-        if ancestor.parent == ancestor:
-            raise FileNotFoundError(f"no existing ancestor for {root}")
-        ancestor = ancestor.parent
     probe = available_bytes_fn or (lambda path: shutil.disk_usage(path).free)
     free_bytes = probe(ancestor)
     if free_bytes < START_FREE_BYTES:
@@ -372,6 +389,11 @@ def claim_campaign_root(
     )
     if identity_loader is not None:
         identity_loader()
+        validate_new_campaign_root(
+            root,
+            project_root,
+            available_bytes_fn=available_bytes_fn,
+        )
     root = Path(root)
     root.parent.mkdir(parents=True, exist_ok=True)
     root.mkdir(exist_ok=False)
@@ -933,7 +955,8 @@ class ProductionOperations:
                 "frames": mission["frames"],
                 **(
                     {"initial_positions_sha256": mission["initial_positions_sha256"]}
-                    if mission["campaign_id"] == "development-v5" else {}
+                    if mission["campaign_id"] in {"development-v5", "development-v6"}
+                    else {}
                 ),
             }
             for mission in schedule
@@ -959,6 +982,20 @@ class ProductionOperations:
         self.initial_positions_by_seed = {
             item.seed: item.positions for item in audit.registered.audits
         }
+
+    def reload_preclaim_identities(
+        self, arguments, schedule, expected_registration, expected_identities
+    ):
+        """Repeat every mutable registration check immediately before mkdir."""
+        observed_registration = self.validate_registration(arguments)
+        observed_identities = self.collect_identities(arguments)
+        self.schedule_frozen(schedule)
+        if arguments.kind == "development":
+            self.audit_initial_family(arguments, schedule)
+        if observed_registration != expected_registration:
+            raise ValueError("preclaim registration identity changed")
+        if observed_identities != expected_identities:
+            raise ValueError("preclaim bound input identity changed")
 
     def materialize_config(self, arguments, mission, config_path):
         config = materialize_primary_config(
@@ -1048,7 +1085,7 @@ class ProductionOperations:
             overlay = Path(self.protocol["bindings"]["ablation_config"]["path"])
             initial_family_path = (
                 Path(self.protocol["bindings"]["initial_family"]["path"])
-                if mission.get("campaign_id") == "development-v5"
+                if mission.get("campaign_id") in {"development-v5", "development-v6"}
                 else None
             )
             config = materialize_ablation_config(
@@ -2163,9 +2200,20 @@ def execute_campaign(arguments, operations) -> dict:
     if arguments.kind == "development" and family_auditor is not None:
         family_auditor(arguments, schedule)
 
+    preclaim_reloader = getattr(operations, "reload_preclaim_identities", None)
+    identity_loader = None
+    if (
+        arguments.kind == "development"
+        and arguments.version == "v6"
+        and preclaim_reloader is not None
+    ):
+        identity_loader = lambda: preclaim_reloader(
+            arguments, schedule, registration, identities
+        )
     output_root = claim_campaign_root(
         Path(arguments.output_root),
         Path.cwd(),
+        identity_loader=identity_loader,
     )
     failure_reason = None
     completed = 0
@@ -2353,19 +2401,29 @@ def _schedule_from_arguments(arguments) -> list[dict]:
     if len(trajectory) != len(noise):
         raise ValueError("trajectory and range-noise seed counts differ")
     if arguments.kind == "development":
-        expected_trajectory = list(range(2026080201, 2026080211))
-        expected_noise = list(range(2026081201, 2026081211))
+        version = arguments.version
+        if version not in {"v5", "v6"}:
+            raise ValueError(
+                "development run requires version v5 or v6 and 1000 frames"
+            )
+        expected_trajectory = list(V6_TRAJECTORY_SEEDS)
+        expected_noise = list(
+            V6_RANGE_NOISE_SEEDS
+            if version == "v6" else range(2026081201, 2026081211)
+        )
         if trajectory != expected_trajectory or noise != expected_noise:
             raise ValueError("development seed schedule is not the registered schedule")
-        if arguments.frames != 1000 or arguments.version != "v5":
-            raise ValueError("development run requires version v5 and 1000 frames")
+        if arguments.frames != 1000:
+            raise ValueError(
+                "development run requires version v5 or v6 and 1000 frames"
+            )
         if getattr(arguments, "initial_family", None) is None:
             raise ValueError("development run requires --initial-family")
         _, initial_audit, _ = _derive_runtime_initial_state(arguments.initial_family)
         initial_by_seed = {
             item.seed: item for item in initial_audit.registered.audits
         }
-        campaign_id = "development-v5"
+        campaign_id = f"development-{version}"
     elif arguments.kind == "confirmatory":
         if getattr(arguments, "initial_family", None) is not None:
             raise ValueError("confirmatory run must not accept --initial-family")

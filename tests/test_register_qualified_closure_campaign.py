@@ -24,6 +24,165 @@ from scripts.diagnostics.register_qualified_closure_campaign import (
 )
 
 
+_V6_GATE_ROW_FIXTURES = {}
+
+
+def _real_v6_gate_rows_fixture(family_path, seeds):
+    """Build producer-shaped PASS rows from the independent frozen geometry."""
+    key = tuple(seeds)
+    if key in _V6_GATE_ROW_FIXTURES:
+        return json.loads(_V6_GATE_ROW_FIXTURES[key])
+    from scripts.diagnostics.hard_interior_selection import (
+        frozen_interior_floor,
+        solve_planar_hard_row_chebyshev,
+    )
+    from scripts.diagnostics.qualified_v6_initial_state import (
+        _local_hard_problem,
+        load_qualified_v6_initial_family,
+        materialize_v6_seed_positions,
+        reconstruct_v6_one_step_state,
+    )
+
+    family = load_qualified_v6_initial_family(family_path)
+    rows = []
+    for seed in key:
+        positions = materialize_v6_seed_positions(family, seed)
+        current_state = reconstruct_v6_one_step_state(
+            family, positions, tuple((0.0, 0.0) for _robot_id in range(1, 15))
+        )
+        current_rows = tuple(
+            tuple(
+                row for row in current_state.current_audit.endpoint_rows
+                if row.owner == robot_id
+            )
+            for robot_id in range(1, 15)
+        )
+        current_material = []
+        commands = []
+        for robot_id in range(1, 15):
+            problem = _local_hard_problem(
+                robot_id, current_rows[robot_id - 1], 25.0
+            )
+            interior = solve_planar_hard_row_chebyshev(problem)
+            floor = frozen_interior_floor(
+                interior.radius_mps, fraction=0.131, cap_mps=0.1,
+                tolerance_mps=1e-9,
+            )
+            command = [interior.witness[0], interior.witness[1], 0.0]
+            command_residuals = [
+                row["constant"] + sum(
+                    coefficient * component
+                    for coefficient, component in zip(
+                        row["coefficients"], command, strict=True
+                    )
+                )
+                for row in problem["rows"]
+            ]
+            minimum_residual = min(command_residuals)
+            commands.append(tuple(command[:2]))
+            current_material.append(
+                (problem, interior, floor, command, minimum_residual)
+            )
+        state = reconstruct_v6_one_step_state(family, positions, commands)
+        next_rows = tuple(
+            tuple(
+                row for row in state.next_endpoint_rows
+                if row.owner == robot_id
+            )
+            for robot_id in range(1, 15)
+        )
+        robot_payloads = []
+        residuals = []
+        floors = []
+        next_problem_payloads = []
+        for robot_id, material in enumerate(current_material, start=1):
+            problem, interior, floor, command, minimum_residual = material
+            residuals.append(minimum_residual)
+            floors.append(floor)
+            robot_payloads.append({
+                "robot_id": robot_id,
+                "applied_command": command,
+                "normal_problem": problem,
+                "hard_interior_selection": {
+                    "schema_version": "hard-interior-v3",
+                    "mode": "planar-chebyshev-fraction-cap-v2",
+                    "fraction": 0.131,
+                    "cap_mps": 0.1,
+                    "feasibility_tolerance_mps": 1e-9,
+                    "planar_chebyshev_radius_mps": interior.radius_mps,
+                    "enforced_floor_mps": floor,
+                    "minimum_original_hard_residual_mps": minimum_residual,
+                },
+            })
+            next_problem_payloads.append({
+                "robot_id": robot_id,
+                "problem": _local_hard_problem(
+                    robot_id, next_rows[robot_id - 1], 25.0
+                ),
+                "radius_mps": state.next_local_radii_mps[robot_id - 1],
+            })
+        barriers = [
+            {
+                "edge": {
+                    "kind": barrier.edge.kind,
+                    "low": barrier.edge.low,
+                    "high": barrier.edge.high,
+                    "base_id": barrier.edge.base_id,
+                },
+                "value_m": barrier.value,
+            }
+            for barrier in state.next_barriers
+        ]
+        certificates = [
+            {
+                "robot_id": certificate.robot_id,
+                "reference_ids": [
+                    {"kind": kind, "id": reference_id}
+                    for kind, reference_id in certificate.reference_ids
+                ],
+                "covariance": [list(row) for row in certificate.covariance],
+                "covariance_rate_bound": certificate.covariance_rate_bound,
+                "epsilon": certificate.epsilon,
+                "bar_nu": certificate.bar_nu,
+            }
+            for certificate in state.next_certificates
+        ]
+        rows.append({
+            "seed": seed,
+            "launched": True,
+            "status": "passed",
+            "passed": True,
+            "reasons": [],
+            # The producer's temporary output directory is intentionally not
+            # retained, so only the canonical digest token is fixture data.
+            "config_sha256": hashlib.sha256(str(seed).encode()).hexdigest(),
+            "positions_sha256": state.current_audit.positions_sha256,
+            "minimum_applied_original_residual_mps": min(residuals),
+            "minimum_enforced_floor_mps": min(floors),
+            "maximum_planar_component_mps": max(
+                abs(component) for command in commands for component in command
+            ),
+            "minimum_next_barrier_m": min(item["value_m"] for item in barriers),
+            "minimum_next_local_radius_mps": min(state.next_local_radii_mps),
+            "barrier_count": len(barriers),
+            "local_radius_count": len(state.next_local_radii_mps),
+            "recomputation_evidence": {
+                "current_positions_m": [list(position) for position in positions],
+                "robots": robot_payloads,
+                "next_positions_m": [
+                    list(position) for position in state.next_positions_m
+                ],
+                "next_dynamic_fim_certificates": certificates,
+                "next_barriers": barriers,
+                "next_local_problems": next_problem_payloads,
+            },
+        })
+    _V6_GATE_ROW_FIXTURES[key] = json.dumps(
+        rows, sort_keys=True, separators=(",", ":")
+    )
+    return json.loads(_V6_GATE_ROW_FIXTURES[key])
+
+
 class QualifiedClosureRegistrarTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(
@@ -1546,6 +1705,738 @@ class QualifiedClosureV6PredecessorTests(unittest.TestCase):
             with self.subTest(alternate=alternate):
                 with self.assertRaisesRegex(ValueError, "v5 predecessor"):
                     registrar.load_v6_predecessor_identity(alternate)
+
+
+class QualifiedClosureV6LifecycleTests(unittest.TestCase):
+    """Catch any lifecycle path that admits v6 without the frozen PASS gate."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(
+            prefix="qualified-v6-lifecycle-"
+        )
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.project = self.root / "repo"
+        self.project.mkdir()
+        self.source = self.project / "run.py"
+        self.binary = self.project / "Swarm"
+        self.base = self.project / "config.json"
+        self.dependencies = self.project / "CMakeCache.txt"
+        self.schema = self.project / "schema.py"
+        for path, payload in (
+            (self.source, "source\n"),
+            (self.binary, "binary\n"),
+            (self.base, "{}\n"),
+            (self.dependencies, "ENABLE_GUROBI:BOOL=ON\n"),
+            (self.schema, "schema\n"),
+        ):
+            path.write_text(payload, encoding="utf-8")
+        self.primary = (
+            Path(__file__).resolve().parents[1]
+            / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v3.json"
+        )
+        self.ablation = (
+            Path(__file__).resolve().parents[1]
+            / "config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v3.json"
+        )
+        self.family = (
+            Path(__file__).resolve().parents[1]
+            / "config/diagnostics/qualified_initial_family_v3.json"
+        )
+        self.predecessor = (
+            Path(__file__).resolve().parents[1]
+            / "config/diagnostics/qualified_v6_predecessor_v5_identity_v1.json"
+        )
+        self.amendment_review = (
+            Path(__file__).resolve().parents[1]
+            / "docs/superpowers/plans/reviews/"
+            "2026-08-02-cbf2026-qualified-v6-controller-margin-amendment-review.md"
+        )
+        self.implementation_review = (
+            Path(__file__).resolve().parents[1]
+            / "docs/superpowers/plans/reviews/"
+            "2026-08-02-cbf2026-qualified-v6-controller-margin-implementation-review.md"
+        )
+        self.gate_claim = self.root / "gate-claim.json"
+        self.gate = self.root / "gate.json"
+        self.gate_review = self.root / "gate-review.md"
+        self.gate_review.write_text(
+            "Independent gate review: C0/I0/M0\n", encoding="utf-8"
+        )
+        self.source_identity = {
+            "root": str(self.project),
+            "head": "1" * 40,
+            "tree": "2" * 40,
+        }
+        gate_producer = (
+            Path(__file__).resolve().parents[1]
+            / "scripts/diagnostics/audit_qualified_v6_one_step_viability.py"
+        )
+        self.gate_bindings = {
+            "implementation": {
+                **registrar._file_identity(gate_producer),
+                "repository_path": (
+                    "scripts/diagnostics/audit_qualified_v6_one_step_viability.py"
+                ),
+                "repository_head": self.source_identity["head"],
+            },
+            "binary": registrar._file_identity(self.binary),
+            "base_config": registrar._file_identity(self.base),
+            "primary_config": registrar._file_identity(self.primary),
+            "initial_family": registrar._file_identity(self.family),
+        }
+        claim = {
+            "schema_version": (
+                "cbf2026-qualified-v6-one-step-viability-v2-claim"
+            ),
+            "claimed": True,
+            "source": copy.deepcopy(self.source_identity),
+            "bindings": copy.deepcopy(self.gate_bindings),
+            "seed_universe": list(range(2026080201, 2026080301)),
+            "execution_provenance": "exact-binary-subprocess",
+            "qualifying": True,
+            "gate": {
+                "dt_s": 0.5,
+                "minimum_next_barrier_m": 0.0,
+                "barrier_comparison": "strictly-greater",
+                "minimum_next_local_radius_mps": 0.05,
+                "component_max_mps": 25.0,
+                "numeric_tolerance": 1e-7,
+                "clamp": False,
+                "resample": False,
+                "retry": False,
+            },
+            "boundary": (
+                "one-step development admission only; not long-horizon safety "
+                "or recursive feasibility"
+            ),
+        }
+        self.claim_payload = copy.deepcopy(claim)
+        self.gate_claim.write_text(
+            json.dumps(claim, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        self.claim_sha256 = hashlib.sha256(
+            self.gate_claim.read_bytes()
+        ).hexdigest()
+        rows = [
+            {
+                "seed": seed,
+                "launched": True,
+                "status": "passed",
+                "passed": True,
+                "reasons": [],
+                "config_sha256": hashlib.sha256(str(seed).encode()).hexdigest(),
+                "positions_sha256": "5" * 64,
+                "minimum_applied_original_residual_mps": 0.1,
+                "minimum_enforced_floor_mps": 0.1,
+                "maximum_planar_component_mps": 24.0,
+                "minimum_next_barrier_m": 1.0,
+                "minimum_next_local_radius_mps": 0.06,
+                "barrier_count": 119,
+                "local_radius_count": 14,
+                "recomputation_evidence": {},
+            }
+            for seed in range(2026080201, 2026080301)
+        ]
+        summary = {
+            "proposed_count": 100,
+            "launched_count": 100,
+            "passed_count": 100,
+            "minimum_next_barrier_m": min(
+                row["minimum_next_barrier_m"] for row in rows
+            ),
+            "minimum_next_local_radius_mps": min(
+                row["minimum_next_local_radius_mps"] for row in rows
+            ),
+        }
+        registered = dict(summary)
+        registered.update(
+            proposed_count=10, launched_count=10, passed_count=10
+        )
+        self.gate_payload = {
+            "schema_version": "cbf2026-qualified-v6-one-step-viability-v2",
+            "terminal": True,
+            "status": "completed",
+            "passed": True,
+            "predicate_passed": True,
+            "reason": "completed",
+            "terminal_failure_reason": None,
+            "claim_sha256": self.claim_sha256,
+            "claimed_identity_sha256": self.claim_sha256,
+            "source": copy.deepcopy(self.source_identity),
+            "terminal_source": copy.deepcopy(self.source_identity),
+            "bindings": copy.deepcopy(self.gate_bindings),
+            "seed_universe": list(range(2026080201, 2026080301)),
+            "execution_provenance": "exact-binary-subprocess",
+            "qualifying": True,
+            "seed_results": rows,
+            "audit_summary": summary,
+            "registered_summary": registered,
+            "launch_count": 100,
+            "retry_count": 0,
+            "boundary": claim["boundary"],
+        }
+        self.write_gate(self.gate_payload)
+
+    def write_gate(self, payload):
+        self.gate.write_text(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+
+    def write_claim(self, payload):
+        self.gate_claim.write_text(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+
+    def validate_gate(self, payload=None):
+        if payload is not None:
+            self.write_gate(payload)
+        protocol_bindings = {
+            "binary": self.gate_bindings["binary"],
+            "base_config": self.gate_bindings["base_config"],
+            "primary_config": self.gate_bindings["primary_config"],
+            "initial_family": self.gate_bindings["initial_family"],
+        }
+        with self.frozen_paths():
+            return registrar._validate_v6_gate(
+                claim_path=self.gate_claim,
+                gate_path=self.gate,
+                gate_review_path=self.gate_review,
+                protocol_bindings=protocol_bindings,
+            )
+
+    def validate_seed_row(self, row):
+        from scripts.diagnostics.qualified_v6_initial_state import (
+            load_qualified_v6_initial_family,
+        )
+        family = load_qualified_v6_initial_family(self.family)
+        return registrar._validate_v6_seed_result(
+            row, seed=2026080201, family=family
+        )
+
+    def real_seed_row(self):
+        return _real_v6_gate_rows_fixture(
+            self.family, (2026080201,)
+        )[0]
+
+    def gate_candidate(self):
+        candidate = copy.deepcopy({
+            key: value for key, value in self.gate_payload.items()
+            if key != "seed_results"
+        })
+        candidate["seed_results"] = self.gate_payload["seed_results"]
+        return candidate
+
+    @contextmanager
+    def frozen_paths(self):
+        with (
+            mock.patch.object(registrar, "FROZEN_V6_BINARY_PATH", self.binary),
+            mock.patch.object(registrar, "FROZEN_V6_BASE_CONFIG_PATH", self.base),
+            mock.patch.object(registrar, "FROZEN_V6_GATE_CLAIM_PATH", self.gate_claim),
+            mock.patch.object(registrar, "FROZEN_V6_GATE_PATH", self.gate),
+            mock.patch.object(registrar, "FROZEN_V6_GATE_REVIEW_PATH", self.gate_review),
+            mock.patch.object(
+                registrar, "_validate_v6_seed_result",
+                side_effect=lambda row, **_kwargs: row,
+                create=True,
+            ),
+            mock.patch.object(
+                registrar,
+                "FROZEN_EXECUTION_ROOTS",
+                {
+                    **registrar.FROZEN_EXECUTION_ROOTS,
+                    "development_v6": {
+                        "raw": str(self.root / "raw/v6"),
+                        "analysis": str(self.root / "analysis/v6"),
+                    },
+                },
+            ),
+        ):
+            yield
+
+    def build_v6(self, **overrides):
+        values = {
+            "kind": "development",
+            "version": "v6",
+            "project_root": self.project,
+            "trajectory_seeds": list(range(2026080201, 2026080211)),
+            "range_noise_seeds": list(range(2026081301, 2026081311)),
+            "frames": 1000,
+            "roots": {
+                "raw": self.root / "raw/v6",
+                "analysis": self.root / "analysis/v6",
+            },
+            "bindings": {
+                "source": self.source,
+                "binary": self.binary,
+                "base_config": self.base,
+                "primary_config": self.primary,
+                "ablation_config": self.ablation,
+                "dependencies": self.dependencies,
+                "schema": self.schema,
+                "initial_family": self.family,
+            },
+            "thresholds": copy.deepcopy(FROZEN_THRESHOLDS),
+            "dirty_relevant_paths": [],
+            "development_gate_claim": self.gate_claim,
+            "development_gate": self.gate,
+            "development_gate_review": self.gate_review,
+            "predecessor_identity": self.predecessor,
+            "controller_margin_amendment_review": self.amendment_review,
+            "controller_margin_implementation_review": self.implementation_review,
+        }
+        values.update(overrides)
+        with self.frozen_paths():
+            return build_qualified_closure_protocol(**values)
+
+    def test_v6_protocol_rejects_absent_or_failed_one_step_gate(self):
+        self.gate.unlink()
+        with self.assertRaisesRegex(ValueError, "one-step gate"):
+            self.build_v6()
+        self.gate_payload["status"] = "failed"
+        self.gate_payload["passed"] = False
+        self.write_gate(self.gate_payload)
+        with self.assertRaisesRegex(ValueError, "one-step gate"):
+            self.build_v6()
+
+    def test_v6_gate_rejects_nonexact_seed_and_nested_evidence_schemas(self):
+        mutations = {
+            "extra seed field": lambda row: row.update(extra=True),
+            "missing seed field": lambda row: row.pop("config_sha256"),
+            "extra evidence field": lambda row: row["recomputation_evidence"].update(
+                extra=True
+            ),
+            "missing evidence field": lambda row: row["recomputation_evidence"].pop(
+                "next_barriers"
+            ),
+            "extra robot field": lambda row: row["recomputation_evidence"][
+                "robots"
+            ][0].update(extra=True),
+            "extra certificate field": lambda row: row["recomputation_evidence"][
+                "next_dynamic_fim_certificates"
+            ][0].update(extra=True),
+            "extra barrier field": lambda row: row["recomputation_evidence"][
+                "next_barriers"
+            ][0].update(extra=True),
+            "extra local problem field": lambda row: row["recomputation_evidence"][
+                "next_local_problems"
+            ][0].update(extra=True),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                row = copy.deepcopy(self.real_seed_row())
+                mutate(row)
+                with self.assertRaisesRegex(ValueError, "seed result|evidence"):
+                    self.validate_seed_row(row)
+
+    def test_v6_gate_threshold_contract_rejects_bool_int_and_nonfinite_tokens(self):
+        self.assertEqual(self.validate_gate()["status"], "completed")
+        mutations = {
+            "bool threshold": ("minimum_next_barrier_m", False),
+            "int threshold": ("minimum_next_barrier_m", 0),
+            "nonfinite threshold": ("minimum_next_barrier_m", float("nan")),
+            "int component bound": ("component_max_mps", 25),
+        }
+        for label, (field, value) in mutations.items():
+            with self.subTest(label=label):
+                claim = copy.deepcopy(self.claim_payload)
+                claim["gate"][field] = value
+                self.write_claim(claim)
+                digest = hashlib.sha256(self.gate_claim.read_bytes()).hexdigest()
+                gate = self.gate_candidate()
+                gate["claim_sha256"] = digest
+                gate["claimed_identity_sha256"] = digest
+                with self.assertRaisesRegex(ValueError, "threshold"):
+                    self.validate_gate(gate)
+
+    def test_v6_gate_independently_recomputes_seed_evidence_and_metrics(self):
+        baseline = self.real_seed_row()
+        self.assertEqual(
+            self.validate_seed_row(copy.deepcopy(baseline))["seed"],
+            2026080201,
+        )
+        mutations = {
+            "config hash token": lambda row: row.__setitem__(
+                "config_sha256", "not-a-sha"
+            ),
+            "positions hash": lambda row: row.__setitem__(
+                "positions_sha256", "f" * 64
+            ),
+            "current position": lambda row: row["recomputation_evidence"][
+                "current_positions_m"
+            ][0].__setitem__(0, row["recomputation_evidence"][
+                "current_positions_m"
+            ][0][0] + 1.0),
+            "normal problem": lambda row: row["recomputation_evidence"][
+                "robots"
+            ][0]["normal_problem"].update(owner=2),
+            "hard problem id": lambda row: row["recomputation_evidence"][
+                "robots"
+            ][0]["normal_problem"].update(hard_problem_id="forged-equivalent"),
+            "hard row name": lambda row: row["recomputation_evidence"][
+                "robots"
+            ][0]["normal_problem"]["rows"][0].update(name="forged-equivalent"),
+            "post reset barrier": lambda row: row["recomputation_evidence"][
+                "robots"
+            ][0]["normal_problem"]["rows"][0].update(post_reset_barrier=1.0),
+            "problem snapshot version": lambda row: row["recomputation_evidence"][
+                "robots"
+            ][0]["normal_problem"].update(snapshot_version=2),
+            "row allocation version": lambda row: row["recomputation_evidence"][
+                "robots"
+            ][0]["normal_problem"]["rows"][0].update(allocation_version=2),
+            "canonical bound": lambda row: row["recomputation_evidence"][
+                "robots"
+            ][0]["normal_problem"]["bounds"][0].update(limit=24.0),
+            "interior floor": lambda row: row["recomputation_evidence"][
+                "robots"
+            ][0]["hard_interior_selection"].update(enforced_floor_mps=0.0),
+            "applied command relation": lambda row: row["recomputation_evidence"][
+                "robots"
+            ][0]["applied_command"].__setitem__(0, 0.25),
+            "next position": lambda row: row["recomputation_evidence"][
+                "next_positions_m"
+            ][0].__setitem__(0, row["recomputation_evidence"][
+                "next_positions_m"
+            ][0][0] + 0.5),
+            "FIM certificate": lambda row: row["recomputation_evidence"][
+                "next_dynamic_fim_certificates"
+            ][0].update(epsilon=0.0),
+            "next barrier": lambda row: row["recomputation_evidence"][
+                "next_barriers"
+            ][0].update(value_m=99.0),
+            "next local problem": lambda row: row["recomputation_evidence"][
+                "next_local_problems"
+            ][0].update(radius_mps=99.0),
+            "published row metric": lambda row: row.__setitem__(
+                "minimum_next_barrier_m", 99.0
+            ),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                row = copy.deepcopy(self.real_seed_row())
+                mutate(row)
+                with self.assertRaisesRegex(ValueError, "seed result|evidence"):
+                    self.validate_seed_row(row)
+    def test_v6_protocol_binds_exact_gate_family_configs_and_predecessor(self):
+        protocol = self.build_v6()
+        self.assertEqual(protocol["version"], "v6")
+        self.assertEqual(protocol["development_gate"]["status"], "completed")
+        self.assertEqual(
+            protocol["development_gate"]["schema_version"],
+            "cbf2026-qualified-v6-one-step-viability-v2",
+        )
+        self.assertEqual(
+            protocol["development_gate"]["campaign_id"],
+            "qualified-v6-one-step-development-gate-v2",
+        )
+        self.assertEqual(
+            Path(protocol["bindings"]["primary_config"]["path"]),
+            self.primary,
+        )
+        self.assertEqual(
+            Path(protocol["bindings"]["ablation_config"]["path"]),
+            self.ablation,
+        )
+        self.assertEqual(
+            Path(protocol["bindings"]["initial_family"]["path"]),
+            self.family,
+        )
+        self.assertEqual(
+            protocol["schedule"]["trajectory_seeds"],
+            list(range(2026080201, 2026080211)),
+        )
+        self.assertEqual(
+            protocol["schedule"]["range_noise_seeds"],
+            list(range(2026081301, 2026081311)),
+        )
+        self.assertEqual(
+            protocol["controller_margin_implementation"]["implementation_commit"],
+            "de6939228f01e2600aeeeba2151ec2162f737cc4",
+        )
+        self.assertEqual(
+            protocol["controller_margin_implementation"]["review_commit"],
+            "a8586c3518f437c68cdeb38a9e10605935f2a48d",
+        )
+
+    def test_v6_gate_git_topology_is_exact_and_allows_later_analyzer_commit(self):
+        def git(repository, *tokens):
+            result = subprocess.run(
+                ["git", *tokens], cwd=repository, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
+            )
+            return result.stdout.strip()
+
+        def fixture(name, *, extra_gate_path=False):
+            repository = self.root / name
+            repository.mkdir()
+            git(repository, "init", "-q")
+            git(repository, "config", "user.email", "test@example.invalid")
+            git(repository, "config", "user.name", "Test")
+            producer_token = (
+                "scripts/diagnostics/audit_qualified_v6_one_step_viability.py"
+            )
+            producer = repository / producer_token
+            producer.parent.mkdir(parents=True)
+            producer.write_text("producer\n", encoding="utf-8")
+            git(repository, "add", producer_token)
+            git(repository, "commit", "-qm", "task6b review")
+            task6b = git(repository, "rev-parse", "HEAD")
+            task6b_tree = git(repository, "rev-parse", "HEAD^{tree}")
+
+            for token in registrar.FROZEN_V6_TASK7_PATHS:
+                path = repository / token
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(f"task7 {token}\n", encoding="utf-8")
+            git(repository, "add", *registrar.FROZEN_V6_TASK7_PATHS)
+            git(repository, "commit", "-qm", "task7 lifecycle")
+            source = git(repository, "rev-parse", "HEAD")
+            source_tree = git(repository, "rev-parse", "HEAD^{tree}")
+
+            gate_tokens = (
+                "docs/diagnostics/reviews/gate-claim.json",
+                "docs/diagnostics/reviews/gate.json",
+                "docs/diagnostics/reviews/gate-review.md",
+            )
+            for token in gate_tokens:
+                path = repository / token
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(f"gate {token}\n", encoding="utf-8")
+            additions = list(gate_tokens)
+            if extra_gate_path:
+                extra = repository / "docs/diagnostics/reviews/extra.txt"
+                extra.write_text("extra\n", encoding="utf-8")
+                additions.append("docs/diagnostics/reviews/extra.txt")
+            git(repository, "add", *additions)
+            git(repository, "commit", "-qm", "gate artifacts")
+            gate_commit = git(repository, "rev-parse", "HEAD")
+            declaration = {
+                "source": {
+                    "root": str(repository.resolve()),
+                    "head": source,
+                    "tree": source_tree,
+                },
+                "bindings": {
+                    "implementation": {
+                        **registrar._file_identity(producer),
+                        "repository_path": producer_token,
+                        "repository_head": source,
+                    },
+                },
+                "claim": registrar._file_identity(repository / gate_tokens[0]),
+                "artifact": registrar._file_identity(repository / gate_tokens[1]),
+                "review": registrar._file_identity(repository / gate_tokens[2]),
+            }
+            controller = {
+                "review_commit": task6b,
+                "review_tree": task6b_tree,
+            }
+            return repository, gate_commit, declaration, controller
+
+        repository, gate_commit, declaration, controller = fixture("topology-ok")
+        analyzer = repository / "scripts/diagnostics/analyze.py"
+        analyzer.write_text("compatible\n", encoding="utf-8")
+        git(repository, "add", "scripts/diagnostics/analyze.py")
+        git(repository, "commit", "-qm", "analyzer compatibility")
+        head = git(repository, "rev-parse", "HEAD")
+        repository_identity = {
+            "root": str(repository.resolve()),
+            "head": head,
+            "tree": git(repository, "rev-parse", "HEAD^{tree}"),
+        }
+        observed_gate = registrar._verify_v6_gate_git_topology(
+            repository_identity, declaration, controller
+        )
+        self.assertEqual(observed_gate, gate_commit)
+
+        task7_token = registrar.FROZEN_V6_TASK7_PATHS[0]
+        (repository / task7_token).write_text(
+            "mutated after source commit\n", encoding="utf-8"
+        )
+        with self.assertRaisesRegex(ValueError, "Task 7 source.*blob"):
+            registrar._verify_v6_gate_git_topology(
+                repository_identity, declaration, controller
+            )
+        (repository / task7_token).write_text(
+            f"task7 {task7_token}\n", encoding="utf-8"
+        )
+
+        bad_repository, _gate, bad_declaration, bad_controller = fixture(
+            "topology-extra", extra_gate_path=True
+        )
+        bad_identity = {
+            "root": str(bad_repository.resolve()),
+            "head": git(bad_repository, "rev-parse", "HEAD"),
+            "tree": git(bad_repository, "rev-parse", "HEAD^{tree}"),
+        }
+        with self.assertRaisesRegex(ValueError, "gate artifact|exact three"):
+            registrar._verify_v6_gate_git_topology(
+                bad_identity, bad_declaration, bad_controller
+            )
+
+        (repository / "docs/diagnostics/reviews/gate.json").write_text(
+            "mutated after gate commit\n", encoding="utf-8"
+        )
+        with self.assertRaisesRegex(ValueError, "blob"):
+            registrar._verify_v6_gate_git_topology(
+                repository_identity, declaration, controller
+            )
+
+    def test_v6_gate_reads_are_nofollow_and_detect_descriptor_mutation(self):
+        symbolic = self.root / "symbolic-gate.json"
+        symbolic.symlink_to(self.gate)
+        with self.assertRaisesRegex(ValueError, "non-symbolic|regular"):
+            registrar._read_stable_regular_file(symbolic, "one-step gate")
+
+        before = self.gate.stat()
+        after = mock.Mock(wraps=before)
+        after.st_size = before.st_size + 1
+        with mock.patch.object(
+            registrar.os, "fstat", side_effect=(before, after)
+        ):
+            with self.assertRaisesRegex(ValueError, "changed during"):
+                registrar._read_stable_regular_file(self.gate, "one-step gate")
+
+    def test_v6_gate_head_tree_binary_config_family_and_seed_mutations_fail(self):
+        mutations = (
+            ("head", lambda value: value["source"].update(head="9" * 40)),
+            ("tree", lambda value: value["terminal_source"].update(tree="9" * 40)),
+            ("binary", lambda value: value["bindings"]["binary"].update(sha256="9" * 64)),
+            ("primary", lambda value: value["bindings"]["primary_config"].update(sha256="9" * 64)),
+            ("family", lambda value: value["bindings"]["initial_family"].update(sha256="9" * 64)),
+            ("seed-order", lambda value: value["seed_universe"].reverse()),
+        )
+        for label, mutate in mutations:
+            with self.subTest(label=label):
+                candidate = self.gate_candidate()
+                mutate(candidate)
+                self.write_gate(candidate)
+                with self.assertRaisesRegex(ValueError, "one-step gate"):
+                    self.build_v6()
+        self.write_gate(self.gate_payload)
+
+    def test_v6_root_collision_and_existing_root_fail_before_protocol(self):
+        with self.assertRaisesRegex(ValueError, "roots must be distinct"):
+            self.build_v6(roots={"raw": self.root / "same", "analysis": self.root / "same"})
+        existing = self.root / "raw/v6"
+        existing.mkdir(parents=True)
+        with self.assertRaises(FileExistsError):
+            self.build_v6()
+
+    def test_v6_precommit_authorization_payload_validation_is_pure(self):
+        protocol = self.build_v6()
+        protocol["repository"] = {
+            "root": str(self.project), "head": "a" * 40, "tree": "b" * 40,
+            "dirty_tracked_paths": [], "dirty_relevant_paths": [],
+            "allowed_untracked_paths": [],
+        }
+        text = "批准执行 exact development-v6 protocol。"
+        authorization = {
+            "schema_version": "cbf2026-qualified-authorization-v1",
+            "authorized": True,
+            "kind": "development",
+            "version": "v6",
+            "protocol_sha256": "c" * 64,
+            "implementation_identity": "a" * 40,
+            "preflight_sha256": "d" * 64,
+            "user_authorization_date": "2026-08-03",
+            "user_authorization_text": text,
+            "user_authorization_text_sha256": hashlib.sha256(
+                text.encode("utf-8")
+            ).hexdigest(),
+        }
+        with (
+            mock.patch.object(
+                registrar, "_repository_identity",
+                side_effect=AssertionError("pure validator called Git"),
+            ),
+            mock.patch.object(
+                registrar, "verify_registered_protocol",
+                side_effect=AssertionError("pure validator inspected topology"),
+            ),
+        ):
+            validated = registrar.validate_authorization_payload(
+                protocol,
+                authorization,
+                protocol_sha256="c" * 64,
+                preflight_sha256="d" * 64,
+            )
+        self.assertEqual(validated, authorization)
+
+        historical = dict(authorization, version="v5")
+        with self.assertRaisesRegex(ValueError, "authorization"):
+            registrar.validate_authorization_payload(
+                protocol,
+                historical,
+                protocol_sha256="c" * 64,
+                preflight_sha256="d" * 64,
+            )
+
+        mutations = (
+            ("extra-field", lambda value: value.update(extra=True)),
+            ("date", lambda value: value.update(user_authorization_date="2026-8-3")),
+            ("text", lambda value: value.update(user_authorization_text=text + " ")),
+            ("protocol", lambda value: value.update(protocol_sha256="e" * 64)),
+            ("preflight", lambda value: value.update(preflight_sha256="e" * 64)),
+        )
+        for label, mutate in mutations:
+            with self.subTest(label=label):
+                candidate = copy.deepcopy(authorization)
+                mutate(candidate)
+                with self.assertRaisesRegex(ValueError, "authorization"):
+                    registrar.validate_authorization_payload(
+                        protocol,
+                        candidate,
+                        protocol_sha256="c" * 64,
+                        preflight_sha256="d" * 64,
+                    )
+
+    def test_v6_registered_runner_and_analyzer_argv_reject_any_mutation(self):
+        protocol = self.build_v6()
+        protocol.update({
+            "repository": {"root": str(self.project)},
+            "publication": {
+                "json_path": "docs/diagnostics/v6-protocol.json",
+                "markdown_path": "docs/diagnostics/v6-protocol.md",
+            },
+        })
+        commands = registrar._registered_argv(protocol)
+        protocol["runner_argv"] = commands["runner"]
+        protocol["analyzer_argv"] = commands["analyzer"]
+        registrar._verify_registered_argv(protocol)
+        self.assertEqual(
+            commands["runner"][commands["runner"].index("--range-noise-seeds") + 1],
+            "2026081301:2026081310",
+        )
+        self.assertEqual(
+            Path(commands["runner"][commands["runner"].index("--primary-config") + 1]).resolve(),
+            self.primary.resolve(),
+        )
+        self.assertEqual(
+            Path(commands["analyzer"][commands["analyzer"].index("--ablation-config") + 1]).resolve(),
+            self.ablation.resolve(),
+        )
+        protocol["runner_argv"] = commands["runner"][:-2]
+        with self.assertRaisesRegex(ValueError, "argv"):
+            registrar._verify_registered_argv(protocol)
+        protocol["runner_argv"] = commands["runner"]
+        protocol["analyzer_argv"] = list(commands["analyzer"])
+        protocol["analyzer_argv"][-1] = "/private/tmp/forged-analysis/v6"
+        with self.assertRaisesRegex(ValueError, "argv"):
+            registrar._verify_registered_argv(protocol)
+
+    def test_v6_registration_cli_exposes_gate_and_predecessor_bindings(self):
+        help_text = registrar.build_argument_parser().format_help()
+        for option in (
+            "--one-step-gate-claim",
+            "--one-step-gate",
+            "--one-step-gate-review",
+            "--predecessor-identity",
+        ):
+            self.assertIn(option, help_text)
 
 
 if __name__ == "__main__":
