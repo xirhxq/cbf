@@ -122,8 +122,8 @@ inline PlanarChebyshevResult solvePlanarHardRowChebyshev(
     planes.push_back({Eigen::Vector3d(0.0, 1.0, 0.0), componentMax});
     planes.push_back({Eigen::Vector3d(0.0, -1.0, 0.0), componentMax});
 
-    bool foundCandidate = false;
-    PlanarChebyshevResult result;
+    std::vector<Eigen::Vector3d> feasibleCandidates;
+    double maximumRadius = -std::numeric_limits<double>::infinity();
     for (std::size_t first = 0; first < planes.size(); ++first) {
         for (std::size_t second = first + 1; second < planes.size(); ++second) {
             for (std::size_t third = second + 1; third < planes.size(); ++third) {
@@ -158,23 +158,29 @@ inline PlanarChebyshevResult solvePlanarHardRowChebyshev(
                 if (!feasible) {
                     continue;
                 }
-
-                const Eigen::Vector2d witness = candidate.head<2>();
-                if (!foundCandidate
-                    || candidate[2] > result.radius
-                    || (candidate[2] == result.radius
-                        && detail::lexicographicallyBefore(
-                            witness, result.witness
-                        ))) {
-                    foundCandidate = true;
-                    result.radius = candidate[2];
-                    result.witness = witness;
-                }
+                feasibleCandidates.push_back(candidate);
+                maximumRadius = std::max(maximumRadius, candidate[2]);
             }
         }
     }
-    if (!foundCandidate) {
+    if (feasibleCandidates.empty()) {
         throw std::runtime_error("planar Chebyshev problem has no finite vertex");
+    }
+
+    bool selectedCandidate = false;
+    PlanarChebyshevResult result;
+    for (const auto& candidate : feasibleCandidates) {
+        if (maximumRadius - candidate[2] > feasibilityTolerance) {
+            continue;
+        }
+        const Eigen::Vector2d witness = candidate.head<2>();
+        if (!selectedCandidate
+            || detail::lexicographicallyBefore(witness, result.witness)
+            || (witness == result.witness && candidate[2] < result.radius)) {
+            selectedCandidate = true;
+            result.radius = candidate[2];
+            result.witness = witness;
+        }
     }
 
     for (std::size_t index = 0; index < problem.rows.size(); ++index) {

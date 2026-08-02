@@ -93,6 +93,36 @@ TEST_CASE("Chebyshev primitive rejects duplicate component bounds") {
     );
 }
 
+TEST_CASE("Chebyshev primitive rejects altered planar bound limit") {
+    auto problem = boxWithRows({row({1.0, 0.0, 0.0}, 1.0)});
+    problem.bounds[0].limit = 24.0;
+
+    CHECK(problem.bounds.size() == 6);
+    CHECK_THROWS_AS(
+        cbf2026::solvePlanarHardRowChebyshev(problem), std::invalid_argument
+    );
+}
+
+TEST_CASE("Chebyshev primitive rejects altered planar bound sign") {
+    auto problem = boxWithRows({row({1.0, 0.0, 0.0}, 1.0)});
+    problem.bounds[0].coefficient = -1.0;
+
+    CHECK(problem.bounds.size() == 6);
+    CHECK_THROWS_AS(
+        cbf2026::solvePlanarHardRowChebyshev(problem), std::invalid_argument
+    );
+}
+
+TEST_CASE("Chebyshev primitive rejects altered yaw bound limit") {
+    auto problem = boxWithRows({row({1.0, 0.0, 0.0}, 1.0)});
+    problem.bounds[4].limit = 0.34;
+
+    CHECK(problem.bounds.size() == 6);
+    CHECK_THROWS_AS(
+        cbf2026::solvePlanarHardRowChebyshev(problem), std::invalid_argument
+    );
+}
+
 TEST_CASE("Chebyshev primitive rejects hard rows with yaw coefficients") {
     const auto problem = boxWithRows({row({1.0, 0.0, 1e-12}, 1.0)});
 
@@ -123,6 +153,16 @@ TEST_CASE("Chebyshev primitive rejects an unbounded radius with no finite vertex
     );
 }
 
+TEST_CASE("finite negative Chebyshev optimum has zero frozen floor") {
+    const auto problem = boxWithRows({row({0.0, 0.0, 0.0}, -0.5)});
+
+    const auto result = cbf2026::solvePlanarHardRowChebyshev(problem);
+
+    CHECK(result.radius == doctest::Approx(-0.5));
+    CHECK(cbf2026::frozenInteriorFloor(result.radius)
+          == doctest::Approx(0.0));
+}
+
 TEST_CASE("Chebyshev primitive selects lexicographically first tied witness") {
     const auto problem = boxWithRows({row({1.0, 0.0, 0.0}, 1.0)});
 
@@ -131,4 +171,23 @@ TEST_CASE("Chebyshev primitive selects lexicographically first tied witness") {
     CHECK(result.radius == doctest::Approx(26.0));
     CHECK(result.witness.isApprox(Eigen::Vector2d(25.0, -25.0), 1e-12));
     CHECK(result.tightHardRows == std::vector<std::size_t>({0}));
+}
+
+TEST_CASE("near-tied non-exact vertices choose lexicographically first witness") {
+    constexpr double slope = 1e-11;
+    constexpr double tolerance = 1e-9;
+    const auto problem = boxWithRows({row({1.0, slope, 0.0}, 1.0)});
+
+    const auto result = cbf2026::solvePlanarHardRowChebyshev(
+        problem, tolerance
+    );
+
+    CHECK(result.witness.isApprox(Eigen::Vector2d(25.0, -25.0), 1e-12));
+    CHECK(result.radius
+          == doctest::Approx(26.0 - 25.0 * slope).epsilon(1e-13));
+    CHECK(result.radius
+          == doctest::Approx(
+              problem.rows[0].coefficients.head<2>().dot(result.witness)
+              + problem.rows[0].constant
+          ).epsilon(1e-13));
 }
