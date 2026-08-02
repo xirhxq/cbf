@@ -153,7 +153,9 @@ def validate_qualified_config(config: Mapping[str, Any]) -> bool:
             return False
 
         cbfs = config["cbfs"]
-        if not _keys(cbfs, {"uncertainty-rate", "input-limits", "without-slack"}):
+        v1_cbf_keys = {"uncertainty-rate", "input-limits", "without-slack"}
+        v2_cbf_keys = v1_cbf_keys | {"hard-interior-selection"}
+        if set(cbfs) != v1_cbf_keys and set(cbfs) != v2_cbf_keys:
             return False
         if cbfs["uncertainty-rate"] != {"mode": "analytic-topological"}:
             return False
@@ -167,18 +169,43 @@ def validate_qualified_config(config: Mapping[str, Any]) -> bool:
             input_limits["yaw-rate-max"], 0.35
         ):
             return False
+        is_v2 = set(cbfs) == v2_cbf_keys
         if not _keys(cbfs["without-slack"], {"safety", "comm-fixed"}):
             return False
         safety = cbfs["without-slack"]["safety"]
-        if not _keys(safety, {"on", "mode"}) or not _boolean(
+        hard_class_keys = {"on", "mode", "alpha"} if is_v2 else {"on", "mode"}
+        if not _keys(safety, hard_class_keys) or not _boolean(
             safety["on"], True
         ) or safety["mode"] != "allocated-pairwise":
             return False
         comm_fixed = cbfs["without-slack"]["comm-fixed"]
-        if not _keys(comm_fixed, {"on", "mode"}) or not _boolean(
+        if not _keys(comm_fixed, hard_class_keys) or not _boolean(
             comm_fixed["on"], True
         ) or comm_fixed["mode"] != "allocated-pairwise":
             return False
+        if is_v2:
+            if not _keys(
+                cbfs["hard-interior-selection"],
+                {"mode", "fraction", "cap-mps", "feasibility-tolerance-mps"},
+            ) or cbfs["hard-interior-selection"]["mode"] != "planar-chebyshev-fraction-cap-v1":
+                return False
+            if not _number(cbfs["hard-interior-selection"]["fraction"], 0.1):
+                return False
+            if not _number(cbfs["hard-interior-selection"]["cap-mps"], 0.1):
+                return False
+            if not _number(
+                cbfs["hard-interior-selection"]["feasibility-tolerance-mps"],
+                1e-9,
+            ):
+                return False
+            if not _keys(safety["alpha"], {"coe", "pow"}) or not _number(
+                safety["alpha"]["coe"], 0.1
+            ) or not _integer(safety["alpha"]["pow"], 1):
+                return False
+            if not _keys(comm_fixed["alpha"], {"coe", "pow"}) or not _number(
+                comm_fixed["alpha"]["coe"], 0.1
+            ) or not _integer(comm_fixed["alpha"]["pow"], 1):
+                return False
 
         execute = config["execute"]
         return execute == {"execution-mode": "distributed", "time-step": 0.5}

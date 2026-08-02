@@ -9,6 +9,8 @@ from scripts.diagnostics.qualified_config import validate_qualified_config
 ROOT = Path(__file__).resolve().parents[1]
 PRIMARY = ROOT / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v1.json"
 ABLATION = ROOT / "config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v1.json"
+PRIMARY_V2 = ROOT / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v2.json"
+ABLATION_V2 = ROOT / "config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v2.json"
 
 
 class QualifiedConfigTests(unittest.TestCase):
@@ -33,6 +35,71 @@ class QualifiedConfigTests(unittest.TestCase):
             ablation["position_covariance"]["reference-selection"],
             "fixed-cbf-only",
         )
+
+    def test_v2_overlays_require_the_exact_interior_selection_contract(self):
+        self.assertTrue(PRIMARY_V2.exists())
+        self.assertTrue(ABLATION_V2.exists())
+        if not PRIMARY_V2.exists() or not ABLATION_V2.exists():
+            return
+
+        primary = self.load(PRIMARY_V2)
+        ablation = self.load(ABLATION_V2)
+        expected_policy = {
+            "mode": "planar-chebyshev-fraction-cap-v1",
+            "fraction": 0.1,
+            "cap-mps": 0.1,
+            "feasibility-tolerance-mps": 1e-9,
+        }
+        expected_alpha = {"coe": 0.1, "pow": 1}
+        for candidate in (primary, ablation):
+            self.assertTrue(validate_qualified_config(candidate))
+            self.assertEqual(
+                candidate["cbfs"]["hard-interior-selection"], expected_policy
+            )
+            self.assertEqual(
+                candidate["cbfs"]["without-slack"]["safety"]["alpha"],
+                expected_alpha,
+            )
+            self.assertEqual(
+                candidate["cbfs"]["without-slack"]["comm-fixed"]["alpha"],
+                expected_alpha,
+            )
+
+        projected = copy.deepcopy(ablation)
+        projected["position_covariance"]["reference-selection"] = (
+            primary["position_covariance"]["reference-selection"]
+        )
+        self.assertEqual(projected, primary)
+
+    def test_v2_interior_selection_rejects_mutations(self):
+        self.assertTrue(PRIMARY_V2.exists())
+        if not PRIMARY_V2.exists():
+            return
+
+        mutations = []
+
+        def mutate(path, value):
+            candidate = self.load(PRIMARY_V2)
+            target = candidate
+            for key in path[:-1]:
+                target = target[key]
+            if value is None:
+                del target[path[-1]]
+            else:
+                target[path[-1]] = value
+            mutations.append(candidate)
+
+        mutate(("cbfs", "hard-interior-selection", "fraction"), 0.2)
+        mutate(("cbfs", "hard-interior-selection", "cap-mps"), 0.5)
+        mutate(("cbfs", "hard-interior-selection", "feasibility-tolerance-mps"), 1e-8)
+        mutate(("cbfs", "hard-interior-selection", "yaw-in-radius"), True)
+        mutate(("cbfs", "without-slack", "safety", "alpha", "coe"), 0.2)
+        mutate(("cbfs", "without-slack", "comm-fixed", "alpha", "pow"), 2)
+        mutate(("execute", "execution-mode"), "centralized")
+
+        for candidate in mutations:
+            with self.subTest(candidate=candidate):
+                self.assertFalse(validate_qualified_config(candidate))
 
     def test_rejects_every_forbidden_contract_mutation(self):
         mutations = []

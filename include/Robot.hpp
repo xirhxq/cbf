@@ -6,6 +6,7 @@
 #include "cbf/AllocatedPairwiseCBF.hpp"
 #include "cbf/CBFConfig.hpp"
 #include "cbf/FimRateCertificate.hpp"
+#include "cbf/HardInteriorSelection.hpp"
 #include "cbf/HybridCertificateGuard.hpp"
 #include "world/world"
 #include "models/models"
@@ -2300,6 +2301,8 @@ public:
         const bool theoremAligned =
             usesAnalyticTopologicalRateCertificate();
         const cbf2026::HardConstraintProblem* committedHardProblem = nullptr;
+        std::optional<double> hardInteriorFloor;
+        json hardInteriorSelection = json();
         if (theoremAligned) {
             if (!committedCertificateState.valid
                 || committedCertificateState.version == 0) {
@@ -2327,6 +2330,60 @@ public:
                 cbf2026::canonicalHardConstraintProblemHash(
                     *committedHardProblem
                 );
+            const auto& cbfs = settings.at("cbfs");
+            if (cbfs.contains("hard-interior-selection")) {
+                const auto& policy = cbfs.at("hard-interior-selection");
+                const auto exactPolicyNumber = [](const json& value,
+                                                  const double expected) {
+                    return value.is_number()
+                        && std::isfinite(value.get<double>())
+                        && value.get<double>() == expected;
+                };
+                if (!policy.is_object() || policy.size() != 4
+                    || !policy.contains("mode")
+                    || !policy.at("mode").is_string()
+                    || policy.at("mode").get<std::string>()
+                       != "planar-chebyshev-fraction-cap-v1"
+                    || !policy.contains("fraction")
+                    || !exactPolicyNumber(policy.at("fraction"), 0.1)
+                    || !policy.contains("cap-mps")
+                    || !exactPolicyNumber(policy.at("cap-mps"), 0.1)
+                    || !policy.contains("feasibility-tolerance-mps")
+                    || !exactPolicyNumber(
+                        policy.at("feasibility-tolerance-mps"), 1e-9
+                    )) {
+                    throw std::invalid_argument(
+                        "theorem hard-interior selection policy is invalid"
+                    );
+                }
+                constexpr double fraction = 0.1;
+                constexpr double capMps = 0.1;
+                constexpr double feasibilityTolerance = 1e-9;
+                const auto chebyshev = cbf2026::solvePlanarHardRowChebyshev(
+                    *committedHardProblem, feasibilityTolerance
+                );
+                if (!std::isfinite(chebyshev.radius)
+                    || chebyshev.radius < -feasibilityTolerance) {
+                    throw std::runtime_error(
+                        "theorem planar hard-row Chebyshev radius is infeasible"
+                    );
+                }
+                const double floor = cbf2026::frozenInteriorFloor(
+                    chebyshev.radius,
+                    fraction,
+                    capMps,
+                    feasibilityTolerance
+                );
+                hardInteriorFloor = floor;
+                hardInteriorSelection = {
+                    {"mode", "planar-chebyshev-fraction-cap-v1"},
+                    {"fraction", fraction},
+                    {"cap_mps", capMps},
+                    {"feasibility_tolerance_mps", feasibilityTolerance},
+                    {"planar_chebyshev_radius_mps", chebyshev.radius},
+                    {"enforced_floor_mps", floor}
+                };
+            }
         }
         const json inputLimitsConfig =
             settings["cbfs"].value("input-limits", json::object());
@@ -2356,6 +2413,9 @@ public:
                     }}
                 }}
         };
+        if (!hardInteriorSelection.is_null()) {
+            opt["hard_interior_selection"] = hardInteriorSelection;
+        }
         json jsonCBFNoSlack = json::array(), jsonCBFSlack = json::array();
         std::vector<Eigen::VectorXd> hardConstraintCoefficients;
         double chargeRate = 1.0;
@@ -2435,9 +2495,10 @@ public:
             std::string cbf_method = settings["cbfs"]["without-slack"].value("method", "all");
 
             if (theoremAligned) {
+                const double enforcedFloor = hardInteriorFloor.value_or(0.0);
                 for (const auto& row : committedHardProblem->rows) {
                     optimiser->addLinearConstraint(
-                        row.coefficients, -row.constant
+                        row.coefficients, -row.constant + enforcedFloor
                     );
                     jsonCBFNoSlack.emplace_back(json{
                         {"name", row.name},

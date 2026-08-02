@@ -118,6 +118,46 @@ json makeTheoremSettings() {
     return settings;
 }
 
+Robot paperRobotWithCommittedHardProblem() {
+    json settings = makeTheoremSettings();
+    settings["cbfs"]["hard-interior-selection"] = {
+        {"mode", "planar-chebyshev-fraction-cap-v1"},
+        {"fraction", 0.1},
+        {"cap-mps", 0.1},
+        {"feasibility-tolerance-mps", 1e-9}
+    };
+    Robot robot(1, settings);
+    cbf2026::HardConstraintProblem problem;
+    problem.owner = robot.id;
+    problem.controlSize = 3;
+    problem.planarComponentMax = 25.0;
+    problem.snapshotVersion = 8;
+    problem.allocationVersion = 1;
+    problem.yawRateMax = 0.35;
+    problem.bounds = cbf2026::theoremInputBounds();
+
+    cbf2026::HardConstraintRow lower;
+    lower.owner = robot.id;
+    lower.name = "local-planar-lower";
+    lower.coefficients = Eigen::Vector3d(1.0, 0.0, 0.0);
+    lower.constant = 0.0;
+    lower.snapshotVersion = 8;
+    lower.allocationVersion = 1;
+    cbf2026::HardConstraintRow upper = lower;
+    upper.name = "local-planar-upper";
+    upper.coefficients = Eigen::Vector3d(-1.0, 0.0, 0.0);
+    upper.constant = 1.0;
+    problem.rows = {lower, upper};
+
+    cbf2026::CommittedCertificateState state;
+    state.version = 8;
+    state.nodeVersions.emplace(robot.id, 8);
+    state.valid = true;
+    state.hardProblems.emplace(robot.id, problem);
+    robot.committedCertificateState = state;
+    return robot;
+}
+
 json makeFourRobotFixedGraphSettings() {
     json settings = makeThreeRobotChainSettings();
     settings["num"] = 4;
@@ -1014,6 +1054,41 @@ TEST_CASE("base communication row treats anchor velocity and rate as zero") {
         robot.cbfNoSlack.cbfs.at("fixedCommCBF(base-0)");
     CHECK(baseCBF.dhdt(robot.model->getX(), 0.0)
           == doctest::Approx(-0.4));
+}
+
+TEST_CASE("theorem task QP enforces the frozen local interior floor") {
+    Robot robot = paperRobotWithCommittedHardProblem();
+    const std::string committedHash = cbf2026::canonicalHardConstraintProblemHash(
+        robot.committedCertificateState.hardProblems.at(robot.id)
+    );
+    robot.optimise();
+
+    REQUIRE(robot.opt.contains("hard_interior_selection"));
+    const auto& policy = robot.opt.at("hard_interior_selection");
+    CHECK(policy.at("mode") == "planar-chebyshev-fraction-cap-v1");
+    CHECK(policy.at("fraction") == doctest::Approx(0.10));
+    CHECK(policy.at("cap_mps") == doctest::Approx(0.10));
+    CHECK(policy.at("feasibility_tolerance_mps") == doctest::Approx(1e-9));
+    const double floor = policy.at("enforced_floor_mps");
+    CHECK(floor == doctest::Approx(0.05));
+    CHECK(floor <= policy.at("planar_chebyshev_radius_mps"));
+    REQUIRE(robot.lastConsumedHardConstraintProblem.has_value());
+    CHECK(cbf2026::canonicalHardConstraintProblemHash(
+        *robot.lastConsumedHardConstraintProblem
+    ) == committedHash);
+    for (const auto& row : robot.lastConsumedHardConstraintProblem->rows) {
+        CHECK(row.constant + row.coefficients.dot(robot.model->getControlInput())
+              >= floor - 1e-7);
+    }
+}
+
+TEST_CASE("interior selection consumes no other UAV control variable") {
+    Robot robot = paperRobotWithCommittedHardProblem();
+    robot.optimise();
+
+    REQUIRE(robot.lastConsumedHardConstraintProblem.has_value());
+    CHECK(robot.lastConsumedHardConstraintProblem->owner == robot.id);
+    CHECK(robot.model->getControlInput().size() == 3);
 }
 
 TEST_CASE("hard input rows bound a strong planar soft task inside the QP") {

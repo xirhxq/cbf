@@ -1663,6 +1663,20 @@ inline bool validateQualifiedMaterializedConfig(
             )) {
             return false;
         }
+        if (cbfs.contains("hard-interior-selection")) {
+            const auto& policy = cbfs.at("hard-interior-selection");
+            if (!policy.is_object() || policy.size() != 4
+                || !exactString(
+                    policy.at("mode"), "planar-chebyshev-fraction-cap-v1"
+                )
+                || !exactNumber(policy.at("fraction"), 0.1)
+                || !exactNumber(policy.at("cap-mps"), 0.1)
+                || !exactNumber(
+                    policy.at("feasibility-tolerance-mps"), 1e-9
+                )) {
+                return false;
+            }
+        }
         const auto& hard = cbfs.at("without-slack");
         if (!exactString(hard.at("method"), "all")
             || !exactBoolean(hard.at("safety").at("on"), true)
@@ -1682,6 +1696,23 @@ inline bool validateQualifiedMaterializedConfig(
             || !exactBoolean(hard.at("energy").at("on"), false)
             || !exactBoolean(hard.at("comm-auto").at("on"), false)) {
             return false;
+        }
+        if (cbfs.contains("hard-interior-selection")) {
+            const auto exactHardAlpha = [&exactNumber, &exactInteger](
+                const nlohmann::json& hardClass
+            ) {
+                if (!hardClass.contains("alpha")) {
+                    return false;
+                }
+                const auto& alpha = hardClass.at("alpha");
+                return alpha.is_object() && alpha.size() == 2
+                    && exactNumber(alpha.at("coe"), 0.1)
+                    && exactInteger(alpha.at("pow"), 1);
+            };
+            if (!exactHardAlpha(hard.at("safety"))
+                || !exactHardAlpha(hard.at("comm-fixed"))) {
+                return false;
+            }
         }
         const auto& execute = config.at("execute");
         if (!exactString(
