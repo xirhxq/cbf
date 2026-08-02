@@ -440,6 +440,15 @@ class CampaignAnalyzerGateTests(unittest.TestCase):
             forged["hard_interior_selection"][field] = value
             with self.assertRaisesRegex(ValueError, "interior"):
                 _verify_controller_interior_evidence([forged])
+        integral_tokens = copy.deepcopy(node)
+        integral_tokens["hard_interior_selection"][
+            "planar_chebyshev_radius_mps"
+        ] = 27
+        integral_tokens["hard_interior_selection"][
+            "minimum_original_hard_residual_mps"
+        ] = 2
+        with self.assertRaisesRegex(ValueError, "interior"):
+            _verify_controller_interior_evidence([integral_tokens])
         with self.assertRaisesRegex(ValueError, "provenance"):
             _verify_controller_interior_evidence([node, {"normal_problem": problem}])
 

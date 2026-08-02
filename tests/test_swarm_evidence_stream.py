@@ -609,6 +609,22 @@ class SwarmEvidenceStdoutTests(unittest.TestCase):
             missing = copy.deepcopy(controller0)
             del missing["runtime"]["nodes"][0]["hard_interior_selection"]
             self.assertFalse(validate_controller_primitive_schema(missing))
+            integral_tokens = copy.deepcopy(controller0)
+            integral_policy = integral_tokens["runtime"]["nodes"][0][
+                "hard_interior_selection"
+            ]
+            integral_policy["planar_chebyshev_radius_mps"] = int(
+                integral_policy["planar_chebyshev_radius_mps"]
+            )
+            integral_policy["minimum_original_hard_residual_mps"] = int(
+                integral_policy["minimum_original_hard_residual_mps"]
+            )
+            self.assertFalse(validate_controller_primitive_schema(integral_tokens))
+            self.assertTrue(
+                reconstruct_controller_primitives(
+                    integral_tokens, endpoint0, 232, 119
+                ).integrity_errors
+            )
             yaw = copy.deepcopy(controller0)
             yaw["runtime"]["nodes"][0]["normal_problem"]["rows"][0][
                 "coefficients"

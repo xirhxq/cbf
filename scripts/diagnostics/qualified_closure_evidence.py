@@ -2695,11 +2695,14 @@ def _valid_hard_interior_selection(policy: object) -> bool:
             "minimum_original_hard_residual_mps",
         }
         and policy["mode"] == "planar-chebyshev-fraction-cap-v1"
-        and all(_finite_number(policy[field]) for field in (
-            "fraction", "cap_mps", "feasibility_tolerance_mps",
-            "planar_chebyshev_radius_mps", "enforced_floor_mps",
-            "minimum_original_hard_residual_mps",
-        ))
+        and all(
+            type(policy[field]) is float and math.isfinite(policy[field])
+            for field in (
+                "fraction", "cap_mps", "feasibility_tolerance_mps",
+                "planar_chebyshev_radius_mps", "enforced_floor_mps",
+                "minimum_original_hard_residual_mps",
+            )
+        )
     )
 
 

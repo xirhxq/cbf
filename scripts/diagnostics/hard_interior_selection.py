@@ -17,10 +17,10 @@ class PlanarChebyshevAudit:
     tight_hard_row_indices: tuple[int, ...]
 
 
-def _number(value: object, *, positive: bool = False) -> float:
-    if type(value) not in (int, float) or isinstance(value, bool):
-        raise ValueError("hard-interior numeric value is not canonical")
-    number = float(value)
+def _continuous(value: object, *, positive: bool = False) -> float:
+    if type(value) is not float:
+        raise ValueError("hard-interior continuous value is not canonical")
+    number = value
     if not math.isfinite(number) or (positive and number <= 0.0):
         raise ValueError("hard-interior numeric value is not finite and positive")
     return number
@@ -45,10 +45,10 @@ def _canonical_problem(problem: Mapping) -> tuple[float, list[tuple[float, float
         "hard_problem_id",
     }:
         raise ValueError("hard-interior problem schema differs")
-    if _int32(problem["owner"]) <= 0 or problem["control_size"] != 3:
+    if _int32(problem["owner"]) <= 0 or _int32(problem["control_size"]) != 3:
         raise ValueError("hard-interior problem owner/control size differs")
-    component_max = _number(problem["planar_component_max"], positive=True)
-    yaw_max = _number(problem["yaw_rate_max"], positive=True)
+    component_max = _continuous(problem["planar_component_max"], positive=True)
+    yaw_max = _continuous(problem["yaw_rate_max"], positive=True)
     if _uint64(problem["snapshot_version"]) == 0 or _uint64(problem["allocation_version"]) == 0:
         raise ValueError("hard-interior problem version differs")
     if not isinstance(problem["hard_problem_id"], str) or not problem["hard_problem_id"]:
@@ -67,8 +67,8 @@ def _canonical_problem(problem: Mapping) -> tuple[float, list[tuple[float, float
         }:
             raise ValueError("hard-interior bound schema differs")
         observed = (
-            _int32(bound["control_index"]), _number(bound["coefficient"]),
-            _number(bound["limit"]),
+            _int32(bound["control_index"]), _continuous(bound["coefficient"]),
+            _continuous(bound["limit"]),
         )
         if observed != expected:
             raise ValueError("hard-interior bound differs")
@@ -92,19 +92,20 @@ def _canonical_problem(problem: Mapping) -> tuple[float, list[tuple[float, float
                 _int32(edge[field])
         except ValueError:
             raise ValueError("hard-interior edge fields differ")
-        if row["owner"] != problem["owner"] or not isinstance(row["name"], str) or not row["name"]:
+        if (_int32(row["owner"]) != problem["owner"]
+                or not isinstance(row["name"], str) or not row["name"]):
             raise ValueError("hard-interior row owner/name differs")
         coefficients = row["coefficients"]
         if not isinstance(coefficients, list) or len(coefficients) != 3:
             raise ValueError("hard-interior row coefficients differ")
-        coefficient = tuple(_number(item) for item in coefficients)
+        coefficient = tuple(_continuous(item) for item in coefficients)
         if coefficient[2] != 0.0:
             raise ValueError("hard-interior row has yaw coefficient")
         if (_uint64(row["snapshot_version"]) != problem["snapshot_version"]
                 or _uint64(row["allocation_version"]) != problem["allocation_version"]):
             raise ValueError("hard-interior row version differs")
-        planar_rows.append((coefficient[0], coefficient[1], _number(row["constant"])))
-        _number(row["post_reset_barrier"])
+        planar_rows.append((coefficient[0], coefficient[1], _continuous(row["constant"])))
+        _continuous(row["post_reset_barrier"])
     return component_max, planar_rows
 
 
@@ -112,7 +113,7 @@ def solve_planar_hard_row_chebyshev(
     problem: Mapping, *, tolerance_mps: float = 1e-9
 ) -> PlanarChebyshevAudit:
     """Solve the serialized local LP by exhaustive, independent 3-plane enumeration."""
-    tolerance = _number(tolerance_mps)
+    tolerance = _continuous(tolerance_mps)
     if tolerance < 0.0:
         raise ValueError("hard-interior tolerance is negative")
     component_max, rows = _canonical_problem(problem)
@@ -150,10 +151,10 @@ def frozen_interior_floor(
     radius_mps: float, *, fraction: float = 0.10, cap_mps: float = 0.10,
     tolerance_mps: float = 1e-9,
 ) -> float:
-    radius = _number(radius_mps)
-    fraction_value = _number(fraction)
-    cap = _number(cap_mps)
-    tolerance = _number(tolerance_mps)
+    radius = _continuous(radius_mps)
+    fraction_value = _continuous(fraction)
+    cap = _continuous(cap_mps)
+    tolerance = _continuous(tolerance_mps)
     if min(fraction_value, cap, tolerance) < 0.0:
         raise ValueError("hard-interior floor argument is negative")
     if radius <= tolerance:

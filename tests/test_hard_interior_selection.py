@@ -73,3 +73,23 @@ class HardInteriorSelectionTests(unittest.TestCase):
                 mutate(problem)
                 with self.assertRaises(ValueError):
                     solve_planar_hard_row_chebyshev(problem)
+
+    def test_rejects_integer_continuous_tokens_and_noninteger_discrete_tokens(self):
+        from scripts.diagnostics.hard_interior_selection import (
+            solve_planar_hard_row_chebyshev,
+        )
+
+        mutations = (
+            lambda problem: problem.__setitem__("planar_component_max", 25),
+            lambda problem: problem["bounds"][0].__setitem__("coefficient", 1),
+            lambda problem: problem["rows"][0].__setitem__("constant", 1),
+            lambda problem: problem.__setitem__("control_size", 3.0),
+            lambda problem: problem.__setitem__("owner", True),
+            lambda problem: problem["rows"][0].__setitem__("owner", True),
+        )
+        for mutate in mutations:
+            with self.subTest(mutate=mutate):
+                problem = self.fixture_problem()
+                mutate(problem)
+                with self.assertRaises(ValueError):
+                    solve_planar_hard_row_chebyshev(problem)

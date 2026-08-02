@@ -224,6 +224,19 @@ class EvidenceUniverseTests(unittest.TestCase):
 
 
 class ControllerPrimitiveSchemaTests(unittest.TestCase):
+    def test_policy_schema_rejects_integral_radius_and_residual_tokens(self):
+        problem = bounded_hard_problem(
+            1, localization_problem_row(2.0), "policy-token-fixture"
+        )
+        policy = interior_policy(problem, [0.0, 0.0, 0.0])
+        self.assertEqual(policy["planar_chebyshev_radius_mps"], 27.0)
+        self.assertEqual(policy["minimum_original_hard_residual_mps"], 2.0)
+        policy["planar_chebyshev_radius_mps"] = 27
+        self.assertFalse(evidence_schema._valid_hard_interior_selection(policy))
+        policy = interior_policy(problem, [0.0, 0.0, 0.0])
+        policy["minimum_original_hard_residual_mps"] = 2
+        self.assertFalse(evidence_schema._valid_hard_interior_selection(policy))
+
     def test_reduced_controller_universe_is_rejected_but_endpoint_is_complete(self):
         reference = {
             "canonical_reference_id": -1,

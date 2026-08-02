@@ -2262,6 +2262,16 @@ def _verify_controller_interior_evidence(nodes):
         }
         if not isinstance(policy, dict) or set(policy) != required:
             raise ValueError("controller interior policy schema differs")
+        continuous = (
+            "fraction", "cap_mps", "feasibility_tolerance_mps",
+            "planar_chebyshev_radius_mps", "enforced_floor_mps",
+            "minimum_original_hard_residual_mps",
+        )
+        if not all(
+            type(policy[field]) is float and math.isfinite(policy[field])
+            for field in continuous
+        ):
+            raise ValueError("controller interior policy numeric token differs")
         if (policy["mode"] != "planar-chebyshev-fraction-cap-v1"
                 or (policy["fraction"], policy["cap_mps"],
                     policy["feasibility_tolerance_mps"]) != (0.1, 0.1, 1e-9)):
