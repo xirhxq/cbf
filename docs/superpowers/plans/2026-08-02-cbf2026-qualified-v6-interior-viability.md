@@ -28,13 +28,13 @@
 - At the one-step state, require every robust hard barrier to be strictly greater than `0 m` and every UAV's planar local Chebyshev radius to be at least `0.05 m/s`.
 - Use exactly the existing nonreplaceable 100 audit trajectory seeds and the existing first 10 registered trajectory seeds. Do not change their order or values. No seed substitution, clamp, resample, retry, or post-hoc selection is allowed.
 - The development gate uses the exact production `Swarm` binary, exact base config, exact primary overlay, exact initial family, and exact implementation identity that will be bound by v6 registration. Test fixtures and mocked subprocesses never satisfy the production gate.
-- The formal development gate is once-only for one committed implementation identity. A failed or interrupted gate is terminal for that identity; repair requires a new implementation commit and a newly versioned gate artifact, never overwriting the failed artifact.
+- The formal development gate is once-only for one committed implementation identity. Before launching any seed, it creates an immutable no-replace claim bound to that identity. A failed or interrupted gate is terminal for that identity; repair requires a new implementation commit and newly versioned claim/artifact paths, never overwriting the consumed claim or failed artifact.
 - Do not create a production development-v6 protocol or preflight until all 100 audit seeds and all 10 registered seeds pass the exact development gate and the gate artifact receives an independent C0/I0/M0 review.
 - A generated v6 protocol and preflight are not authorization. Do not create the authorization JSON, authorization commit, campaign root, or analysis root until the researcher supplies new exact user-origin authorization text after seeing that exact protocol and preflight.
 - The authorization JSON must bind the exact UTF-8 user text, its SHA-256, the exact protocol and preflight hashes, the exact registered implementation identity, date, kind, and version. Historical approvals, test fixtures, inferred intent, and review verdicts are invalid authorization.
 - The registered v6 runner and analyzer are each once-only. No retry, resume, overwrite, reinterpretation, or second analyzer invocation is allowed after their versioned roots are claimed.
 - Use `conda run -n cbf_env` for Python. Use `apply_patch` for source/document edits. Generated no-replace evidence artifacts may be emitted only by their tested producer.
-- This implementation scope never modifies the paper worktree, DRA worktree, submission files, or estimator implementation. This plan-authoring turn must not modify git history; later execution may create only the scoped, reviewed commits explicitly suggested below and only after user approval.
+- This implementation scope never modifies the paper worktree, DRA worktree, submission files, or estimator implementation. The planning phase creates only the scoped plan/review commits; later execution may create only the scoped, reviewed commits explicitly suggested below and only after user approval.
 - Before every suggested commit, obtain explicit user approval as required by `AGENTS.md`. Never add `Co-Authored-By` lines.
 - Every implementation task uses a vertical TDD cycle: focused RED test with the intended assertion failure, minimal GREEN implementation, focused regression, full relevant regression, `git diff --check`, independent review, then a scoped commit only after explicit approval.
 - Every new standalone `tests/*.cpp` file starts with `#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN` before `doctest/doctest.h`. Rerun CMake after adding a new test source because the existing test glob lacks `CONFIGURE_DEPENDS`.
@@ -91,7 +91,8 @@ Lifecycle and immutable predecessor binding:
 
 Conditional artifacts created only after the required gates:
 
-- Create `docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability.json`: terminal once-only formal development-gate artifact.
+- Create `docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-claim.json`: immutable pre-launch claim created before the first formal-gate child launch.
+- Create `docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability.json`: terminal once-only formal development-gate artifact, when execution reaches terminal publication.
 - Create `docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-review.md`: independent gate review.
 - Create `docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v6-protocol.json` and `.md`: only after gate PASS/review.
 - Create `docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v6-preflight.md`: independent C0/I0/M0 preflight.
@@ -215,7 +216,7 @@ for label, root_text in (
     ("analysis", "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v5"),
 ):
     root = Path(root_text)
-    manifest = root / ("campaign.manifest.json" if label == "raw" else "manifest.json")
+    manifest = root / "manifest.json"
     print(json.dumps({"label": label, "root": str(root), **_directory_tree_identity(root), "manifest_name": manifest.name, "manifest_sha256": _sha256(manifest)}, sort_keys=True))
 PY
 ```
@@ -328,7 +329,7 @@ TEST_CASE("planar Chebyshev radius uses local hard rows and component box") {
     }, 25.0, 0.35);
     const auto result = cbf2026::solvePlanarHardRowChebyshev(problem);
     CHECK(result.radius == doctest::Approx(2.0));
-    CHECK(result.witness.isApprox(Eigen::Vector2d::Zero(), 1e-12));
+    CHECK(result.witness.isApprox(Eigen::Vector2d(0.0, -1.0), 1e-12));
 }
 
 TEST_CASE("yaw never enters planar Chebyshev radius") {
@@ -720,7 +721,7 @@ git commit -m "feat(diagnostics): freeze v6 one-step initial family"
 
 **Interfaces:**
 - Consumes: exact binary/base/primary/family paths; all 100 frozen seeds; actual frame-zero controller evidence; Task 4/5 independent reconstruction.
-- Produces a no-replace terminal JSON artifact through:
+- Produces an immutable pre-launch claim and a no-replace terminal JSON artifact through:
 
 ```python
 class OneStepOperations(Protocol):
@@ -728,7 +729,7 @@ class OneStepOperations(Protocol):
 
 def audit_one_step_universe(
     *, binary: Path, base_config: Path, primary_config: Path,
-    initial_family: Path, output: Path, project_root: Path,
+    initial_family: Path, claim: Path, output: Path, project_root: Path,
     operations: OneStepOperations | None = None,
 ) -> dict: ...
 ```
@@ -748,13 +749,26 @@ def test_any_nonpositive_barrier_or_small_next_radius_terminally_fails(self):
     self.assertEqual(result["status"], "failed")
     self.assertFalse(result["passed"])
 
-def test_existing_output_is_never_overwritten(self):
+def test_existing_claim_or_output_is_never_overwritten(self):
+    self.claim.write_text("occupied", encoding="utf-8")
+    with self.assertRaises(FileExistsError):
+        audit_one_step_universe(**self.arguments())
+    self.claim.unlink()
     self.output.write_text("occupied", encoding="utf-8")
+    with self.assertRaises(FileExistsError):
+        audit_one_step_universe(**self.arguments())
+
+def test_hard_interruption_consumes_identity_before_first_launch(self):
+    operations = InterruptingOperations()
+    with self.assertRaises(KeyboardInterrupt):
+        audit_one_step_universe(**self.arguments(operations=operations))
+    self.assertTrue(self.claim.is_file())
+    self.assertFalse(self.output.exists())
     with self.assertRaises(FileExistsError):
         audit_one_step_universe(**self.arguments())
 ```
 
-Also test child nonzero exit, timeout, malformed/multiple frame-zero rows, wrong seed, altered config hash, applied residual below `mu`, component-bound violation, retry attempt, and partial artifact terminalization.
+Also test child nonzero exit, timeout, malformed/multiple frame-zero rows, wrong seed, altered config hash, applied residual below `mu`, component-bound violation, retry attempt, immutable claim identity, claim/output cross-binding, and partial terminal publication.
 
 - [ ] **Step 2: Run RED**
 
@@ -767,7 +781,9 @@ Expected: FAIL because the producer does not exist.
 
 - [ ] **Step 3: Implement bounded once-per-seed execution**
 
-For each frozen seed, materialize one config in a fresh private temporary directory under `/private/tmp`, set exact positions, exact seed, `time-total=0.5`, evidence mode, and no campaign root. Invoke the binary once, parse exactly one complete frame-zero controller interval, reject any extra/missing identity, and discard temporary files after the terminal artifact is atomically published. Do not retain decompressed evidence or retry a seed.
+Before creating any temporary config or launching any child, require both `claim` and `output` absent. Create `claim` with an `O_CREAT|O_EXCL` no-replace write, fsync its exact implementation/binary/config/family/seed-universe identities, and never modify or delete it. An uncatchable interruption may leave only this claim; that still permanently consumes the implementation identity and blocks another launch. Caught child failures/timeouts publish a separate terminal failed `output` that binds the claim SHA-256.
+
+For each frozen seed, materialize one config in a fresh private temporary directory under `/private/tmp`, set exact positions, exact seed, `time-total=0.5`, evidence mode, and no campaign root. Invoke the binary once, parse exactly one complete frame-zero controller interval, reject any extra/missing identity, and discard temporary files after a no-replace terminal output is published. Do not retain decompressed evidence or retry a seed.
 
 Independently compute every applied original hard residual, `x_plus`, dynamic FIM certificate, 119 robust barriers, 14 next local hard problems, and 14 next planar radii. A passing record requires:
 
@@ -778,7 +794,7 @@ and all(next_barrier > 0.0)
 and all(next_radius >= 0.05)
 ```
 
-The artifact records the live HEAD/tree, binary/config/family identities, every seed result, registered/audit summaries, child-launch count, zero retry count, and a terminal status. It must never claim long-horizon safety or recursive feasibility.
+The terminal artifact records and verifies the immutable claim SHA-256, live HEAD/tree, binary/config/family identities, every seed result, registered/audit summaries, child-launch count, zero retry count, and a terminal status. It must never claim long-horizon safety or recursive feasibility.
 
 - [ ] **Step 4: Run GREEN with fixtures, then a real one-seed integration test**
 
@@ -795,7 +811,7 @@ Expected: unit tests PASS; real integration launches exactly one declared seed o
 
 - [ ] **Step 5: Review and commit**
 
-Independent reviewer checks process count, exact seed universe, no retry/no replace, temporary cleanup, state-update chronology, graph distinction, strict barrier comparison, and `rho>=0.05`. Required verdict C0/I0/M0.
+Independent reviewer checks the claim is published and fsynced before launch, process count, exact seed universe, no retry/no replace, hard-interruption behavior, temporary cleanup, state-update chronology, graph distinction, strict barrier comparison, and `rho>=0.05`. Required verdict C0/I0/M0.
 
 Suggested commit after explicit approval:
 
@@ -817,7 +833,7 @@ git commit -m "feat(diagnostics): add v6 one-step viability gate"
 
 **Interfaces:**
 - Consumes: passed gate-artifact schema, v6 predecessor identity, v2 configs/family, existing protocol-v2 authorization model.
-- Produces: production registration support for `kind=development, version=v6` that refuses absent/failed/mismatched gate evidence; it does not itself create production artifacts in this task.
+- Produces: production registration support for `kind=development, version=v6` that refuses absent/failed/mismatched gate evidence, plus a pure `validate_authorization_payload(...)` helper for precommit field/hash checks that deliberately does not inspect Git topology; it does not itself create production artifacts in this task.
 
 - [ ] **Step 1: Add RED lifecycle tests**
 
@@ -837,6 +853,15 @@ def test_v6_protocol_binds_exact_gate_family_configs_and_predecessor(self):
 def test_v6_runtime_rejects_historical_or_inferred_authorization(self):
     with self.assertRaisesRegex(ValueError, "authorization"):
         self.validate_v6_with_v5_authorization()
+
+def test_v6_precommit_authorization_payload_validation_is_pure(self):
+    authorization = self.exact_v6_authorization_payload()
+    validated = registrar.validate_authorization_payload(
+        self.protocol, authorization,
+        protocol_sha256=self.protocol_sha256,
+        preflight_sha256=self.preflight_sha256,
+    )
+    self.assertEqual(validated, authorization)
 ```
 
 Add tests for gate HEAD/tree mismatch, binary/config/family hash mismatch, changed seed order, v5/v6 root collision, existing v6 root, altered predecessor file, runner argv omission, analyzer argv mutation, and v5 regression verification.
@@ -854,6 +879,8 @@ Expected: only new v6 cases FAIL; all existing v5 cases remain green.
 - [ ] **Step 3: Add version-keyed validation**
 
 Require literal v2 family/overlay/predecessor/gate paths and exact identities. The v6 schedule uses the same 10 registered trajectory seeds, a newly frozen 10-seed range-noise schedule, 1000 frames, new absent `/v6` raw and analysis roots, no retry, and the existing resource/supervision limits. Do not mutate v5 argv or protocol verification.
+
+Add a pure `validate_authorization_payload` that accepts already-parsed protocol/authorization values plus the exact protocol/preflight hashes and checks the exact ten-field schema, values, date, verbatim UTF-8 text, and text digest. It must not call `_repository_identity`, `_verify_committed_registration_state`, or inspect filesystem/Git topology. Keep `validate_authorization_binding` as the production postcommit validator that performs those topology and committed-blob checks.
 
 Before claiming any v6 root, the runner revalidates authorization, protocol, gate, family, configs, binary, predecessor, schedule, and root absence. It may verify the committed gate artifact but must not rerun or reinterpret the formal gate.
 
@@ -888,12 +915,13 @@ git commit -m "feat(experiments): bind v6 interior viability lifecycle"
 ### Task 8: Verify the Committed Implementation and Run the Formal Development Gate
 
 **Files:**
+- Create before any formal-gate launch: `docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-claim.json`
 - Create on PASS or terminal failure: `docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability.json`
 - Create: `docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-review.md`
 
 **Interfaces:**
 - Consumes: clean committed Tasks 1--7 implementation and exact production binary/config/family.
-- Produces: one terminal, immutable formal gate artifact and one independent review. No v6 protocol yet.
+- Produces: one immutable pre-launch claim, one terminal formal gate artifact when terminal publication is reachable, and one independent review. No v6 protocol yet.
 
 - [ ] **Step 1: Run the full implementation verification before the formal gate**
 
@@ -927,6 +955,7 @@ Expected: all PASS. Tracked worktree is clean; only preserved `build-diagnostic/
 
 ```bash
 test ! -e docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability.json
+test ! -e docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-claim.json
 test ! -e docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v6-protocol.json
 test ! -e /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v6
 test ! -e /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v6
@@ -948,23 +977,29 @@ conda run -n cbf_env python -m \
   --base-config config/config.json \
   --primary-config config/diagnostics/qualified_mode_hybrid_dcbf_development_v2.json \
   --initial-family config/diagnostics/qualified_initial_family_v2.json \
+  --claim docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-claim.json \
   --output docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability.json
 ```
 
-Expected PASS artifact: terminal/completed, `launch_count=100`, `retry_count=0`, audit `100/100`, registered `10/10`, minimum next barrier strictly positive, minimum next local radius `>=0.05 m/s`, zero applied residual/floor violations, zero component-bound violations, and exact implementation/binary/config/family identities. If the process or any seed fails, preserve the terminal artifact, stop before protocol generation, and begin a newly versioned development design from a new implementation commit.
+Expected PASS evidence: the immutable claim predates every child launch; the terminal artifact binds its SHA-256 and reports terminal/completed, `launch_count=100`, `retry_count=0`, audit `100/100`, registered `10/10`, minimum next barrier strictly positive, minimum next local radius `>=0.05 m/s`, zero applied residual/floor violations, zero component-bound violations, and exact implementation/binary/config/family identities. If the process or any seed fails, preserve the claim and terminal artifact. If an uncatchable interruption leaves only the claim, preserve it and write a separate interruption review without relaunching. In every non-PASS case stop before protocol generation and begin a newly versioned development design from a new implementation commit.
 
 - [ ] **Step 4: Independently review the formal artifact**
 
-Reviewer recomputes all 100 position hashes, launch universe, every frame-zero applied residual, every one-step state, all barrier/radius minima, identities, and no-retry/no-replace evidence without trusting `passed`. Review must distinguish this one-step empirical gate from recursive-feasibility proof and return C0/I0/M0.
+Reviewer first verifies the claim identity and creation chronology, then recomputes all 100 position hashes, launch universe, every frame-zero applied residual, every one-step state, all barrier/radius minima, identities, and no-retry/no-replace evidence without trusting `passed`. Review must distinguish this one-step empirical gate from recursive-feasibility proof and return C0/I0/M0.
 
 - [ ] **Step 5: Run the formal-gate GREEN check**
 
 ```bash
 conda run -n cbf_env python - <<'PY'
 import json
+import hashlib
 from pathlib import Path
+c = Path("docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-claim.json")
 p = Path("docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability.json")
+d_claim = json.loads(c.read_text())
 d = json.loads(p.read_text())
+assert d_claim["claimed"] is True
+assert d["claim_sha256"] == hashlib.sha256(c.read_bytes()).hexdigest()
 assert d["terminal"] is True and d["status"] == "completed" and d["passed"] is True
 assert d["launch_count"] == 100 and d["retry_count"] == 0
 assert d["audit_summary"]["passed_count"] == 100
@@ -973,6 +1008,7 @@ assert d["audit_summary"]["minimum_next_barrier_m"] > 0.0
 assert d["audit_summary"]["minimum_next_local_radius_mps"] >= 0.05
 PY
 git diff --check -- \
+  docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-claim.json \
   docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability.json \
   docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-review.md
 ```
@@ -985,6 +1021,7 @@ Suggested commit:
 
 ```bash
 git add docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability.json \
+  docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-claim.json \
   docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-review.md
 git commit -m "docs(cbf2026): approve v6 one-step viability gate"
 ```
@@ -1045,7 +1082,7 @@ Present the exact protocol SHA-256, preflight SHA-256, implementation identity, 
 
 - [ ] **Step 6: After new user text, create and validate authorization**
 
-The JSON contains only the schema's exact fields and binds the verbatim UTF-8 text plus its SHA-256. Run the production authorization validator and exact-four-artifact add-only child check.
+The JSON contains only the schema's exact fields and binds the verbatim UTF-8 text plus its SHA-256. Before commit, run only the dedicated pure authorization-payload validator added and tested in Task 7: exact field set, kind/version, implementation identity, protocol/preflight hashes, canonical date, verbatim UTF-8 text, and text SHA-256. This precommit helper must not inspect committed-child topology. Do not call `validate_authorization_binding` yet because the exact-four child does not exist.
 
 - [ ] **Step 7: Commit exact lifecycle artifacts after explicit approval**
 
@@ -1062,6 +1099,23 @@ git commit -m "docs(cbf2026): authorize v6 closure campaign"
 ```
 
 Expected staged universe: exactly those four files; the commit is their sole direct add-only child of the registered implementation identity.
+
+- [ ] **Step 8: Run production postcommit validation before any root allocation**
+
+```bash
+conda run -n cbf_env python - <<'PY'
+from pathlib import Path
+from scripts.diagnostics.register_qualified_closure_campaign import validate_authorization_binding
+protocol = Path("docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v6-protocol.json")
+authorization = Path("docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v6-authorization.json")
+validated = validate_authorization_binding(protocol, authorization)
+assert validated["authorized"] is True
+assert validated["kind"] == "development" and validated["version"] == "v6"
+PY
+git status --short
+```
+
+Expected: production validation proves current HEAD is the sole direct exact-four add-only child of the registered implementation identity, every live artifact equals its committed blob, hashes and fresh user text bind exactly, v6 roots remain absent, and porcelain contains only the registered allowed `build-diagnostic/` path. Any failure keeps Task 10 closed; do not amend the authorization commit or allocate a root.
 
 ---
 
