@@ -1506,5 +1506,38 @@ class QualifiedClosureV5InitialFamilyTests(unittest.TestCase):
                 registrar.verify_development_predecessor_state()
 
 
+class QualifiedClosureV6PredecessorTests(unittest.TestCase):
+    """Bind v6 registration to the terminal, immutable v5 evidence roots."""
+
+    identity_path = Path(
+        "config/diagnostics/qualified_v6_predecessor_v5_identity_v1.json"
+    )
+
+    def copy_v6_predecessor_fixture(self):
+        return json.loads(self.identity_path.read_text(encoding="utf-8"))
+
+    def test_v6_predecessor_identity_matches_terminal_v5_roots(self):
+        self.assertTrue(
+            self.identity_path.is_file(),
+            "the literal v6 predecessor identity file must exist",
+        )
+        self.assertTrue(
+            callable(getattr(registrar, "load_v6_predecessor_identity", None)),
+            "the v6 predecessor loader must exist",
+        )
+        identity = registrar.load_v6_predecessor_identity(self.identity_path)
+        registrar.verify_v6_predecessor_state(identity)
+
+    def test_v6_predecessor_rejects_tree_or_manifest_mutation(self):
+        self.assertTrue(
+            callable(getattr(registrar, "verify_v6_predecessor_state", None)),
+            "the v6 predecessor verifier must exist",
+        )
+        identity = self.copy_v6_predecessor_fixture()
+        identity["terminal"]["raw"]["tree_sha256"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "v5 predecessor"):
+            registrar.verify_v6_predecessor_state(identity)
+
+
 if __name__ == "__main__":
     unittest.main()

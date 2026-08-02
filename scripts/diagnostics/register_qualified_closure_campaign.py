@@ -7,6 +7,7 @@ import os
 import uuid
 import sys
 import subprocess
+from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
 
@@ -67,6 +68,33 @@ FROZEN_INITIAL_FAMILY_PATH = (
     Path(__file__).resolve().parents[2]
     / "config" / "diagnostics" / "qualified_initial_family_v1.json"
 )
+
+FROZEN_V6_PREDECESSOR_IDENTITY_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "config" / "diagnostics" / "qualified_v6_predecessor_v5_identity_v1.json"
+)
+
+FROZEN_V6_PREDECESSOR_V5_IDENTITY = {
+    "schema_version": "cbf2026-qualified-v6-predecessor-v5-identity-v1",
+    "terminal": {
+        "raw": {
+            "root": "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v5",
+            "files": 28,
+            "logical_bytes": 12764382,
+            "tree_sha256": "7ead4049e0d13f63458ba8d1a522f055ffed56357ffa1719e1bfc1da38a66870",
+            "manifest_name": "manifest.json",
+            "manifest_sha256": "a3970bcf588e938f8487a794b00d1bbbe8bbd181c0d5a919cc0297b258e64a32",
+        },
+        "analysis": {
+            "root": "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v5",
+            "files": 1,
+            "logical_bytes": 176,
+            "tree_sha256": "e42ce3e1cd83c60366b2901e3adec58a4282cfc70df7f9b13609a16f600020f5",
+            "manifest_name": "manifest.json",
+            "manifest_sha256": "82457d6a4838b2396b16fa36d99b15b6ccd0ab16823cfbf486be51613e862a63",
+        },
+    },
+}
 
 
 def _require_literal_initial_family_path(path: Path) -> Path:
@@ -578,6 +606,79 @@ def _json_object(path: Path, label: str) -> dict:
     if not isinstance(value, dict):
         raise ValueError(f"{label} must be a JSON object")
     return value
+
+
+def _require_literal_v6_predecessor_identity_path(path: Path) -> Path:
+    """Authorize only the committed, non-symbolic v6 predecessor record."""
+    path = Path(path)
+    if (
+        path.is_symlink()
+        or _has_symbolic_ancestor(path)
+        or path.resolve() != FROZEN_V6_PREDECESSOR_IDENTITY_PATH.resolve()
+    ):
+        raise ValueError("v5 predecessor identity path is not literal")
+    return path
+
+
+def _validate_v6_predecessor_identity(identity: Mapping) -> None:
+    """Reject any extensible or self-rehashed v5 predecessor declaration."""
+    expected = FROZEN_V6_PREDECESSOR_V5_IDENTITY
+    if not isinstance(identity, Mapping) or set(identity) != set(expected):
+        raise ValueError("v5 predecessor identity schema is not exact")
+    if identity.get("schema_version") != expected["schema_version"]:
+        raise ValueError("v5 predecessor identity schema version mutated")
+    terminal = identity.get("terminal")
+    if not isinstance(terminal, Mapping) or set(terminal) != set(expected["terminal"]):
+        raise ValueError("v5 predecessor terminal identities are incomplete")
+    for label, expected_record in expected["terminal"].items():
+        record = terminal.get(label)
+        if not isinstance(record, Mapping) or set(record) != set(expected_record):
+            raise ValueError(f"v5 predecessor {label} identity schema is not exact")
+        for key in ("files", "logical_bytes"):
+            if type(record.get(key)) is not int or record[key] < 0:
+                raise ValueError(f"v5 predecessor {label} identity has invalid {key}")
+        for key in ("tree_sha256", "manifest_sha256"):
+            if not _lower_hex(record.get(key), 64):
+                raise ValueError(f"v5 predecessor {label} identity has noncanonical hash")
+        if record != expected_record:
+            raise ValueError(f"v5 predecessor {label} identity mutated")
+
+
+def load_v6_predecessor_identity(path: Path) -> dict:
+    """Load the one immutable v5 terminal identity authorized for v6."""
+    path = _require_literal_v6_predecessor_identity_path(path)
+    before = _sha256(path)
+    identity = _json_object(path, "v5 predecessor identity")
+    after = _sha256(path)
+    if before != after:
+        raise ValueError("v5 predecessor identity changed while being read")
+    _validate_v6_predecessor_identity(identity)
+    return identity
+
+
+def verify_v6_predecessor_state(identity: Mapping) -> None:
+    """Recompute the frozen v5 trees and manifests without modifying them."""
+    _validate_v6_predecessor_identity(identity)
+    for label, expected in identity["terminal"].items():
+        root = Path(expected["root"])
+        if root.is_symlink() or _has_symbolic_ancestor(root):
+            raise ValueError(f"v5 predecessor {label} root is symbolic")
+        try:
+            observed = _directory_tree_identity(root)
+        except ValueError as error:
+            raise ValueError(f"v5 predecessor {label} tree is unavailable") from error
+        expected_tree = {
+            key: expected[key]
+            for key in ("files", "logical_bytes", "tree_sha256")
+        }
+        manifest = root / expected["manifest_name"]
+        if (
+            observed != expected_tree
+            or manifest.is_symlink()
+            or not manifest.is_file()
+            or _sha256(manifest) != expected["manifest_sha256"]
+        ):
+            raise ValueError(f"v5 predecessor {label} tree or manifest mutated")
 
 
 def _initial_family_semantic_sha256(family: dict) -> str:

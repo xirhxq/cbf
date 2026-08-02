@@ -1,0 +1,21 @@
+{
+  "schema_version": "cbf2026-qualified-v6-predecessor-v5-identity-v1",
+  "terminal": {
+    "raw": {
+      "root": "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v5",
+      "files": 28,
+      "logical_bytes": 12764382,
+      "tree_sha256": "7ead4049e0d13f63458ba8d1a522f055ffed56357ffa1719e1bfc1da38a66870",
+      "manifest_name": "manifest.json",
+      "manifest_sha256": "a3970bcf588e938f8487a794b00d1bbbe8bbd181c0d5a919cc0297b258e64a32"
+    },
+    "analysis": {
+      "root": "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v5",
+      "files": 1,
+      "logical_bytes": 176,
+      "tree_sha256": "e42ce3e1cd83c60366b2901e3adec58a4282cfc70df7f9b13609a16f600020f5",
+      "manifest_name": "manifest.json",
+      "manifest_sha256": "82457d6a4838b2396b16fa36d99b15b6ccd0ab16823cfbf486be51613e862a63"
+    }
+  }
+}
