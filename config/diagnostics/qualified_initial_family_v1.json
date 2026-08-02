@@ -1,0 +1,120 @@
+{
+  "schema_version": "cbf2026-qualified-initial-family-v1",
+  "namespace": "cbf2026-v5-initial",
+  "template_positions_m": [
+    [-1405.6519845832192, -181.57557542683088],
+    [-1405.651984583215, 181.57557542682423],
+    [-1370.5, 0.0],
+    [-1486.517149260088, 62.21755876564317],
+    [-1383.3900347553965, -123.69189439925512],
+    [-1476.6099652446042, -123.69189439925204],
+    [-1454.3480154167842, -181.5755754268258],
+    [-1383.3900347553965, 123.691894399255],
+    [-1373.482850739912, 62.2175587656418],
+    [-1476.6099652446028, 123.69189439925789],
+    [-1373.4828507399125, -62.21755876564655],
+    [-1486.5171492600884, -62.217558765639424],
+    [-1489.5, 1.1732292571851443e-12],
+    [-1454.348015416783, 181.57557542682727]
+  ],
+  "perturbation": {
+    "method": "sha256-first8-uint64-be-affine-v1",
+    "coordinate_radius_m": 0.1,
+    "clamp": false,
+    "resample": false
+  },
+  "deployment": {
+    "polygon_vertices_m": [
+      [-1490.0, -200.0],
+      [-1490.0, 200.0],
+      [-1370.0, 200.0],
+      [-1370.0, -200.0]
+    ],
+    "world_boundary_m": [
+      [-1500.0, -1500.0],
+      [1500.0, -1500.0],
+      [1500.0, 1500.0],
+      [-1500.0, 1500.0]
+    ]
+  },
+  "schedule": {
+    "registered_trajectory_seeds": [
+      2026080201,
+      2026080202,
+      2026080203,
+      2026080204,
+      2026080205,
+      2026080206,
+      2026080207,
+      2026080208,
+      2026080209,
+      2026080210
+    ],
+    "audit_seed_first": 2026080201,
+    "audit_seed_last": 2026080300,
+    "audit_seed_count": 100
+  },
+  "production_contract": {
+    "base_positions_m": [
+      [-1550.0, -300.0],
+      [-1550.0, 0.0],
+      [-1550.0, 300.0]
+    ],
+    "formation_base_ids": [[1, 0], [1, 2]],
+    "squad_count": 2,
+    "uavs_per_squad": 7,
+    "ranging_sigma_m": 0.5,
+    "reference_max_range_m": 850.0,
+    "safe_distance_m": 10.0,
+    "class_k_coefficient": 0.1,
+    "uav_endpoint_allocation": 0.5,
+    "base_endpoint_allocation": 1.0,
+    "planar_component_max_mps": 25.0
+  },
+  "admission": {
+    "minimum_barrier_m": 35.0,
+    "minimum_qp_margin_mps": 0.7,
+    "fixed_localization_edge_count": 28,
+    "collision_edge_count": 91,
+    "barrier_count": 119,
+    "endpoint_row_count": 232,
+    "local_qp_count": 14
+  },
+  "frozen_summary": {
+    "registered": {
+      "proposed_count": 10,
+      "accepted_count": 10,
+      "minimum_barrier_m": 35.77296640879953,
+      "minimum_barrier_seed": 2026080205,
+      "minimum_barrier_edge": ["collision", 2, 14, -1],
+      "minimum_qp_margin_mps": 0.7658252531927233,
+      "minimum_qp_seed": 2026080207,
+      "minimum_qp_uav": 13,
+      "maximum_bar_nu_mps": 6.768799189292255,
+      "maximum_bar_nu_seed": 2026080204,
+      "maximum_bar_nu_uav": 14,
+      "minimum_pair_distance_m": 48.53866222462101,
+      "minimum_pair_distance_seed": 2026080205,
+      "minimum_pair_distance_edge": [2, 14]
+    },
+    "audit": {
+      "proposed_count": 100,
+      "accepted_count": 100,
+      "minimum_barrier_m": 35.77296640879953,
+      "minimum_barrier_seed": 2026080205,
+      "minimum_barrier_edge": ["collision", 2, 14, -1],
+      "minimum_qp_margin_mps": 0.7658252531927233,
+      "minimum_qp_seed": 2026080207,
+      "minimum_qp_uav": 13,
+      "maximum_bar_nu_mps": 6.7773637849535655,
+      "maximum_bar_nu_seed": 2026080253,
+      "maximum_bar_nu_uav": 14,
+      "minimum_pair_distance_m": 48.51563216720877,
+      "minimum_pair_distance_seed": 2026080246,
+      "minimum_pair_distance_edge": [1, 7]
+    },
+    "representative_seed": 2026080201,
+    "representative_positions_sha256": "161fb8a9104b7b5b0a3a20cd5cf0e9c896db98e74ee2262088751edddaa72e88"
+  },
+  "semantic_sha256": "4f8070127c86149de8ebde10197e5c7a639814e03dac7d56ab17befc6d5bdb8b"
+}
