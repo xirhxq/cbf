@@ -1085,6 +1085,106 @@ class RawManifestSchemaTests(unittest.TestCase):
                 root / "synthetic-missing.jsonl.gz", mission, "launch_failure"
             )
 
+    def test_incomplete_controller_abort_remains_in_synthetic_missing_universe(self):
+        from tests.test_run_qualified_closure_campaign import (
+            rejected_verified_reset_fixture,
+        )
+
+        with tempfile.TemporaryDirectory(
+            prefix="qualified-incomplete-controller-missing-"
+        ) as directory:
+            root = Path(directory)
+            mission = {
+                "campaign_id": "development-v5",
+                "mission_id": "mission-01",
+                "trajectory_seed": 2026080101,
+                "range_noise_seed": 2026081101,
+                "frames": 1,
+                "conditions": ["dynamic_primary", "fixed_fim_ablation"],
+            }
+            identity = {
+                "schema_version": "cbf2026-qualified-evidence-v1",
+                "campaign_id": mission["campaign_id"],
+                "condition": "dynamic_primary",
+                "trajectory_seed": mission["trajectory_seed"],
+                "range_noise_seed": mission["range_noise_seed"],
+            }
+            rows = [
+                {
+                    **identity,
+                    "record_type": "initialization",
+                    "frame_index": 0,
+                    "robot_id": robot_id,
+                    "runtime": {"local_index": robot_id},
+                    "analyzer_only": {
+                        "truth_position": [float(robot_id), 0.0]
+                    },
+                }
+                for robot_id in range(1, 15)
+            ]
+            reset = rejected_verified_reset_fixture(identity)
+            rows.extend((
+                reset,
+                {
+                    **identity,
+                    "record_type": "controller_interval",
+                    "frame_index": 0,
+                    "runtime": {
+                        "snapshot_version": 0,
+                        "allocation_version": 1,
+                        "nodes": [
+                            {
+                                "robot_id": robot_id,
+                                "snapshot_version": 0,
+                                "optimization_status": "not-attempted",
+                                "applied_command": None,
+                                "committed_hard_problem_id": "unavailable",
+                                "consumed_hard_problem_id": "unavailable",
+                            }
+                            for robot_id in range(1, 15)
+                        ],
+                        "expected_node_count": 14,
+                        "expected_endpoint_row_count": 232,
+                        "expected_reconstructed_row_count": 119,
+                        "observed_endpoint_row_count": 0,
+                        "abort_reason": (
+                            "theorem certificate reset rejected: "
+                            + reset["runtime"]["reason"]
+                        ),
+                        "complete": False,
+                    },
+                    "analyzer_only": {},
+                },
+                {
+                    **identity,
+                    "record_type": "mission_terminal",
+                    "frame_index": mission["frames"],
+                    "runtime": {
+                        "success": False,
+                        "reason": "bootstrap_failure",
+                        "process_outcome": "bootstrap_failure",
+                        "declared_frames": mission["frames"],
+                        "completed_intervals": 0,
+                    },
+                },
+            ))
+            with gzip.open(
+                root / "swarm.jsonl.gz", "wt", encoding="utf-8"
+            ) as sink:
+                for row in rows:
+                    sink.write(json.dumps(row, separators=(",", ":")) + "\n")
+
+            ProductionOperations().synthesize_failed_mission(
+                mission, root, "mission_declared_unsuccessful"
+            )
+
+            _validate_synthesized_missing_stream(
+                root / "synthetic-missing.jsonl.gz",
+                mission,
+                "mission_declared_unsuccessful",
+                mission_root=root,
+            )
+
     def test_campaign_terminal_counts_are_exact_and_status_consistent(self):
         with tempfile.TemporaryDirectory(prefix="qualified-campaign-state-") as directory:
             root = Path(directory)

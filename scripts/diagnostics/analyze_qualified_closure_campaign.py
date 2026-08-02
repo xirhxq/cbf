@@ -1932,7 +1932,10 @@ def _analyzer_observed_failed_mission_keys(mission_root, mission):
                     if key in observed["endpoint"]:
                         raise ValueError("retained prefix key is duplicated")
                     observed["endpoint"].add(key)
-                elif record_type == "controller_interval":
+                elif (
+                    record_type == "controller_interval"
+                    and row.get("runtime", {}).get("complete") is True
+                ):
                     key = (*identity, row["frame_index"])
                     if key in observed["controller"]:
                         raise ValueError("retained prefix key is duplicated")
