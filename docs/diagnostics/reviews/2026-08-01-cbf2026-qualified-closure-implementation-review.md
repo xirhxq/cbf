@@ -480,3 +480,218 @@ Ready for development-v1 protocol generation: **Yes**.
 Finding summary: the final implementation report is identity-consistent with
 `ec78794`/`3efa308`, its qualified verification record, and the observed
 no-campaign state; no report-only C/I/M finding remains.
+
+## Failed-v1 recovery implementation/report/plan conformance review
+
+### Scope, chronology, and current identity
+
+This appended review preserves every initial finding, Fix Round 1 disposition,
+development-v1 approval boundary, and failed-v1 audit record above. It does
+not revise those historical decisions. The new scope begins with the immutable
+failed-v1 evidence commit and reviews the authorization-lifecycle repair plus
+the current recovery report and executable plan:
+
+```text
+failed-v1 evidence commit  0e4c439ae35f8490b27019aeb26b1c46ba9ab3f7
+lifecycle-fix HEAD         eafa68c3631c590b9f1070bcc8d313ca4f3b7705
+lifecycle-fix tree         6fe358619a78fe259c2fb33998be4170bd8786f6
+```
+
+Commit `eafa68c...` is the current code snapshot and has sole parent
+`0e4c439...`. Its exact six-file diff is:
+
+```text
+scripts/diagnostics/analyze_qualified_closure_campaign.py
+scripts/diagnostics/register_qualified_closure_campaign.py
+scripts/diagnostics/run_qualified_closure_campaign.py
+tests/test_analyze_qualified_closure_campaign.py
+tests/test_register_qualified_closure_campaign.py
+tests/test_run_qualified_closure_campaign.py
+```
+
+No C++ source, configuration, threshold, schema, binary, build contract, or
+historical evidence file changed in that commit. The final recovery documents
+reviewed here are:
+
+```text
+e4cb6569e532f3dcb9358b6fd796420e0060d4eaf9430244e12cb492049acfda  docs/superpowers/plans/2026-08-01-cbf2026-qualified-modes-hybrid-distributed-cbf-implementation.md
+e54e4a0cc3df1b33c26b7490d1793b1bdbe422ab57c403f30b975184d48bd943  docs/diagnostics/2026-08-01-cbf2026-qualified-closure-implementation.md
+```
+
+The plan is 152,241 bytes / 2,765 lines. The report is 31,753 bytes / 626
+lines and embeds the exact final plan SHA-256 above. These are working-tree
+identities for the pending documentation-closure commit; neither is a
+protocol, authorization, result, or execution identity.
+
+### Immutable failed-v1 evidence
+
+The three failed-v1 artifacts remain byte-identical to their blobs in
+`0e4c439...`:
+
+```text
+9a5e9d2503d083bdbb239468a88cf5ceed2cc283978e8beed5badc020ae74343  41,979 bytes  docs/diagnostics/2026-08-01-cbf2026-qualified-closure-development-v1-protocol.json
+19cf657d787bfe76bfa2aecf35ce06baf9fd2f57ff2deeab12e894429ccebffc     312 bytes  docs/diagnostics/2026-08-01-cbf2026-qualified-closure-development-v1-protocol.md
+7ef7fbbf09d1ef95ecad482282a75398158fb97008fdb8a08745efeb51523515   9,274 bytes  docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-development-v1-preflight.md
+```
+
+`0e4c439...` adds exactly those three paths and nothing else. The v1
+authorization and both v1 execution roots remain absent. The plan now labels
+every v1 protocol/preflight/runner/analyzer/root instruction as historical,
+superseded, and non-executable. Failed v1 is consumed audit evidence: it may
+not be retried, overwritten, repaired in place, reinterpreted, or used as a
+development or confirmatory dependency.
+
+### Lifecycle-fix conformance
+
+Development alone advances to protocol version `v2` and the exact roots:
+
+```text
+/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v2
+/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v2
+```
+
+Confirmatory and confirmatory-smoke remain version `v1` with their previously
+frozen six roots. Registrar, runner, analyzer, report, and plan token sequences
+agree: development rejects v1 and requires v2, while confirmatory rejects v2
+and requires v1. The recorded development-v2 runner/analyzer arrays compare
+token-for-token with the registrar's production derivation.
+
+The production authorization artifact has an exact ten-field schema and
+binds exact protocol bytes, `protocol.repository.head`, exact independent
+preflight bytes, a canonical ISO date, nonempty original UTF-8 authorization
+text, and that text's SHA-256. The plan further fixes the production date to
+`2026-08-02` and the researcher's exact text to `批准`, whose UTF-8 SHA-256 is:
+
+```text
+8cbe697b157364a5b13646285b38409dc53ec5287deeb7913493e65b275cd14d
+```
+
+The protocol's frozen authorization declaration explicitly requires the
+protocol SHA-256, implementation identity, preflight SHA-256, and user
+authorization. Exact-schema, missing-field, self-rehashed-false, preflight,
+text, date, committed-blob, extra-path, source-mutation, second-descendant,
+non-descendant, dirty-status, and root-reuse cases all fail closed.
+
+The real-Git positive test creates an implementation commit, publishes the
+four new lifecycle artifacts, commits them as one direct child, and validates
+that exact state. Production accepts only a current commit whose sole parent
+is `protocol.repository.head`, whose complete name-status diff is exactly four
+`A` entries for protocol JSON, protocol Markdown, preflight Markdown, and
+authorization JSON, and whose live artifact bytes equal the current HEAD
+blobs. Bound implementation/report/tool/config/build identities inside the
+repository must also equal the registered parent blobs.
+
+The lifecycle repair review chronology is preserved: the first scoped review
+reported I1 because the protocol authorization declaration omitted preflight
+and user-authorization semantics; the next review reported M1 because the
+positive fixture text named the wrong development version. Both were corrected
+under test, and the final lifecycle code review returned C0/I0/M0.
+
+### Report and plan conformance chronology
+
+The first recovery-document pass reviewed plan identity `16db3703...` and
+report identity `9f0e1169...` and returned C0/I3/M0:
+
+1. I1: the current Task 11 development-v2 block stopped after execution and
+   analysis and omitted failed-gate retention, independent raw/gate review,
+   named v2 report/review artifacts, DRA closure, and the explicit Task 12
+   gate.
+2. I2: Task 12's prose required a passing development-v2 dependency, but its
+   registrar command still bound the failed development-v1 protocol/report/
+   review paths.
+3. I3: Task 12 still prescribed committing the protocol pair before a later
+   preflight/authorization commit, which cannot satisfy the sole-direct-child
+   exact-four-artifact production validator.
+
+The fix round adds the exact development-v2 report and review paths, a
+no-retry failed-gate stop, independent raw/gate recomputation, report/review
+commit, separate DRA update, and a PASS+C0/I0-only confirmatory gate. Task 12
+now consumes exactly:
+
+```text
+docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v2-protocol.json
+docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v2.md
+docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v2-review.md
+```
+
+It generates confirmatory-v1 only from a clean passing-development parent,
+creates preflight and the exact dated/text-bound authorization while all four
+files are new, and commits exactly those four add-only artifacts as the sole
+direct child. It keeps that artifact-only HEAD through both smoke runs, all
+three analyses, and the scientific run. The repository smoke review is
+deliberately deferred until no authorized invocation remains, preventing a
+second-descendant lifecycle failure.
+
+The first plan fix closed I1--I3. A follow-up pass found two remaining document
+identity/ambiguity issues: the top-level file list still named a future v1
+result and grouped pre-run authorization artifacts with post-terminal results,
+and the report still embedded the preceding plan hash after that correction.
+The final plan now names only the v2 result/review as current, labels v1
+historical and non-executable, splits pre-run from post-terminal artifacts,
+and gates confirmatory on development-v2 PASS+C0/I0. The final report embeds
+the final `e4cb6569...` plan identity. No document finding remains.
+
+### Verification and no-campaign state
+
+Fresh independent verification for this recovery review produced:
+
+```text
+registrar/runner/analyzer lifecycle suite  142 / 142 passed
+five-module campaign/lifecycle suite       171 / 171 passed
+full Python discovery                      1,160 total
+                                            1,147 passed
+                                                5 failed
+                                                8 errored
+                                                0 skipped
+direct C++ binaries                        111 / 111 cases passed
+                                          1,106 / 1,106 assertions passed
+CTest                                         1 / 1 passed
+ENABLE_GUROBI:BOOL                            ON
+```
+
+The full-discovery five failures and eight errors are the same unchanged ten
+legacy circular-parent outcomes and three absent external-fixture outcomes
+itemized in the implementation report. They remain non-green and are not
+waived, but none is attributable to the six-file lifecycle repair. All three
+changed production scripts passed `py_compile`; the implementation and live
+document diffs passed `git diff --check`.
+
+All four development-v2 lifecycle artifacts, both v2 execution roots, all
+confirmatory roots, and every development-v2/confirmatory empirical result
+remain absent. No protocol, preflight, authorization, campaign, or production
+execution root was generated by this review. Direct C++ verification wrote
+only ignored test output under the pre-existing `build-diagnostic/` namespace.
+
+### Standards and specification verdict
+
+The independent Standards axis found no hard repository-standard violation.
+It noted one nonblocking Fowler judgement call: the development/confirmatory
+version/root matrix is intentionally restated across registrar, runner, and
+analyzer, increasing synchronized-edit cost. The current values and tests
+agree, so this is not counted as a C/I/M defect in the scoped recovery.
+
+The Specification axis finds the lifecycle repair, report, and final plan
+conformant after the document fix rounds above. The current working state is
+not the future implementation parent. The report, plan, and this appended
+review must first be committed together as one clean documentation-closure
+commit after `eafa68c...`. The registrar must discover and bind that future
+commit as `protocol.repository.head`; it must not bind `eafa68c...` merely
+because that is the code-fix commit. Only a later sole direct child adding the
+exact four development-v2 lifecycle artifacts may authorize Task 11.
+
+### Recovery decision
+
+Critical: `0`; Important: `0`; Minor: `0`.
+
+Ready to commit only the implementation report, recovery plan, and this
+implementation review as the prerequisite documentation-closure commit:
+**Yes**.
+
+Ready to generate the development-v2 protocol before that commit: **No**.
+
+Ready to execute development-v2, smoke, or confirmatory: **No**.
+
+Finding summary: the failed-v1 evidence is immutable and non-executable;
+`eafa68c...` closes the authorization lifecycle; the final report and plan
+close all recovery-document findings; and no protocol, authorization, result,
+or campaign state has been created.

@@ -96,8 +96,8 @@ and records that identity in DRA.
 - Create `tests/test_generate_qualified_measurements.py`: deterministic RNG, sigma binding, and primary/ablation shared-measurement identity tests.
 - Create `tests/testEvidenceStream.cpp`: incremental/no-aggregate logger and abnormal-stop prefix tests.
 - Create `tests/test_swarm_evidence_stream.py`: real `Swarm` subprocess test proving evidence-mode stdout contains JSONL only and human output is isolated on stderr.
-- Create `docs/diagnostics/2026-08-01-cbf2026-qualified-closure-development-v1.md` and its independent review after development becomes terminal.
-- Generate a versioned protocol, preflight, authorization, terminal report, and independent review only after development gates pass.
+- Create `docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v2.md` and `docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v2-review.md` after the recovery development campaign becomes terminal; the development-v1 pair is historical and must never be created by execution.
+- Create each versioned protocol, preflight, and authorization before its corresponding authorized run under the Task 10/12 lifecycle; create the terminal report and independent review only after that bundle is terminal, and permit confirmatory registration only after development-v2 PASS with C0/I0 review.
 - Modify `/private/tmp/cbf2026-paper-geometric-stability/main.tex` and add only the reviewed compact result assets under `assets/2026-08-qualified-closure/` after evidence gates permit each edit.
 - Modify `papers/cbf2026/status.md`, `papers/cbf2026/timeline.md`, `papers/cbf2026/sources.md`, and `papers/cbf2026/open-questions.md` in the DRA.
 - Create `/private/tmp/dra-cbf2026-diagnostic/papers/cbf2026/theory/2026-08-01-qualified-global-modes-and-hybrid-distributed-cbf.md` and `/private/tmp/dra-cbf2026-diagnostic/meta-log/2026-08-01-cbf2026-qualified-mode-hybrid-dcbf.md` as append-only scientific/process records.
@@ -1588,6 +1588,13 @@ rechecks that the analysis root is absent and atomically claims only the
 analysis root. Neither process pre-creates the other's root. Never delete or
 retry the same version.
 
+Recovery note (2026-08-02): the v1 root allocation above is preserved as the
+original frozen design but was never executed and is now terminally
+superseded. The implemented development allocation constants now require the
+non-colliding `/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v2`
+and `/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v2`
+roots recorded in Tasks 10--11.
+
 - [ ] **Step 3: Freeze development seeds and schedules**
 
 Use exactly trajectory seeds `2026080101..2026080110` and separately serialized
@@ -1754,15 +1761,22 @@ git commit -m "feat(experiments): add qualified closure development campaign"
 **Files:**
 - Create: `docs/diagnostics/2026-08-01-cbf2026-qualified-closure-implementation.md`
 - Create: `docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-implementation-review.md`
-- Generate: `docs/diagnostics/2026-08-01-cbf2026-qualified-closure-development-v1-protocol.json`
-- Generate: `docs/diagnostics/2026-08-01-cbf2026-qualified-closure-development-v1-protocol.md`
-- Create: `docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-development-v1-preflight.md`
-- Create: `docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-development-v1-authorization.json`
+- Historical failed v1: `docs/diagnostics/2026-08-01-cbf2026-qualified-closure-development-v1-protocol.json`
+- Historical failed v1: `docs/diagnostics/2026-08-01-cbf2026-qualified-closure-development-v1-protocol.md`
+- Historical failed v1: `docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-development-v1-preflight.md`
+- Historical absent v1: `docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-development-v1-authorization.json`
+- Recovery v2 generate: `docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v2-protocol.json`
+- Recovery v2 generate: `docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v2-protocol.md`
+- Recovery v2 create: `docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v2-preflight.md`
+- Recovery v2 create: `docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v2-authorization.json`
 - Modify: DRA four CBF2026 files from Task 1.
 
 **Interfaces:**
 - Consumes: Tasks 2--9 code and tests.
-- Produces: one reviewed clean implementation commit approved only for development v1 execution.
+- Produces: one reviewed clean implementation commit approved only for the
+  development-v2 registration/preflight/authorization lifecycle. Execution
+  remains closed until the exact four-artifact direct-child commit below is
+  independently validated.
 
 - [ ] **Step 1: Run complete Python discovery**
 
@@ -1825,7 +1839,12 @@ git add docs/diagnostics/2026-08-01-cbf2026-qualified-closure-implementation.md 
 git commit -m "docs(cbf2026): approve qualified closure implementation"
 ```
 
-- [ ] **Step 7: Generate the exact development protocol from the reviewed implementation identity**
+- [x] **Historical Step 7: Generate the exact development-v1 protocol from the reviewed implementation identity**
+
+This command is retained only as the exact record of the failed-v1 lifecycle.
+It was run against implementation/report archive commit
+`709f4ef6cef60b0754527fc62d8ca64ac7a88a12`; it is superseded and must never
+be run again.
 
 Run the registrar in development mode after the implementation report/review
 commit exists. Bind that exact code tree, `build-diagnostic/Swarm` SHA-256,
@@ -1857,7 +1876,13 @@ Expected: both output files are new, their embedded runner/analyzer token
 arrays equal Task 11 exactly, neither execution root is created, and a second
 invocation refuses to replace either protocol file.
 
-- [ ] **Step 8: Perform independent development preflight and create authorization artifact**
+Observed historical result: the protocol pair was generated without creating
+either v1 root. The JSON is 41,979 bytes with SHA-256
+`9a5e9d2503d083bdbb239468a88cf5ceed2cc283978e8beed5badc020ae74343`;
+the Markdown is 312 bytes with SHA-256
+`19cf657d787bfe76bfa2aecf35ce06baf9fd2f57ff2deeab12e894429ccebffc`.
+
+- [x] **Historical Step 8: Perform independent development-v1 preflight — FAILED**
 
 Recompute every identity from the implementation commit, prove both roots
 absent, prove the v2 tree commitment unchanged, verify 8 GB launch space, and
@@ -1866,23 +1891,219 @@ SHA-256 and implementation commit that records the researcher's standing
 authorization for development execution. It does not authorize root reuse,
 retry, threshold changes, or confirmatory execution.
 
-- [ ] **Step 9: Commit protocol/preflight/authorization and update DRA**
+Observed historical result: independent preflight returned C1/I0/M0 and
+`FAILED — NOT READY` because the exact-HEAD validator made its own publication
+and required later commit mutually unsatisfiable. The 9,274-byte preflight has
+SHA-256
+`7ef7fbbf09d1ef95ecad482282a75398158fb97008fdb8a08745efeb51523515`.
+The v1 authorization and both v1 execution roots remained absent. This failed
+v1 protocol/preflight is immutable audit evidence and may not be repaired,
+retried, overwritten, reinterpreted, or used for execution.
+
+- [x] **Historical Step 9: Commit the exact three failed-v1 audit artifacts**
 
 ```bash
 git add docs/diagnostics/2026-08-01-cbf2026-qualified-closure-development-v1-protocol.json \
   docs/diagnostics/2026-08-01-cbf2026-qualified-closure-development-v1-protocol.md \
-  docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-development-v1-preflight.md \
-  docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-development-v1-authorization.json
-git commit -m "docs(cbf2026): authorize qualified closure development v1"
+  docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-development-v1-preflight.md
+git commit -m "docs(cbf2026): record qualified closure v1 preflight failure"
 ```
 
-Update the DRA with implementation/protocol/report/review/authorization
-hashes, all verification commands, and `development v1 authorized;
-confirmatory gate closed`.
+Observed: exact three-artifact commit
+`0e4c439ae35f8490b27019aeb26b1c46ba9ab3f7`; no authorization was created.
+
+- [x] **Recovery Step 10: Repair the authorization lifecycle under TDD and freeze the code-fix identity**
+
+Commit `eafa68c3631c590b9f1070bcc8d313ca4f3b7705` (tree
+`6fe358619a78fe259c2fb33998be4170bd8786f6`) closes the lifecycle deadlock.
+Development now requires version `v2` and the exact v2 roots below;
+confirmatory remains version `v1`. Authorization remains bound to exact
+protocol bytes, the registered implementation identity, exact independent
+preflight bytes, and the researcher's exact dated authorization text. The
+authorization gate accepts only one current commit whose sole parent is the
+registered implementation commit and whose diff is exactly the four named
+artifacts below, all added with no extra path. Review chronology was I1 for
+the protocol declaration, then M1 for the authorization fixture, then final
+C0/I0/M0 after both were corrected.
+
+Before registration, commit the updated implementation report, source plan,
+and independent recovery review as a clean documentation-closure commit after
+`eafa68c...`. The registrar must discover and record that then-current exact
+commit as `protocol.repository.head`. Its identity is intentionally not
+hard-coded here because it does not exist until these documentation updates
+are complete.
+
+- [ ] **Recovery Step 11: Generate the exact development-v2 protocol**
+
+Run only from the clean, final report/plan/review documentation-closure commit
+described above. Its source code-fix ancestor is
+`eafa68c3631c590b9f1070bcc8d313ca4f3b7705`; its exact current HEAD is what the
+registrar must bind. No working edit may contaminate registration or the later
+exact artifact-only child.
+
+```bash
+conda run -n cbf_env python \
+  scripts/diagnostics/register_qualified_closure_campaign.py \
+  --kind development --version v2 \
+  --implementation-report docs/diagnostics/2026-08-01-cbf2026-qualified-closure-implementation.md \
+  --implementation-review docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-implementation-review.md \
+  --binary build-diagnostic/Swarm \
+  --base-config config/config.json \
+  --primary-config config/diagnostics/qualified_mode_hybrid_dcbf_development_v1.json \
+  --ablation-config config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v1.json \
+  --trajectory-seeds 2026080101:2026080110 \
+  --range-noise-seeds 2026081101:2026081110 \
+  --frames 1000 \
+  --raw-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v2 \
+  --analysis-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v2 \
+  --protocol-json docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v2-protocol.json \
+  --protocol-md docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v2-protocol.md
+```
+
+- [ ] **Recovery Step 12: Independently preflight and create the bound authorization**
+
+Create exactly:
+
+```text
+docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v2-preflight.md
+docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v2-authorization.json
+```
+
+The preflight must independently recompute every registered identity and argv,
+confirm both v2 roots absent, retain the historical two-range v2 commitment,
+verify launch space, and return C0/I0/M0. The authorization schema is exactly
+`schema_version`, `authorized`, `kind`, `version`, `protocol_sha256`,
+`implementation_identity`, `preflight_sha256`, `user_authorization_date`,
+`user_authorization_text`, and `user_authorization_text_sha256`. It binds date
+`2026-08-02` and the researcher's exact standing-authorization text `批准`,
+whose UTF-8 SHA-256 is
+`8cbe697b157364a5b13646285b38409dc53ec5287deeb7913493e65b275cd14d`.
+Any different text used inside a unit-test fixture is test data only and does
+not authorize the production protocol.
+
+- [ ] **Recovery Step 13: Commit and validate the exact four-artifact direct child**
+
+The commit must be the sole direct child of the exact documentation-closure
+commit recorded by the v2 protocol as `repository.head`, and must add exactly
+these four paths, with no modification, deletion, rename, or additional path:
+
+```bash
+git add docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v2-protocol.json \
+  docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v2-protocol.md \
+  docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v2-preflight.md \
+  docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v2-authorization.json
+git commit -m "docs(cbf2026): authorize qualified closure development v2"
+```
+
+Only after independent validation of that committed four-artifact state may
+Task 11 development-v2 execution become eligible. The commands above are
+documentary at this update; no v2 artifact or root exists yet.
 
 ---
 
-### Task 11: Execute and Adversarially Review Development v1
+### Task 11: Execute and Adversarially Review Development v2
+
+This is the only current development execution task. Every development-v1
+preflight, runner, analyzer, root, protocol, and authorization command in the
+historical Task 11 block below is superseded and must not be executed.
+
+**Files:**
+- Generate: `/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v2/**`
+- Generate: `/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v2/**`
+- Consume: `docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v2-protocol.json`
+- Consume: `docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v2-authorization.json`
+- Create: `docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v2.md`
+- Create: `docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v2-review.md`
+- Modify: DRA four CBF2026 files from Task 1.
+
+**Interfaces:**
+- Consumes: exact Task 10 development-v2 protocol/authorization artifact
+  commit and the frozen ten-seed primary/ablation configuration.
+- Produces: one immutable terminal development-v2 raw/analysis bundle, author
+  report, independent gate review, and explicit Task 12 gate decision.
+
+- [ ] **Step 1: Execute development-v2 exactly once after the complete Task 10 gate**
+
+Execute the serialized runner argv from the v2 protocol; the expanded command
+below must compare token-for-token before launch:
+
+```bash
+conda run -n cbf_env python \
+  scripts/diagnostics/run_qualified_closure_campaign.py \
+  --kind development \
+  --version v2 \
+  --protocol docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v2-protocol.json \
+  --authorization docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v2-authorization.json \
+  --binary build-diagnostic/Swarm \
+  --base-config config/config.json \
+  --primary-config config/diagnostics/qualified_mode_hybrid_dcbf_development_v1.json \
+  --ablation-config config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v1.json \
+  --trajectory-seeds 2026080101:2026080110 \
+  --range-noise-seeds 2026081101:2026081110 \
+  --frames 1000 \
+  --output-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v2
+```
+
+- [ ] **Step 2: Analyze the immutable development-v2 bundle**
+
+Only after the raw bundle is terminal, execute the exact serialized analyzer
+argv:
+
+```bash
+conda run -n cbf_env python \
+  scripts/diagnostics/analyze_qualified_closure_campaign.py \
+  --kind development \
+  --version v2 \
+  --protocol docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v2-protocol.json \
+  --authorization docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v2-authorization.json \
+  --input-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v2 \
+  --ablation-config config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v1.json \
+  --output-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v2
+```
+
+- [ ] **Step 3: Stop and retain on any failed execution or analysis gate**
+
+If the runner, analyzer, integrity accounting, or scientific gate fails,
+retain every v2 artifact and root unchanged, write the exact failure in the
+named v2 report and review, and update the DRA. Never retry, resume, delete,
+overwrite, repartition, or reinterpret v2. Any changed code, configuration,
+threshold, or authorization lifecycle requires another reviewed fix and the
+next non-colliding development version.
+
+- [ ] **Step 4: Independently recompute raw accounting and every gate**
+
+Without importing reported result booleans, independently recompute raw and
+compact hashes, schedule/seed cardinalities, all ten declared mission
+outcomes, initialization and per-condition estimator universes, controller
+intervals, certificate availability, `nu_inst <= bar_nu`, allocated/full edge
+rows and residuals, reset transactions, command bounds, true-distance
+violations, completion, and mission-success arithmetic. Record every mismatch
+and return an explicit C/I/M review verdict.
+
+- [ ] **Step 5: Commit the v2 report/review, update DRA, and open or close Task 12**
+
+```bash
+git add docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v2.md \
+  docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v2-review.md
+git commit -m "docs(cbf2026): record qualified closure development v2"
+```
+
+Update all four DRA files with protocol/authorization/raw/analysis/report/review
+identities and every passing or failed gate, then commit that DRA checkpoint
+in its separate Task 1 repository. Require both the main report/review
+worktree and the DRA worktree clean. Only an independently reproduced
+development-v2 PASS with review C0/I0 may enter Task 12. Any failure,
+Important, or Critical finding keeps confirmatory closed.
+
+Neither execution command has been run at this update. Both v2 result files
+and both v2 execution roots remain absent; there is no empirical result.
+
+---
+
+### Historical Task 11: Development v1 — superseded and never executed
+
+The entire block below is retained only to preserve the original audit trail.
+No command in it confers authority or may be executed.
 
 **Files:**
 - Generate: `/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v1/**`
@@ -1975,9 +2196,19 @@ Only a PASS with C0/I0 review permits Task 12. Update DRA with both failed and p
 
 ### Task 12: Freeze and Execute the Exactly 60-Mission Confirmatory Campaign
 
+Recovery dependency override: confirmatory itself remains protocol version
+`v1`, but every Task 12 dependency on a development-v1 protocol, result,
+review, or execution root is superseded. Task 12 may consume only a terminal
+PASS development-v2 bundle/report/review from the current Task 11 and must
+update its development bindings accordingly before confirmatory registration.
+This override does not authorize any confirmatory command.
+
 **Files:**
 - Verify: `scripts/diagnostics/register_qualified_closure_campaign.py`
 - Verify: `tests/test_register_qualified_closure_campaign.py`
+- Consume: `docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v2-protocol.json`
+- Consume: `docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v2.md`
+- Consume: `docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v2-review.md`
 - Generate: `docs/diagnostics/2026-08-01-cbf2026-qualified-closure-confirmatory-v1-protocol.json`
 - Generate: `docs/diagnostics/2026-08-01-cbf2026-qualified-closure-confirmatory-v1-protocol.md`
 - Create: `docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-confirmatory-v1-preflight.md`
@@ -2050,15 +2281,22 @@ git diff --check
 Expected: PASS on the same registrar identity independently reviewed in Task
 10; no production output path exists.
 
-- [ ] **Step 3: Generate protocol and independent preflight**
+- [ ] **Step 3: Generate, preflight, authorize, and commit the exact confirmatory four-artifact child**
+
+Begin from the clean Task 11 development-v2 PASS report/review commit in the
+main repository and a separately clean committed DRA checkpoint, with all six
+confirmatory roots absent. The registrar records the exact current main-repo
+commit as `protocol.repository.head`; it remains the scientific
+implementation/docs parent for confirmatory-v1. No working edit or extra
+untracked relevant path may be present.
 
 ```bash
 conda run -n cbf_env python \
   scripts/diagnostics/register_qualified_closure_campaign.py \
   --kind confirmatory --version v1 \
-  --development-protocol docs/diagnostics/2026-08-01-cbf2026-qualified-closure-development-v1-protocol.json \
-  --development-report docs/diagnostics/2026-08-01-cbf2026-qualified-closure-development-v1.md \
-  --development-review docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-development-v1-review.md \
+  --development-protocol docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v2-protocol.json \
+  --development-report docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v2.md \
+  --development-review docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v2-review.md \
   --binary build-diagnostic/Swarm \
   --base-config config/config.json \
   --primary-config config/diagnostics/qualified_mode_hybrid_dcbf_development_v1.json \
@@ -2079,13 +2317,46 @@ conda run -n cbf_env python \
   --protocol-md docs/diagnostics/2026-08-01-cbf2026-qualified-closure-confirmatory-v1-protocol.md
 ```
 
-Commit the two protocol files, independently verify byte identities and all six
-absent roots in the named preflight Markdown, then create the named
-authorization JSON bound to the protocol commit/SHA-256, implementation,
-development PASS, binary/config/dependency identities, and exact serialized
-argv arrays. Commit preflight and authorization before allocating a root. The
-researcher's standing authorization permits execution only after this
-preflight passes.
+Do not commit the protocol pair separately. While all four lifecycle files are
+still new, independently reconstruct the JSON/Markdown pairing and every bound
+source, development-v2 PASS, binary, configuration, dependency, seed,
+threshold, universe, argv, and six-root-absence identity. Write the result to
+`docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-confirmatory-v1-preflight.md`;
+it must be C0/I0/M0 before authorization may exist.
+
+Create the authorization JSON at
+`docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-confirmatory-v1-authorization.json`
+with the exact ten-field schema: `schema_version` equal to
+`cbf2026-qualified-authorization-v1`, `authorized` equal to `true`, `kind`
+equal to `confirmatory`, `version` equal to `v1`, exact protocol SHA-256,
+the implementation identity from `protocol.repository.head`, exact preflight
+SHA-256, `user_authorization_date` equal to `2026-08-02`, exact UTF-8
+`user_authorization_text` equal to `批准`, and
+`user_authorization_text_sha256` equal to
+`8cbe697b157364a5b13646285b38409dc53ec5287deeb7913493e65b275cd14d`.
+No unit-test fixture text is production authorization.
+
+Commit exactly the four new lifecycle artifacts as the sole direct child of
+the registered implementation/docs parent, with no modified, deleted,
+renamed, or additional path:
+
+```bash
+git add docs/diagnostics/2026-08-01-cbf2026-qualified-closure-confirmatory-v1-protocol.json \
+  docs/diagnostics/2026-08-01-cbf2026-qualified-closure-confirmatory-v1-protocol.md \
+  docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-confirmatory-v1-preflight.md \
+  docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-confirmatory-v1-authorization.json
+git commit -m "docs(cbf2026): authorize qualified closure confirmatory v1"
+```
+
+Before allocating any smoke or scientific root, independently validate that
+the current commit has exactly one parent equal to `protocol.repository.head`,
+its complete parent-to-current diff is exactly four `A` entries for the named
+files, all authorization hashes/text/date/identity bindings pass the production
+validator, every bound byte identity remains unchanged, and all six roots are
+still absent. Any failure consumes no root and returns to a new reviewed,
+non-colliding protocol lifecycle; it never amends this commit in place. Keep
+this exact artifact-only HEAD and a clean relevant worktree through both smoke
+runs, the confirmatory run, and all three analyses.
 
 - [ ] **Step 4: Run and review deterministic smoke A/B**
 
@@ -2117,10 +2388,15 @@ conda run -n cbf_env python scripts/diagnostics/analyze_qualified_closure_campai
   --output-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-confirmatory-smoke-v1-a-analysis
 ```
 
-For B replace only `a` by `b` and the two A roots by their B roots. Record the
-comparison in the named smoke review, require C0/I0, and commit that review in
-a scoped commit before scientific run. The smoke commit may not change code,
-configuration, protocol, authorization, thresholds, or roots.
+For B replace only `a` by `b` and the two A roots by their B roots. Independently
+recompute the comparison and require C0/I0 before the scientific run, but do
+not yet create or commit a repository review: any extra tracked or untracked
+relevant path, or any commit beyond the exact four-artifact child, invalidates
+the production authorization gate. Preserve the interim smoke decision in an
+immutable external operator ledger outside the repository and all registered
+roots. After the scientific runner and analyzer are terminal, reproduce that
+decision into the named smoke review and commit it only with the final evidence
+closure in Step 8.
 
 - [ ] **Step 5: Execute the registered campaign once**
 
@@ -2163,13 +2439,16 @@ Verify raw hashes, schedules, exact mission denominator 60, all tuple/interval u
 
 - [ ] **Step 8: Freeze terminal evidence and update DRA**
 
-Write the named author report and both evidence-review files. The protocol,
-preflight, authorization, and smoke review are already committed before the
-scientific run; do not rewrite them. The JSON review
+Write the named author report, smoke review, and both evidence-review files.
+Only the protocol, preflight, and authorization are already committed; do not
+rewrite them. Reproduce the independently recorded external smoke decision
+into the named smoke review now that no further authorized runner/analyzer
+invocation remains. The JSON review
 attestation contains at least `verdict`, `critical_count`, `important_count`,
 `protocol_sha256`, `manifest_sha256`, `compact_json_path`, and
-`reviewed_compact_sha256`. Commit the terminal author report and both terminal
-reviews in one scoped evidence commit. Record every result and failure in DRA.
+`reviewed_compact_sha256`. Commit the smoke review, terminal author report, and
+both terminal reviews in one scoped evidence commit. Record every result and
+failure in DRA.
 Paper numerical gates remain closed unless the registered scientific verdict
 passes and independent review has C0/I0.
 

@@ -2,7 +2,8 @@
 
 Date: 2026-08-02 (Asia/Shanghai)
 
-Verification scope: Task 10, Steps 1--4 only
+Verification scope: Task 10 implementation archive plus failed-v1 to
+development-v2 authorization-lifecycle recovery
 
 Worktree: `/private/tmp/cbf2026-diagnostic`
 
@@ -10,25 +11,29 @@ Branch: `codex/cbf2026-diagnostic`
 
 ## Status and claim boundary
 
-The implementation snapshot at
-`ec7879404604ca19e12a94cdfa8cb00524ecd305`
-(tree `3efa308786c64a65bdf66208c60d49ed5a69d955`) completed fresh full
-Python, C++, and static/provenance verification. No failure, error, or skip is
-attributable to the qualified-mode, hybrid distributed-CBF, evidence, or
-campaign contracts changed by Tasks 2--9 and the reviewed fix. The complete
-Python discovery did exit nonzero: 13 old tests remain nonpassing for two
-independently reproducible pre-existing/external-input reasons recorded
-below. This report does not waive those results or describe the complete
+The current implementation snapshot is
+`eafa68c3631c590b9f1070bcc8d313ca4f3b7705`
+(tree `6fe358619a78fe259c2fb33998be4170bd8786f6`). It preserves the verified
+qualified-mode/hybrid distributed-CBF implementation and repairs the
+protocol-publication/authorization lifecycle after the immutable
+development-v1 preflight failure. Fresh post-fix Python verification found no
+new changed-contract failure, error, or skip. Complete discovery still exits
+nonzero: the exact same 13 legacy/external-input outcomes recorded below
+remain nonpassing. This report does not waive them or describe the complete
 repository suite as green.
 
-The initial independent review found Critical C1/C2 and Important I1. Commit
-`ec7879404604ca19e12a94cdfa8cb00524ecd305` closed all three through a new
-red/green cycle, and the scoped independent re-review returned Critical 0,
-Important 0, Minor 0, Ready Yes. The implementation is approved only for
-development-v1 protocol generation. This report is not itself a protocol,
+The original implementation review found Critical C1/C2 and Important I1;
+`ec7879404604ca19e12a94cdfa8cb00524ecd305` closed all three and its scoped
+re-review returned C0/I0/M0. The reviewed archive was committed at `709f4ef`,
+but development-v1 independent preflight then found a new lifecycle C1 and
+withheld authorization. Commit `eafa68c...` closes that lifecycle through TDD;
+its review rounds were I1 for the protocol declaration, M1 for the
+authorization fixture, and finally C0/I0/M0. Only development-v2
+registration, independent preflight, and four-artifact authorization closure
+may proceed. Execution remains closed. This report is not itself a protocol,
 preflight, authorization, development result, or confirmatory result. No
-development, confirmatory, smoke, full-mission, or other campaign was run. No
-execution root was created.
+development, confirmatory, smoke, full-mission, or other campaign was run, and
+no execution root was created.
 
 ## Implementation identity
 
@@ -54,16 +59,24 @@ sequence from that baseline through the verified snapshot is:
 16. `01dc8ab357d45a2617fc44644293bef4cb77c75f` -- `docs(evidence): archive controller evidence review`
 17. `0e8e9031f83a62a6de327383e86735aede0af733` -- `feat(experiments): add qualified closure development campaign`
 18. `ec7879404604ca19e12a94cdfa8cb00524ecd305` -- `fix(experiments): close campaign evidence gates`
+19. `709f4ef6cef60b0754527fc62d8ca64ac7a88a12` -- `docs(cbf2026): approve qualified closure implementation`
+20. `0e4c439ae35f8490b27019aeb26b1c46ba9ab3f7` -- `docs(cbf2026): record qualified closure v1 preflight failure`
+21. `eafa68c3631c590b9f1070bcc8d313ca4f3b7705` -- `fix(experiments): close protocol authorization lifecycle`
 
-The exact 50 paths changed over
-`19c1bab7825d9e974751f9223867124abd6b790c..ec7879404604ca19e12a94cdfa8cb00524ecd305`
+The exact 55 paths changed over
+`19c1bab7825d9e974751f9223867124abd6b790c..eafa68c3631c590b9f1070bcc8d313ca4f3b7705`
 are:
 
 ```text
 CMakeLists.txt
 config/diagnostics/qualified_mode_hybrid_dcbf_development_v1.json
 config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v1.json
+docs/diagnostics/2026-08-01-cbf2026-qualified-closure-development-v1-protocol.json
+docs/diagnostics/2026-08-01-cbf2026-qualified-closure-development-v1-protocol.md
+docs/diagnostics/2026-08-01-cbf2026-qualified-closure-implementation.md
 docs/diagnostics/2026-08-02-qualified-controller-evidence.md
+docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-development-v1-preflight.md
+docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-implementation-review.md
 docs/diagnostics/reviews/2026-08-02-qualified-controller-evidence-review.md
 docs/superpowers/plans/2026-08-01-cbf2026-qualified-modes-hybrid-distributed-cbf-implementation.md
 include/Robot.hpp
@@ -112,15 +125,20 @@ tests/test_swarm_evidence_stream.py
 tests/test_two_range_reacquisition.py
 ```
 
-The approved design, design review, current plan, and plan review identities
-observed during this verification are respectively:
+The approved design, design review, current recovery plan, and archived plan
+review identities are respectively:
 
 ```text
 ced4824b0cb8b2919579469e876650aa45e71c26f1b5853ddf2633550822127b  docs/superpowers/specs/2026-08-01-cbf2026-qualified-modes-hybrid-distributed-cbf-design.md
 897881d421d1bf78b4d0b1aed5dca86b574430aed0290e35f843fe6c840d6c9c  docs/superpowers/specs/reviews/2026-08-01-cbf2026-qualified-modes-hybrid-distributed-cbf-design-review.md
-82e2783d9d045f239da164eafdcca8a3198b5a87d440d1f7dd4d1467d11f1ff7  docs/superpowers/plans/2026-08-01-cbf2026-qualified-modes-hybrid-distributed-cbf-implementation.md
+e4cb6569e532f3dcb9358b6fd796420e0060d4eaf9430244e12cb492049acfda  docs/superpowers/plans/2026-08-01-cbf2026-qualified-modes-hybrid-distributed-cbf-implementation.md
 cf5bd776bb99183015dce678c4136964edcabd81a64624ff1c6b446d7a107d90  docs/superpowers/plans/reviews/2026-08-01-cbf2026-qualified-modes-hybrid-distributed-cbf-implementation-plan-review.md
 ```
+
+The recovery-plan hash is a working-document identity for this update. The
+plan, this report, and the independent recovery review must first enter a clean
+documentation-closure commit after `eafa68c...`; they are not permitted
+members of the later exact four-artifact authorization commit.
 
 ## Fresh Python discovery
 
@@ -131,10 +149,10 @@ The required complete discovery was run exactly with Python 3.11.12 from the
 conda run -n cbf_env python -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
-Fresh result at `ec7879404604ca19e12a94cdfa8cb00524ecd305`:
-1,149 tests in 100.719 s; 1,136 passed, 5 failed, 8 errored,
-and 0 skipped. All changed-contract tests passed. The exact nonpassing tests
-and attribution are as follows.
+Fresh post-lifecycle-fix result at
+`eafa68c3631c590b9f1070bcc8d313ca4f3b7705`: 1,160 tests; 1,147 passed,
+5 failed, 8 errored, and 0 skipped. All changed-contract tests passed. The
+exact nonpassing tests and attribution are unchanged and are as follows.
 
 Five failures in the untouched legacy
 `test_register_two_range_reacquisition.RegistrationTests` class were:
@@ -172,7 +190,7 @@ contract regression. Read-only proof:
   `scripts/diagnostics/register_two_range_reacquisition.py`,
   `tests/test_extract_predictive_wnls_stage0.py`, and
   `tests/test_extract_two_range_reacquisition_fixture.py` returned 0: none of
-  these legacy files changed in Tasks 2--9.
+  these legacy files changed in Tasks 2--10.
 - Commit `736ffeede3e25e16d78fcb2de21867cd3daccee2`, the already-recorded
   Task 4 baseline, already tracks both the v2 Markdown and JSON protocol
   files. The tests clone the current implementation parent, so the circular
@@ -201,8 +219,8 @@ The impact boundary is narrow and explicit: this worktree cannot certify
 those three historical fixture-backed extraction cases or the ten old
 registrar cases under a parent that already contains their generated v2
 protocol. It does certify, through this discovery, that every other Python
-test including all Tasks 2--9 qualified contracts passed. No test or gate was
-weakened, skipped, or edited to obtain that attribution.
+test including all Tasks 2--10 qualified and lifecycle contracts passed. No
+test or gate was weakened, skipped, or edited to obtain that attribution.
 
 ## Independent review and fix closure
 
@@ -217,9 +235,9 @@ reported Critical 2, Important 1, Minor 0 and blocked protocol generation:
   complete primary post-initialization tuple universe; and
 - I1: the 6 GB hard floor did not cover synchronous measurement generation.
 
-Commit `ec7879404604ca19e12a94cdfa8cb00524ecd305` changes exactly three
-production scripts and two tests while leaving the 50-path baseline-to-HEAD
-set unchanged. C1 is closed by retaining and independently reconstructing the
+Commit `ec7879404604ca19e12a94cdfa8cb00524ecd305` changed exactly three
+production scripts and two tests while leaving the then-current 50-path
+baseline-to-`ec78794` set unchanged. C1 is closed by retaining and independently reconstructing the
 C++ initialization record plus both condition-specific frame-zero qualified
 audits as one composite initialization witness; frame zero remains outside
 the post-initialization estimator denominator. C2 is closed by using the
@@ -236,11 +254,80 @@ found no new Critical or Important issue and returned Critical 0, Important
 0, Minor 0, Ready Yes. Its fresh evidence was: the eight exact C1/C2/I1
 regressions 8/8, the five-module campaign suite 160/160, all three amended
 production scripts through `py_compile`, `git diff --check`, direct C++
-111/111 cases and 1,106/1,106 assertions, and CTest 1/1. The root then freshly
-reran the full 1,149-test discovery recorded above and the same five-module
-suite 160/160. The implementation is therefore approved only for the next
-Task 10 protocol-generation step; preflight, execution authorization, and all
-campaign gates remain closed.
+111/111 cases and 1,106/1,106 assertions, and CTest 1/1. At that historical
+snapshot, the root reran a 1,149-test discovery and the same five-module suite
+160/160. The implementation was therefore approved only for the next Task 10
+protocol-generation step; preflight, execution authorization, and all campaign
+gates remained closed.
+
+## Failed-v1 to development-v2 lifecycle chronology
+
+The subsequent registration lifecycle is part of the audit record and does
+not alter the scientific verification above:
+
+1. Commit `709f4ef6cef60b0754527fc62d8ca64ac7a88a12` archived this
+   implementation report and its independent review. Its tree was
+   `8a92bba68977792d7e97ece996bed2fcf61e859e`.
+2. Task 10 Step 7 generated the development-v1 protocol pair. The JSON is
+   41,979 bytes with SHA-256
+   `9a5e9d2503d083bdbb239468a88cf5ceed2cc283978e8beed5badc020ae74343`;
+   the Markdown is 312 bytes with SHA-256
+   `19cf657d787bfe76bfa2aecf35ce06baf9fd2f57ff2deeab12e894429ccebffc`.
+3. Independent Step 8 preflight returned C1/I0/M0 and
+   `FAILED — NOT READY`. Its 9,274 bytes have SHA-256
+   `7ef7fbbf09d1ef95ecad482282a75398158fb97008fdb8a08745efeb51523515`.
+   The exact-HEAD validator rejected the registrar's own relevant untracked
+   outputs before commit, while the required later artifact commit advanced
+   HEAD and was rejected after commit. No permitted state could authorize
+   execution.
+4. The v1 authorization was deliberately withheld and both v1 roots remained
+   absent. Commit `0e4c439ae35f8490b27019aeb26b1c46ba9ab3f7` added exactly the
+   JSON, Markdown, and failed preflight as immutable evidence. Development-v1
+   is consumed and terminally failed; it may not be executed, retried,
+   overwritten, repaired in place, or reinterpreted.
+5. Commit `eafa68c3631c590b9f1070bcc8d313ca4f3b7705` repairs the
+   lifecycle under TDD. Development alone advances to version `v2` with roots
+   `/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v2` and
+   `/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v2`;
+   confirmatory remains version `v1`.
+6. The updated report, plan, and independent recovery review must first be
+   committed in one clean documentation-closure state after code-fix identity
+   `eafa68c...`. The registrar will record that then-current exact commit as
+   `protocol.repository.head`; it is intentionally unknown until the
+   documentation closure is committed. The new authorization must bind the
+   exact protocol SHA-256, that registered implementation identity, exact
+   independent preflight SHA-256, date
+   `2026-08-02`, and the researcher's exact standing-authorization text
+   `批准`. That text's UTF-8 SHA-256 is
+   `8cbe697b157364a5b13646285b38409dc53ec5287deeb7913493e65b275cd14d`.
+   Unit-test fixture text is test data only and must not be copied into the
+   production authorization.
+   Execution validation accepts only a current commit whose sole parent is
+   the documentation-closure commit recorded in the protocol and whose
+   complete diff is exactly the v2 protocol JSON, protocol Markdown, preflight
+   Markdown, and authorization JSON, all four add-only with no extra path.
+
+The lifecycle-fix review first reported I1 for an incomplete protocol
+declaration and then M1 for a fixture that did not exercise the exact user
+authorization binding. After both corrections the final review returned
+C0/I0/M0.
+
+Fresh post-fix verification was:
+
+- registrar/runner/analyzer lifecycle suite: 142/142 passed;
+- complete five-module campaign suite: 171/171 passed;
+- complete discovery: 1,160 total = 1,147 passed + the unchanged 5 failures
+  + unchanged 8 errors, with 0 skipped;
+- all three amended production scripts
+  (`register_qualified_closure_campaign.py`,
+  `run_qualified_closure_campaign.py`, and
+  `analyze_qualified_closure_campaign.py`) passed `py_compile`;
+- the implementation diff passed `git diff --check`; and
+- all three committed v1 artifact byte counts and hashes remained exact.
+
+The C++ source and binary were unchanged by the lifecycle repair, so the prior
+direct result remains 111/111 cases and 1,106/1,106 assertions, CTest remains
+1/1, and the configured backend remains `ENABLE_GUROBI:BOOL=ON`.
 
 ## Fresh C++ verification
 
@@ -438,6 +525,8 @@ PRESENT /private/tmp/cbf2026-two-range-reacquisition-development/v2
 ABSENT  /private/tmp/cbf2026-two-range-reacquisition-analysis/v2
 ABSENT  /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v1
 ABSENT  /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v1
+ABSENT  /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v2
+ABSENT  /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v2
 ABSENT  /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-confirmatory-smoke-v1-a
 ABSENT  /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-confirmatory-smoke-v1-a-analysis
 ABSENT  /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-confirmatory-smoke-v1-b
@@ -446,26 +535,42 @@ ABSENT  /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-confirmatory/v1
 ABSENT  /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-confirmatory-analysis/v1
 ```
 
-The development protocol, preflight, and authorization artifacts are also
-absent. Consequently there is no development result, no confirmatory result,
-and no authority in this report to launch either campaign. The unrelated
-untracked `build-diagnostic/` and all historical evidence remain preserved.
+The development-v1 protocol JSON/Markdown and failed preflight are present and
+tracked at `0e4c439...`; their authorization remains absent. All four named
+development-v2 lifecycle artifacts are absent:
 
-## Exact Task 11 commands (recorded, not executed)
+```text
+ABSENT  docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v2-protocol.json
+ABSENT  docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v2-protocol.md
+ABSENT  docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v2-preflight.md
+ABSENT  docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v2-authorization.json
+```
 
-After this report-only identity update and the approved independent review are
-committed, Task 10 may generate the protocol. Only after protocol registration,
-independent preflight, and authorization are complete may Task 11 execute the
-protocol-bound development runner exactly once with the following token
-sequence:
+Consequently there is no development-v2 empirical result, no confirmatory
+result, and no authority in this report to launch either campaign. The
+unrelated untracked `build-diagnostic/` and all historical evidence remain
+preserved. This report/plan update belongs in the prerequisite clean
+documentation-closure commit and must not enter the future exact
+four-artifact direct-child commit.
+
+## Exact development-v2 recovery commands (recorded, not executed)
+
+All prior development-v1 registrar, runner, analyzer, protocol,
+authorization, and root commands are terminally superseded. They are retained
+in the source plan only as failed-v1 history and must not be executed.
+
+The following is the exact current registrar command. It must run only from
+the clean final report/plan/review documentation-closure commit after
+`eafa68c...`; the registrar, not this report, supplies that future commit's
+exact identity. No later working edit may be present or enter the future
+artifact-only child:
 
 ```bash
 conda run -n cbf_env python \
-  scripts/diagnostics/run_qualified_closure_campaign.py \
-  --kind development \
-  --version v1 \
-  --protocol docs/diagnostics/2026-08-01-cbf2026-qualified-closure-development-v1-protocol.json \
-  --authorization docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-development-v1-authorization.json \
+  scripts/diagnostics/register_qualified_closure_campaign.py \
+  --kind development --version v2 \
+  --implementation-report docs/diagnostics/2026-08-01-cbf2026-qualified-closure-implementation.md \
+  --implementation-review docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-implementation-review.md \
   --binary build-diagnostic/Swarm \
   --base-config config/config.json \
   --primary-config config/diagnostics/qualified_mode_hybrid_dcbf_development_v1.json \
@@ -473,24 +578,49 @@ conda run -n cbf_env python \
   --trajectory-seeds 2026080101:2026080110 \
   --range-noise-seeds 2026081101:2026081110 \
   --frames 1000 \
-  --output-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v1
+  --raw-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v2 \
+  --analysis-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v2 \
+  --protocol-json docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v2-protocol.json \
+  --protocol-md docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v2-protocol.md
 ```
 
-Only after that immutable raw bundle becomes terminal may Task 11 run the
+After independent C0/I0/M0 preflight, exact authorization construction, and
+the exact four-artifact add-only direct-child commit have all succeeded, Task
+11 may execute the protocol-bound development-v2 runner exactly once with the
+following token sequence:
+
+```bash
+conda run -n cbf_env python \
+  scripts/diagnostics/run_qualified_closure_campaign.py \
+  --kind development \
+  --version v2 \
+  --protocol docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v2-protocol.json \
+  --authorization docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v2-authorization.json \
+  --binary build-diagnostic/Swarm \
+  --base-config config/config.json \
+  --primary-config config/diagnostics/qualified_mode_hybrid_dcbf_development_v1.json \
+  --ablation-config config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v1.json \
+  --trajectory-seeds 2026080101:2026080110 \
+  --range-noise-seeds 2026081101:2026081110 \
+  --frames 1000 \
+  --output-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v2
+```
+
+Only after that immutable raw bundle is terminal may Task 11 run the
 protocol-bound analyzer with this exact token sequence:
 
 ```bash
 conda run -n cbf_env python \
   scripts/diagnostics/analyze_qualified_closure_campaign.py \
   --kind development \
-  --version v1 \
-  --protocol docs/diagnostics/2026-08-01-cbf2026-qualified-closure-development-v1-protocol.json \
-  --authorization docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-development-v1-authorization.json \
-  --input-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v1 \
+  --version v2 \
+  --protocol docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v2-protocol.json \
+  --authorization docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v2-authorization.json \
+  --input-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v2 \
   --ablation-config config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v1.json \
-  --output-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v1
+  --output-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v2
 ```
 
-Neither command above was run during this verification. Any failed v1 gate
-must retain v1 unchanged; changed code, configuration, or threshold requires
-a new development version rather than retrying or reinterpreting v1.
+None of these three commands was run during this recovery update. The v2
+protocol pair, preflight, authorization, raw root, and analysis root all
+remain absent. There is no new empirical result.
