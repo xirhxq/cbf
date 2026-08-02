@@ -1,6 +1,8 @@
 import copy
 import unittest
 
+import scripts.diagnostics.qualified_closure_evidence as evidence_schema
+
 from scripts.diagnostics.qualified_closure_evidence import (
     CanonicalEdgeId,
     FrozenMissionSchedule,
@@ -406,6 +408,16 @@ class ExactLifecycleSchemaTests(unittest.TestCase):
         forged = self.terminal()
         forged["runtime"]["extra"] = True
         self.assertFalse(validate_mission_terminal_schema(forged))
+
+        mismatched_outcome = self.terminal()
+        mismatched_outcome["runtime"].update({
+            "success": False,
+            "reason": "unrelated",
+            "process_outcome": "loop_failure",
+        })
+        self.assertFalse(
+            validate_mission_terminal_schema(mismatched_outcome)
+        )
 
 
 class IndependentReconstructionTests(unittest.TestCase):
@@ -1142,6 +1154,35 @@ class ResetReconstructionTests(unittest.TestCase):
             },
         }
 
+    def rejected_verified_reset(self):
+        rejected = self.valid_reset()
+        rejected["runtime"].update({
+            "stage": "hard_qp_verified",
+            "guard_decision": "rejected",
+            "outcome": "abort",
+            "reason": (
+                "post-reset bounded local hard QP is infeasible for UAV 1 "
+                "(infeasible)"
+            ),
+            "hard_problems": [],
+        })
+        rejected["runtime"]["post_endpoint_states"][0]["bar_nu"] = 30.0
+        rejected["runtime"]["nodes"][0]["proposed_snapshot"]["bar_nu"] = 30.0
+        rejected["runtime"]["hard_edges"][0]["endpoint_rows"][0][
+            "constant"
+        ] = -29.1
+        failed = rejected["runtime"]["local_hard_qps"][0]
+        failed["problem"]["rows"][0]["constant"] = -29.1
+        failed["problem"]["hard_problem_id"] = "a9e91048e2f0d067"
+        failed.update({
+            "feasible": False,
+            "status": "infeasible",
+            "minimum_residual": None,
+            "hard_problem_id": "a9e91048e2f0d067",
+            "solution": None,
+        })
+        return rejected
+
     def test_reset_delta_barrier_and_descendant_closure_are_independent(self):
         valid = self.valid_reset()
         self.assertEqual(audit_reset_primitives(valid, (1, 2), 1), ())
@@ -1192,6 +1233,228 @@ class ResetReconstructionTests(unittest.TestCase):
                 error.startswith("reset_hard_problem_structure:1")
                 for error in errors
             )
+        )
+
+    def test_rejected_verified_qp_preserves_all_checked_witnesses(self):
+        rejected = self.rejected_verified_reset()
+        self.assertEqual(audit_reset_primitives(rejected, (1, 2), 1), ())
+
+    def test_verified_reset_rejects_unchecked_qp_and_false_infeasibility(self):
+        unchecked = self.rejected_verified_reset()
+        unchecked["runtime"]["local_hard_qps"][1].update({
+            "feasible": False,
+            "status": "unchecked",
+            "minimum_residual": None,
+            "solution": None,
+        })
+        self.assertIn(
+            "reset_qp_stage:2",
+            audit_reset_primitives(unchecked, (1, 2), 1),
+        )
+
+        false_infeasible = self.valid_reset()
+        false_infeasible["runtime"].update({
+            "stage": "hard_qp_verified",
+            "guard_decision": "rejected",
+            "outcome": "abort",
+            "reason": (
+                "post-reset bounded local hard QP is infeasible for UAV 1 "
+                "(infeasible)"
+            ),
+            "hard_problems": [],
+        })
+        false_infeasible["runtime"]["local_hard_qps"][0].update({
+            "feasible": False,
+            "status": "infeasible",
+            "minimum_residual": None,
+            "solution": None,
+        })
+        self.assertIn(
+            "reset_qp_false_infeasible:1",
+            audit_reset_primitives(false_infeasible, (1, 2), 1),
+        )
+
+    def test_verified_reset_binds_first_failure_reason_and_preserves_exceptions(self):
+        wrong_reason = self.rejected_verified_reset()
+        wrong_reason["runtime"]["reason"] = (
+            "post-reset bounded local hard QP is infeasible for UAV 2 "
+            "(infeasible)"
+        )
+        self.assertIn(
+            "reset_failure_reason",
+            audit_reset_primitives(wrong_reason, (1, 2), 1),
+        )
+
+        verifier_error = self.valid_reset()
+        verifier_error["runtime"].update({
+            "stage": "hard_qp_verified",
+            "guard_decision": "rejected",
+            "outcome": "abort",
+            "reason": (
+                "post-reset bounded local hard QP is infeasible for UAV 1 "
+                "(solver-error)"
+            ),
+            "hard_problems": [],
+        })
+        verifier_error["runtime"]["local_hard_qps"][0].update({
+            "feasible": False,
+            "status": "solver-error",
+            "minimum_residual": None,
+            "solution": None,
+        })
+        self.assertEqual(
+            audit_reset_primitives(verifier_error, (1, 2), 1), ()
+        )
+
+        premature_checked = self.rejected_verified_reset()
+        premature_checked["runtime"]["hard_problems"] = copy.deepcopy(
+            self.valid_reset()["runtime"]["hard_problems"]
+        )
+        self.assertIn(
+            "reset_checked_problem_universe",
+            audit_reset_primitives(premature_checked, (1, 2), 1),
+        )
+
+    def test_committed_and_lifecycle_rejected_require_every_qp_to_pass(self):
+        for stage in ("committed", "lifecycle_rejected"):
+            with self.subTest(stage=stage):
+                invalid = self.valid_reset()
+                if stage == "lifecycle_rejected":
+                    invalid["runtime"].update({
+                        "stage": "lifecycle_rejected",
+                        "guard_decision": "rejected",
+                        "outcome": "abort",
+                        "reason": "node predecessor version is unavailable",
+                    })
+                invalid["runtime"]["local_hard_qps"][0].update({
+                    "feasible": False,
+                    "status": "solver-error",
+                    "minimum_residual": None,
+                    "solution": None,
+                })
+                self.assertIn(
+                    "reset_qp_stage:1",
+                    audit_reset_primitives(invalid, (1, 2), 1),
+                )
+
+        missing_checked = self.valid_reset()
+        missing_checked["runtime"].update({
+            "stage": "lifecycle_rejected",
+            "guard_decision": "rejected",
+            "outcome": "abort",
+            "reason": "node predecessor version is unavailable",
+            "hard_problems": [],
+        })
+        self.assertIn(
+            "reset_checked_problem_universe",
+            audit_reset_primitives(missing_checked, (1, 2), 1),
+        )
+
+        reordered_checked = self.valid_reset()
+        reordered_checked["runtime"]["hard_problems"].reverse()
+        self.assertIn(
+            "reset_checked_problem_universe",
+            audit_reset_primitives(reordered_checked, (1, 2), 1),
+        )
+
+        wrong_commit_reason = self.valid_reset()
+        wrong_commit_reason["runtime"]["reason"] = "arbitrary success"
+        self.assertIn(
+            "reset_commit_reason",
+            audit_reset_primitives(wrong_commit_reason, (1, 2), 1),
+        )
+
+    def test_verified_reset_uses_guard_predicate_for_optimal_status_failure(self):
+        rejected = self.rejected_verified_reset()
+        failed = rejected["runtime"]["local_hard_qps"][0]
+        failed.update({
+            "feasible": False,
+            "status": "optimal",
+            "minimum_residual": -29.1,
+            "solution": [0.0, 0.0, 0.0],
+        })
+        rejected["runtime"]["reason"] = (
+            "post-reset bounded local hard QP is infeasible for UAV 1 "
+            "(optimal)"
+        )
+
+        self.assertEqual(
+            audit_reset_primitives(rejected, (1, 2), 1), ()
+        )
+
+        false_negative_flag = self.valid_reset()
+        false_negative_flag["runtime"].update({
+            "stage": "hard_qp_verified",
+            "guard_decision": "rejected",
+            "outcome": "abort",
+            "reason": (
+                "post-reset bounded local hard QP is infeasible for UAV 1 "
+                "(optimal)"
+            ),
+            "hard_problems": [],
+        })
+        false_negative_flag["runtime"]["local_hard_qps"][0][
+            "feasible"
+        ] = False
+        self.assertIn(
+            "reset_qp_comparison:1",
+            audit_reset_primitives(false_negative_flag, (1, 2), 1),
+        )
+
+        false_positive_flag = self.rejected_verified_reset()
+        false_positive_flag["runtime"]["local_hard_qps"][0].update({
+            "feasible": True,
+            "status": "optimal",
+            "minimum_residual": -29.1,
+            "solution": [0.0, 0.0, 0.0],
+        })
+        false_positive_flag["runtime"]["reason"] = (
+            "post-reset bounded local hard QP is infeasible for UAV 1 "
+            "(optimal)"
+        )
+        self.assertIn(
+            "reset_qp_comparison:1",
+            audit_reset_primitives(false_positive_flag, (1, 2), 1),
+        )
+
+    def test_early_reset_stages_reject_deeper_artifacts(self):
+        for stage in ("candidate_built", "hard_edges_built"):
+            with self.subTest(stage=stage):
+                malformed = self.rejected_verified_reset()
+                malformed["runtime"]["stage"] = stage
+                self.assertIn(
+                    "reset_stage_artifact",
+                    audit_reset_primitives(malformed, (1, 2), 1),
+                )
+
+    def test_preflight_requires_every_qp_to_remain_unchecked(self):
+        preflight = self.valid_reset()
+        preflight["runtime"].update({
+            "stage": "hard_qp_preflight",
+            "guard_decision": "rejected",
+            "outcome": "abort",
+            "reason": "post-reset hard-QP preflight rejected",
+            "hard_problems": [],
+        })
+        for qp in preflight["runtime"]["local_hard_qps"]:
+            qp.update({
+                "feasible": False,
+                "status": "unchecked",
+                "minimum_residual": None,
+                "solution": None,
+            })
+        self.assertEqual(audit_reset_primitives(preflight, (1, 2), 1), ())
+
+        mixed = copy.deepcopy(preflight)
+        mixed["runtime"]["local_hard_qps"][1].update({
+            "feasible": True,
+            "status": "optimal",
+            "minimum_residual": 0.35,
+            "solution": [0.0, 0.0, 0.0],
+        })
+        self.assertIn(
+            "reset_qp_stage:2",
+            audit_reset_primitives(mixed, (1, 2), 1),
         )
 
     def test_reset_malformed_indices_and_hash_overflow_fail_closed(self):
@@ -1271,6 +1534,65 @@ class ResetReconstructionTests(unittest.TestCase):
             "reset_proposed_snapshot:1",
             audit_reset_primitives(nonfinite_snapshot, (1, 2), 1),
         )
+
+
+class ControllerAbortSchemaTests(unittest.TestCase):
+    @staticmethod
+    def abort_record():
+        return {
+            "record_type": "controller_interval",
+            "schema_version": "cbf2026-qualified-evidence-v1",
+            "campaign_id": "development-v5",
+            "condition": "dynamic_primary",
+            "trajectory_seed": 2026080101,
+            "range_noise_seed": 2026081101,
+            "frame_index": 0,
+            "runtime": {
+                "snapshot_version": 0,
+                "allocation_version": 1,
+                "nodes": [
+                    {
+                        "robot_id": robot_id,
+                        "snapshot_version": 0,
+                        "optimization_status": "not-attempted",
+                        "applied_command": None,
+                        "committed_hard_problem_id": "unavailable",
+                        "consumed_hard_problem_id": "unavailable",
+                    }
+                    for robot_id in range(1, 15)
+                ],
+                "expected_node_count": 14,
+                "expected_endpoint_row_count": 232,
+                "expected_reconstructed_row_count": 119,
+                "observed_endpoint_row_count": 0,
+                "abort_reason": (
+                    "theorem certificate reset rejected: post-reset bounded "
+                    "local hard QP is infeasible for UAV 3 (infeasible)"
+                ),
+                "complete": False,
+            },
+            "analyzer_only": {},
+        }
+
+    def test_frame_zero_abort_schema_preserves_unsolved_node_witnesses(self):
+        validator = getattr(
+            evidence_schema, "validate_controller_abort_schema", None
+        )
+        self.assertIsNotNone(validator)
+        self.assertTrue(validator(self.abort_record()))
+
+    def test_abort_schema_rejects_missing_reason(self):
+        malformed = self.abort_record()
+        malformed["runtime"].pop("abort_reason")
+        validator = getattr(
+            evidence_schema, "validate_controller_abort_schema", None
+        )
+        self.assertIsNotNone(validator)
+        self.assertFalse(validator(malformed))
+
+        boolean_version = self.abort_record()
+        boolean_version["runtime"]["allocation_version"] = True
+        self.assertFalse(validator(boolean_version))
 
 
 if __name__ == "__main__":

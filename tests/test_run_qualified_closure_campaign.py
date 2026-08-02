@@ -42,8 +42,207 @@ from scripts.diagnostics.run_qualified_closure_campaign import (
     write_schedule_no_replace,
 )
 from scripts.diagnostics.qualified_closure_evidence import (
+    _PAPER_BASE_POSITIONS,
+    _PAPER_EDGES,
+    _canonical_hard_problem_hash,
+    audit_reset_primitives,
     validate_estimator_tuple_schema,
 )
+
+
+def rejected_verified_reset_fixture(identity):
+    positions = {
+        robot_id: [1000.0 + 200.0 * robot_id, 0.0]
+        for robot_id in range(1, 15)
+    }
+    positions[3] = [0.0, 0.0]
+    positions[5] = [11.2, 0.0]
+
+    def endpoint(robot_id, version):
+        return {
+            "robot_id": robot_id,
+            "estimate": positions[robot_id],
+            "covariance": [[0.25, 0.0], [0.0, 0.25]],
+            "covariance_rate_bound": 0.1,
+            "epsilon": 0.1,
+            "bar_nu": 100.0 if robot_id == 3 else 0.3,
+            "snapshot_version": version,
+            "allocation_version": 1,
+        }
+
+    pre = {robot_id: endpoint(robot_id, 0) for robot_id in range(1, 15)}
+    post = {robot_id: endpoint(robot_id, 1) for robot_id in range(1, 15)}
+    problem_rows = {robot_id: [] for robot_id in range(1, 15)}
+    hard_edges = []
+    for edge in _PAPER_EDGES:
+        first = positions[edge.low]
+        if edge.base_id >= 0:
+            second = list(_PAPER_BASE_POSITIONS[edge.base_id])
+            uncertainty = 0.1
+            owners = (edge.low,)
+            allocation = 1.0
+        else:
+            second = positions[edge.high]
+            uncertainty = 0.2
+            owners = (edge.low, edge.high)
+            allocation = 0.5
+        dx = first[0] - second[0]
+        dy = first[1] - second[1]
+        separation = (dx * dx + dy * dy) ** 0.5
+        normal = [dx / separation, dy / separation]
+        threshold = (
+            separation + uncertainty + 100.0
+            if edge.kind == "localization"
+            else 10.0
+        )
+        barrier = (
+            threshold - separation - uncertainty
+            if edge.kind == "localization"
+            else separation - threshold - uncertainty
+        )
+        endpoint_rows = []
+        for owner in owners:
+            sign = (
+                -1.0 if edge.kind == "localization" else 1.0
+            ) if owner == edge.low else (
+                1.0 if edge.kind == "localization" else -1.0
+            )
+            coefficient = [sign * normal[0], sign * normal[1]]
+            constant = -post[owner]["bar_nu"] + allocation * barrier
+            endpoint_rows.append({
+                "owner": owner,
+                "coefficient": coefficient,
+                "constant": constant,
+                "allocation": allocation,
+                "snapshot_version": 1,
+                "allocation_version": 1,
+            })
+            other_id = edge.high if owner == edge.low else edge.low
+            name = (
+                f"fixedCommCBF(base-{edge.base_id})"
+                if edge.kind == "localization" and edge.base_id >= 0
+                else f"fixedCommCBF(#{other_id})"
+                if edge.kind == "localization"
+                else f"safetyCBF(#{other_id})"
+            )
+            problem_rows[owner].append({
+                "edge": dataclasses.asdict(edge),
+                "owner": owner,
+                "name": name,
+                "coefficients": [*coefficient, 0.0],
+                "constant": constant,
+                "post_reset_barrier": barrier,
+                "snapshot_version": 1,
+                "allocation_version": 1,
+            })
+        hard_edges.append({
+            "edge": dataclasses.asdict(edge),
+            "threshold": threshold,
+            "base_position": second if edge.base_id >= 0 else [0.0, 0.0],
+            "b_minus": barrier,
+            "b_plus": barrier,
+            "class_k_coefficient": 1.0,
+            "class_k_power": 1,
+            "endpoint_rows": endpoint_rows,
+        })
+
+    bounds = [
+        {"control_index": 0, "coefficient": 1.0, "limit": 25.0},
+        {"control_index": 0, "coefficient": -1.0, "limit": 25.0},
+        {"control_index": 1, "coefficient": 1.0, "limit": 25.0},
+        {"control_index": 1, "coefficient": -1.0, "limit": 25.0},
+        {"control_index": 2, "coefficient": 1.0, "limit": 0.35},
+        {"control_index": 2, "coefficient": -1.0, "limit": 0.35},
+    ]
+    problems = {}
+    for robot_id in range(1, 15):
+        problem = {
+            "owner": robot_id,
+            "control_size": 3,
+            "planar_component_max": 25.0,
+            "yaw_rate_max": 0.35,
+            "snapshot_version": 1,
+            "allocation_version": 1,
+            "bounds": copy.deepcopy(bounds),
+            "rows": problem_rows[robot_id],
+            "hard_problem_id": "pending",
+        }
+        problem["hard_problem_id"] = _canonical_hard_problem_hash(problem)
+        problems[robot_id] = problem
+
+    local_qps = []
+    for robot_id in range(1, 15):
+        qp = {
+            "node_id": robot_id,
+            "problem": problems[robot_id],
+            "feasible": False,
+            "status": "unchecked",
+            "minimum_residual": None,
+            "hard_problem_id": problems[robot_id]["hard_problem_id"],
+            "solution": None,
+        }
+        if robot_id != 3:
+            zero_minimum = min(
+                [bound["limit"] for bound in problems[robot_id]["bounds"]]
+                + [row["constant"] for row in problems[robot_id]["rows"]]
+            )
+            qp.update({
+                "feasible": True,
+                "status": "optimal",
+                "minimum_residual": zero_minimum,
+                "solution": [0.0, 0.0, 0.0],
+            })
+        elif robot_id == 3:
+            qp["status"] = "infeasible"
+        local_qps.append(qp)
+
+    active_sets = [
+        {
+            "node_id": robot_id,
+            "pre_active_references": [-1, -2],
+            "post_active_references": [-1, -2],
+        }
+        for robot_id in range(1, 15)
+    ]
+    nodes = [
+        {
+            "node_id": robot_id,
+            "topological_index": robot_id,
+            "snapshot_version": 1,
+            "delta_p": [0.0, 0.0],
+            "delta_epsilon": 0.0,
+            "pre_active_references": [-1, -2],
+            "post_active_references": [-1, -2],
+            "proposed_snapshot": post[robot_id],
+        }
+        for robot_id in range(1, 15)
+    ]
+    return {
+        **identity,
+        "record_type": "reset",
+        "frame_index": 0,
+        "runtime": {
+            "stage": "hard_qp_verified",
+            "trigger": ["certificate-discontinuity"],
+            "predecessor_version": 0,
+            "proposed_version": 1,
+            "changed_nodes": list(range(1, 15)),
+            "descendant_closure": list(range(1, 15)),
+            "nodes": nodes,
+            "active_sets": active_sets,
+            "pre_endpoint_states": list(pre.values()),
+            "post_endpoint_states": list(post.values()),
+            "hard_edges": hard_edges,
+            "hard_problems": [],
+            "local_hard_qps": local_qps,
+            "guard_decision": "rejected",
+            "outcome": "abort",
+            "reason": (
+                "post-reset bounded local hard QP is infeasible for UAV 3 "
+                "(infeasible)"
+            ),
+        },
+    }
 
 
 class RunnerRootTests(unittest.TestCase):
@@ -613,6 +812,357 @@ class RunnerSupervisorTests(unittest.TestCase):
         )
         self.assert_failure_bundle(result, "schema_error", [])
 
+    def test_rejected_reset_abort_then_terminal_is_a_valid_failed_lifecycle(self):
+        mission = {
+            "campaign_id": "development-v5",
+            "trajectory_seed": 2026080101,
+            "range_noise_seed": 2026081101,
+            "frames": 1000,
+        }
+        reset_reason = (
+            "post-reset bounded local hard QP is infeasible for UAV 3 "
+            "(infeasible)"
+        )
+
+        def pending_state(
+            stage="hard_qp_verified", reason=reset_reason
+        ):
+            candidate = _SwarmStreamState(mission)
+            candidate.initialization = 14
+            candidate.pending_reset = {
+                "runtime": {
+                    "stage": stage,
+                    "predecessor_version": 0,
+                    "proposed_version": 1,
+                    "guard_decision": "rejected",
+                    "reason": reason,
+                }
+            }
+            return candidate
+
+        state = pending_state()
+        identity = {
+            "schema_version": "cbf2026-qualified-evidence-v1",
+            "campaign_id": "development-v5",
+            "condition": "dynamic_primary",
+            "trajectory_seed": 2026080101,
+            "range_noise_seed": 2026081101,
+        }
+        abort = {
+            **identity,
+            "record_type": "controller_interval",
+            "frame_index": 0,
+            "runtime": {
+                "snapshot_version": 0,
+                "allocation_version": 1,
+                "nodes": [
+                    {
+                        "robot_id": robot_id,
+                        "snapshot_version": 0,
+                        "optimization_status": "not-attempted",
+                        "applied_command": None,
+                        "committed_hard_problem_id": "unavailable",
+                        "consumed_hard_problem_id": "unavailable",
+                    }
+                    for robot_id in range(1, 15)
+                ],
+                "expected_node_count": 14,
+                "expected_endpoint_row_count": 232,
+                "expected_reconstructed_row_count": 119,
+                "observed_endpoint_row_count": 0,
+                "abort_reason": "theorem certificate reset rejected: " + reset_reason,
+                "complete": False,
+            },
+            "analyzer_only": {},
+        }
+        terminal = {
+            **identity,
+            "record_type": "mission_terminal",
+            "frame_index": 1000,
+            "runtime": {
+                "success": False,
+                "reason": "bootstrap_failure",
+                "process_outcome": "bootstrap_failure",
+                "declared_frames": 1000,
+                "completed_intervals": 0,
+            },
+        }
+
+        wrong_abort = copy.deepcopy(abort)
+        wrong_abort["runtime"]["abort_reason"] = "different failure"
+        wrong_state = pending_state()
+        self.assertFalse(wrong_state(wrong_abort))
+        self.assertEqual(wrong_state.reason, "reset_abort_reason_mismatch")
+
+        bootstrap_reason = "injected evidence bootstrap failure"
+        bootstrap_abort = copy.deepcopy(abort)
+        bootstrap_abort["runtime"]["abort_reason"] = bootstrap_reason
+        bootstrap_state = pending_state(
+            stage="proposal_started", reason=bootstrap_reason
+        )
+        self.assertTrue(bootstrap_state(bootstrap_abort))
+
+        successful_terminal = copy.deepcopy(terminal)
+        successful_terminal["runtime"].update({
+            "success": True,
+            "reason": "completed",
+            "process_outcome": "completed",
+        })
+        success_state = pending_state()
+        self.assertTrue(success_state(abort))
+        self.assertFalse(success_state(successful_terminal))
+        self.assertEqual(
+            success_state.reason, "successful_terminal_after_controller_abort"
+        )
+
+        contradictory_terminal = copy.deepcopy(terminal)
+        contradictory_terminal["runtime"].update({
+            "reason": "completed",
+            "process_outcome": "completed",
+        })
+        contradictory_state = pending_state()
+        self.assertTrue(contradictory_state(abort))
+        self.assertFalse(contradictory_state(contradictory_terminal))
+        self.assertEqual(
+            contradictory_state.reason,
+            "completed_terminal_after_controller_abort",
+        )
+
+        wrong_failure_kind = copy.deepcopy(terminal)
+        wrong_failure_kind["runtime"].update({
+            "reason": "loop_failure",
+            "process_outcome": "loop_failure",
+        })
+        wrong_failure_state = pending_state()
+        self.assertTrue(wrong_failure_state(abort))
+        self.assertFalse(wrong_failure_state(wrong_failure_kind))
+        self.assertEqual(
+            wrong_failure_state.reason,
+            "controller_abort_terminal_outcome_mismatch",
+        )
+
+        loop_state = pending_state()
+        loop_state.last_controller = 4
+        loop_state.snapshot_version = 1
+        loop_state.pending_reset["runtime"].update({
+            "predecessor_version": 1,
+            "proposed_version": 2,
+        })
+        loop_abort = copy.deepcopy(abort)
+        loop_abort["frame_index"] = 5
+        loop_abort["runtime"]["snapshot_version"] = 1
+        for node in loop_abort["runtime"]["nodes"]:
+            node["snapshot_version"] = 1
+        loop_terminal = copy.deepcopy(terminal)
+        loop_terminal["runtime"].update({
+            "reason": "loop_failure",
+            "process_outcome": "loop_failure",
+            "completed_intervals": 5,
+        })
+        self.assertTrue(loop_state(loop_abort))
+        self.assertTrue(loop_state(loop_terminal))
+
+        self.assertTrue(state(abort))
+        self.assertIsNone(state.pending_reset)
+        self.assertTrue(state(terminal))
+        self.assertTrue(state.complete)
+        self.assertFalse(state.success)
+        self.assertEqual(state.reason, "bootstrap_failure")
+
+    def test_rejected_reset_requires_abort_as_the_immediate_next_row(self):
+        mission = {
+            "campaign_id": "development-v5",
+            "trajectory_seed": 2026080101,
+            "range_noise_seed": 2026081101,
+            "frames": 1000,
+        }
+        identity = {
+            "schema_version": "cbf2026-qualified-evidence-v1",
+            "campaign_id": mission["campaign_id"],
+            "condition": "dynamic_primary",
+            "trajectory_seed": mission["trajectory_seed"],
+            "range_noise_seed": mission["range_noise_seed"],
+            "frame_index": 0,
+        }
+        reset_runtime = {
+            "predecessor_version": 0,
+            "proposed_version": 1,
+            "guard_decision": "rejected",
+            "reason": (
+                "post-reset bounded local hard QP is infeasible for UAV 3 "
+                "(infeasible)"
+            ),
+        }
+        invalid_successors = (
+            {**identity, "record_type": "endpoint_row"},
+            {
+                **identity,
+                "record_type": "controller_interval",
+                "runtime": {"complete": True},
+            },
+            {
+                **identity,
+                "record_type": "reset",
+                "runtime": reset_runtime,
+            },
+            {
+                **identity,
+                "record_type": "mission_terminal",
+                "frame_index": 1000,
+                "runtime": {
+                    "success": False,
+                    "reason": "bootstrap_failure",
+                    "process_outcome": "bootstrap_failure",
+                    "declared_frames": 1000,
+                    "completed_intervals": 0,
+                },
+            },
+        )
+        for successor in invalid_successors:
+            with self.subTest(record_type=successor["record_type"]):
+                state = _SwarmStreamState(mission)
+                state.initialization = 14
+                state.pending_reset = {"runtime": copy.deepcopy(reset_runtime)}
+                self.assertFalse(state(successor))
+                self.assertEqual(
+                    state.reason, "rejected_reset_requires_controller_abort"
+                )
+
+    def test_supervisor_retains_verified_reset_abort_and_terminal_prefix(self):
+        mission = {
+            "campaign_id": "development-v5",
+            "trajectory_seed": 2026080101,
+            "range_noise_seed": 2026081101,
+            "frames": 1000,
+        }
+        identity = {
+            "schema_version": "cbf2026-qualified-evidence-v1",
+            "campaign_id": mission["campaign_id"],
+            "condition": "dynamic_primary",
+            "trajectory_seed": mission["trajectory_seed"],
+            "range_noise_seed": mission["range_noise_seed"],
+        }
+        rows = [
+            {
+                **identity,
+                "record_type": "initialization",
+                "frame_index": 0,
+                "robot_id": robot_id,
+                "runtime": {"local_index": robot_id},
+                "analyzer_only": {
+                    "truth_position": [float(robot_id), 0.0]
+                },
+            }
+            for robot_id in range(1, 15)
+        ]
+        reset = rejected_verified_reset_fixture(identity)
+        self.assertEqual(
+            audit_reset_primitives(reset, tuple(range(1, 15)), 119), ()
+        )
+        rows.append(reset)
+        rows.append({
+            **identity,
+            "record_type": "controller_interval",
+            "frame_index": 0,
+            "runtime": {
+                "snapshot_version": 0,
+                "allocation_version": 1,
+                "nodes": [
+                    {
+                        "robot_id": robot_id,
+                        "snapshot_version": 0,
+                        "optimization_status": "not-attempted",
+                        "applied_command": None,
+                        "committed_hard_problem_id": "unavailable",
+                        "consumed_hard_problem_id": "unavailable",
+                    }
+                    for robot_id in range(1, 15)
+                ],
+                "expected_node_count": 14,
+                "expected_endpoint_row_count": 232,
+                "expected_reconstructed_row_count": 119,
+                "observed_endpoint_row_count": 0,
+                "abort_reason": (
+                    "theorem certificate reset rejected: post-reset bounded "
+                    "local hard QP is infeasible for UAV 3 (infeasible)"
+                ),
+                "complete": False,
+            },
+            "analyzer_only": {},
+        })
+        rows.append({
+            **identity,
+            "record_type": "mission_terminal",
+            "frame_index": 1000,
+            "runtime": {
+                "success": False,
+                "reason": "bootstrap_failure",
+                "process_outcome": "bootstrap_failure",
+                "declared_frames": 1000,
+                "completed_intervals": 0,
+            },
+        })
+        fixture_path = self.root / "rejected-reset-rows.json"
+        fixture_path.write_text(json.dumps(rows), encoding="utf-8")
+        state = _SwarmStreamState(mission)
+
+        result = supervise_child_to_gzip(
+            [
+                os.sys.executable,
+                "-c",
+                (
+                    "import json,sys; "
+                    "rows=json.load(open(sys.argv[1],encoding='utf-8')); "
+                    "[print(json.dumps(row),flush=True) for row in rows]; "
+                    "sys.exit(1)"
+                ),
+                str(fixture_path),
+            ],
+            stream_path=self.root / "failed-swarm.jsonl.gz",
+            synthetic_path=self.root / "failed-swarm.missing.jsonl.gz",
+            stderr_path=self.root / "failed-swarm.stderr.log",
+            manifest_path=self.root / "failed-swarm.manifest.json",
+            expected_keys=None,
+            row_validator=state,
+            available_bytes_fn=lambda _path: 7_000_000_000,
+            poll_interval_s=0.005,
+            terminate_grace_s=0.02,
+            wallclock_timeout_s=2.0,
+            line_stall_timeout_s=1.0,
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["reason"], "child_nonzero_exit")
+        self.assertEqual(result["valid_rows"], 17)
+        self.assertTrue(state.complete)
+        retained = self.rows("failed-swarm.jsonl.gz")
+        self.assertEqual(
+            [row["record_type"] for row in retained[-3:]],
+            ["reset", "controller_interval", "mission_terminal"],
+        )
+        self.assertEqual(retained[-3]["runtime"]["stage"], "hard_qp_verified")
+        self.assertFalse(retained[-2]["runtime"]["complete"])
+        self.assertEqual(
+            json.loads((self.root / "failed-swarm.manifest.json").read_text()),
+            result,
+        )
+        mission_stage = self.root / "failed-mission-stage"
+        mission_stage.mkdir()
+        shutil.copyfile(
+            self.root / "failed-swarm.jsonl.gz",
+            mission_stage / "swarm.jsonl.gz",
+        )
+        observed = _observed_failed_mission_keys(
+            mission_stage,
+            {
+                **mission,
+                "conditions": ["dynamic_primary", "fixed_fim_ablation"],
+            },
+        )
+        self.assertEqual(observed["initialization"], set())
+        self.assertEqual(observed["controller"], set())
+        self.assertEqual(observed["reconstructed"], set())
+
     def test_oversized_partial_line_is_bounded_and_terminal(self):
         result = self.run_child(
             "import sys,time; sys.stdout.write('{' + 'x' * 1000); "
@@ -872,7 +1422,7 @@ class RunnerProducerOrchestrationTests(unittest.TestCase):
             "frame_index": 1,
             "runtime": {
                 "success": False,
-                "reason": "bootstrap_failure:singular_fim",
+                "reason": "bootstrap_failure",
                 "process_outcome": "bootstrap_failure",
                 "declared_frames": 1,
                 "completed_intervals": 0,

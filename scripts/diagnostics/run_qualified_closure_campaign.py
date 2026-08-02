@@ -1019,7 +1019,10 @@ def _observed_failed_mission_keys(mission_stage, mission):
                         ),
                         row["owner"],
                     ))
-                elif record_type == "controller_interval":
+                elif (
+                    record_type == "controller_interval"
+                    and row.get("runtime", {}).get("complete") is True
+                ):
                     observed["controller"].add(
                         (*identity, row["frame_index"])
                     )
@@ -1099,6 +1102,8 @@ class _SwarmStreamState:
         self.endpoint_count = 0
         self.pending_reset = None
         self.snapshot_version = 0
+        self.controller_aborted = False
+        self.expected_terminal_outcome = None
         self.terminal = False
         self.success = False
         self.reason = "missing_mission_terminal"
@@ -1112,6 +1117,7 @@ class _SwarmStreamState:
             CanonicalEdgeId,
             _PAPER_ENDPOINTS,
             audit_reset_primitives,
+            validate_controller_abort_schema,
             validate_controller_primitive_schema,
             validate_endpoint_primitive_schema,
             validate_initialization_schema,
@@ -1123,6 +1129,40 @@ class _SwarmStreamState:
         record_type = row.get("record_type")
         if not _swarm_row_matches_mission(row, self.mission, record_type):
             self.reason = "swarm_identity_mismatch"
+            return False
+        if self.controller_aborted:
+            if record_type != "mission_terminal":
+                self.reason = "row_after_controller_abort"
+                return False
+            if row.get("runtime", {}).get("success") is True:
+                self.reason = "successful_terminal_after_controller_abort"
+                return False
+            if (
+                row.get("runtime", {}).get("process_outcome") == "completed"
+                or row.get("runtime", {}).get("reason") == "completed"
+            ):
+                self.reason = "completed_terminal_after_controller_abort"
+                return False
+            if (
+                self.expected_terminal_outcome is not None
+                and row.get("runtime", {}).get("process_outcome")
+                    != self.expected_terminal_outcome
+            ):
+                self.reason = "controller_abort_terminal_outcome_mismatch"
+                return False
+        pending_runtime = (
+            None if self.pending_reset is None
+            else self.pending_reset.get("runtime", {})
+        )
+        pending_rejected = (
+            pending_runtime is not None
+            and pending_runtime.get("guard_decision") == "rejected"
+        )
+        if pending_rejected and not (
+            record_type == "controller_interval"
+            and row.get("runtime", {}).get("complete") is False
+        ):
+            self.reason = "rejected_reset_requires_controller_abort"
             return False
         if record_type == "initialization":
             valid = (
@@ -1181,6 +1221,63 @@ class _SwarmStreamState:
         if record_type == "controller_interval":
             frame = row.get("frame_index")
             runtime = row.get("runtime", {})
+            if runtime.get("complete") is False:
+                proposed = (
+                    None if self.pending_reset is None
+                    else self.pending_reset["runtime"]
+                )
+                reset_accepted = (
+                    proposed is not None
+                    and proposed.get("guard_decision") == "accepted"
+                )
+                expected_version = self.snapshot_version + int(reset_accepted)
+                observed_endpoint_count = runtime.get(
+                    "observed_endpoint_row_count"
+                )
+                expected_abort_reason = (
+                    None if not pending_rejected
+                    else pending_runtime.get("reason", "")
+                    if pending_runtime.get("stage") in {
+                        "proposal_started",
+                        "candidate_built",
+                        "hard_edges_built",
+                    }
+                    else "theorem certificate reset rejected: "
+                        + pending_runtime.get("reason", "")
+                )
+                if (
+                    expected_abort_reason is not None
+                    and runtime.get("abort_reason") != expected_abort_reason
+                ):
+                    self.reason = "reset_abort_reason_mismatch"
+                    return False
+                valid = (
+                    frame == self.last_controller + 1
+                    and self.endpoint_frame in {None, frame}
+                    and observed_endpoint_count == self.endpoint_count
+                    and validate_controller_abort_schema(row)
+                    and runtime.get("snapshot_version") == expected_version
+                    and runtime.get("allocation_version") == 1
+                )
+                if valid:
+                    if pending_rejected:
+                        initial_reset_abort = (
+                            self.last_controller == -1
+                            and frame == 0
+                            and self.snapshot_version == 0
+                            and pending_runtime.get("predecessor_version") == 0
+                        )
+                        self.expected_terminal_outcome = (
+                            "bootstrap_failure"
+                            if initial_reset_abort else "loop_failure"
+                        )
+                    self.controller_aborted = True
+                    self.snapshot_version = expected_version
+                    self.pending_reset = None
+                    self.endpoint_frame = None
+                    self.endpoint_count = 0
+                    self.reason = runtime["abort_reason"]
+                return valid
             reset = runtime.get("reset", {})
             proposed = (
                 None if self.pending_reset is None

@@ -253,12 +253,82 @@ def validate_mission_terminal_schema(record: object) -> bool:
                     "loop_failure",
                     "terminated_early",
                 }
+            and runtime["reason"] == runtime["process_outcome"]
             and _integer(runtime["declared_frames"])
             and runtime["declared_frames"] > 0
             and _integer(runtime["completed_intervals"])
             and 0 <= runtime["completed_intervals"] <= runtime["declared_frames"]
             and record["frame_index"] == runtime["declared_frames"]
         )
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+
+
+def validate_controller_abort_schema(record: object) -> bool:
+    try:
+        if not _valid_evidence_identity(record, "controller_interval"):
+            return False
+        if set(record) != _EVIDENCE_IDENTITY_FIELDS | {
+            "runtime", "analyzer_only"
+        }:
+            return False
+        runtime = record["runtime"]
+        runtime_fields = {
+            "snapshot_version",
+            "allocation_version",
+            "nodes",
+            "expected_node_count",
+            "expected_endpoint_row_count",
+            "expected_reconstructed_row_count",
+            "observed_endpoint_row_count",
+            "abort_reason",
+            "complete",
+        }
+        if not isinstance(runtime, dict) or set(runtime) != runtime_fields:
+            return False
+        if (
+            not _uint64(runtime["snapshot_version"])
+            or not _uint64(runtime["allocation_version"])
+            or runtime["allocation_version"] != 1
+            or runtime["expected_node_count"] != 14
+            or runtime["expected_endpoint_row_count"] != 232
+            or runtime["expected_reconstructed_row_count"] != 119
+            or not _integer(runtime["observed_endpoint_row_count"])
+            or not 0 <= runtime["observed_endpoint_row_count"] <= 232
+            or not _nonempty_string(runtime["abort_reason"])
+            or runtime["complete"] is not False
+            or record["analyzer_only"] != {}
+        ):
+            return False
+        nodes = runtime["nodes"]
+        required_node_fields = {
+            "robot_id",
+            "snapshot_version",
+            "optimization_status",
+            "applied_command",
+            "committed_hard_problem_id",
+            "consumed_hard_problem_id",
+        }
+        if not isinstance(nodes, list) or len(nodes) != 14:
+            return False
+        for expected_robot_id, node in enumerate(nodes, start=1):
+            if (
+                not isinstance(node, dict)
+                or set(node) != required_node_fields
+                or not _integer(node["robot_id"])
+                or node["robot_id"] != expected_robot_id
+                or not _uint64(node["snapshot_version"])
+                or node["snapshot_version"] != runtime["snapshot_version"]
+                or not _nonempty_string(node["optimization_status"])
+                or not (
+                    node["applied_command"] is None
+                    or _vector(node["applied_command"], 3)
+                )
+                or not _nonempty_string(node["committed_hard_problem_id"])
+                or not _nonempty_string(node["consumed_hard_problem_id"])
+            ):
+                return False
+        return True
     except (KeyError, TypeError, ValueError, OverflowError):
         return False
 
@@ -491,7 +561,7 @@ def audit_reset_primitives(
 
         pre_endpoints = endpoint_map("pre_endpoint_states")
         post_endpoints = endpoint_map("post_endpoint_states")
-        if accepted_claim and (
+        if stage_rank >= 3 and (
             set(pre_endpoints) != expected_ids or set(post_endpoints) != expected_ids
         ):
             errors.append("reset_endpoint_universe")
@@ -798,7 +868,7 @@ def audit_reset_primitives(
                 }
 
         if (
-            accepted_claim
+            stage_rank >= 3
             and expected_edge_count == len(_PAPER_EDGES)
             and seen_edges != set(_PAPER_EDGES)
         ):
@@ -813,8 +883,19 @@ def audit_reset_primitives(
             if isinstance(item, dict) and _integer(item.get("node_id"))
         }
         all_qps_valid = set(qps_by_node) == expected_ids and len(qps_by_node) == len(local_qps)
-        if accepted_claim and not all_qps_valid:
+        full_qp_stages = {
+            "hard_qp_preflight",
+            "hard_qp_verified",
+            "lifecycle_rejected",
+            "committed",
+        }
+        if stage in full_qp_stages and (
+            not all_qps_valid
+            or [item.get("node_id") for item in local_qps]
+                != list(expected_robot_ids)
+        ):
             errors.append("reset_qp_universe")
+            all_qps_valid = False
         checked_problem_by_node: dict[int, dict[str, object]] = {}
         hard_problems = runtime["hard_problems"]
         if not isinstance(hard_problems, list):
@@ -831,9 +912,25 @@ def audit_reset_primitives(
             if owner in checked_problem_by_node:
                 errors.append(f"reset_duplicate_checked_problem:{owner}")
             checked_problem_by_node[owner] = problem
-        if accepted_claim and set(checked_problem_by_node) != expected_ids:
+        checked_problem_order = [
+            problem.get("owner") if isinstance(problem, dict) else None
+            for problem in hard_problems
+        ]
+        if (
+            accepted_claim or stage == "lifecycle_rejected"
+        ) and (
+            set(checked_problem_by_node) != expected_ids
+            or checked_problem_order != list(expected_robot_ids)
+        ):
             errors.append("reset_checked_problem_universe")
+        if stage not in {"lifecycle_rejected", "committed"} and hard_problems:
+            errors.append("reset_checked_problem_universe")
+        if stage == "committed" and runtime["reason"] != "accepted":
+            errors.append("reset_commit_reason")
 
+        checked_qp_ids: set[int] = set()
+        unchecked_qp_ids: set[int] = set()
+        first_guard_failure: tuple[int, str] | None = None
         for robot_id, qp in qps_by_node.items():
             if not isinstance(qp, dict) or set(qp) != {
                 "node_id",
@@ -898,6 +995,7 @@ def audit_reset_primitives(
 
             unchecked = qp["status"] == "unchecked"
             if unchecked:
+                unchecked_qp_ids.add(robot_id)
                 if (
                     stage != "hard_qp_preflight"
                     or qp["solution"] is not None
@@ -907,11 +1005,32 @@ def audit_reset_primitives(
                     errors.append(f"reset_qp_stage:{robot_id}")
                     all_qps_valid = False
                 continue
+            checked_qp_ids.add(robot_id)
+            if stage == "hard_qp_preflight":
+                errors.append(f"reset_qp_stage:{robot_id}")
+                all_qps_valid = False
+            status = qp["status"]
+            if not _nonempty_string(status):
+                errors.append(f"reset_qp_status:{robot_id}")
+                all_qps_valid = False
+                continue
+            if type(qp["feasible"]) is not bool:
+                errors.append(f"reset_qp_comparison:{robot_id}")
+                all_qps_valid = False
             solution_valid = _vector(qp["solution"], 3)
             residuals = _problem_residuals(problem, qp["solution"]) if solution_valid else []
             witness_feasible = bool(residuals) and min(residuals) >= -1e-7
-            independently_feasible = witness_feasible or _hard_problem_is_feasible(problem)
-            if solution_valid and not witness_feasible:
+            if (
+                solution_valid
+                and type(qp["feasible"]) is bool
+                and qp["feasible"] != witness_feasible
+            ):
+                errors.append(f"reset_qp_comparison:{robot_id}")
+                all_qps_valid = False
+            if not solution_valid and qp["feasible"] is True:
+                errors.append(f"reset_qp_comparison:{robot_id}")
+                all_qps_valid = False
+            if qp["solution"] is not None and not solution_valid:
                 errors.append(f"reset_qp_solution:{robot_id}")
                 all_qps_valid = False
             if solution_valid:
@@ -925,13 +1044,79 @@ def audit_reset_primitives(
             elif qp["minimum_residual"] is not None:
                 errors.append(f"reset_qp_minimum:{robot_id}")
                 all_qps_valid = False
-            derived_feasible = independently_feasible and witness_feasible
-            if type(qp["feasible"]) is not bool or qp["feasible"] != derived_feasible:
-                errors.append(f"reset_qp_comparison:{robot_id}")
+
+            minimum = qp["minimum_residual"]
+            guard_passed = (
+                qp["feasible"] is True
+                and status == "optimal"
+                and _finite_number(minimum)
+                and minimum >= -1e-7
+            )
+            if guard_passed:
+                if not solution_valid or not witness_feasible:
+                    if solution_valid and not witness_feasible:
+                        errors.append(f"reset_qp_solution:{robot_id}")
+                    errors.append(f"reset_qp_comparison:{robot_id}")
+                    all_qps_valid = False
+            else:
+                if first_guard_failure is None:
+                    first_guard_failure = (robot_id, status)
+                if stage in {"committed", "lifecycle_rejected"}:
+                    errors.append(f"reset_qp_stage:{robot_id}")
+                    all_qps_valid = False
+                if status == "infeasible" and (
+                    qp["feasible"] is not False
+                    or qp["solution"] is not None
+                    or qp["minimum_residual"] is not None
+                ):
+                    errors.append(f"reset_qp_comparison:{robot_id}")
+                    all_qps_valid = False
+                if status == "infeasible" and _hard_problem_is_feasible(problem):
+                    errors.append(f"reset_qp_false_infeasible:{robot_id}")
+                    all_qps_valid = False
+
+        if stage == "hard_qp_preflight" and (
+            unchecked_qp_ids != expected_ids or checked_qp_ids
+        ):
+            errors.append("reset_qp_stage")
+            all_qps_valid = False
+        if stage in {"hard_qp_verified", "lifecycle_rejected", "committed"} and (
+            checked_qp_ids != expected_ids or unchecked_qp_ids
+        ):
+            errors.append("reset_qp_stage")
+            all_qps_valid = False
+        if stage == "hard_qp_verified":
+            if accepted_claim or first_guard_failure is None:
+                errors.append("reset_qp_stage")
                 all_qps_valid = False
-            if (qp["status"] == "optimal") != derived_feasible:
-                errors.append(f"reset_qp_status:{robot_id}")
-                all_qps_valid = False
+            else:
+                failed_robot, failed_status = first_guard_failure
+                expected_reason = (
+                    "post-reset bounded local hard QP is infeasible for UAV "
+                    f"{failed_robot} ({failed_status})"
+                )
+                if runtime["reason"] != expected_reason:
+                    errors.append("reset_failure_reason")
+
+        artifact_presence = {
+            "nodes": bool(node_records),
+            "hard_edges": bool(hard_edges),
+            "local_qps": bool(local_qps),
+            "checked_problems": bool(hard_problems),
+        }
+        expected_artifacts = {
+            "proposal_started": (False, False, False, False),
+            "candidate_built": (True, False, False, False),
+            "hard_edges_built": (True, True, False, False),
+            "hard_qp_preflight": (True, True, True, False),
+            "hard_qp_verified": (True, True, True, False),
+            "lifecycle_rejected": (True, True, True, True),
+            "committed": (True, True, True, True),
+        }
+        observed_artifacts = tuple(artifact_presence.values())
+        if observed_artifacts != expected_artifacts.get(stage):
+            errors.append("reset_stage_artifact")
+            all_qps_valid = False
 
         derived_accept = (
             proposed_version == predecessor_version + 1
