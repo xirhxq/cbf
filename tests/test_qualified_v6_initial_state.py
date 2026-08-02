@@ -3,7 +3,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from scripts.diagnostics import qualified_v6_initial_state as v6
 from scripts.diagnostics.qualified_initial_state import (
     _materialize_seed_positions,
     InitialStateAdmissionError,
@@ -159,6 +161,24 @@ class QualifiedV6InitialFamilyTests(unittest.TestCase):
                 candidate["semantic_sha256"] = v6_family_semantic_sha256(candidate)
                 with self.assertRaises(ValueError):
                     validate_qualified_v6_initial_family(candidate)
+
+    def test_v1_static_projection_rejects_signed_zero_bit_substitution(self):
+        candidate = copy.deepcopy(self.raw)
+        candidate["template_positions_m"][2][1] = -0.0
+        candidate["semantic_sha256"] = v6_family_semantic_sha256(candidate)
+        with self.assertRaises(ValueError):
+            validate_qualified_v6_initial_family(candidate)
+
+    def test_v1_static_oracle_uses_only_the_hash_checked_byte_buffer(self):
+        contradictory_second_read = copy.deepcopy(self.v1)
+        contradictory_second_read["template_positions_m"][2][1] = 1.0
+        with mock.patch.object(
+            v6.v1,
+            "load_qualified_initial_family",
+            return_value=contradictory_second_read,
+        ):
+            checked = validate_qualified_v6_initial_family(self.raw)
+        self.assertEqual(checked, self.raw)
 
     def test_duplicate_keys_and_alternate_identity_fail_closed(self):
         source = V2_PATH.read_text(encoding="utf-8")

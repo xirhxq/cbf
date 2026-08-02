@@ -11,6 +11,7 @@ import copy
 import hashlib
 import json
 import math
+import struct
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -102,7 +103,15 @@ def _canonical_v1_family() -> dict:
         raise ValueError("canonical v1 initial family is unavailable") from error
     if hashlib.sha256(source).hexdigest() != EXPECTED_V1_FILE_SHA256:
         raise ValueError("canonical v1 initial family file identity differs")
-    return v1.load_qualified_initial_family(EXPECTED_V1_PATH)
+    try:
+        parsed = json.loads(
+            source.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys
+        )
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError(
+            "canonical v1 initial family is not valid UTF-8 JSON"
+        ) from error
+    return v1.validate_qualified_initial_family(parsed)
 
 
 def _require_same_json_tokens(actual: object, expected: object, label: str) -> None:
@@ -120,6 +129,16 @@ def _require_same_json_tokens(actual: object, expected: object, label: str) -> N
         for index, (actual_item, expected_item) in enumerate(zip(actual, expected)):
             _require_same_json_tokens(
                 actual_item, expected_item, f"{label}[{index}]"
+            )
+        return
+    if type(expected) is float:
+        if (
+            not math.isfinite(actual)
+            or not math.isfinite(expected)
+            or struct.pack(">d", actual) != struct.pack(">d", expected)
+        ):
+            raise ValueError(
+                f"{label} IEEE-754 token differs from canonical v1"
             )
         return
     if actual != expected:
