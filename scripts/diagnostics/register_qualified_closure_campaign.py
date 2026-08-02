@@ -73,6 +73,9 @@ FROZEN_V6_PREDECESSOR_IDENTITY_PATH = (
     Path(__file__).resolve().parents[2]
     / "config" / "diagnostics" / "qualified_v6_predecessor_v5_identity_v1.json"
 )
+FROZEN_V6_PREDECESSOR_IDENTITY_RELATIVE_PATH = (
+    "config/diagnostics/qualified_v6_predecessor_v5_identity_v1.json"
+)
 
 FROZEN_V6_PREDECESSOR_V5_IDENTITY = {
     "schema_version": "cbf2026-qualified-v6-predecessor-v5-identity-v1",
@@ -610,10 +613,14 @@ def _json_object(path: Path, label: str) -> dict:
 
 def _require_literal_v6_predecessor_identity_path(path: Path) -> Path:
     """Authorize only the committed, non-symbolic v6 predecessor record."""
-    path = Path(path)
+    spelling = os.fspath(path)
+    if spelling != FROZEN_V6_PREDECESSOR_IDENTITY_RELATIVE_PATH:
+        raise ValueError("v5 predecessor identity path is not literal")
+    path = Path(spelling)
     if (
         path.is_symlink()
         or _has_symbolic_ancestor(path)
+        or not path.is_file()
         or path.resolve() != FROZEN_V6_PREDECESSOR_IDENTITY_PATH.resolve()
     ):
         raise ValueError("v5 predecessor identity path is not literal")

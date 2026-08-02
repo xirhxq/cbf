@@ -1538,6 +1538,15 @@ class QualifiedClosureV6PredecessorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "v5 predecessor"):
             registrar.verify_v6_predecessor_state(identity)
 
+    def test_v6_predecessor_rejects_alternate_lexical_identity_path(self):
+        for alternate in (
+            "./config/diagnostics/qualified_v6_predecessor_v5_identity_v1.json",
+            "config/diagnostics/../diagnostics/qualified_v6_predecessor_v5_identity_v1.json",
+        ):
+            with self.subTest(alternate=alternate):
+                with self.assertRaisesRegex(ValueError, "v5 predecessor"):
+                    registrar.load_v6_predecessor_identity(alternate)
+
 
 if __name__ == "__main__":
     unittest.main()
