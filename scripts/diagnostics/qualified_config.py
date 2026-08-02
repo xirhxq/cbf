@@ -30,10 +30,19 @@ def _number_vector(value: Any, expected: list[float]) -> bool:
 
 def validate_qualified_config(config: Mapping[str, Any]) -> bool:
     try:
-        if not _keys(
-            config,
-            {"qualified-estimator", "position_covariance", "cbfs", "execute"},
-        ):
+        v1_root_keys = {
+            "qualified-estimator",
+            "position_covariance",
+            "cbfs",
+            "execute",
+        }
+        v2_root_keys = v1_root_keys | {"qualified-controller"}
+        if set(config) != v1_root_keys and set(config) != v2_root_keys:
+            return False
+        is_v2 = set(config) == v2_root_keys
+        if is_v2 and config["qualified-controller"] != {
+            "schema-version": "hard-interior-v2"
+        }:
             return False
 
         estimator = config["qualified-estimator"]
@@ -155,7 +164,8 @@ def validate_qualified_config(config: Mapping[str, Any]) -> bool:
         cbfs = config["cbfs"]
         v1_cbf_keys = {"uncertainty-rate", "input-limits", "without-slack"}
         v2_cbf_keys = v1_cbf_keys | {"hard-interior-selection"}
-        if set(cbfs) != v1_cbf_keys and set(cbfs) != v2_cbf_keys:
+        expected_cbf_keys = v2_cbf_keys if is_v2 else v1_cbf_keys
+        if set(cbfs) != expected_cbf_keys:
             return False
         if cbfs["uncertainty-rate"] != {"mode": "analytic-topological"}:
             return False
@@ -169,7 +179,6 @@ def validate_qualified_config(config: Mapping[str, Any]) -> bool:
             input_limits["yaw-rate-max"], 0.35
         ):
             return False
-        is_v2 = set(cbfs) == v2_cbf_keys
         if not _keys(cbfs["without-slack"], {"safety", "comm-fixed"}):
             return False
         safety = cbfs["without-slack"]["safety"]

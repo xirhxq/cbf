@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cmath>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -87,6 +88,32 @@ json makeDiagnosticSettings() {
     };
 }
 
+json loadMaterializedConfig(const std::string& path) {
+    std::ifstream stream(path);
+    if (!stream.good()) {
+        throw std::runtime_error("unable to load diagnostic config");
+    }
+    return json::parse(stream);
+}
+
+void mergeDiagnosticOverlay(json& materialized, const json& overlay) {
+    for (const auto& [key, value] : overlay.items()) {
+        if (value.is_object()
+            && materialized.contains(key)
+            && materialized.at(key).is_object()) {
+            mergeDiagnosticOverlay(materialized[key], value);
+        } else {
+            materialized[key] = value;
+        }
+    }
+}
+
+json materializedV2DiagnosticConfig(const std::string& overlay) {
+    json materialized = loadMaterializedConfig("config/config.json");
+    mergeDiagnosticOverlay(materialized, loadMaterializedConfig(overlay));
+    return materialized;
+}
+
 json makeThreeRobotChainSettings() {
     json settings = makeDiagnosticSettings();
     settings["num"] = 3;
@@ -120,6 +147,9 @@ json makeTheoremSettings() {
 
 Robot paperRobotWithCommittedHardProblem() {
     json settings = makeTheoremSettings();
+    settings["qualified-controller"] = {
+        {"schema-version", "hard-interior-v2"}
+    };
     settings["cbfs"]["hard-interior-selection"] = {
         {"mode", "planar-chebyshev-fraction-cap-v1"},
         {"fraction", 0.1},
@@ -1080,6 +1110,52 @@ TEST_CASE("theorem task QP enforces the frozen local interior floor") {
         CHECK(row.constant + row.coefficients.dot(robot.model->getControlInput())
               >= floor - 1e-7);
     }
+}
+
+TEST_CASE("materialized v2 contract rejects policy and marker mismatches") {
+    json primary = materializedV2DiagnosticConfig(
+        "config/diagnostics/qualified_mode_hybrid_dcbf_development_v2.json"
+    );
+    json ablation = materializedV2DiagnosticConfig(
+        "config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v2.json"
+    );
+    CHECK(cbf2026::validateQualifiedMaterializedConfig(primary, {"Gurobi"}));
+    CHECK(cbf2026::validateQualifiedMaterializedConfig(ablation, {"Gurobi"}));
+
+    primary["qualified-controller"] = {
+        {"schema-version", "hard-interior-v2"}
+    };
+    primary["cbfs"].erase("hard-interior-selection");
+    CHECK_FALSE(cbf2026::validateQualifiedMaterializedConfig(
+        primary, {"Gurobi"}
+    ));
+
+    json v1WithPolicy = materializedV2DiagnosticConfig(
+        "config/diagnostics/qualified_mode_hybrid_dcbf_development_v1.json"
+    );
+    v1WithPolicy["cbfs"]["hard-interior-selection"] = {
+        {"mode", "planar-chebyshev-fraction-cap-v1"},
+        {"fraction", 0.1},
+        {"cap-mps", 0.1},
+        {"feasibility-tolerance-mps", 1e-9}
+    };
+    CHECK_FALSE(cbf2026::validateQualifiedMaterializedConfig(
+        v1WithPolicy, {"Gurobi"}
+    ));
+}
+
+TEST_CASE("v2 Robot rejects a marker-declared missing interior policy") {
+    Robot robot = paperRobotWithCommittedHardProblem();
+    robot.settings["qualified-controller"] = {
+        {"schema-version", "hard-interior-v2"}
+    };
+    robot.settings["cbfs"].erase("hard-interior-selection");
+
+    CHECK_THROWS_AS(robot.optimise(), std::invalid_argument);
+
+    Robot unmarkedPolicy = paperRobotWithCommittedHardProblem();
+    unmarkedPolicy.settings.erase("qualified-controller");
+    CHECK_THROWS_AS(unmarkedPolicy.optimise(), std::invalid_argument);
 }
 
 TEST_CASE("interior selection consumes no other UAV control variable") {

@@ -53,6 +53,13 @@ class QualifiedConfigTests(unittest.TestCase):
         expected_alpha = {"coe": 0.1, "pow": 1}
         for candidate in (primary, ablation):
             self.assertTrue(validate_qualified_config(candidate))
+            self.assertIn("qualified-controller", candidate)
+            if "qualified-controller" not in candidate:
+                return
+            self.assertEqual(
+                candidate["qualified-controller"],
+                {"schema-version": "hard-interior-v2"},
+            )
             self.assertEqual(
                 candidate["cbfs"]["hard-interior-selection"], expected_policy
             )
@@ -75,6 +82,9 @@ class QualifiedConfigTests(unittest.TestCase):
         self.assertTrue(PRIMARY_V2.exists())
         if not PRIMARY_V2.exists():
             return
+        self.assertIn("qualified-controller", self.load(PRIMARY_V2))
+        if "qualified-controller" not in self.load(PRIMARY_V2):
+            return
 
         mutations = []
 
@@ -92,9 +102,16 @@ class QualifiedConfigTests(unittest.TestCase):
         mutate(("cbfs", "hard-interior-selection", "fraction"), 0.2)
         mutate(("cbfs", "hard-interior-selection", "cap-mps"), 0.5)
         mutate(("cbfs", "hard-interior-selection", "feasibility-tolerance-mps"), 1e-8)
+        mutate(("cbfs", "hard-interior-selection", "mode"), "other")
+        mutate(("cbfs", "hard-interior-selection"), None)
         mutate(("cbfs", "hard-interior-selection", "yaw-in-radius"), True)
         mutate(("cbfs", "without-slack", "safety", "alpha", "coe"), 0.2)
         mutate(("cbfs", "without-slack", "comm-fixed", "alpha", "pow"), 2)
+        mutate(("cbfs", "without-slack", "safety", "alpha", "extra"), True)
+        mutate(("cbfs", "without-slack", "comm-fixed", "alpha"), None)
+        mutate(("qualified-controller", "schema-version"), "other")
+        mutate(("qualified-controller", "extra"), True)
+        mutate(("qualified-controller",), None)
         mutate(("execute", "execution-mode"), "centralized")
 
         for candidate in mutations:

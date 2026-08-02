@@ -1649,6 +1649,22 @@ inline bool validateQualifiedMaterializedConfig(
             return false;
         }
         const auto& cbfs = config.at("cbfs");
+        const bool isV2 = config.contains("qualified-controller");
+        if (isV2) {
+            const auto& marker = config.at("qualified-controller");
+            if (!marker.is_object() || marker.size() != 1
+                || !exactString(
+                    marker.at("schema-version"), "hard-interior-v2"
+                )) {
+                return false;
+            }
+        }
+        const bool hasInteriorPolicy = cbfs.contains(
+            "hard-interior-selection"
+        );
+        if (isV2 != hasInteriorPolicy) {
+            return false;
+        }
         if (!exactString(
                 cbfs.at("uncertainty-rate").at("mode"),
                 "analytic-topological"
@@ -1663,7 +1679,7 @@ inline bool validateQualifiedMaterializedConfig(
             )) {
             return false;
         }
-        if (cbfs.contains("hard-interior-selection")) {
+        if (isV2) {
             const auto& policy = cbfs.at("hard-interior-selection");
             if (!policy.is_object() || policy.size() != 4
                 || !exactString(
@@ -1697,7 +1713,7 @@ inline bool validateQualifiedMaterializedConfig(
             || !exactBoolean(hard.at("comm-auto").at("on"), false)) {
             return false;
         }
-        if (cbfs.contains("hard-interior-selection")) {
+        if (isV2) {
             const auto exactHardAlpha = [&exactNumber, &exactInteger](
                 const nlohmann::json& hardClass
             ) {

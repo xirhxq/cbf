@@ -1,4 +1,5 @@
 {
+  "qualified-controller": {"schema-version": "hard-interior-v2"},
   "qualified-estimator": {
     "mode-tolerance-m": 0.001,
     "sensitivity-tolerances-m": [0.0005, 0.001, 0.002],

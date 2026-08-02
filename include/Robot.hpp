@@ -2303,6 +2303,7 @@ public:
         const cbf2026::HardConstraintProblem* committedHardProblem = nullptr;
         std::optional<double> hardInteriorFloor;
         json hardInteriorSelection = json();
+        bool hardInteriorV2 = false;
         if (theoremAligned) {
             if (!committedCertificateState.valid
                 || committedCertificateState.version == 0) {
@@ -2331,7 +2332,29 @@ public:
                     *committedHardProblem
                 );
             const auto& cbfs = settings.at("cbfs");
-            if (cbfs.contains("hard-interior-selection")) {
+            hardInteriorV2 = settings.contains("qualified-controller");
+            if (hardInteriorV2) {
+                const auto& marker = settings.at("qualified-controller");
+                if (!marker.is_object() || marker.size() != 1
+                    || !marker.contains("schema-version")
+                    || !marker.at("schema-version").is_string()
+                    || marker.at("schema-version").get<std::string>()
+                       != "hard-interior-v2") {
+                    throw std::invalid_argument(
+                        "theorem hard-interior v2 marker is invalid"
+                    );
+                }
+                if (!cbfs.contains("hard-interior-selection")) {
+                    throw std::invalid_argument(
+                        "theorem hard-interior v2 policy is unavailable"
+                    );
+                }
+            } else if (cbfs.contains("hard-interior-selection")) {
+                throw std::invalid_argument(
+                    "theorem hard-interior policy requires the v2 marker"
+                );
+            }
+            if (hardInteriorV2) {
                 const auto& policy = cbfs.at("hard-interior-selection");
                 const auto exactPolicyNumber = [](const json& value,
                                                   const double expected) {
@@ -2495,7 +2518,15 @@ public:
             std::string cbf_method = settings["cbfs"]["without-slack"].value("method", "all");
 
             if (theoremAligned) {
-                const double enforcedFloor = hardInteriorFloor.value_or(0.0);
+                double enforcedFloor = 0.0;
+                if (hardInteriorV2) {
+                    if (!hardInteriorFloor.has_value()) {
+                        throw std::logic_error(
+                            "theorem hard-interior v2 floor is unavailable"
+                        );
+                    }
+                    enforcedFloor = *hardInteriorFloor;
+                }
                 for (const auto& row : committedHardProblem->rows) {
                     optimiser->addLinearConstraint(
                         row.coefficients, -row.constant + enforcedFloor
