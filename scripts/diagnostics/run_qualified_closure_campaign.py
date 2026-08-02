@@ -698,8 +698,9 @@ def _runtime_runner_argv(arguments) -> list[str]:
 class ProductionOperations:
     """Concrete, fail-closed operations used by the public campaign CLI."""
 
-    def __init__(self):
+    def __init__(self, *, available_bytes_fn=None):
         self.protocol = None
+        self.available_bytes_fn = available_bytes_fn
 
     def validate_registration(self, arguments):
         from scripts.diagnostics.register_qualified_closure_campaign import (
@@ -861,6 +862,7 @@ class ProductionOperations:
             config_sha256=swarm["config_sha256"],
             required_edges_by_condition=swarm["edge_schedule"],
             truth_manifest=swarm["truth_manifest"],
+            available_bytes_fn=self.available_bytes_fn,
         )
         return {
             **manifest,
@@ -896,7 +898,7 @@ class ProductionOperations:
         output = mission_stage / f"replay-{condition}.raw.jsonl.gz"
         expected = (
             (frame, robot)
-            for frame in range(1, mission["frames"])
+            for frame in range(mission["frames"])
             for robot in range(1, 15)
         )
         argv = [
@@ -985,6 +987,10 @@ def _observed_failed_mission_keys(mission_stage, mission):
             "reconstructed", "reset",
         )
     }
+    swarm_initialization = set()
+    replay_initialization = {
+        condition: set() for condition in mission["conditions"]
+    }
     swarm_path = Path(mission_stage) / "swarm.jsonl.gz"
     if swarm_path.is_file() and not swarm_path.is_symlink():
         state = _SwarmStreamState(mission)
@@ -999,7 +1005,7 @@ def _observed_failed_mission_keys(mission_stage, mission):
                 )
                 record_type = row["record_type"]
                 if record_type == "initialization":
-                    observed["initialization"].add((
+                    swarm_initialization.add((
                         mission["campaign_id"], mission["trajectory_seed"],
                         mission["range_noise_seed"], 0, row["robot_id"],
                     ))
@@ -1029,7 +1035,7 @@ def _observed_failed_mission_keys(mission_stage, mission):
             continue
         expected_order = iter(
             (frame, robot)
-            for frame in range(1, mission["frames"])
+            for frame in range(mission["frames"])
             for robot in range(1, 15)
         )
         with gzip.open(
@@ -1048,11 +1054,23 @@ def _observed_failed_mission_keys(mission_stage, mission):
                     raise ValueError(
                         "retained replay differs from frozen prefix order"
                     )
-                observed["estimator"].add((
+                key = (
                     mission["campaign_id"], condition,
                     mission["trajectory_seed"], mission["range_noise_seed"],
                     row["frame_index"], row["robot_id"],
-                ))
+                )
+                if row["frame_index"] == 0:
+                    replay_initialization[condition].add((
+                        mission["campaign_id"], mission["trajectory_seed"],
+                        mission["range_noise_seed"], 0, row["robot_id"],
+                    ))
+                else:
+                    observed["estimator"].add(key)
+    observed["initialization"] = set(swarm_initialization)
+    for condition in mission["conditions"]:
+        observed["initialization"].intersection_update(
+            replay_initialization[condition]
+        )
     return observed
 
 
@@ -1527,13 +1545,11 @@ def _emit_replay_rows(arguments) -> None:
                 solver=solver,
                 mission_horizon_frames=arguments.frames,
             )
-            if frame > 0:
-                encoded = json.dumps(
-                    row, ensure_ascii=False, allow_nan=False, separators=(",", ":")
-                ).encode("utf-8") + b"\n"
-                sys.stdout.buffer.write(encoded)
-        if frame > 0:
-            sys.stdout.buffer.flush()
+            encoded = json.dumps(
+                row, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+            ).encode("utf-8") + b"\n"
+            sys.stdout.buffer.write(encoded)
+        sys.stdout.buffer.flush()
     if next_measurement is not None or next_commands is not None:
         raise ValueError("replay input contains rows beyond the frozen horizon")
 
@@ -1903,7 +1919,18 @@ def execute_campaign(arguments, operations) -> dict:
             )
             _require_terminal_operation(measurements, "measurement generator")
             if measurements.get("status") != "completed":
-                raise RuntimeError("measurement generator did not complete")
+                failure_reason = str(
+                    measurements.get("reason") or "measurements_failed"
+                )
+                _synthesize_and_publish_failed_mission(
+                    operations, mission, mission_stage, output_root,
+                    failure_reason,
+                )
+                _terminalize_remaining_schedule(
+                    operations, schedule, index + 1, output_root,
+                    failure_reason,
+                )
+                break
 
             replay_manifests = {}
             for condition in mission["conditions"]:

@@ -314,6 +314,12 @@ def analyze_qualified_closure_campaign(campaign: dict) -> dict:
     primary_estimator = [
         row for row in estimator if row.get("condition") == "dynamic_primary"
     ]
+    frozen_primary_count = campaign.get("expected_primary_tuple_count")
+    if (
+        type(frozen_primary_count) is not int
+        or frozen_primary_count < len(primary_estimator)
+    ):
+        raise ValueError("frozen primary tuple count is absent or inconsistent")
     ablation_estimator = [
         row for row in estimator if row.get("condition") == "fixed_fim_ablation"
     ]
@@ -425,15 +431,15 @@ def analyze_qualified_closure_campaign(campaign: dict) -> dict:
             and row.get("contained") is True
             for row in primary_estimator
         ),
-        len(primary_estimator),
+        frozen_primary_count,
         0.93,
     )
-    fresh_expected = [
-        row for row in primary_estimator if row.get("fresh_expected") is True
-    ]
     gates["fresh_retention"] = _ratio_gate(
-        sum(row.get("output_status") == "fresh" for row in fresh_expected),
-        len(fresh_expected),
+        sum(
+            row.get("output_status") == "fresh"
+            for row in primary_estimator
+        ),
+        frozen_primary_count,
         0.98,
     )
     gates["fresh_or_bounded_predicted_availability"] = _ratio_gate(
@@ -445,7 +451,7 @@ def analyze_qualified_closure_campaign(campaign: dict) -> dict:
             )
             for row in primary_estimator
         ),
-        len(primary_estimator),
+        frozen_primary_count,
         0.95,
     )
 
@@ -1318,7 +1324,16 @@ def _stream_raw_campaign(input_root, protocol, missions, database, disk_guard=No
         "CREATE TABLE truth (mission TEXT, frame INTEGER, robot INTEGER, x REAL, y REAL, PRIMARY KEY(mission,frame,robot))"
     )
     database.execute(
-        "CREATE TABLE estimator (condition TEXT, mission TEXT, frame INTEGER, robot INTEGER, depth INTEGER, status TEXT, error REAL, contained INTEGER, fresh_expected INTEGER, bounded INTEGER, admissible INTEGER, wrong INTEGER, private_age INTEGER, source_order_valid INTEGER, PRIMARY KEY(condition,mission,frame,robot))"
+        "CREATE TABLE initialization (mission TEXT, robot INTEGER, "
+        "PRIMARY KEY(mission,robot))"
+    )
+    database.execute(
+        "CREATE TABLE initialization_audit (condition TEXT, mission TEXT, "
+        "robot INTEGER, public_status TEXT, private_present INTEGER, "
+        "PRIMARY KEY(condition,mission,robot))"
+    )
+    database.execute(
+        "CREATE TABLE estimator (condition TEXT, mission TEXT, frame INTEGER, robot INTEGER, depth INTEGER, status TEXT, error REAL, contained INTEGER, bounded INTEGER, admissible INTEGER, wrong INTEGER, private_age INTEGER, source_order_valid INTEGER, PRIMARY KEY(condition,mission,frame,robot))"
     )
     database.execute(
         "CREATE TABLE measurement (mission TEXT, condition TEXT, frame INTEGER, owner INTEGER, ordinal INTEGER, kind TEXT, reference_id INTEGER, noisy_range REAL, ranging_sigma REAL, position_json TEXT, covariance_json TEXT, provenance_json TEXT, PRIMARY KEY(mission,condition,frame,owner,ordinal))"
@@ -1460,17 +1475,38 @@ def _stream_raw_campaign(input_root, protocol, missions, database, disk_guard=No
             replay_path = root / f"replay-{condition}.raw.jsonl.gz"
             expected_sha = replay.get("sha256")
             replay_publications = {}
+            expected_replay_order = iter(
+                (frame, robot)
+                for frame in range(mission["frames"])
+                for robot in range(1, 15)
+            )
+            initialization_audit_count = 0
+            post_initialization_count = 0
 
             def consume(row, condition=condition, mission_id=mission_id):
+                nonlocal initialization_audit_count
+                nonlocal post_initialization_count
                 if disk_guard is not None and counters["estimator"] % 256 == 0:
                     disk_guard()
+                order_key = (row["frame_index"], row["robot_id"])
+                if order_key != next(expected_replay_order, None):
+                    raise ValueError(
+                        "replay differs from the frozen initialization/tuple order"
+                    )
                 source_order_valid = _validate_replay_reference_provenance(
                     database, mission_id, condition, row, replay_publications
                 )
-                _account_raw_estimator_row(
-                    database, mission_id, condition, row, counters,
-                    source_order_valid=source_order_valid,
-                )
+                if row["frame_index"] == 0:
+                    _account_initialization_audit(
+                        database, mission_id, condition, row
+                    )
+                    initialization_audit_count += 1
+                else:
+                    _account_raw_estimator_row(
+                        database, mission_id, condition, row, counters,
+                        source_order_valid=source_order_valid,
+                    )
+                    post_initialization_count += 1
                 replay_publications[(row["frame_index"], row["robot_id"])] = (
                     row["audit_bundle"]["lifecycle"]["public_output"]
                 )
@@ -1478,8 +1514,19 @@ def _stream_raw_campaign(input_root, protocol, missions, database, disk_guard=No
             count = stream_validated_replay_rows(
                 replay_path, expected_sha, on_valid_row=consume
             )
-            counters["estimator"] += count
-            counters["source_order_checked"] += count
+            if (
+                count != mission["frames"] * 14
+                or next(expected_replay_order, None) is not None
+                or initialization_audit_count != 14
+                or post_initialization_count
+                    != max(0, mission["frames"] - 1) * 14
+            ):
+                raise ValueError(
+                    f"{mission_id} replay initialization/tuple universe is incomplete"
+                )
+            counters["initialization_audit"] += initialization_audit_count
+            counters["estimator"] += post_initialization_count
+            counters["source_order_checked"] += post_initialization_count
         counters["missions_success"] += mission_success
     database.commit()
     return _report_from_streamed_counts(
@@ -1568,6 +1615,10 @@ def _analyzer_observed_failed_mission_keys(mission_root, mission):
             "reconstructed", "reset",
         )
     }
+    swarm_initialization = set()
+    replay_initialization = {
+        condition: set() for condition in mission["conditions"]
+    }
     mission_root = Path(mission_root)
     swarm_path = mission_root / "swarm.jsonl.gz"
     if swarm_path.is_file() and not swarm_path.is_symlink():
@@ -1587,9 +1638,9 @@ def _analyzer_observed_failed_mission_keys(mission_root, mission):
                         mission["campaign_id"], mission["trajectory_seed"],
                         mission["range_noise_seed"], 0, row["robot_id"],
                     )
-                    if key in observed["initialization"]:
+                    if key in swarm_initialization:
                         raise ValueError("retained prefix key is duplicated")
-                    observed["initialization"].add(key)
+                    swarm_initialization.add(key)
                 elif record_type == "endpoint_row":
                     edge = row["edge"]
                     key = (
@@ -1619,7 +1670,7 @@ def _analyzer_observed_failed_mission_keys(mission_root, mission):
             continue
         expected_order = iter(
             (frame, robot)
-            for frame in range(1, mission["frames"])
+            for frame in range(mission["frames"])
             for robot in range(1, 15)
         )
         with gzip.open(replay_path, "rt", encoding="utf-8", errors="strict") as source:
@@ -1633,11 +1684,23 @@ def _analyzer_observed_failed_mission_keys(mission_root, mission):
                     raise ValueError(
                         "retained replay differs from frozen prefix order"
                     )
-                observed["estimator"].add((
+                key = (
                     mission["campaign_id"], condition,
                     mission["trajectory_seed"], mission["range_noise_seed"],
                     row["frame_index"], row["robot_id"],
-                ))
+                )
+                if row["frame_index"] == 0:
+                    replay_initialization[condition].add((
+                        mission["campaign_id"], mission["trajectory_seed"],
+                        mission["range_noise_seed"], 0, row["robot_id"],
+                    ))
+                else:
+                    observed["estimator"].add(key)
+    observed["initialization"] = set(swarm_initialization)
+    for condition in mission["conditions"]:
+        observed["initialization"].intersection_update(
+            replay_initialization[condition]
+        )
     return observed
 
 
@@ -1696,6 +1759,10 @@ def _stream_swarm_evidence(
                     raise ValueError("initialization schema/order mismatch")
                 initialization += 1
                 counters["initialization"] += 1
+                database.execute(
+                    "INSERT INTO initialization VALUES (?,?)",
+                    (mission["mission_id"], row["robot_id"]),
+                )
             elif record_type == "reset":
                 errors = audit_reset_primitives(row, tuple(range(1, 15)), 119)
                 counters["reset_violations"] += bool(errors)
@@ -1962,7 +2029,7 @@ def _account_raw_estimator_row(
         contained = int(error <= radius)
     wrong = int(_wrong_mode_from_truth(row, truth)) if status == "fresh" and truth else 0
     database.execute(
-        "INSERT INTO estimator VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO estimator VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             condition,
             mission_id,
@@ -1972,12 +2039,33 @@ def _account_raw_estimator_row(
             status,
             error,
             contained,
-            int(row["admissible_mode_count"] == 1),
             int(status == "predicted" and public["aged_modeled_radius"] is not None),
             row["admissible_mode_count"],
             wrong,
             row["private_age"],
             int(source_order_valid is True),
+        ),
+    )
+
+
+def _account_initialization_audit(database, mission_id, condition, row):
+    """Bind one independently reconstructed frame-zero audit to its key."""
+    if (
+        row.get("frame_index") != 0
+        or row.get("qualification_kind") != "deployment"
+    ):
+        raise ValueError("qualified initialization audit is not frame zero")
+    lifecycle = row["audit_bundle"]["lifecycle"]
+    public = lifecycle["public_output"]
+    private = lifecycle["next_private_state"]
+    database.execute(
+        "INSERT INTO initialization_audit VALUES (?,?,?,?,?)",
+        (
+            condition,
+            mission_id,
+            row["robot_id"],
+            public["output_status"],
+            int(private is not None),
         ),
     )
 
@@ -2129,9 +2217,24 @@ def _report_from_streamed_counts(
     universes = protocol["universes"]
     expected_estimator = universes["estimator_total"]
     expected_primary = universes["estimator_per_condition"]
+    initialization_complete = database.execute(
+        "SELECT COUNT(*) FROM initialization AS base "
+        "WHERE EXISTS ("
+        "SELECT 1 FROM initialization_audit AS dynamic "
+        "WHERE dynamic.mission=base.mission "
+        "AND dynamic.robot=base.robot "
+        "AND dynamic.condition='dynamic_primary') "
+        "AND EXISTS ("
+        "SELECT 1 FROM initialization_audit AS fixed "
+        "WHERE fixed.mission=base.mission "
+        "AND fixed.robot=base.robot "
+        "AND fixed.condition='fixed_fim_ablation')"
+    ).fetchone()[0]
     complete = (
         manifests_complete
-        and counters["initialization"] == universes["initialization"]
+        and initialization_complete == universes["initialization"]
+        and counters["initialization_audit"]
+            == universes["initialization"] * 2
         and counters["controller"] == universes["controller"]
         and counters["endpoint"] == universes["endpoint"]
         and counters["estimator"] == expected_estimator
@@ -2147,7 +2250,7 @@ def _report_from_streamed_counts(
             counters["runtime_truth_read_violation"], max(1, expected_estimator)
         ),
         "zero_initialization_accounting_omissions": _zero_gate(
-            max(0, universes["initialization"] - counters["initialization"]),
+            max(0, universes["initialization"] - initialization_complete),
             universes["initialization"],
         ),
         "zero_cross_mode_source_order_publication": _zero_gate(
@@ -2172,8 +2275,11 @@ def _report_from_streamed_counts(
             contained, expected_primary, 0.93
         ),
         "fresh_retention": _ratio_gate(
-            scalar("SELECT COUNT(*) FROM estimator WHERE condition='dynamic_primary' AND fresh_expected=1 AND status='fresh'"),
-            scalar("SELECT COUNT(*) FROM estimator WHERE condition='dynamic_primary' AND fresh_expected=1"),
+            scalar(
+                "SELECT COUNT(*) FROM estimator "
+                "WHERE condition='dynamic_primary' AND status='fresh'"
+            ),
+            expected_primary,
             0.98,
         ),
         "fresh_or_bounded_predicted_availability": _ratio_gate(

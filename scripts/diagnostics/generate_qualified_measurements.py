@@ -16,6 +16,7 @@ import numpy as np
 
 
 SCHEMA_VERSION = "cbf2026-qualified-measurements-v1"
+STOP_FREE_BYTES = 6_000_000_000
 RUNTIME_FIELDS = {
     "schema_version", "record_type", "frame_index", "owner_id",
     "reference_key", "role_tags", "reference_position",
@@ -35,6 +36,7 @@ def generate_measurement_bundle(
     truth_manifest: dict,
     truth_opener=None,
     publish_hook=None,
+    available_bytes_fn=None,
 ) -> dict:
     """Consume committed truth once and transactionally publish both streams."""
     truth_path = Path(truth_path)
@@ -87,67 +89,109 @@ def generate_measurement_bundle(
     rng = np.random.default_rng(range_noise_seed)
     row_count = 0
     open_truth = truth_opener or (lambda path: Path(path).open("rb"))
+    available_probe = available_bytes_fn or (
+        lambda path: shutil.disk_usage(path).free
+    )
+    disk_failure = None
     try:
-        with (
-            open_truth(truth_path) as truth_raw,
-            runtime_path.open("xb") as runtime_raw,
-            audit_path.open("xb") as audit_raw,
-            gzip.GzipFile(fileobj=_HashingReader(truth_raw), mode="rb") as truth_gzip,
-            io.TextIOWrapper(truth_gzip, encoding="utf-8", errors="strict") as truth,
-            gzip.GzipFile(filename="", mode="wb", fileobj=runtime_raw, mtime=0) as runtime_sink,
-            gzip.GzipFile(filename="", mode="wb", fileobj=audit_raw, mtime=0) as audit_sink,
-        ):
-            hashing_reader = truth_gzip.fileobj
-            for line_number, line in enumerate(truth, start=1):
-                source_row = _strict_object(line, f"truth row {line_number}")
-                for source in _expand_truth_source(source_row, required):
-                    key = _truth_key(source)
-                    if selector_policy:
-                        if previous_key is not None and key <= previous_key:
-                            raise ValueError("controller measurement keys are not strictly ordered")
-                        previous_key = key
-                    else:
-                        if key in seen:
-                            raise ValueError(f"duplicate truth key: {key}")
-                        seen.add(key)
-                    expected_roles = (
-                        sorted(source.get("role_tags", [])) if selector_policy else sorted(
-                            condition for condition, keys in required.items() if key in keys
+        try:
+            with (
+                open_truth(truth_path) as truth_raw,
+                runtime_path.open("xb") as runtime_raw,
+                audit_path.open("xb") as audit_raw,
+                gzip.GzipFile(fileobj=_HashingReader(truth_raw), mode="rb") as truth_gzip,
+                io.TextIOWrapper(truth_gzip, encoding="utf-8", errors="strict") as truth,
+                gzip.GzipFile(filename="", mode="wb", fileobj=runtime_raw, mtime=0) as runtime_sink,
+                gzip.GzipFile(filename="", mode="wb", fileobj=audit_raw, mtime=0) as audit_sink,
+            ):
+                hashing_reader = truth_gzip.fileobj
+                for line_number, line in enumerate(truth, start=1):
+                    source_row = _strict_object(line, f"truth row {line_number}")
+                    for source in _expand_truth_source(source_row, required):
+                        if available_probe(stage) < STOP_FREE_BYTES:
+                            raise _MeasurementDiskFloor
+                        key = _truth_key(source)
+                        if selector_policy:
+                            if previous_key is not None and key <= previous_key:
+                                raise ValueError("controller measurement keys are not strictly ordered")
+                            previous_key = key
+                        else:
+                            if key in seen:
+                                raise ValueError(f"duplicate truth key: {key}")
+                            seen.add(key)
+                        expected_roles = (
+                            sorted(source.get("role_tags", [])) if selector_policy else sorted(
+                                condition for condition, keys in required.items() if key in keys
+                            )
                         )
-                    )
-                    roles = source.get("role_tags")
-                    if not isinstance(roles, list) or sorted(roles) != expected_roles:
-                        raise ValueError(f"role-tagged requested edge mismatch: {key}")
-                    endpoint = _vec2(source.get("endpoint_truth_position"), "endpoint truth")
-                    reference_truth = _vec2(
-                        source.get("reference_truth_position"), "reference truth"
-                    )
-                    reference_position = _vec2(
-                        source.get("reference_position"), "reference position"
-                    )
-                    covariance = _matrix2(
-                        source.get("reference_covariance"), "reference covariance"
-                    )
-                    provenance = source.get("base_anchor_provenance")
-                    if not isinstance(provenance, list) or not all(
-                        type(item) is int and item >= 0 for item in provenance
-                    ):
-                        raise ValueError("base anchor provenance is invalid")
-                    noiseless_range = math.dist(endpoint, reference_truth)
-                    sampled_noise = float(rng.normal(0.0, ranging_sigma))
-                    runtime_row = _runtime_row(
-                        key, roles, reference_position, covariance, provenance,
-                        noiseless_range + sampled_noise, ranging_sigma,
-                        config_sha256, measurement_stream_id,
-                    )
-                    audit_row = _audit_row(
-                        key, endpoint, reference_truth, noiseless_range,
-                        sampled_noise, range_noise_seed, measurement_stream_id,
-                    )
-                    runtime_sink.write(_json_bytes(runtime_row) + b"\n")
-                    audit_sink.write(_json_bytes(audit_row) + b"\n")
-                    row_count += 1
-            observed_truth_sha256 = hashing_reader.hexdigest()
+                        roles = source.get("role_tags")
+                        if not isinstance(roles, list) or sorted(roles) != expected_roles:
+                            raise ValueError(f"role-tagged requested edge mismatch: {key}")
+                        endpoint = _vec2(source.get("endpoint_truth_position"), "endpoint truth")
+                        reference_truth = _vec2(
+                            source.get("reference_truth_position"), "reference truth"
+                        )
+                        reference_position = _vec2(
+                            source.get("reference_position"), "reference position"
+                        )
+                        covariance = _matrix2(
+                            source.get("reference_covariance"), "reference covariance"
+                        )
+                        provenance = source.get("base_anchor_provenance")
+                        if not isinstance(provenance, list) or not all(
+                            type(item) is int and item >= 0 for item in provenance
+                        ):
+                            raise ValueError("base anchor provenance is invalid")
+                        noiseless_range = math.dist(endpoint, reference_truth)
+                        sampled_noise = float(rng.normal(0.0, ranging_sigma))
+                        runtime_row = _runtime_row(
+                            key, roles, reference_position, covariance, provenance,
+                            noiseless_range + sampled_noise, ranging_sigma,
+                            config_sha256, measurement_stream_id,
+                        )
+                        audit_row = _audit_row(
+                            key, endpoint, reference_truth, noiseless_range,
+                            sampled_noise, range_noise_seed, measurement_stream_id,
+                        )
+                        runtime_sink.write(_json_bytes(runtime_row) + b"\n")
+                        audit_sink.write(_json_bytes(audit_row) + b"\n")
+                        row_count += 1
+                observed_truth_sha256 = hashing_reader.hexdigest()
+        except _MeasurementDiskFloor:
+            disk_failure = "disk_hard_floor"
+        if disk_failure is not None:
+            runtime_manifest = _stream_manifest(
+                runtime_path, "runtime", row_count, measurement_stream_id
+            )
+            audit_manifest = _stream_manifest(
+                audit_path, "audit", row_count, measurement_stream_id
+            )
+            for manifest in (runtime_manifest, audit_manifest):
+                manifest.update(identity_payload)
+                manifest.update({
+                    "status": "failed",
+                    "reason": disk_failure,
+                })
+            _publish_json(stage / "runtime.manifest.json", runtime_manifest)
+            _publish_json(stage / "audit.manifest.json", audit_manifest)
+            manifest = {
+                "schema_version": "cbf2026-qualified-measurement-bundle-v1",
+                "terminal": True,
+                "status": "failed",
+                "reason": disk_failure,
+                "truth_sha256": truth_manifest["sha256"],
+                "config_sha256": config_sha256,
+                "range_noise_seed": range_noise_seed,
+                "rng_identity": f"numpy.default_rng.PCG64:{range_noise_seed}",
+                "edge_universe_sha256": edge_universe_sha256,
+                "measurement_stream_id": measurement_stream_id,
+                "runtime_sha256": runtime_manifest["sha256"],
+                "audit_sha256": audit_manifest["sha256"],
+                "row_count": row_count,
+            }
+            _publish_json(stage / "manifest.json", manifest)
+            _rename_directory_no_replace(stage, output_root)
+            return manifest
         if observed_truth_sha256 != truth_manifest["sha256"]:
             raise ValueError("truth SHA-256 changed during its single read")
         if not selector_policy and seen != union:
@@ -184,6 +228,10 @@ def generate_measurement_bundle(
     finally:
         if stage.exists():
             shutil.rmtree(stage)
+
+
+class _MeasurementDiskFloor(Exception):
+    pass
 
 
 class _HashingReader:

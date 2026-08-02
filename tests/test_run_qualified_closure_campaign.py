@@ -191,6 +191,60 @@ class RunnerDiskPolicyTests(unittest.TestCase):
         self.assertEqual(result["reason"], "cache_cap")
         self.assertTrue((self.root / "manifest.json").is_file())
 
+    def test_production_measurement_generation_stops_with_paired_prefix(self):
+        from tests.test_generate_qualified_measurements import (
+            read_rows,
+            write_truth,
+        )
+
+        truth = self.root / "truth.jsonl.gz"
+        write_truth(truth)
+        stage = self.root / "mission-stage"
+        stage.mkdir()
+        free = iter((STOP_FREE_BYTES + 1, STOP_FREE_BYTES - 1))
+        operations = ProductionOperations()
+        operations.available_bytes_fn = lambda _path: next(
+            free, STOP_FREE_BYTES - 1
+        )
+        result = operations.generate_measurements(
+            {
+                "range_noise_seed": 2026081101,
+            },
+            stage,
+            {
+                "truth_path": truth,
+                "truth_manifest": {
+                    "terminal": True,
+                    "status": "completed",
+                    "sha256": hashlib.sha256(
+                        truth.read_bytes()
+                    ).hexdigest(),
+                },
+                "config_sha256": "a" * 64,
+                "edge_schedule": {
+                    "dynamic_primary": [
+                        (0, 1, ("base", 0)),
+                        (0, 2, ("uav", 1)),
+                    ],
+                    "fixed_fim_ablation": [
+                        (0, 1, ("base", 0)),
+                    ],
+                },
+            },
+        )
+
+        bundle = stage / "measurements"
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["reason"], "disk_hard_floor")
+        self.assertTrue(result["terminal"])
+        self.assertEqual(len(read_rows(bundle / "runtime.jsonl.gz")), 1)
+        self.assertEqual(len(read_rows(bundle / "audit.jsonl.gz")), 1)
+        self.assertEqual(
+            json.loads((bundle / "manifest.json").read_text())["status"],
+            "failed",
+        )
+        self.assertFalse(any(stage.glob(".measurements.*.tmp")))
+
 
 class RunnerScheduleTests(unittest.TestCase):
     """Catch implicit/colliding seeds and accidental ablation launches."""
@@ -576,13 +630,23 @@ class RunnerProducerOrchestrationTests(unittest.TestCase):
     def replay_row(self, frame, robot):
         from tests.test_replay_qualified_estimator import (
             build_registered_qualified_row,
+            registered_deployment_domain,
         )
 
-        row = build_registered_qualified_row(
-            frame_index=frame,
-            applied_command_frame=frame - 1,
-            history_version=frame,
-        )
+        arguments = {
+            "frame_index": frame,
+            "applied_command_frame": frame - 1,
+            "history_version": frame,
+        }
+        if frame == 0:
+            arguments.update({
+                "applied_command_frame": None,
+                "qualifier_kind": "deployment",
+                "qualifier_payload": {
+                    "domain": registered_deployment_domain()
+                },
+            })
+        row = build_registered_qualified_row(**arguments)
         local = robot if robot <= 7 else robot - 7
         row["robot_id"] = robot
         row["squad_local_index"] = local
@@ -704,12 +768,12 @@ class RunnerProducerOrchestrationTests(unittest.TestCase):
 
     def test_retained_replay_rejects_middle_gap(self):
         self.assert_replay_prefix_rejected(
-            "middle-gap", 2, [(1, 1), (1, 3)]
+            "middle-gap", 2, [(0, 1), (0, 3)]
         )
 
     def test_retained_replay_rejects_cross_frame_gap(self):
         self.assert_replay_prefix_rejected(
-            "cross-frame-gap", 3, [(1, 1), (2, 1)]
+            "cross-frame-gap", 3, [(0, 1), (1, 1)]
         )
 
     def test_retained_replay_accepts_exact_partial_prefix(self):
@@ -727,7 +791,7 @@ class RunnerProducerOrchestrationTests(unittest.TestCase):
             "frames": 2,
             "conditions": ["dynamic_primary"],
         }
-        valid_keys = [(1, 1), (1, 2), (1, 3)]
+        valid_keys = [(0, 1), (0, 2), (0, 3)]
         self.write_replay_rows(
             valid_stage,
             "dynamic_primary",
@@ -738,13 +802,8 @@ class RunnerProducerOrchestrationTests(unittest.TestCase):
             _analyzer_observed_failed_mission_keys,
         ):
             observed = validator(valid_stage, valid_mission)
-            self.assertEqual(
-                {
-                    (key[-2], key[-1])
-                    for key in observed["estimator"]
-                },
-                set(valid_keys),
-            )
+            self.assertEqual(observed["estimator"], set())
+            self.assertEqual(observed["initialization"], set())
 
     def test_declared_unsuccessful_swarm_has_exact_complement(self):
         stage = self.root / "declared-unsuccessful"
@@ -816,7 +875,11 @@ class RunnerProducerOrchestrationTests(unittest.TestCase):
         self.write_replay_rows(
             stage,
             "dynamic_primary",
-            [self.replay_row(1, robot) for robot in range(1, 4)],
+            [
+                self.replay_row(0, robot) for robot in range(1, 15)
+            ] + [
+                self.replay_row(1, robot) for robot in range(1, 4)
+            ],
         )
 
         ProductionOperations().synthesize_failed_mission(
@@ -826,6 +889,66 @@ class RunnerProducerOrchestrationTests(unittest.TestCase):
         self.assert_exact_failed_complement(
             stage, mission, "replay_line_stall_timeout"
         )
+
+    def test_initialization_key_requires_cpp_and_both_condition_audits(self):
+        from scripts.diagnostics.analyze_qualified_closure_campaign import (
+            _analyzer_observed_failed_mission_keys,
+        )
+
+        stage = self.root / "composite-initialization-key"
+        stage.mkdir()
+        mission = {
+            "campaign_id": "development-v1",
+            "mission_id": "mission-01",
+            "trajectory_seed": 2026080101,
+            "range_noise_seed": 2026081101,
+            "frames": 1,
+            "conditions": ["dynamic_primary", "fixed_fim_ablation"],
+        }
+        initialization = {
+            "record_type": "initialization",
+            "schema_version": "cbf2026-qualified-evidence-v1",
+            "campaign_id": mission["campaign_id"],
+            "condition": "dynamic_primary",
+            "trajectory_seed": mission["trajectory_seed"],
+            "range_noise_seed": mission["range_noise_seed"],
+            "frame_index": 0,
+            "robot_id": 1,
+            "runtime": {"local_index": 1},
+            "analyzer_only": {"truth_position": [1.0, 0.0]},
+        }
+        with gzip.open(
+            stage / "swarm.jsonl.gz", "wt", encoding="utf-8"
+        ) as sink:
+            sink.write(json.dumps(initialization) + "\n")
+        self.write_replay_rows(
+            stage, "dynamic_primary", [self.replay_row(0, 1)]
+        )
+        validators = (
+            _observed_failed_mission_keys,
+            _analyzer_observed_failed_mission_keys,
+        )
+        for validator in validators:
+            with self.subTest(
+                phase="one-condition", validator=validator.__name__
+            ):
+                observed = validator(stage, mission)
+                self.assertEqual(observed["initialization"], set())
+                self.assertEqual(observed["estimator"], set())
+
+        self.write_replay_rows(
+            stage, "fixed_fim_ablation", [self.replay_row(0, 1)]
+        )
+        expected = {
+            ("development-v1", 2026080101, 2026081101, 0, 1)
+        }
+        for validator in validators:
+            with self.subTest(
+                phase="both-conditions", validator=validator.__name__
+            ):
+                observed = validator(stage, mission)
+                self.assertEqual(observed["initialization"], expected)
+                self.assertEqual(observed["estimator"], set())
 
     def test_both_conditions_receive_same_measurement_identity_and_no_audit_path(self):
         calls = []
@@ -1052,6 +1175,12 @@ class RunnerProducerOrchestrationTests(unittest.TestCase):
         }
         with gzip.open(stage / "swarm.jsonl.gz", "wt", encoding="utf-8") as sink:
             sink.write(json.dumps(initialization) + "\n")
+        for condition in (
+            "dynamic_primary", "fixed_fim_ablation"
+        ):
+            self.write_replay_rows(
+                stage, condition, [self.replay_row(0, 1)]
+            )
         (stage / "swarm.stderr.log").write_text("producer diagnostic\n")
         (stage / "swarm.supervisor.manifest.json").write_text(json.dumps({
             "terminal": True, "status": "failed", "reason": "malformed_json",
@@ -1228,7 +1357,11 @@ class RunnerProducerOrchestrationTests(unittest.TestCase):
         observed = []
 
         def supervise(argv, **kwargs):
-            observed.append((list(argv), Path(kwargs["cwd"])))
+            observed.append((
+                list(argv),
+                Path(kwargs["cwd"]),
+                list(kwargs["expected_keys"]),
+            ))
             with gzip.open(
                 kwargs["stream_path"], "wt", encoding="utf-8"
             ) as sink:
@@ -1257,6 +1390,9 @@ class RunnerProducerOrchestrationTests(unittest.TestCase):
         self.assertNotIn("__replay-producer", observed[0][0])
         self.assertEqual(result["producer_argv"], observed[0][0])
         self.assertNotIn(mission_stage, observed[0][1].parents)
+        self.assertEqual(len(observed[0][2]), 28)
+        self.assertEqual(observed[0][2][0], (0, 1))
+        self.assertEqual(observed[0][2][-1], (1, 14))
 
     def test_runtime_measurement_validator_rejects_bool_and_forged_provenance(self):
         row = {
@@ -1428,6 +1564,14 @@ class CampaignCoordinatorTests(unittest.TestCase):
             bundle.mkdir()
             runtime = bundle / "runtime.jsonl.gz"
             runtime.write_bytes(b"shared")
+            if self.fail_phase == "measurements-terminal":
+                return {
+                    "terminal": True,
+                    "status": "failed",
+                    "reason": "disk_hard_floor",
+                    "runtime_path": runtime,
+                    "sha256": "m" * 64,
+                }
             return {"terminal": True, "status": "completed",
                     "runtime_path": runtime, "sha256": "m" * 64}
 
@@ -1503,6 +1647,25 @@ class CampaignCoordinatorTests(unittest.TestCase):
             self.assertEqual([event[1] for event in synthetic], [
                 f"mission-{number:02d}" for number in range(3, 11)
             ])
+
+    def test_terminal_measurement_disk_stop_preserves_exact_failure_reason(self):
+        with tempfile.TemporaryDirectory(
+            prefix="qualified-campaign-measurement-disk-stop-"
+        ) as directory:
+            output = Path(directory) / "raw" / "v1"
+            operations = self.FakeOperations(
+                fail_phase="measurements-terminal"
+            )
+
+            manifest = execute_campaign(self.arguments(output), operations)
+
+            self.assertEqual(manifest["status"], "failed")
+            self.assertEqual(manifest["reason"], "disk_hard_floor")
+            for mission_number in range(1, 11):
+                mission_manifest = json.loads((
+                    output / f"mission-{mission_number:02d}" / "manifest.json"
+                ).read_text())
+                self.assertEqual(mission_manifest["reason"], "disk_hard_floor")
 
     def test_all_swarm_failure_classes_preserve_validated_prefix_and_supervisor_bundle(self):
         for reason in (

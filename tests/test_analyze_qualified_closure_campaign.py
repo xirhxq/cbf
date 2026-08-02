@@ -9,6 +9,7 @@ import hashlib
 import argparse
 import sqlite3
 import io
+from collections import Counter
 from contextlib import chdir, contextmanager, redirect_stderr
 from pathlib import Path
 from unittest import mock
@@ -32,8 +33,10 @@ from scripts.diagnostics.analyze_qualified_closure_campaign import (
     _terminalize_claimed_analysis_failure,
     _runtime_analyzer_argv,
     _canonical_json_identity,
+    _account_initialization_audit,
     _preflight_raw_campaign,
     _producer_input_violations,
+    _report_from_streamed_counts,
     _validate_synthesized_missing_stream,
     _validate_producer_namespace_identities,
     _validate_replay_reference_provenance,
@@ -234,6 +237,7 @@ def passing_campaign():
         ],
         "expected_key_count": 20,
         "observed_key_count": 20,
+        "expected_primary_tuple_count": 2,
         "runtime_truth_read_count": 0,
         "initialization_rows": [
             {"accounted": True}, {"accounted": True},
@@ -408,6 +412,124 @@ class CampaignAnalyzerGateTests(unittest.TestCase):
         self.assertEqual(
             report["gates"]["zero_finite_error_above_50m"]["denominator"], 2
         )
+
+    def test_fresh_retention_uses_entire_frozen_primary_tuple_universe(self):
+        campaign = passing_campaign()
+        primary = [
+            row for row in campaign["estimator_rows"]
+            if row["condition"] == "dynamic_primary"
+        ]
+        primary[1].update({
+            "output_status": "predicted",
+            "fresh_expected": False,
+            "bounded_prediction": True,
+        })
+
+        gate = analyze_qualified_closure_campaign(campaign)["gates"][
+            "fresh_retention"
+        ]
+
+        self.assertEqual(gate["numerator"], 1)
+        self.assertEqual(gate["denominator"], 2)
+        self.assertFalse(gate["passed"])
+
+    def test_missing_primary_row_cannot_shrink_synthetic_frozen_denominator(self):
+        campaign = passing_campaign()
+        campaign["estimator_rows"].remove(next(
+            row for row in campaign["estimator_rows"]
+            if row["condition"] == "dynamic_primary"
+            and row["mission_id"] == "mission-02"
+        ))
+
+        gate = analyze_qualified_closure_campaign(campaign)["gates"][
+            "fresh_retention"
+        ]
+
+        self.assertEqual(gate["numerator"], 1)
+        self.assertEqual(gate["denominator"], 2)
+        self.assertFalse(gate["passed"])
+
+    def test_production_sql_fresh_retention_uses_frozen_primary_universe(self):
+        database = sqlite3.connect(":memory:")
+        self.addCleanup(database.close)
+        database.execute(
+            "CREATE TABLE estimator (condition TEXT, mission TEXT, "
+            "frame INTEGER, robot INTEGER, depth INTEGER, status TEXT, "
+            "error REAL, contained INTEGER, bounded INTEGER, "
+            "admissible INTEGER, wrong INTEGER, "
+            "private_age INTEGER, source_order_valid INTEGER, "
+            "PRIMARY KEY(condition,mission,frame,robot))"
+        )
+        database.execute(
+            "CREATE TABLE initialization (mission TEXT, robot INTEGER, "
+            "PRIMARY KEY(mission,robot))"
+        )
+        database.execute(
+            "CREATE TABLE initialization_audit (condition TEXT, "
+            "mission TEXT, robot INTEGER, public_status TEXT, "
+            "private_present INTEGER, "
+            "PRIMARY KEY(condition,mission,robot))"
+        )
+        database.executemany(
+            "INSERT INTO initialization VALUES (?,?)",
+            [("mission-01", robot) for robot in range(1, 15)],
+        )
+        database.executemany(
+            "INSERT INTO initialization_audit VALUES (?,?,?,?,?)",
+            [
+                (condition, "mission-01", robot, "fresh", 1)
+                for condition in (
+                    "dynamic_primary", "fixed_fim_ablation"
+                )
+                for robot in range(1, 15)
+            ],
+        )
+        rows = []
+        for condition in ("dynamic_primary", "fixed_fim_ablation"):
+            for robot, status in (
+                (1, "fresh"),
+                (2, "predicted"),
+            ):
+                rows.append((
+                    condition, "mission-01", 1, robot, 1, status,
+                    1.0, 1, int(status == "predicted"),
+                    1, 0, 0, 1,
+                ))
+        database.executemany(
+            "INSERT INTO estimator VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+        counters = Counter({
+            "initialization": 14,
+            "initialization_audit": 28,
+            "controller": 1,
+            "endpoint": 1,
+            "estimator": 4,
+            "controller_available": 1,
+            "missions_success": 1,
+        })
+        report = _report_from_streamed_counts(
+            database,
+            {"universes": {
+                "initialization": 14,
+                "controller": 1,
+                "endpoint": 1,
+                "estimator_total": 4,
+                "estimator_per_condition": 2,
+                "reconstructed": 1,
+            }},
+            1,
+            counters,
+            1,
+            [],
+            ["a" * 64],
+            Counter(),
+        )
+
+        gate = report["gates"]["fresh_retention"]
+        self.assertEqual(gate["numerator"], 1)
+        self.assertEqual(gate["denominator"], 2)
+        self.assertFalse(gate["passed"])
 
     def test_missing_edge_fails_hard_row_gate(self):
         campaign = passing_campaign()
@@ -604,6 +726,109 @@ class RawReplayStreamingTests(unittest.TestCase):
                     tampered, hashlib.sha256(tampered.read_bytes()).hexdigest(),
                     on_valid_row=lambda _row: None,
                 )
+
+    def test_frame_zero_audit_reconstructs_full_base_case_without_post_metrics(self):
+        from tests.test_replay_qualified_estimator import (
+            fresh_registered_qualified_row,
+        )
+
+        with tempfile.TemporaryDirectory(
+            prefix="qualified-initialization-audit-"
+        ) as directory:
+            root = Path(directory)
+            valid = root / "frame-zero.jsonl.gz"
+            row = fresh_registered_qualified_row()
+            self.write(valid, row)
+            reconstructed = []
+
+            self.assertEqual(
+                stream_validated_replay_rows(
+                    valid,
+                    hashlib.sha256(valid.read_bytes()).hexdigest(),
+                    on_valid_row=reconstructed.append,
+                ),
+                1,
+            )
+            self.assertEqual(
+                reconstructed[0]["qualification_kind"], "deployment"
+            )
+            self.assertIn(
+                "qualifier_payload",
+                reconstructed[0]["audit_bundle"]["qualifier_context"],
+            )
+            self.assertTrue(
+                reconstructed[0]["audit_bundle"]["clustering"]["modes"]
+            )
+            self.assertTrue(reconstructed[0]["qualifications"])
+            self.assertIn(
+                "public_output",
+                reconstructed[0]["audit_bundle"]["lifecycle"],
+            )
+            self.assertIn(
+                "next_private_state",
+                reconstructed[0]["audit_bundle"]["lifecycle"],
+            )
+
+            database = sqlite3.connect(":memory:")
+            self.addCleanup(database.close)
+            database.execute(
+                "CREATE TABLE initialization_audit (condition TEXT, "
+                "mission TEXT, robot INTEGER, public_status TEXT, "
+                "private_present INTEGER, "
+                "PRIMARY KEY(condition,mission,robot))"
+            )
+            database.execute(
+                "CREATE TABLE estimator (condition TEXT, mission TEXT, "
+                "frame INTEGER, robot INTEGER)"
+            )
+            _account_initialization_audit(
+                database,
+                "mission-01",
+                "dynamic_primary",
+                reconstructed[0],
+            )
+            self.assertEqual(
+                database.execute(
+                    "SELECT condition,mission,robot FROM initialization_audit"
+                ).fetchall(),
+                [("dynamic_primary", "mission-01", row["robot_id"])],
+            )
+            self.assertEqual(
+                database.execute("SELECT COUNT(*) FROM estimator").fetchone()[0],
+                0,
+            )
+
+            mutations = {
+                "deployment-domain": lambda item: item["audit_bundle"][
+                    "qualifier_context"
+                ]["qualifier_payload"]["domain"].__setitem__(
+                    "margin_m", False
+                ),
+                "mode-enumeration": lambda item: item["audit_bundle"][
+                    "clustering"
+                ]["modes"][0].__setitem__("mode_id", "forged-mode"),
+                "qualification": lambda item: item["qualifications"][0].__setitem__(
+                    "admissible", not item["qualifications"][0]["admissible"]
+                ),
+                "publication": lambda item: item.__setitem__(
+                    "published_mode_id", "forged-mode"
+                ),
+                "private-state": lambda item: item["audit_bundle"][
+                    "lifecycle"
+                ]["next_private_state"].__setitem__("history_version", False),
+            }
+            for label, mutate in mutations.items():
+                with self.subTest(label=label):
+                    tampered = copy.deepcopy(row)
+                    mutate(tampered)
+                    path = root / f"{label}.jsonl.gz"
+                    self.write(path, tampered)
+                    with self.assertRaises(ValueError):
+                        stream_validated_replay_rows(
+                            path,
+                            hashlib.sha256(path.read_bytes()).hexdigest(),
+                            on_valid_row=lambda _row: None,
+                        )
 
     def test_cross_mode_source_order_requires_identical_mission_frame_robot_keys(self):
         database = sqlite3.connect(":memory:")
