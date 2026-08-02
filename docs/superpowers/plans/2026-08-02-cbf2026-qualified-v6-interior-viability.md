@@ -53,6 +53,7 @@
 Planning baseline only:
 
 - Create `docs/superpowers/plans/reviews/2026-08-02-cbf2026-qualified-v6-interior-viability-plan-review.md`: independent review of this committed plan and its planning identities.
+- Create after Task 6: `docs/superpowers/plans/reviews/2026-08-02-cbf2026-qualified-v6-controller-margin-amendment-review.md`: independent review of the committed Task 6b amendment, including its one-candidate/no-retuning rule and execution prohibition.
 
 Controller primitives and integration:
 
@@ -834,6 +835,7 @@ git commit -m "feat(diagnostics): add v6 one-step viability gate"
 The candidate below is chosen once from the pre-existing frozen 100-seed current-state universe, not by fitting the observed next-radius deficit. The independently reconstructed minimum current local radius across all `100 * 14 = 1400` frame-zero problems is `0.7658252531927233 m/s`. Therefore a fraction of at least `0.1 / (0.7658252531927233 - 1e-9) = 0.1305780917...` saturates every frame-zero floor at the already frozen `0.10 m/s` cap. Pre-register exactly `0.131`; do not search a grid or try another fraction if the formal gate later fails.
 
 **Files:**
+- Create before implementation: `docs/superpowers/plans/reviews/2026-08-02-cbf2026-qualified-v6-controller-margin-amendment-review.md`
 - Create: `config/diagnostics/qualified_mode_hybrid_dcbf_development_v3.json`
 - Create: `config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v3.json`
 - Create: `config/diagnostics/qualified_initial_family_v3.json`
