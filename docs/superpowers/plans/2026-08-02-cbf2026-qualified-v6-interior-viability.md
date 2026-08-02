@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a distributed two-stage local hard-row interior-selection policy and an exact one-step viability development gate so that a future development-v6 campaign cannot repeat the consumed v5 frame-one infeasibility without detection.
+**Goal:** Add a distributed two-stage local hard-row interior-selection policy and an exact one-step viability development gate so that a future development-v6 campaign cannot repeat the consumed v5 frame-one infeasibility without detection. After the single permitted Task 6 integration exposed insufficient next-state margin under the original `fraction=0.10` policy, the reviewed forward path is an additive, pre-registered margin-policy identity; the gate threshold and frozen seed universe do not change.
 
 **Architecture:** Keep the existing fixed hard-CBF graph, dynamic lower-index FIM graph, allocated endpoint rows, componentwise planar bounds, local Gurobi task QPs, and continuous-time conditional theorem. Before each local task QP, solve a pure two-dimensional Chebyshev LP over that UAV's allocated hard rows and planar component box, then minimize the unchanged task/slack objective subject to a frozen fractional/capped interior floor. Separately, run the exact production binary for the unchanged frozen initial seed universe and admit development-v6 registration only if every actual frame-zero command maps to a one-step state with positive robust barriers and a strictly positive local Chebyshev radius.
 
@@ -19,7 +19,7 @@
 - Preserve every committed v5 protocol, preflight, authorization, terminal report, review, and lifecycle commit byte-for-byte. v6 uses new filenames, schema/version fields where required, and new absent versioned roots.
 - Keep both hard classes at exactly `alpha.coe=0.1` and `alpha.pow=1` for `comm-fixed` and `safety`. Do not test or register `0.2` or `0.5` in this plan.
 - The Chebyshev LP consumes only one UAV's allocated hard rows and the planar component box `-25 <= u_x,u_y <= 25`. The yaw coordinate and yaw bounds never enter `rho`.
-- Freeze the local interior policy as `mode=planar-chebyshev-fraction-cap-v1`, `fraction=0.10`, and `cap=0.10 m/s`. The enforced floor is `mu = min(cap, fraction * max(0, rho - feasibility_tolerance))`.
+- Preserve the completed original policy as historical `mode=planar-chebyshev-fraction-cap-v1`, `fraction=0.10`, and `cap=0.10 m/s`; it produced the consumed Task 6 one-seed negative result and must not be reinterpreted or rerun. Before any formal gate, Task 6b adds `mode=planar-chebyshev-fraction-cap-v2`, `fraction=0.131`, and the unchanged `cap=0.10 m/s`. In both versions, `mu = min(cap, fraction * max(0, rho - feasibility_tolerance))`.
 - The second-stage task QP keeps the current nominal, soft-CBF slack variables, `k_delta=10`, and objective unchanged. Only local allocated hard-row right-hand sides are strengthened from residual `>= 0` to residual `>= mu`.
 - Do not modify canonical hard-row constants or hard-problem hashes. The interior floor is a controller selection policy applied after the exact hard problem has been built and verified.
 - Keep execution distributed. No joint swarm QP, centralized command selection, cross-UAV optimization variable, estimator comparison, estimator redesign, or lower-level dynamics enters this plan.
@@ -28,7 +28,7 @@
 - At the one-step state, require every robust hard barrier to be strictly greater than `0 m` and every UAV's planar local Chebyshev radius to be at least `0.05 m/s`.
 - Use exactly the existing nonreplaceable 100 audit trajectory seeds and the existing first 10 registered trajectory seeds. Do not change their order or values. No seed substitution, clamp, resample, retry, or post-hoc selection is allowed.
 - The development gate uses the exact production `Swarm` binary, exact base config, exact primary overlay, exact initial family, and exact implementation identity that will be bound by v6 registration. Test fixtures and mocked subprocesses never satisfy the production gate.
-- The formal development gate is once-only for one committed implementation identity. Before launching any seed, it creates an immutable no-replace claim bound to that identity. A failed or interrupted gate is terminal for that identity; repair requires a new implementation commit and newly versioned claim/artifact paths, never overwriting the consumed claim or failed artifact.
+- The formal development gate is once-only for one committed implementation identity. Before launching any seed, it creates an immutable no-replace claim bound to that identity. A failed or interrupted gate is terminal for that identity; repair requires a new implementation commit and newly versioned claim/artifact paths, never overwriting the consumed claim or failed artifact. The Task 6b policy is a single pre-registered candidate: if its unchanged 100-seed formal gate fails, stop this plan; do not retune `fraction`, change the threshold, substitute seeds, or launch a second formal gate under another ad hoc policy.
 - Do not create a production development-v6 protocol or preflight until all 100 audit seeds and all 10 registered seeds pass the exact development gate and the gate artifact receives an independent C0/I0/M0 review.
 - A generated v6 protocol and preflight are not authorization. Do not create the authorization JSON, authorization commit, campaign root, or analysis root until the researcher supplies new exact user-origin authorization text after seeing that exact protocol and preflight.
 - The authorization JSON must bind the exact UTF-8 user text, its SHA-256, the exact protocol and preflight hashes, the exact registered implementation identity, date, kind, and version. Historical approvals, test fixtures, inferred intent, and review verdicts are invalid authorization.
@@ -43,9 +43,10 @@
 
 1. **Phase 0 — planning baseline only:** create this plan's committed planning baseline and independent plan review. No implementation, config, test, binary, gate, protocol, paper, or DRA change is allowed.
 2. **Phase 1 — pure controller primitives:** Tasks 1--3 freeze v5 immutability, add the exact Chebyshev primitive, and integrate the distributed interior policy. No production one-step gate or protocol is run.
-3. **Phase 2 — evidence and initial-family closure:** Tasks 4--6 independently validate the controller policy, freeze the unchanged seed family, and implement the exact one-step gate producer. Test fixtures only; no formal gate yet.
-4. **Phase 3 — lifecycle closure and formal development gate:** Tasks 7--8 bind v6 lifecycle semantics, commit the implementation, execute the once-only 100-seed development gate, and obtain independent review. Any failure stops the plan before protocol generation.
-5. **Phase 4 — protocol, fresh authorization, and v6 execution:** Tasks 9--10 are conditional on Phase 3 PASS. Generate and independently review the exact protocol/preflight, wait for new verbatim user authorization, then execute the registered runner and analyzer once.
+3. **Phase 2 — evidence and initial-family closure:** Tasks 4--6 independently validate the original policy, freeze the unchanged seed family, and implement the exact one-step gate producer. Task 6's one permitted real seed is a development integration only; its negative result is retained and never rerun.
+4. **Phase 2b — pre-registered controller-margin amendment:** Task 6b adds the single `fraction=0.131` policy identity, independently reconstructible evidence, a byte-identical seed-position family, and gate-v2 bindings. Only pure/unit/fixture tests are allowed; no real `Swarm` launch or formal gate occurs in Task 6b.
+5. **Phase 3 — lifecycle closure and formal development gate:** Tasks 7--8 bind the amended v6 lifecycle semantics, commit the implementation, execute the unchanged once-only 100-seed development gate, and obtain independent review. Any failure stops the plan before protocol generation and forbids sequential controller tuning in this plan.
+6. **Phase 4 — protocol, fresh authorization, and v6 execution:** Tasks 9--10 are conditional on Phase 3 PASS. Generate and independently review the exact protocol/preflight, wait for new verbatim user authorization, then execute the registered runner and analyzer once.
 
 ## Exact File Map
 
@@ -64,6 +65,7 @@ Controller primitives and integration:
 - Modify `scripts/diagnostics/qualified_config.py`: exact v2 overlay schema and constants while preserving v1 validation.
 - Modify `tests/testRobustConstraintConstruction.cpp`: task-QP floor, unchanged objective, component bounds, yaw exclusion, and local-only consumption tests.
 - Modify `tests/test_qualified_config.py`: exact v1/v2 acceptance and mutation rejection.
+- Create `config/diagnostics/qualified_mode_hybrid_dcbf_development_v3.json` and `config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v3.json`: additive `hard-interior-v3` overlays with `planar-chebyshev-fraction-cap-v2`, pre-registered `fraction=0.131`, and unchanged alpha, cap, tolerance, graph, objective, bounds, and execution mode.
 
 Evidence and independent reconstruction:
 
@@ -81,6 +83,8 @@ Frozen v6 initial family and one-step gate:
 - Create `tests/test_qualified_v6_initial_state.py`: v1/v2 positional identity, fixed universes, mutation rejection, and v5 counterexample fixture.
 - Create `scripts/diagnostics/audit_qualified_v6_one_step_viability.py`: bounded exact-binary producer for the once-only 100-seed development gate.
 - Create `tests/test_audit_qualified_v6_one_step_viability.py`: mocked orchestration, real one-seed subprocess integration, no-retry, and no-replace publication tests.
+- Create `config/diagnostics/qualified_initial_family_v3.json`: byte-identical 100-seed positions and gate thresholds with only the additive controller-policy identity changed to the pre-registered v2 margin policy.
+- Modify `scripts/diagnostics/qualified_v6_initial_state.py`, `scripts/diagnostics/audit_qualified_v6_one_step_viability.py`, and their tests: retain historical v2/v1-policy validation while binding qualifying execution to the exact v3/v2-policy bytes and gate-v2 schema.
 
 Lifecycle and immutable predecessor binding:
 
@@ -91,9 +95,9 @@ Lifecycle and immutable predecessor binding:
 
 Conditional artifacts created only after the required gates:
 
-- Create `docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-claim.json`: immutable pre-launch claim created before the first formal-gate child launch.
-- Create `docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability.json`: terminal once-only formal development-gate artifact, when execution reaches terminal publication.
-- Create `docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-review.md`: independent gate review.
+- Create `docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-v2-claim.json`: immutable pre-launch claim for the pre-registered margin-policy identity, created before the first formal-gate child launch.
+- Create `docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-v2.json`: terminal once-only formal development-gate artifact, when execution reaches terminal publication.
+- Create `docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-v2-review.md`: independent gate review.
 - Create `docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v6-protocol.json` and `.md`: only after gate PASS/review.
 - Create `docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v6-preflight.md`: independent C0/I0/M0 preflight.
 - Create `docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v6-authorization.json`: only after fresh verbatim user approval.
@@ -823,6 +827,70 @@ git commit -m "feat(diagnostics): add v6 one-step viability gate"
 
 ---
 
+### Task 6b: Pre-register the Additive Controller-Margin Policy
+
+**Why this task exists:** The single permitted Task 6 real integration for seed `2026080201` was structurally valid but terminally negative only because the reconstructed next local radius was `0.045836701551219286 m/s`, below the unchanged `0.05 m/s` gate. Its current minimum radius was `0.862613426899052 m/s`; the applied minimum residual was already the v1 floor to numerical tolerance. This is evidence that the controller selected a command on the strengthened current-row boundary, not evidence that the gate threshold or seed should be changed. The old execution is consumed and must never be rerun.
+
+The candidate below is chosen once from the pre-existing frozen 100-seed current-state universe, not by fitting the observed next-radius deficit. The independently reconstructed minimum current local radius across all `100 * 14 = 1400` frame-zero problems is `0.7658252531927233 m/s`. Therefore a fraction of at least `0.1 / (0.7658252531927233 - 1e-9) = 0.1305780917...` saturates every frame-zero floor at the already frozen `0.10 m/s` cap. Pre-register exactly `0.131`; do not search a grid or try another fraction if the formal gate later fails.
+
+**Files:**
+- Create: `config/diagnostics/qualified_mode_hybrid_dcbf_development_v3.json`
+- Create: `config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v3.json`
+- Create: `config/diagnostics/qualified_initial_family_v3.json`
+- Modify: `include/Robot.hpp`
+- Modify: `include/cbf/HybridCertificateGuard.hpp`
+- Modify: `scripts/diagnostics/qualified_config.py`
+- Modify: `scripts/diagnostics/qualified_closure_evidence.py`
+- Modify: `scripts/diagnostics/analyze_qualified_closure_campaign.py`
+- Modify: `scripts/diagnostics/qualified_v6_initial_state.py`
+- Modify: `scripts/diagnostics/audit_qualified_v6_one_step_viability.py`
+- Modify the directly corresponding C++ and Python tests only.
+
+**Exact additive identity:**
+
+```json
+{
+  "qualified-controller": {"schema-version": "hard-interior-v3"},
+  "hard-interior-selection": {
+    "mode": "planar-chebyshev-fraction-cap-v2",
+    "fraction": 0.131,
+    "cap-mps": 0.1,
+    "feasibility-tolerance-mps": 1e-9
+  }
+}
+```
+
+The v3 overlays must otherwise be structurally and numerically identical to their v2 predecessors. Both hard classes remain `alpha.coe=0.1`, `alpha.pow=1`; component bounds remain `+/-25 m/s`; yaw remains excluded from `rho`; `k_delta=10`, task/slack objective, hard rows, allocated ownership, fixed hard-CBF graph, dynamic-lower-index primary FIM graph, fixed-FIM ablation graph, and distributed execution remain unchanged. The v3 initial family must materialize exactly the same IEEE-754 positions, ordered 100 audit seeds, first 10 registered seeds, `dt=0.5 s`, barrier threshold `>0`, radius threshold `>=0.05`, and no clamp/resample/retry fields as v2.
+
+The v1 policy and v2 config/family files remain accepted only as historical identities. Do not alter their bytes. Evidence reconstruction and analysis must select the exact `(mode, fraction, cap, tolerance)` tuple from the declared controller marker; mismatched markers, cross-version policy tuples, integers-for-floats, booleans, nonfinite values, missing fields, or extra fields fail closed. Qualifying one-step execution moves to gate schema `cbf2026-qualified-v6-one-step-viability-v2`, campaign ID `qualified-v6-one-step-development-gate-v2`, the canonical v3 primary overlay, and canonical v3 initial family. Injected operations remain irreversibly nonqualifying.
+
+- [ ] **Step 1: Add distinguishing RED tests before implementation**
+
+Required RED cases:
+
+1. Exact v3 config/family acceptance is initially absent; changing `0.131` to `0.13`, `0.132`, an integer, or another mode/marker fails.
+2. All 100 v3 materialized position sequences are bitwise equal to v2 and v1, and the v2 config/family SHA-256 identities remain unchanged.
+3. Pure reconstruction over all 1400 frozen frame-zero local problems observes minimum `rho=0.7658252531927233 m/s` within a frozen numeric tolerance, proves `mu <= rho`, and produces exactly `mu=0.1 m/s` for every problem under v2 policy. The same test records, but does not reinterpret, the historical v1 floors.
+4. For paired v2/v3 materialized settings, canonical hard-problem rows/hashes, row ownership, component bounds, nominal task target, soft-CBF slack variables, `k_delta`, and objective coefficients are unchanged. Only the policy marker/mode/fraction and resulting floor may differ.
+5. Real-v3 fixture evidence independently reconstructs `rho`, `mu`, and applied residual. Cross-version marker/policy mutations fail schema, reconstruction, and analyzer validation; legacy v1 and historical v2 fixtures still pass their own exact contracts.
+6. Gate fake/unit tests bind exact v3 paths, gate-v2 schema, full retained recomputation evidence, and unchanged numerical predicate. Old v2 paths cannot qualify. No test may launch the real binary.
+
+- [ ] **Step 2: Run focused RED, then implement the minimal additive version**
+
+Do not change the generic Chebyshev algorithm or its historical default. Select the policy constants explicitly from the validated marker/version. Apply the v2 floor to the same local allocated hard rows only; no neighbor command, joint QP, predictive constraint, new slack, or changed row enters the controller.
+
+- [ ] **Step 3: Run pure/unit GREEN and relevant regressions only**
+
+At minimum run the qualified-config, robust-construction, hybrid-guard, hard-interior, evidence reconstruction, analyzer, initial-family, and gate fake/unit suites. The gate's real-binary test class must be skipped or excluded. Rebuild `Swarm` only as a compilation check if source changes require it; do not execute it.
+
+- [ ] **Step 4: Independently review and commit before Task 7**
+
+The reviewer must recompute the 100-seed/1400-problem result without trusting a stored summary; hash v1/v2 historical bytes before and after; verify the additive v3 diff does not change the graph, CBF rows, objective, component bounds, seeds, thresholds, or retry policy; verify no real-binary launch or formal artifact occurred; and return C0/I0/M0. Freeze the implementation commit/tree and exact source/config/family/test hashes in the review and DRA checkpoint.
+
+This task establishes a stronger *current-row command-selection margin*. It does not prove that the next-state radius is bounded below, recursive feasibility, sampled-data safety, or long-horizon localization accuracy. Those remain empirical questions for the unchanged one-step gate and later Monte Carlo campaign.
+
+---
+
 ### Task 7: Bind Development-v6 Lifecycle Without Generating Its Protocol
 
 **Files:**
@@ -878,7 +946,7 @@ Expected: only new v6 cases FAIL; all existing v5 cases remain green.
 
 - [ ] **Step 3: Add version-keyed validation**
 
-Require literal v2 family/overlay/predecessor/gate paths and exact identities. The v6 schedule uses the same 10 registered trajectory seeds, a newly frozen 10-seed range-noise schedule, 1000 frames, new absent `/v6` raw and analysis roots, no retry, and the existing resource/supervision limits. Do not mutate v5 argv or protocol verification.
+Require literal v3 family/overlay paths, gate-v2 paths, predecessor path, and exact identities. The v6 schedule uses the same 10 registered trajectory seeds, a newly frozen 10-seed range-noise schedule, 1000 frames, new absent `/v6` raw and analysis roots, no retry, and the existing resource/supervision limits. Do not mutate v5 argv or protocol verification.
 
 Add a pure `validate_authorization_payload` that accepts already-parsed protocol/authorization values plus the exact protocol/preflight hashes and checks the exact ten-field schema, values, date, verbatim UTF-8 text, and text digest. It must not call `_repository_identity`, `_verify_committed_registration_state`, or inspect filesystem/Git topology. Keep `validate_authorization_binding` as the production postcommit validator that performs those topology and committed-blob checks.
 
@@ -915,9 +983,9 @@ git commit -m "feat(experiments): bind v6 interior viability lifecycle"
 ### Task 8: Verify the Committed Implementation and Run the Formal Development Gate
 
 **Files:**
-- Create before any formal-gate launch: `docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-claim.json`
-- Create on PASS or terminal failure: `docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability.json`
-- Create: `docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-review.md`
+- Create before any formal-gate launch: `docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-v2-claim.json`
+- Create on PASS or terminal failure: `docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-v2.json`
+- Create: `docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-v2-review.md`
 
 **Interfaces:**
 - Consumes: clean committed Tasks 1--7 implementation and exact production binary/config/family.
@@ -954,16 +1022,16 @@ Expected: all PASS. Tracked worktree is clean; only preserved `build-diagnostic/
 - [ ] **Step 2: Run the formal-gate RED precondition**
 
 ```bash
-test ! -e docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability.json
-test ! -e docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-claim.json
+test ! -e docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-v2.json
+test ! -e docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-v2-claim.json
 test ! -e docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v6-protocol.json
 test ! -e /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v6
 test ! -e /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v6
 git rev-parse HEAD
 git rev-parse 'HEAD^{tree}'
 shasum -a 256 build-diagnostic/Swarm config/config.json \
-  config/diagnostics/qualified_mode_hybrid_dcbf_development_v2.json \
-  config/diagnostics/qualified_initial_family_v2.json
+  config/diagnostics/qualified_mode_hybrid_dcbf_development_v3.json \
+  config/diagnostics/qualified_initial_family_v3.json
 ```
 
 Expected: gate/protocol/roots are absent and identities are recorded from live state.
@@ -975,10 +1043,10 @@ conda run -n cbf_env python -m \
   scripts.diagnostics.audit_qualified_v6_one_step_viability \
   --binary build-diagnostic/Swarm \
   --base-config config/config.json \
-  --primary-config config/diagnostics/qualified_mode_hybrid_dcbf_development_v2.json \
-  --initial-family config/diagnostics/qualified_initial_family_v2.json \
-  --claim docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-claim.json \
-  --output docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability.json
+  --primary-config config/diagnostics/qualified_mode_hybrid_dcbf_development_v3.json \
+  --initial-family config/diagnostics/qualified_initial_family_v3.json \
+  --claim docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-v2-claim.json \
+  --output docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-v2.json
 ```
 
 Expected PASS evidence: the immutable claim predates every child launch; the terminal artifact binds its SHA-256 and reports terminal/completed, `launch_count=100`, `retry_count=0`, audit `100/100`, registered `10/10`, minimum next barrier strictly positive, minimum next local radius `>=0.05 m/s`, zero applied residual/floor violations, zero component-bound violations, and exact implementation/binary/config/family identities. If the process or any seed fails, preserve the claim and terminal artifact. If an uncatchable interruption leaves only the claim, preserve it and write a separate interruption review without relaunching. In every non-PASS case stop before protocol generation and begin a newly versioned development design from a new implementation commit.
@@ -994,8 +1062,8 @@ conda run -n cbf_env python - <<'PY'
 import json
 import hashlib
 from pathlib import Path
-c = Path("docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-claim.json")
-p = Path("docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability.json")
+c = Path("docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-v2-claim.json")
+p = Path("docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-v2.json")
 d_claim = json.loads(c.read_text())
 d = json.loads(p.read_text())
 assert d_claim["claimed"] is True
@@ -1008,9 +1076,9 @@ assert d["audit_summary"]["minimum_next_barrier_m"] > 0.0
 assert d["audit_summary"]["minimum_next_local_radius_mps"] >= 0.05
 PY
 git diff --check -- \
-  docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-claim.json \
-  docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability.json \
-  docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-review.md
+  docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-v2-claim.json \
+  docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-v2.json \
+  docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-v2-review.md
 ```
 
 Expected: PASS and review C0/I0/M0.
@@ -1020,9 +1088,9 @@ Expected: PASS and review C0/I0/M0.
 Suggested commit:
 
 ```bash
-git add docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability.json \
-  docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-claim.json \
-  docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-review.md
+git add docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-v2.json \
+  docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-v2-claim.json \
+  docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-v2-review.md
 git commit -m "docs(cbf2026): approve v6 one-step viability gate"
 ```
 
@@ -1056,7 +1124,7 @@ Expected: protocol, authorization, and roots absent; tracked worktree clean.
 
 - [ ] **Step 2: Generate the exact protocol with the production registrar**
 
-Use the registrar's production CLI with `kind=development`, `version=v6`, exact binary/base/v2 primary/v2 ablation/v2 family/gate paths, the unchanged 10 trajectory seeds, newly frozen 10 range-noise seeds, 1000 frames, and absent `/v6` roots. Do not manually edit the generated JSON.
+Use the registrar's production CLI with `kind=development`, `version=v6`, exact binary/base/v3 primary/v3 ablation/v3 family/gate-v2 paths, the unchanged 10 trajectory seeds, newly frozen 10 range-noise seeds, 1000 frames, and absent `/v6` roots. Do not manually edit the generated JSON.
 
 Expected: protocol records all frozen controller/gate parameters, predecessor identities, exact argv, roots, hashes, no-retry, resource limits, and the committed gate PASS identity. Authorization path remains absent.
 
@@ -1190,7 +1258,7 @@ git add docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v6.md 
 git commit -m "docs(cbf2026): record v6 closure evidence"
 ```
 
-This plan ends at independently reviewed source evidence. Paper and DRA updates require a separate reviewed plan and are not authorized here.
+This source plan ends at independently reviewed source evidence. Process/checkpoint documentation may be mirrored into DRA under the researcher's separate standing authorization; paper claims and figures remain unchanged until the corresponding source evidence is independently reviewed.
 
 ## Final Verification Matrix
 
@@ -1203,7 +1271,9 @@ alpha(comm-fixed) = alpha(safety) = 0.1, power = 1
 distributed execution; no joint swarm QP
 rho uses only local allocated hard rows plus +/-25 planar bounds
 yaw absent from rho
-fraction = 0.10, cap = 0.10 m/s
+historical policy v1 remains fraction = 0.10, cap = 0.10 m/s and is not rerun
+formal policy v2 is pre-registered once at fraction = 0.131, cap = 0.10 m/s
+all 1400 frozen frame-zero local problems have mu = 0.10 m/s and mu <= rho under policy v2
 task/slack objective and k_delta = 10 unchanged
 dt = 0.5 s
 same ordered 100 audit seeds and first 10 registered seeds
@@ -1217,7 +1287,8 @@ fresh verbatim user authorization after protocol/preflight
 runner invoked once; analyzer invoked once
 v6 roots terminal and immutable
 terminal report/review distinguish theorem, one-step gate, and empirical campaign
-paper and DRA untouched
+DRA checkpoints distinguish historical negative evidence, pre-registered policy, and formal results
+paper unchanged until the relevant independently reviewed evidence exists
 ```
 
 ## Execution Handoff
