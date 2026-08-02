@@ -258,6 +258,38 @@ class ControllerPrimitiveSchemaTests(unittest.TestCase):
                     problem, 1, strict_continuous=True
                 ))
 
+    def test_discrete_problem_and_reference_fields_reject_boolean_tokens(self):
+        mutations = (
+            lambda problem: problem.__setitem__("owner", True),
+            lambda problem: problem.__setitem__("control_size", True),
+            lambda problem: problem["bounds"][0].__setitem__("control_index", True),
+            lambda problem: problem["rows"][0].__setitem__("owner", True),
+            lambda problem: problem["rows"][0]["edge"].__setitem__("low", True),
+            lambda problem: problem["rows"][0].__setitem__("snapshot_version", True),
+        )
+        for mutate in mutations:
+            with self.subTest(mutate=mutate):
+                problem = bounded_hard_problem(
+                    1, localization_problem_row(2.0), "discrete-problem"
+                )
+                mutate(problem)
+                self.assertFalse(evidence_schema._valid_hard_problem(problem, 1))
+        reference = {
+            "canonical_reference_id": -1,
+            "reference_kind": "base",
+            "direction": [1.0, 0.0],
+            "distance": 1.0,
+            "ranging_variance": 1.0,
+            "predecessor_local_index": 0,
+            "predecessor_snapshot_version": 1,
+            "predecessor_covariance": [[0.0, 0.0], [0.0, 0.0]],
+            "predecessor_covariance_rate_bound": 0.0,
+            "predecessor_speed_bound": 0.0,
+        }
+        self.assertTrue(evidence_schema._valid_reference(reference, 1))
+        reference["predecessor_snapshot_version"] = True
+        self.assertFalse(evidence_schema._valid_reference(reference, 1))
+
     def test_reduced_controller_universe_is_rejected_but_endpoint_is_complete(self):
         reference = {
             "canonical_reference_id": -1,

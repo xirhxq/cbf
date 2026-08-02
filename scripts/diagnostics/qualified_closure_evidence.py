@@ -2305,6 +2305,7 @@ def _valid_reference(reference: object, snapshot_version: int) -> bool:
         and reference["distance"] > 0.0
         and _finite_number(reference["ranging_variance"])
         and reference["ranging_variance"] > 0.0
+        and _uint64(reference["predecessor_snapshot_version"])
         and reference["predecessor_snapshot_version"] == snapshot_version
         and _matrix2(reference["predecessor_covariance"])
         and _finite_number(reference["predecessor_covariance_rate_bound"])
@@ -2349,8 +2350,9 @@ def _valid_hard_problem(
     }:
         return False
     if (
-        problem["owner"] != owner
-        or not _int32(owner)
+        not _int32(owner)
+        or not _int32(problem["owner"])
+        or problem["owner"] != owner
         or owner <= 0
         or not _int32(problem["control_size"])
         or problem["control_size"] != 3
@@ -2415,7 +2417,9 @@ def _valid_hard_problem(
             or not continuous(row["constant"])
             or not continuous(row["post_reset_barrier"])
             or not _uint64(row["snapshot_version"])
+            or row["snapshot_version"] != problem["snapshot_version"]
             or not _uint64(row["allocation_version"])
+            or row["allocation_version"] != problem["allocation_version"]
         ):
             return False
     return True
@@ -2677,7 +2681,9 @@ def _valid_node(node: object, snapshot_version: int, allocation_version: int) ->
         and node["robot_id"] > 0
         and _integer(node["local_index"])
         and node["local_index"] > 0
+        and _uint64(node["snapshot_version"])
         and node["snapshot_version"] == snapshot_version
+        and _uint64(node["allocation_version"])
         and node["allocation_version"] == allocation_version
         and _vector(node["interface_estimate"], 2)
         and all(_finite_number(node[field]) for field in finite_scalars)

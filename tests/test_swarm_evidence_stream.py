@@ -640,6 +640,38 @@ class SwarmEvidenceStdoutTests(unittest.TestCase):
             )
             with self.assertRaises(ValueError):
                 _controller_frame_metrics(hard_only_integer, endpoint0)
+            for label, mutate in (
+                (
+                    "hard_only_owner",
+                    lambda row: row["runtime"]["nodes"][0][
+                        "hard_only_problem"
+                    ].__setitem__("owner", True),
+                ),
+                (
+                    "node_snapshot",
+                    lambda row: row["runtime"]["nodes"][0].__setitem__(
+                        "snapshot_version", True
+                    ),
+                ),
+                (
+                    "reference_snapshot",
+                    lambda row: row["runtime"]["nodes"][0]["references"][0]
+                    .__setitem__("predecessor_snapshot_version", True),
+                ),
+            ):
+                forged_discrete = copy.deepcopy(controller0)
+                mutate(forged_discrete)
+                self.assertFalse(
+                    validate_controller_primitive_schema(forged_discrete), label
+                )
+                self.assertTrue(
+                    reconstruct_controller_primitives(
+                        forged_discrete, endpoint0, 232, 119
+                    ).integrity_errors,
+                    label,
+                )
+                with self.assertRaises(ValueError, msg=label):
+                    _controller_frame_metrics(forged_discrete, endpoint0)
             yaw = copy.deepcopy(controller0)
             yaw["runtime"]["nodes"][0]["normal_problem"]["rows"][0][
                 "coefficients"
