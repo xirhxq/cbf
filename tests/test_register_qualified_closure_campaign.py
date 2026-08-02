@@ -35,8 +35,8 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
         self.project.mkdir()
         self.frozen_roots = {
             "development": {
-                "raw": str(self.root / "raw" / "v3"),
-                "analysis": str(self.root / "analysis" / "v3"),
+                "raw": str(self.root / "raw" / "v4"),
+                "analysis": str(self.root / "analysis" / "v4"),
             },
             "confirmatory": {
                 "smoke_a_raw": str(self.root / "outputs" / "smoke-a-raw"),
@@ -297,7 +297,7 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
         markdown_path = publication / "fixture-protocol.md"
         protocol = self.authoritative(
             json_path=protocol_path, markdown_path=markdown_path,
-            kind="development", version="v3",
+            kind="development", version="v4",
         )
         protocol["repository"] = registrar._repository_identity(self.project)
         protocol["semantic_sha256"] = registrar._semantic_sha256(protocol)
@@ -312,12 +312,12 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
             "# Independent preflight\n\nC0/I0/M0. Exact registered identities pass.\n",
             encoding="utf-8",
         )
-        authorization_text = "Continue with the registered development-v3 execution."
+        authorization_text = "Continue with the registered development-v4 execution."
         authorization = {
             "schema_version": "cbf2026-qualified-authorization-v1",
             "authorized": True,
             "kind": "development",
-            "version": "v3",
+            "version": "v4",
             "protocol_sha256": hashlib.sha256(
                 protocol_path.read_bytes()
             ).hexdigest(),
@@ -503,7 +503,7 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
             json_path=protocol_path,
             markdown_path=markdown_path,
             kind="development",
-            version="v3",
+            version="v4",
         )
         protocol["bindings"]["binary"] = registrar._file_identity(binary)
         protocol["bindings"]["dependencies"] = registrar._file_identity(cmake_cache)
@@ -521,12 +521,12 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
         preflight_path = review_root / "fixture-preflight.md"
         authorization_path = review_root / "fixture-authorization.json"
         preflight_path.write_text("# Independent preflight\n\nC0/I0/M0.\n")
-        authorization_text = "Continue with the registered development-v3 execution."
+        authorization_text = "Continue with the registered development-v4 execution."
         authorization = {
             "schema_version": "cbf2026-qualified-authorization-v1",
             "authorized": True,
             "kind": "development",
-            "version": "v3",
+            "version": "v4",
             "protocol_sha256": hashlib.sha256(protocol_path.read_bytes()).hexdigest(),
             "implementation_identity": protocol["repository"]["head"],
             "preflight_sha256": hashlib.sha256(preflight_path.read_bytes()).hexdigest(),
@@ -584,12 +584,14 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
                 registrar._repository_identity(self.project),
             )
 
-    def test_failed_development_v1_v2_are_consumed_and_v3_is_non_colliding(self):
-        historical_v1 = self.root / "development-v1-protocol.json"
-        historical_v2 = self.root / "development-v2-protocol.json"
+    def test_failed_development_v1_v2_v3_are_consumed_and_v4_is_non_colliding(self):
+        historical_paths = [
+            self.root / f"development-{version}-protocol.json"
+            for version in ("v1", "v2", "v3")
+        ]
         historical_bytes = b'{"terminal":"failed"}\n'
-        historical_v1.write_bytes(historical_bytes)
-        historical_v2.write_bytes(historical_bytes)
+        for historical_path in historical_paths:
+            historical_path.write_bytes(historical_bytes)
         development_arguments = {
             "count": 10,
             "kind": "development",
@@ -601,18 +603,18 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
             },
         }
 
-        for version in ("v1", "v2"):
+        for version in ("v1", "v2", "v3"):
             with self.subTest(version=version):
-                with self.assertRaisesRegex(ValueError, "development.*v3"):
+                with self.assertRaisesRegex(ValueError, "development.*v4"):
                     self.build(version=version, **development_arguments)
-        protocol = self.build(version="v3", **development_arguments)
+        protocol = self.build(version="v4", **development_arguments)
 
-        self.assertEqual(historical_v1.read_bytes(), historical_bytes)
-        self.assertEqual(historical_v2.read_bytes(), historical_bytes)
-        self.assertEqual(protocol["version"], "v3")
+        for historical_path in historical_paths:
+            self.assertEqual(historical_path.read_bytes(), historical_bytes)
+        self.assertEqual(protocol["version"], "v4")
         self.assertEqual(protocol["roots"], self.frozen_roots["development"])
-        self.assertTrue(protocol["roots"]["raw"].endswith("/v3"))
-        self.assertTrue(protocol["roots"]["analysis"].endswith("/v3"))
+        self.assertTrue(protocol["roots"]["raw"].endswith("/v4"))
+        self.assertTrue(protocol["roots"]["analysis"].endswith("/v4"))
 
     def test_uncommitted_artifacts_cannot_authorize_execution(self):
         bundle = self.prepare_registered_bundle()
@@ -962,9 +964,24 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
         )
         authorization = "docs/diagnostics/reviews/frozen-authorization.json"
 
+        self.assertEqual(registrar._runner_argv(arguments), [
+            "conda", "run", "-n", "cbf_env", "python", "-m",
+            "scripts.diagnostics.run_qualified_closure_campaign",
+            "--kind", "confirmatory", "--version", "v1",
+            "--protocol", "docs/diagnostics/frozen-protocol.json",
+            "--authorization", authorization,
+            "--binary", "build-diagnostic/Swarm",
+            "--base-config", "config/config.json",
+            "--primary-config", "config/diagnostics/primary.json",
+            "--ablation-config", "config/diagnostics/ablation.json",
+            "--trajectory-seeds", "2026082001:2026082060",
+            "--range-noise-seeds", "2026083001:2026083060",
+            "--frames", "1000",
+            "--output-root", "/private/tmp/scientific-raw",
+        ])
         self.assertEqual(registrar._analyzer_argv(arguments), [
-            "conda", "run", "-n", "cbf_env", "python",
-            "scripts/diagnostics/analyze_qualified_closure_campaign.py",
+            "conda", "run", "-n", "cbf_env", "python", "-m",
+            "scripts.diagnostics.analyze_qualified_closure_campaign",
             "--kind", "confirmatory", "--version", "v1",
             "--protocol", "docs/diagnostics/frozen-protocol.json",
             "--authorization", authorization,
@@ -978,8 +995,8 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
         smoke_argv = registrar._smoke_argv(arguments)
         for smoke_id, (raw, analysis) in expected_smoke.items():
             self.assertEqual(smoke_argv[smoke_id]["runner"], [
-                "conda", "run", "-n", "cbf_env", "python",
-                "scripts/diagnostics/run_qualified_closure_campaign.py",
+                "conda", "run", "-n", "cbf_env", "python", "-m",
+                "scripts.diagnostics.run_qualified_closure_campaign",
                 "--kind", "confirmatory-smoke", "--smoke-id", smoke_id,
                 "--protocol", "docs/diagnostics/frozen-protocol.json",
                 "--authorization", authorization,
@@ -992,8 +1009,8 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
                 "--frames", "20", "--output-root", raw,
             ])
             self.assertEqual(smoke_argv[smoke_id]["analyzer"], [
-                "conda", "run", "-n", "cbf_env", "python",
-                "scripts/diagnostics/analyze_qualified_closure_campaign.py",
+                "conda", "run", "-n", "cbf_env", "python", "-m",
+                "scripts.diagnostics.analyze_qualified_closure_campaign",
                 "--kind", "confirmatory-smoke", "--version", "v1",
                 "--smoke-id", smoke_id,
                 "--protocol", "docs/diagnostics/frozen-protocol.json",
@@ -1001,19 +1018,40 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
                 "--input-root", raw, "--output-root", analysis,
             ])
 
-    def test_development_analyzer_argv_binds_version_and_ablation(self):
+    def test_development_runner_and_analyzer_argv_bind_v4_and_ablation(self):
         arguments = argparse.Namespace(
-            kind="development", version="v3",
+            kind="development", version="v4",
             protocol_json=Path("docs/diagnostics/development-protocol.json"),
+            binary=Path("build-diagnostic/Swarm"),
+            base_config=Path("config/config.json"),
+            primary_config=Path("config/diagnostics/primary.json"),
             ablation_config=Path("config/diagnostics/ablation.json"),
+            trajectory_seeds="2026080101:2026080110",
+            range_noise_seeds="2026081101:2026081110", frames=1000,
             raw_root=Path("/private/tmp/development-raw"),
             analysis_root=Path("/private/tmp/development-analysis"),
         )
 
+        self.assertEqual(registrar._runner_argv(arguments), [
+            "conda", "run", "-n", "cbf_env", "python", "-m",
+            "scripts.diagnostics.run_qualified_closure_campaign",
+            "--kind", "development", "--version", "v4",
+            "--protocol", "docs/diagnostics/development-protocol.json",
+            "--authorization",
+            "docs/diagnostics/reviews/development-authorization.json",
+            "--binary", "build-diagnostic/Swarm",
+            "--base-config", "config/config.json",
+            "--primary-config", "config/diagnostics/primary.json",
+            "--ablation-config", "config/diagnostics/ablation.json",
+            "--trajectory-seeds", "2026080101:2026080110",
+            "--range-noise-seeds", "2026081101:2026081110",
+            "--frames", "1000",
+            "--output-root", "/private/tmp/development-raw",
+        ])
         self.assertEqual(registrar._analyzer_argv(arguments), [
-            "conda", "run", "-n", "cbf_env", "python",
-            "scripts/diagnostics/analyze_qualified_closure_campaign.py",
-            "--kind", "development", "--version", "v3",
+            "conda", "run", "-n", "cbf_env", "python", "-m",
+            "scripts.diagnostics.analyze_qualified_closure_campaign",
+            "--kind", "development", "--version", "v4",
             "--protocol", "docs/diagnostics/development-protocol.json",
             "--authorization",
             "docs/diagnostics/reviews/development-authorization.json",
@@ -1155,7 +1193,7 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
         output = self.root / "registered"
         output.mkdir()
         arguments = argparse.Namespace(
-            kind="development", version="v3",
+            kind="development", version="v4",
             implementation_report=report, implementation_review=review,
             development_protocol=None, development_report=None,
             development_review=None, binary=binary, base_config=base,
@@ -1166,8 +1204,8 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
             smoke_frames=None, smoke_a_raw_root=None,
             smoke_a_analysis_root=None, smoke_b_raw_root=None,
             smoke_b_analysis_root=None,
-            raw_root=self.root / "raw" / "v3",
-            analysis_root=self.root / "analysis" / "v3",
+            raw_root=self.root / "raw" / "v4",
+            analysis_root=self.root / "analysis" / "v4",
             protocol_json=output / "fixture-protocol.json",
             protocol_md=output / "fixture-protocol.md",
         )

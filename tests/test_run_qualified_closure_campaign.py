@@ -255,11 +255,11 @@ class RunnerScheduleTests(unittest.TestCase):
 
         self.assertEqual(
             DEVELOPMENT_RAW_ROOT,
-            Path("/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v3"),
+            Path("/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v4"),
         )
         self.assertEqual(
             DEVELOPMENT_ANALYSIS_ROOT,
-            Path("/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v3"),
+            Path("/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v4"),
         )
         self.assertEqual(len(schedule), 10)
         self.assertEqual(
@@ -271,7 +271,7 @@ class RunnerScheduleTests(unittest.TestCase):
             list(range(2026081101, 2026081111)),
         )
         self.assertTrue(all(
-            mission["campaign_id"] == "development-v3"
+            mission["campaign_id"] == "development-v4"
             and mission["frames"] == 1000
             and mission["horizon_s"] == 500.0
             and mission["conditions"]
@@ -279,20 +279,20 @@ class RunnerScheduleTests(unittest.TestCase):
             for mission in schedule
         ))
 
-    def test_development_v3_schedule_is_required_while_confirmatory_remains_v1(self):
+    def test_development_v4_schedule_is_required_while_confirmatory_remains_v1(self):
         development = argparse.Namespace(
-            kind="development", version="v3", smoke_id=None,
+            kind="development", version="v4", smoke_id=None,
             trajectory_seeds="2026080101:2026080110",
             range_noise_seeds="2026081101:2026081110", frames=1000,
         )
         self.assertTrue(all(
-            mission["campaign_id"] == "development-v3"
+            mission["campaign_id"] == "development-v4"
             for mission in _schedule_from_arguments(development)
         ))
-        for version in ("v1", "v2"):
+        for version in ("v1", "v2", "v3"):
             with self.subTest(version=version):
                 development.version = version
-                with self.assertRaisesRegex(ValueError, "development.*v3"):
+                with self.assertRaisesRegex(ValueError, "development.*v4"):
                     _schedule_from_arguments(development)
 
         confirmatory = argparse.Namespace(
@@ -380,7 +380,7 @@ class RunnerScheduleTests(unittest.TestCase):
                 path.write_text("same bytes\n")
                 paths[name] = path
             arguments = argparse.Namespace(
-                kind="development", version="v3", smoke_id=None,
+                kind="development", version="v4", smoke_id=None,
                 protocol=root / "fixture-protocol.json",
                 authorization=root / "fixture-authorization.json",
                 binary=paths["Swarm"], base_config=paths["base.json"],
@@ -435,7 +435,7 @@ class RunnerScheduleTests(unittest.TestCase):
             )
             output = root / "mission" / "config.materialized.json"
             mission = {
-                "campaign_id": "development-v1",
+                "campaign_id": "development-v4",
                 "mission_id": "mission-01",
                 "trajectory_seed": 2026080101,
                 "range_noise_seed": 2026081101,
@@ -470,7 +470,7 @@ class RunnerScheduleTests(unittest.TestCase):
             self.assertEqual(materialized["evidence-stream"], {
                 "enabled": True,
                 "schema-version": "cbf2026-qualified-evidence-v1",
-                "campaign-id": "development-v1",
+                "campaign-id": "development-v4",
                 "trajectory-seed": 2026080101,
                 "range-noise-seed": 2026081101,
                 "condition": "dynamic_primary",
@@ -775,7 +775,7 @@ class RunnerProducerOrchestrationTests(unittest.TestCase):
                 stage = self.root / f"{label}-{validator.__name__}"
                 stage.mkdir()
                 mission = {
-                    "campaign_id": "development-v1",
+                    "campaign_id": "development-v4",
                     "mission_id": "mission-01",
                     "trajectory_seed": 2026080101,
                     "range_noise_seed": 2026081101,
@@ -815,7 +815,7 @@ class RunnerProducerOrchestrationTests(unittest.TestCase):
         valid_stage = self.root / "valid-partial-prefix"
         valid_stage.mkdir()
         valid_mission = {
-            "campaign_id": "development-v1",
+            "campaign_id": "development-v4",
             "mission_id": "mission-01",
             "trajectory_seed": 2026080101,
             "range_noise_seed": 2026081101,
@@ -840,7 +840,7 @@ class RunnerProducerOrchestrationTests(unittest.TestCase):
         stage = self.root / "declared-unsuccessful"
         stage.mkdir()
         mission = {
-            "campaign_id": "development-v1",
+            "campaign_id": "development-v4",
             "mission_id": "mission-01",
             "trajectory_seed": 2026080101,
             "range_noise_seed": 2026081101,
@@ -896,7 +896,7 @@ class RunnerProducerOrchestrationTests(unittest.TestCase):
         stage = self.root / "partial-replay-complement"
         stage.mkdir()
         mission = {
-            "campaign_id": "development-v1",
+            "campaign_id": "development-v4",
             "mission_id": "mission-01",
             "trajectory_seed": 2026080101,
             "range_noise_seed": 2026081101,
@@ -929,7 +929,7 @@ class RunnerProducerOrchestrationTests(unittest.TestCase):
         stage = self.root / "composite-initialization-key"
         stage.mkdir()
         mission = {
-            "campaign_id": "development-v1",
+            "campaign_id": "development-v4",
             "mission_id": "mission-01",
             "trajectory_seed": 2026080101,
             "range_noise_seed": 2026081101,
@@ -971,7 +971,7 @@ class RunnerProducerOrchestrationTests(unittest.TestCase):
             stage, "fixed_fim_ablation", [self.replay_row(0, 1)]
         )
         expected = {
-            ("development-v1", 2026080101, 2026081101, 0, 1)
+            ("development-v4", 2026080101, 2026081101, 0, 1)
         }
         for validator in validators:
             with self.subTest(
@@ -1154,7 +1154,7 @@ class RunnerProducerOrchestrationTests(unittest.TestCase):
         stage = self.root / "failed-stage"
         stage.mkdir()
         mission = {
-            "campaign_id": "development-v1",
+            "campaign_id": "development-v4",
             "trajectory_seed": 2026080101,
             "range_noise_seed": 2026081101,
             "frames": 1,
@@ -1195,7 +1195,7 @@ class RunnerProducerOrchestrationTests(unittest.TestCase):
         initialization = {
             "record_type": "initialization",
             "schema_version": "cbf2026-qualified-evidence-v1",
-            "campaign_id": "development-v1",
+            "campaign_id": "development-v4",
             "condition": "dynamic_primary",
             "trajectory_seed": 2026080101,
             "range_noise_seed": 2026081101,
@@ -1217,7 +1217,7 @@ class RunnerProducerOrchestrationTests(unittest.TestCase):
             "terminal": True, "status": "failed", "reason": "malformed_json",
         }))
         mission = {
-            "campaign_id": "development-v1", "mission_id": "mission-01",
+            "campaign_id": "development-v4", "mission_id": "mission-01",
             "trajectory_seed": 2026080101, "range_noise_seed": 2026081101,
             "frames": 1,
             "conditions": ["dynamic_primary", "fixed_fim_ablation"],
@@ -1248,10 +1248,10 @@ class RunnerProducerOrchestrationTests(unittest.TestCase):
                 if row["record_type"] == "missing_initialization"
             }
         observed_initialization = {
-            ("development-v1", 2026080101, 2026081101, 0, 1)
+            ("development-v4", 2026080101, 2026081101, 0, 1)
         }
         frozen_initialization = {
-            ("development-v1", 2026080101, 2026081101, 0, robot)
+            ("development-v4", 2026080101, 2026081101, 0, robot)
             for robot in range(1, 15)
         }
         self.assertFalse(observed_initialization & missing_initialization)
@@ -1268,7 +1268,7 @@ class RunnerProducerOrchestrationTests(unittest.TestCase):
     def test_swarm_stream_rejects_schema_valid_endpoint_out_of_canonical_order(self):
         from scripts.diagnostics.qualified_closure_evidence import _PAPER_ENDPOINTS
         mission = {
-            "campaign_id": "development-v1", "trajectory_seed": 101,
+            "campaign_id": "development-v4", "trajectory_seed": 101,
             "range_noise_seed": 201, "frames": 1,
         }
         state = _SwarmStreamState(mission)
@@ -1279,7 +1279,7 @@ class RunnerProducerOrchestrationTests(unittest.TestCase):
         row = {
             "record_type": "endpoint_row", "frame_index": 0,
             "edge": dataclasses.asdict(wrong_edge), "owner": wrong_owner,
-            "campaign_id": "development-v1", "condition": "dynamic_primary",
+            "campaign_id": "development-v4", "condition": "dynamic_primary",
             "trajectory_seed": 101, "range_noise_seed": 201,
         }
         with mock.patch(
@@ -1291,13 +1291,13 @@ class RunnerProducerOrchestrationTests(unittest.TestCase):
 
     def test_schema_valid_unsuccessful_swarm_terminal_is_preserved(self):
         mission = {
-            "campaign_id": "development-v1", "trajectory_seed": 101,
+            "campaign_id": "development-v4", "trajectory_seed": 101,
             "range_noise_seed": 201, "frames": 1000,
         }
         state = _SwarmStreamState(mission)
         terminal = {
             "record_type": "mission_terminal", "frame_index": 1000,
-            "campaign_id": "development-v1", "condition": "dynamic_primary",
+            "campaign_id": "development-v4", "condition": "dynamic_primary",
             "trajectory_seed": 101, "range_noise_seed": 201,
             "runtime": {
                 "success": False, "reason": "bootstrap_failure:singular_fim",
@@ -1379,7 +1379,7 @@ class RunnerProducerOrchestrationTests(unittest.TestCase):
             "row_count": 1,
         }
         mission = {
-            "campaign_id": "development-v1",
+            "campaign_id": "development-v4",
             "trajectory_seed": 2026080101,
             "range_noise_seed": 2026081101,
             "frames": 2,
@@ -1417,9 +1417,20 @@ class RunnerProducerOrchestrationTests(unittest.TestCase):
             Path(__file__).resolve().parents[1]
             / "scripts/diagnostics/replay_qualified_estimator.py"
         )
-        self.assertEqual(observed[0][0][:2], [sys.executable, expected_script])
+        expected_argv = [
+            sys.executable, expected_script,
+            "--condition", "dynamic_primary",
+            "--measurements", "measurements.jsonl.gz",
+            "--measurement-sha256", measurements["sha256"],
+            "--measurement-manifest", "measurements.manifest.json",
+            "--commands", "commands.jsonl.gz",
+            "--commands-manifest", "commands.manifest.json",
+            "--config", "config.json",
+            "--frames", "2",
+        ]
+        self.assertEqual(observed[0][0], expected_argv)
         self.assertNotIn("__replay-producer", observed[0][0])
-        self.assertEqual(result["producer_argv"], observed[0][0])
+        self.assertEqual(result["producer_argv"], expected_argv)
         self.assertNotIn(mission_stage, observed[0][1].parents)
         self.assertEqual(len(observed[0][2]), 28)
         self.assertEqual(observed[0][2][0], (0, 1))
@@ -1504,7 +1515,7 @@ class RunnerProducerOrchestrationTests(unittest.TestCase):
 
         projected = project_raw_estimator_tuple(
             raw,
-            campaign_id="development-v1",
+            campaign_id="development-v4",
             condition="dynamic_primary",
             trajectory_seed=2026080101,
             range_noise_seed=2026081101,
@@ -1516,6 +1527,64 @@ class RunnerProducerOrchestrationTests(unittest.TestCase):
 
 
 class RunnerCliTests(unittest.TestCase):
+    def development_arguments(self, root):
+        return argparse.Namespace(
+            kind="development", version="v4", smoke_id=None,
+            protocol=root / "absent-protocol.json",
+            authorization=root / "absent-authorization.json",
+            binary=root / "absent-Swarm",
+            base_config=root / "absent-base.json",
+            primary_config=root / "absent-primary.json",
+            ablation_config=root / "absent-ablation.json",
+            trajectory_seeds="2026080101:2026080110",
+            range_noise_seeds="2026081101:2026081110",
+            frames=1000,
+            output_root=root / "raw" / "v4",
+        )
+
+    def test_runtime_development_argv_uses_v4_module_entrypoint_exactly(self):
+        root = Path("/private/tmp/qualified-runtime-argv")
+        arguments = self.development_arguments(root)
+
+        self.assertEqual(_runtime_runner_argv(arguments), [
+            "conda", "run", "-n", "cbf_env", "python", "-m",
+            "scripts.diagnostics.run_qualified_closure_campaign",
+            "--kind", "development", "--version", "v4",
+            "--protocol", str(root / "absent-protocol.json"),
+            "--authorization", str(root / "absent-authorization.json"),
+            "--binary", str(root / "absent-Swarm"),
+            "--base-config", str(root / "absent-base.json"),
+            "--primary-config", str(root / "absent-primary.json"),
+            "--ablation-config", str(root / "absent-ablation.json"),
+            "--trajectory-seeds", "2026080101:2026080110",
+            "--range-noise-seeds", "2026081101:2026081110",
+            "--frames", "1000",
+            "--output-root", str(root / "raw" / "v4"),
+        ])
+
+    def test_frozen_runner_reaches_registration_without_claiming_root(self):
+        repository = Path(__file__).resolve().parents[1]
+        environment = dict(os.environ)
+        environment.pop("PYTHONPATH", None)
+        with tempfile.TemporaryDirectory(
+            prefix="qualified-runner-module-cli-"
+        ) as directory:
+            root = Path(directory)
+            arguments = self.development_arguments(root)
+            result = subprocess.run(
+                _runtime_runner_argv(arguments),
+                cwd=repository,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("registered protocol is unreadable", result.stderr)
+            self.assertNotIn("No module named 'scripts'", result.stderr)
+            self.assertFalse(arguments.output_root.exists())
+
     def test_help_exposes_exact_campaign_options(self):
         script = Path(__file__).resolve().parents[1] / "scripts" / "diagnostics" / "run_qualified_closure_campaign.py"
         result = subprocess.run(
@@ -1624,7 +1693,7 @@ class CampaignCoordinatorTests(unittest.TestCase):
     def arguments(self, output_root):
         import argparse
         return argparse.Namespace(
-            kind="development", version="v3", smoke_id=None,
+            kind="development", version="v4", smoke_id=None,
             protocol=Path("protocol.json"), authorization=Path("authorization.json"),
             binary=Path("Swarm"), base_config=Path("config.json"),
             primary_config=Path("primary.json"), ablation_config=Path("ablation.json"),

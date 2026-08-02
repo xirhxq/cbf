@@ -1019,13 +1019,13 @@ def validate_analysis_registration_contract(protocol, arguments):
         output_label = "analysis"
     if protocol.get("kind") != registered_kind:
         raise ValueError("analysis kind differs from registered protocol")
-    expected_version = "v3" if registered_kind == "development" else "v1"
+    expected_version = "v4" if registered_kind == "development" else "v1"
     if (
         arguments.version != expected_version
         or protocol.get("version") != arguments.version
     ):
         if registered_kind == "development":
-            raise ValueError("development analysis requires version v3")
+            raise ValueError("development analysis requires version v4")
         raise ValueError("analysis version differs from registered protocol")
     input_root = Path(arguments.input_root)
     output_root = Path(arguments.output_root)
@@ -1130,8 +1130,8 @@ def _validate_runtime_analyzer_argv(protocol, arguments) -> None:
 
 def _runtime_analyzer_argv(arguments) -> list[str]:
     tokens = [
-        "conda", "run", "-n", "cbf_env", "python",
-        "scripts/diagnostics/analyze_qualified_closure_campaign.py",
+        "conda", "run", "-n", "cbf_env", "python", "-m",
+        "scripts.diagnostics.analyze_qualified_closure_campaign",
         "--kind", arguments.kind,
         "--version", arguments.version,
     ]

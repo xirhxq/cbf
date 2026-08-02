@@ -31,8 +31,8 @@ FROZEN_THRESHOLDS = {
 
 FROZEN_EXECUTION_ROOTS = {
     "development": {
-        "raw": "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v3",
-        "analysis": "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v3",
+        "raw": "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v4",
+        "analysis": "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v4",
     },
     "confirmatory": {
         "smoke_a_raw": "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-confirmatory-smoke-v1-a",
@@ -59,7 +59,7 @@ FROZEN_AUTHORIZATION_REQUIREMENTS = {
 }
 
 SUPPORTED_PROTOCOL_VERSIONS = {
-    "development": "v3",
+    "development": "v4",
     "confirmatory": "v1",
 }
 
@@ -79,7 +79,7 @@ def build_qualified_closure_protocol(**kwargs) -> dict:
         raise ValueError("only registered development/confirmatory protocols are supported")
     if version != SUPPORTED_PROTOCOL_VERSIONS[kind]:
         raise ValueError(
-            "development requires v3 and confirmatory requires v1"
+            "development requires v4 and confirmatory requires v1"
         )
     project_root = Path(kwargs["project_root"]).resolve()
     trajectory = _seed_list(kwargs.get("trajectory_seeds"), "trajectory")
@@ -969,8 +969,8 @@ def _repository_path_token(path, repository_root: Path) -> str:
 def _runner_argv(arguments) -> list[str]:
     authorization = _authorization_path(arguments.protocol_json)
     tokens = [
-        "conda", "run", "-n", "cbf_env", "python",
-        "scripts/diagnostics/run_qualified_closure_campaign.py",
+        "conda", "run", "-n", "cbf_env", "python", "-m",
+        "scripts.diagnostics.run_qualified_closure_campaign",
         "--kind", arguments.kind,
     ]
     tokens.extend(["--version", arguments.version])
@@ -992,8 +992,8 @@ def _runner_argv(arguments) -> list[str]:
 def _analyzer_argv(arguments) -> list[str]:
     authorization = _authorization_path(arguments.protocol_json)
     tokens = [
-        "conda", "run", "-n", "cbf_env", "python",
-        "scripts/diagnostics/analyze_qualified_closure_campaign.py",
+        "conda", "run", "-n", "cbf_env", "python", "-m",
+        "scripts.diagnostics.analyze_qualified_closure_campaign",
         "--kind", arguments.kind,
     ]
     tokens.extend(["--version", arguments.version])
@@ -1020,8 +1020,8 @@ def _smoke_argv(arguments) -> dict:
             "--authorization", authorization,
         ]
         runner = [
-            "conda", "run", "-n", "cbf_env", "python",
-            "scripts/diagnostics/run_qualified_closure_campaign.py",
+            "conda", "run", "-n", "cbf_env", "python", "-m",
+            "scripts.diagnostics.run_qualified_closure_campaign",
             "--kind", "confirmatory-smoke", *shared,
             "--binary", _path_token(arguments.binary),
             "--base-config", _path_token(arguments.base_config),
@@ -1035,8 +1035,8 @@ def _smoke_argv(arguments) -> dict:
             "--output-root", _path_token(raw),
         ]
         analyzer = [
-            "conda", "run", "-n", "cbf_env", "python",
-            "scripts/diagnostics/analyze_qualified_closure_campaign.py",
+            "conda", "run", "-n", "cbf_env", "python", "-m",
+            "scripts.diagnostics.analyze_qualified_closure_campaign",
             "--kind", "confirmatory-smoke", "--version", arguments.version,
             *shared,
             "--input-root", _path_token(raw),
