@@ -488,6 +488,58 @@ class CampaignAnalyzerGateTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "interior"):
                     _verify_controller_interior_evidence([mutated])
 
+    def test_analyzer_rejects_mixed_controller_policy_identities(self):
+        from tests.test_qualified_closure_evidence import (
+            bounded_hard_problem,
+            interior_policy,
+            localization_problem_row,
+        )
+
+        problem = bounded_hard_problem(
+            1, localization_problem_row(2.0), "analyzer-mixed-policy"
+        )
+        command = [0.0, 0.0, 0.0]
+
+        def node(policy=None):
+            result = {
+                "normal_problem": copy.deepcopy(problem),
+                "applied_command": list(command),
+            }
+            if policy is not None:
+                result["hard_interior_selection"] = copy.deepcopy(policy)
+            return result
+
+        historical_v2 = interior_policy(problem, command)
+        marked_v2 = interior_policy(
+            problem, command, schema_version="hard-interior-v2"
+        )
+        registered_v3 = interior_policy(
+            problem,
+            command,
+            schema_version="hard-interior-v3",
+            mode="planar-chebyshev-fraction-cap-v2",
+            fraction=0.131,
+        )
+
+        for policies in (
+            [None, None],
+            [historical_v2, historical_v2],
+            [marked_v2, marked_v2],
+            [registered_v3, registered_v3],
+        ):
+            with self.subTest(
+                identity=None if policies[0] is None
+                else policies[0].get("schema_version", "historical-v2")
+            ):
+                _verify_controller_interior_evidence(
+                    [node(policy) for policy in policies]
+                )
+
+        with self.assertRaisesRegex(ValueError, "provenance"):
+            _verify_controller_interior_evidence(
+                [node(historical_v2), node(registered_v3)]
+            )
+
     def test_wrong_mode_compares_publication_to_all_physical_modes(self):
         row = {
             "published_mode_id": "far-mode",

@@ -1,5 +1,6 @@
 import copy
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -238,6 +239,115 @@ class EvidenceUniverseTests(unittest.TestCase):
 
 
 class ControllerPrimitiveSchemaTests(unittest.TestCase):
+    def test_controller_frame_rejects_mixed_normalized_policy_identities(self):
+        problem = bounded_hard_problem(
+            1, localization_problem_row(2.0), "mixed-policy-frame"
+        )
+        command = [0.0, 0.0, 0.0]
+        historical_v2 = interior_policy(problem, command)
+        marked_v2 = interior_policy(
+            problem, command, schema_version="hard-interior-v2"
+        )
+        registered_v3 = interior_policy(
+            problem,
+            command,
+            schema_version="hard-interior-v3",
+            mode="planar-chebyshev-fraction-cap-v2",
+            fraction=0.131,
+        )
+
+        self.assertEqual(
+            evidence_schema._hard_interior_policy_contract(
+                historical_v2
+            ).identity,
+            "hard-interior-v2",
+        )
+        self.assertEqual(
+            evidence_schema._hard_interior_policy_contract(marked_v2).identity,
+            "hard-interior-v2",
+        )
+        self.assertEqual(
+            evidence_schema._hard_interior_policy_contract(
+                registered_v3
+            ).identity,
+            "hard-interior-v3",
+        )
+
+        def controller_frame(policies):
+            nodes = []
+            for robot_id, policy in enumerate(policies, start=1):
+                node = {"robot_id": robot_id}
+                if policy is not None:
+                    node["hard_interior_selection"] = copy.deepcopy(policy)
+                nodes.append(node)
+            return {
+                "record_type": "controller_interval",
+                "schema_version": "cbf2026-qualified-evidence-v1",
+                "campaign_id": "mixed-policy-test",
+                "condition": "dynamic_primary",
+                "trajectory_seed": 101,
+                "range_noise_seed": 201,
+                "frame_index": 0,
+                "runtime": {
+                    "snapshot_version": 1,
+                    "allocation_version": 1,
+                    "nodes": nodes,
+                    "expected_node_count": len(nodes),
+                    "expected_endpoint_row_count": 1,
+                    "expected_reconstructed_row_count": 1,
+                    "observed_endpoint_row_count": 1,
+                    "complete_finite_snapshot": True,
+                    "reset": {
+                        "attempted": False,
+                        "guard_status": "not-attempted",
+                        "committed": False,
+                    },
+                    "component_maxima": {
+                        "vx": 0.0,
+                        "vy": 0.0,
+                        "yaw_rate": 0.0,
+                    },
+                    "local_residual_minimum": 2.0,
+                    "reconstructed_residual_minimum": 2.0,
+                    "abort_reason": "",
+                    "complete": True,
+                },
+                "analyzer_only": {
+                    "truth": [
+                        {"robot_id": node["robot_id"], "position": [0.0, 0.0]}
+                        for node in nodes
+                    ]
+                },
+            }
+
+        with mock.patch.object(evidence_schema, "_valid_node", return_value=True):
+            for policies in (
+                [None, None],
+                [historical_v2, historical_v2],
+                [marked_v2, marked_v2],
+                [registered_v3, registered_v3],
+            ):
+                with self.subTest(
+                    identity=None if policies[0] is None
+                    else policies[0].get("schema_version", "historical-v2")
+                ):
+                    self.assertTrue(
+                        evidence_schema._validate_controller_primitive_schema(
+                            controller_frame(policies), 2
+                        )
+                    )
+
+            mixed = controller_frame([historical_v2, registered_v3])
+            self.assertFalse(
+                evidence_schema._validate_controller_primitive_schema(mixed, 2)
+            )
+            self.assertEqual(
+                _reconstruct_controller_primitives_impl(
+                    mixed, [], schema_expected_node_count=2
+                ).integrity_errors,
+                ("controller_schema",),
+            )
+
     def test_v3_policy_marker_selects_only_the_registered_tuple(self):
         problem = bounded_hard_problem(
             1, localization_problem_row(2.0), "v3-policy-fixture"

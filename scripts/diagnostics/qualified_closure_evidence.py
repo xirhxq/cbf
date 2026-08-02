@@ -128,6 +128,14 @@ class ControllerReconstruction:
 
 
 @dataclass(frozen=True)
+class HardInteriorPolicyContract:
+    identity: str
+    fraction: float
+    cap_mps: float
+    tolerance_mps: float
+
+
+@dataclass(frozen=True)
 class EvidenceRatio:
     numerator: int
     denominator: int
@@ -2588,7 +2596,7 @@ def _audit_problem_and_solution(
 
 def _hard_interior_policy_contract(
     policy: object,
-) -> tuple[float, float, float] | None:
+) -> HardInteriorPolicyContract | None:
     if not isinstance(policy, dict):
         return None
     base_fields = {
@@ -2597,6 +2605,7 @@ def _hard_interior_policy_contract(
         "minimum_original_hard_residual_mps",
     }
     if set(policy) == base_fields:
+        identity = "hard-interior-v2"
         expected = ("planar-chebyshev-fraction-cap-v1", 0.1)
     elif set(policy) == base_fields | {"schema_version"}:
         contracts = {
@@ -2609,6 +2618,7 @@ def _hard_interior_policy_contract(
         expected = contracts.get(schema_version)
         if expected is None:
             return None
+        identity = schema_version
     else:
         return None
     continuous = (
@@ -2628,10 +2638,11 @@ def _hard_interior_policy_contract(
         or policy["feasibility_tolerance_mps"] != 1e-9
     ):
         return None
-    return (
-        policy["fraction"],
-        policy["cap_mps"],
-        policy["feasibility_tolerance_mps"],
+    return HardInteriorPolicyContract(
+        identity=identity,
+        fraction=policy["fraction"],
+        cap_mps=policy["cap_mps"],
+        tolerance_mps=policy["feasibility_tolerance_mps"],
     )
 
 
@@ -2647,7 +2658,9 @@ def _audit_hard_interior_selection(
         contract = _hard_interior_policy_contract(policy)
         if contract is None:
             return [f"interior_policy:{robot_id}"]
-        fraction, cap, tolerance = contract
+        fraction = contract.fraction
+        cap = contract.cap_mps
+        tolerance = contract.tolerance_mps
         audit = solve_planar_hard_row_chebyshev(
             problem, tolerance_mps=tolerance
         )
@@ -2842,6 +2855,16 @@ def _validate_controller_primitive_schema(
         ]
         if any(has_interior_policy) and not all(has_interior_policy):
             return False
+        if all(has_interior_policy):
+            policy_contracts = [
+                _hard_interior_policy_contract(node["hard_interior_selection"])
+                for node in nodes
+            ]
+            if (
+                any(contract is None for contract in policy_contracts)
+                or len({contract.identity for contract in policy_contracts}) != 1
+            ):
+                return False
         for field in (
             "expected_endpoint_row_count",
             "expected_reconstructed_row_count",

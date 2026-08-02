@@ -2254,6 +2254,15 @@ def _verify_controller_interior_evidence(nodes):
         return
     if not all(policy_presence):
         raise ValueError("controller interior policy provenance differs")
+    policy_contracts = [
+        _hard_interior_policy_contract(node.get("hard_interior_selection"))
+        for node in nodes
+    ]
+    if (
+        any(contract is None for contract in policy_contracts)
+        or len({contract.identity for contract in policy_contracts}) != 1
+    ):
+        raise ValueError("controller interior policy provenance differs")
     for node in nodes:
         if "normal_problem" not in node:
             raise ValueError("controller interior normal problem is absent")
@@ -2261,7 +2270,9 @@ def _verify_controller_interior_evidence(nodes):
         contract = _hard_interior_policy_contract(policy)
         if contract is None:
             raise ValueError("controller interior policy differs")
-        fraction, cap_mps, tolerance_mps = contract
+        fraction = contract.fraction
+        cap_mps = contract.cap_mps
+        tolerance_mps = contract.tolerance_mps
         audit = solve_planar_hard_row_chebyshev(
             node["normal_problem"],
             tolerance_mps=tolerance_mps,
