@@ -16,6 +16,8 @@ from pathlib import Path
 from unittest import mock
 
 import scripts.diagnostics.register_qualified_closure_campaign as registrar
+import scripts.diagnostics.analyze_qualified_closure_campaign as analyzer_module
+import scripts.diagnostics.qualified_initial_state as initial_state_module
 
 from scripts.diagnostics.analyze_qualified_closure_campaign import (
     COMPACT_CAP_BYTES,
@@ -42,6 +44,12 @@ from scripts.diagnostics.analyze_qualified_closure_campaign import (
     _validate_producer_namespace_identities,
     _validate_replay_reference_provenance,
     _wrong_mode_from_truth,
+    _load_development_initial_state_contract,
+    _validate_completed_mission_initial_configs,
+    _validate_swarm_initial_truth,
+    _validate_measurement_config_link,
+    _registered_schedule_envelope,
+    analyze_campaign_from_arguments,
     main as analyzer_main,
 )
 from tests.test_replay_qualified_estimator import build_registered_qualified_row
@@ -56,6 +64,47 @@ from scripts.diagnostics.run_qualified_closure_campaign import (
     ProductionOperations,
     write_schedule_no_replace,
 )
+from scripts.diagnostics.qualified_initial_state import (
+    audit_frozen_initial_family,
+    load_qualified_initial_family,
+)
+
+
+def frozen_initial_family_fixture():
+    repository = Path(__file__).resolve().parents[1]
+    path = repository / "config/diagnostics/qualified_initial_family_v1.json"
+    family = load_qualified_initial_family(path)
+    audited = audit_frozen_initial_family(family)
+    initial_state = {
+        "family_schema_version": family["schema_version"],
+        "namespace": family["namespace"],
+        "family_semantic_sha256": family["semantic_sha256"],
+        "registered_trajectory_seeds": [
+            audit.seed for audit in audited.registered.audits
+        ],
+        "audit_trajectory_seeds": [
+            audit.seed for audit in audited.audit.audits
+        ],
+        "missions": [
+            {
+                "trajectory_seed": audit.seed,
+                "positions_sha256": audit.positions_sha256,
+            }
+            for audit in audited.registered.audits
+        ],
+        "frozen_summary": family["frozen_summary"],
+        "admission": family["admission"],
+        "perturbation_policy": {
+            "clamp": family["perturbation"]["clamp"],
+            "resample": family["perturbation"]["resample"],
+        },
+    }
+    identity = {
+        "path": str(path.resolve()),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "bytes": path.stat().st_size,
+    }
+    return path, family, audited, initial_state, identity
 
 
 def write_development_registration(root, raw, analysis):
@@ -69,6 +118,10 @@ def write_development_registration(root, raw, analysis):
         path = project / name
         path.write_text("{}\n")
         files[name] = path
+    files["initial_family"] = (
+        Path(__file__).resolve().parents[1]
+        / "config/diagnostics/qualified_initial_family_v1.json"
+    )
     files["dependencies.txt"].write_text("ENABLE_GUROBI:BOOL=ON\n")
     files["primary.json"].write_text(json.dumps({
         "position_covariance": {"reference-selection": "dynamic-lower-index"}
@@ -77,9 +130,9 @@ def write_development_registration(root, raw, analysis):
         "position_covariance": {"reference-selection": "fixed-cbf-only"}
     }))
     protocol = build_qualified_closure_protocol(
-        kind="development", version="v4", project_root=project,
-        trajectory_seeds=list(range(2026080101, 2026080111)),
-        range_noise_seeds=list(range(2026081101, 2026081111)), frames=1000,
+        kind="development", version="v5", project_root=project,
+        trajectory_seeds=list(range(2026080201, 2026080211)),
+        range_noise_seeds=list(range(2026081201, 2026081211)), frames=1000,
         roots={"raw": raw, "analysis": analysis},
         bindings={
             "source": files["source.py"], "binary": files["Swarm"],
@@ -88,6 +141,7 @@ def write_development_registration(root, raw, analysis):
             "ablation_config": files["ablation.json"],
             "dependencies": files["dependencies.txt"],
             "schema": files["schema.json"],
+            "initial_family": files["initial_family"],
         },
         thresholds=FROZEN_THRESHOLDS, dirty_relevant_paths=[],
     )
@@ -133,6 +187,7 @@ def write_development_registration(root, raw, analysis):
                 "register_qualified_closure_campaign.py",
                 "replay_qualified_estimator.py",
                 "analyze_qualified_estimator.py",
+                "qualified_initial_state.py",
             )
         },
         "publication": {
@@ -151,7 +206,7 @@ def write_development_registration(root, raw, analysis):
     authorization_path.parent.mkdir()
     authorization_path.write_text(json.dumps({
         "schema_version": "cbf2026-qualified-authorization-v1",
-        "authorized": True, "kind": "development", "version": "v4",
+        "authorized": True, "kind": "development", "version": "v5",
         "protocol_sha256": hashlib.sha256(protocol_path.read_bytes()).hexdigest(),
         "implementation_identity": repository["head"],
     }))
@@ -183,6 +238,10 @@ def development_registration_patches(protocol):
             return_value={
                 "implementation_identity": protocol["repository"]["head"]
             },
+        ),
+        mock.patch.object(
+            registrar, "verify_development_predecessor_state",
+            return_value=None,
         ),
     ):
         yield
@@ -1273,30 +1332,404 @@ class ProducerNamespaceIdentityTests(unittest.TestCase):
                     _producer_input_violations(tampered, allowed, **kwargs), 1
                 )
 
+class DevelopmentV5InitialStateAnalyzerTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        (
+            cls.family_path,
+            cls.family,
+            cls.audited,
+            cls.initial_state,
+            cls.family_identity,
+        ) = frozen_initial_family_fixture()
+        cls.by_seed = {
+            audit.seed: audit for audit in cls.audited.registered.audits
+        }
+
+    def protocol(self):
+        missions = [
+            {
+                "mission_id": f"mission-{index:02d}",
+                "trajectory_seed": audit.seed,
+                "range_noise_seed": 2026081200 + index,
+                "frames": 1000,
+                "initial_positions_sha256": audit.positions_sha256,
+            }
+            for index, audit in enumerate(
+                self.audited.registered.audits, start=1
+            )
+        ]
+        return {
+            "kind": "development",
+            "version": "v5",
+            "bindings": {"initial_family": copy.deepcopy(self.family_identity)},
+            "initial_state": copy.deepcopy(self.initial_state),
+            "schedule": {"missions": missions},
+        }
+
+    def test_v5_schedule_envelope_propagates_exact_initial_positions_hash(self):
+        audit = self.by_seed[2026080201]
+        mission = {
+            "mission_id": "mission-01",
+            "trajectory_seed": audit.seed,
+            "range_noise_seed": 2026081201,
+            "frames": 1000,
+            "initial_positions_sha256": audit.positions_sha256,
+        }
+        self.assertEqual(
+            _registered_schedule_envelope(
+                [mission], campaign_id="development-v5"
+            ),
+            [{
+                "campaign_id": "development-v5",
+                **mission,
+                "horizon_s": 500.0,
+                "conditions": ["dynamic_primary", "fixed_fim_ablation"],
+            }],
+        )
+        for tampered in (
+            {key: value for key, value in mission.items()
+             if key != "initial_positions_sha256"},
+            {**mission, "initial_positions_sha256": "not-a-sha"},
+        ):
+            with self.subTest(tampered=tampered):
+                with self.assertRaisesRegex(ValueError, "initial|schedule"):
+                    _registered_schedule_envelope(
+                        [tampered], campaign_id="development-v5"
+                    )
+
+    def test_family_reaudit_binds_all_100_seeds_and_rejects_seed_hash_substitution(self):
+        contract = _load_development_initial_state_contract(self.protocol())
+        self.assertEqual(set(contract), set(range(2026080201, 2026080211)))
+        self.assertEqual(
+            contract[2026080201].positions_sha256,
+            self.by_seed[2026080201].positions_sha256,
+        )
+
+        tampered = self.protocol()
+        tampered["initial_state"]["missions"][0]["positions_sha256"] = (
+            self.by_seed[2026080202].positions_sha256
+        )
+        with self.assertRaisesRegex(ValueError, "initial state|position"):
+            _load_development_initial_state_contract(tampered)
+
+        tampered = self.protocol()
+        tampered["initial_state"]["frozen_summary"]["audit"][
+            "minimum_pair_distance_m"
+        ] += 1.0
+        with self.assertRaisesRegex(ValueError, "initial state"):
+            _load_development_initial_state_contract(tampered)
+
+        with tempfile.TemporaryDirectory(
+            prefix="qualified-v5-family-identity-"
+        ) as directory:
+            root = Path(directory)
+            duplicate = root / "duplicate-family.json"
+            duplicate.write_text(
+                self.family_path.read_text().replace(
+                    "{",
+                    '{"schema_version":"cbf2026-qualified-initial-family-v1",',
+                    1,
+                )
+            )
+            tampered = self.protocol()
+            tampered["bindings"]["initial_family"] = {
+                "path": str(duplicate.resolve()),
+                "sha256": hashlib.sha256(duplicate.read_bytes()).hexdigest(),
+                "bytes": duplicate.stat().st_size,
+            }
+            with self.assertRaisesRegex(ValueError, "duplicate JSON key"):
+                _load_development_initial_state_contract(tampered)
+
+    def test_content_identity_cache_still_reloads_and_revalidates_family(self):
+        analyzer_module._INITIAL_FAMILY_AUDIT_CACHE.clear()
+        with (
+            mock.patch.object(
+                initial_state_module,
+                "load_qualified_initial_family",
+                wraps=initial_state_module.load_qualified_initial_family,
+            ) as loader,
+            mock.patch.object(
+                initial_state_module,
+                "audit_frozen_initial_family",
+                wraps=initial_state_module.audit_frozen_initial_family,
+            ) as auditor,
+        ):
+            _load_development_initial_state_contract(self.protocol())
+            _load_development_initial_state_contract(self.protocol())
+        self.assertEqual(loader.call_count, 2)
+        self.assertEqual(auditor.call_count, 1)
+
+    def test_bad_initial_family_fails_before_analysis_output_root_is_claimed(self):
+        with tempfile.TemporaryDirectory(
+            prefix="qualified-v5-family-pre-root-"
+        ) as directory:
+            root = Path(directory)
+            protocol = self.protocol()
+            protocol["initial_state"]["missions"][0][
+                "positions_sha256"
+            ] = self.by_seed[2026080202].positions_sha256
+            protocol_path = root / "protocol.json"
+            protocol_path.write_text(json.dumps(protocol))
+            arguments = argparse.Namespace(
+                kind="development", version="v5", smoke_id=None,
+                protocol=protocol_path,
+                authorization=root / "authorization.json",
+                input_root=root / "raw-v5",
+                ablation_config=root / "ablation.json",
+                output_root=root / "analysis-v5",
+            )
+            contract = {
+                "claimed_root": "raw",
+                "registered_schedule": [],
+            }
+            with (
+                mock.patch(
+                    "scripts.diagnostics.analyze_qualified_closure_campaign."
+                    "validate_analysis_registration_contract",
+                    return_value=contract,
+                ),
+                mock.patch.object(
+                    registrar,
+                    "validate_authorization_binding",
+                    return_value={"implementation_identity": "a" * 40},
+                ),
+            ):
+                with self.assertRaisesRegex(ValueError, "initial state|position"):
+                    analyze_campaign_from_arguments(arguments)
+            self.assertFalse(arguments.output_root.exists())
+
+    def materialized_fixture(self, root, seed=2026080201):
+        audit = self.by_seed[seed]
+        exact_position = {
+            "method": "specified",
+            "positions": [list(position) for position in audit.positions],
+        }
+        documents = {
+            "materialized-primary.json": {
+                "initial": {"position": copy.deepcopy(exact_position)},
+                "condition": "dynamic_primary",
+            },
+            "materialized-dynamic_primary.json": {
+                "initial": {"position": copy.deepcopy(exact_position)},
+                "condition": "dynamic_primary",
+            },
+            "materialized-fixed_fim_ablation.json": {
+                "initial": {"position": copy.deepcopy(exact_position)},
+                "condition": "fixed_fim_ablation",
+            },
+        }
+        identities = {}
+        for name, document in documents.items():
+            path = root / name
+            path.write_text(json.dumps(document, sort_keys=True))
+            identities[name] = {
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "bytes": path.stat().st_size,
+            }
+        manifest = {
+            "member_identities": identities,
+            "swarm": {"config_sha256": identities[
+                "materialized-primary.json"
+            ]["sha256"]},
+        }
+        mission = {
+            "mission_id": "mission-01",
+            "trajectory_seed": seed,
+            "initial_positions_sha256": audit.positions_sha256,
+        }
+        return audit, documents, manifest, mission
+
+    def test_completed_mission_requires_exact_specified_materialized_initial_state(self):
+        with tempfile.TemporaryDirectory(
+            prefix="qualified-v5-materialized-initial-"
+        ) as directory:
+            root = Path(directory)
+            audit, _, manifest, mission = self.materialized_fixture(root)
+            primary_identity = _validate_completed_mission_initial_configs(
+                root, manifest, mission, audit
+            )
+            self.assertEqual(
+                primary_identity,
+                manifest["member_identities"]["materialized-primary.json"],
+            )
+
+            path = root / "materialized-fixed_fim_ablation.json"
+            tampered = json.loads(path.read_text())
+            tampered["initial"]["position"]["method"] = "random-in-polygon"
+            path.write_text(json.dumps(tampered, sort_keys=True))
+            manifest["member_identities"][path.name] = {
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "bytes": path.stat().st_size,
+            }
+            with self.assertRaisesRegex(ValueError, "materialized initial"):
+                _validate_completed_mission_initial_configs(
+                    root, manifest, mission, audit
+                )
+
+        with tempfile.TemporaryDirectory(
+            prefix="qualified-v5-rehashed-initial-"
+        ) as directory:
+            root = Path(directory)
+            audit, documents, manifest, mission = self.materialized_fixture(root)
+            for name, document in documents.items():
+                document["initial"]["position"]["positions"][0][0] += 1e-9
+                path = root / name
+                path.write_text(json.dumps(document, sort_keys=True))
+                manifest["member_identities"][name] = {
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    "bytes": path.stat().st_size,
+                }
+            manifest["swarm"]["config_sha256"] = manifest[
+                "member_identities"
+            ]["materialized-primary.json"]["sha256"]
+            with self.assertRaisesRegex(ValueError, "materialized initial"):
+                _validate_completed_mission_initial_configs(
+                    root, manifest, mission, audit
+                )
+
+    def test_materialized_config_parses_the_same_bytes_that_are_authenticated(self):
+        with tempfile.TemporaryDirectory(
+            prefix="qualified-v5-materialized-buffer-"
+        ) as directory:
+            root = Path(directory)
+            audit, _, manifest, mission = self.materialized_fixture(root)
+            target = root / "materialized-fixed_fim_ablation.json"
+            authenticated = target.read_bytes()
+            replacement = authenticated.replace(
+                b'"specified"', b'"forbidden"', 1
+            )
+            self.assertEqual(len(replacement), len(authenticated))
+            original_open = Path.open
+            state = {"wrapped": False, "swapped": False}
+
+            class SwapAfterAuthenticatedRead:
+                def __init__(self, stream):
+                    self.stream = stream
+
+                def __enter__(self):
+                    self.stream.__enter__()
+                    return self
+
+                def __exit__(self, *arguments):
+                    return self.stream.__exit__(*arguments)
+
+                def read(self, *arguments):
+                    payload = self.stream.read(*arguments)
+                    if payload and not state["swapped"]:
+                        state["swapped"] = True
+                        with original_open(target, "wb") as output:
+                            output.write(replacement)
+                    return payload
+
+                def __getattr__(self, name):
+                    return getattr(self.stream, name)
+
+            def swapping_open(path, mode="r", *arguments, **keywords):
+                stream = original_open(path, mode, *arguments, **keywords)
+                if (
+                    Path(path) == target
+                    and mode == "rb"
+                    and not state["wrapped"]
+                ):
+                    state["wrapped"] = True
+                    return SwapAfterAuthenticatedRead(stream)
+                return stream
+
+            with mock.patch.object(Path, "open", new=swapping_open):
+                primary_identity = _validate_completed_mission_initial_configs(
+                    root, manifest, mission, audit
+                )
+
+            self.assertTrue(state["swapped"])
+            self.assertEqual(
+                primary_identity,
+                manifest["member_identities"]["materialized-primary.json"],
+            )
+
+    def test_initialization_and_frame_zero_truth_are_exact_frozen_coordinates(self):
+        audit = self.by_seed[2026080201]
+        initialization = {
+            "record_type": "initialization",
+            "robot_id": 1,
+            "analyzer_only": {"truth_position": list(audit.positions[0])},
+        }
+        _validate_swarm_initial_truth(initialization, audit)
+        tampered = copy.deepcopy(initialization)
+        tampered["analyzer_only"]["truth_position"][0] += 1e-9
+        with self.assertRaisesRegex(ValueError, "initialization truth"):
+            _validate_swarm_initial_truth(tampered, audit)
+
+        controller = {
+            "record_type": "controller_interval",
+            "frame_index": 0,
+            "analyzer_only": {"truth": [
+                {"robot_id": robot_id, "position": list(position)}
+                for robot_id, position in enumerate(audit.positions, start=1)
+            ]},
+        }
+        _validate_swarm_initial_truth(controller, audit)
+        tampered = copy.deepcopy(controller)
+        tampered["analyzer_only"]["truth"][1]["position"] = list(
+            audit.positions[0]
+        )
+        with self.assertRaisesRegex(ValueError, "frame-zero truth"):
+            _validate_swarm_initial_truth(tampered, audit)
+
+    def test_measurement_config_hash_links_primary_member_swarm_and_runtime(self):
+        with tempfile.TemporaryDirectory(
+            prefix="qualified-v5-measurement-config-link-"
+        ) as directory:
+            root = Path(directory)
+            audit, _, manifest, mission = self.materialized_fixture(root)
+            primary = _validate_completed_mission_initial_configs(
+                root, manifest, mission, audit
+            )
+            measurement = {"config_sha256": primary["sha256"]}
+            _validate_measurement_config_link(
+                measurement, manifest, primary, mission["mission_id"]
+            )
+            for target in (measurement, manifest["swarm"]):
+                with self.subTest(target=target):
+                    changed = copy.deepcopy(target)
+                    changed["config_sha256"] = "e" * 64
+                    with self.assertRaisesRegex(ValueError, "config SHA"):
+                        _validate_measurement_config_link(
+                            changed if target is measurement else measurement,
+                            {
+                                **manifest,
+                                "swarm": changed if target is manifest["swarm"]
+                                else manifest["swarm"],
+                            },
+                            primary,
+                            mission["mission_id"],
+                        )
+
+
 class AnalyzerCliTests(unittest.TestCase):
     def development_arguments(self, root):
         return argparse.Namespace(
-            kind="development", version="v4", smoke_id=None,
+            kind="development", version="v5", smoke_id=None,
             protocol=root / "absent-protocol.json",
             authorization=root / "absent-authorization.json",
-            input_root=root / "absent-raw" / "v4",
+            input_root=root / "absent-raw" / "v5",
             ablation_config=root / "absent-ablation.json",
-            output_root=root / "analysis" / "v4",
+            output_root=root / "analysis" / "v5",
         )
 
-    def test_runtime_development_analyzer_argv_uses_v4_module_entrypoint_exactly(self):
+    def test_runtime_development_analyzer_argv_uses_v5_module_entrypoint_exactly(self):
         root = Path("/private/tmp/qualified-runtime-analyzer-argv")
         arguments = self.development_arguments(root)
 
         self.assertEqual(_runtime_analyzer_argv(arguments), [
             "conda", "run", "-n", "cbf_env", "python", "-m",
             "scripts.diagnostics.analyze_qualified_closure_campaign",
-            "--kind", "development", "--version", "v4",
+            "--kind", "development", "--version", "v5",
             "--protocol", str(root / "absent-protocol.json"),
             "--authorization", str(root / "absent-authorization.json"),
-            "--input-root", str(root / "absent-raw" / "v4"),
+            "--input-root", str(root / "absent-raw" / "v5"),
             "--ablation-config", str(root / "absent-ablation.json"),
-            "--output-root", str(root / "analysis" / "v4"),
+            "--output-root", str(root / "analysis" / "v5"),
         ])
 
     def test_frozen_analyzer_reaches_registration_without_claiming_root(self):
@@ -1329,23 +1762,24 @@ class AnalyzerCliTests(unittest.TestCase):
             ablation = root / "ablation.json"
             ablation.write_text("{}\n")
             arguments = argparse.Namespace(
-                kind="development", version="v4", smoke_id=None,
+                kind="development", version="v5", smoke_id=None,
                 protocol=root / "fixture-protocol.json",
                 authorization=root / "fixture-authorization.json",
                 input_root=raw, output_root=output,
                 ablation_config=ablation,
             )
             protocol = {
-                "kind": "development", "version": "v4",
+                "kind": "development", "version": "v5",
                 "roots": {
                     "raw": str(raw.resolve()),
                     "analysis": str(output.resolve()),
                 },
                 "schedule": {"missions": [{
                     "mission_id": "mission-01",
-                    "trajectory_seed": 2026080101,
-                    "range_noise_seed": 2026081101,
+                    "trajectory_seed": 2026080201,
+                    "range_noise_seed": 2026081201,
                     "frames": 1000,
+                    "initial_positions_sha256": "a" * 64,
                 }]},
                 "bindings": {"ablation_config": {
                     "path": str(ablation.resolve()),
@@ -1354,13 +1788,19 @@ class AnalyzerCliTests(unittest.TestCase):
                 }},
                 "analyzer_argv": _runtime_analyzer_argv(arguments),
             }
-            contract = validate_analysis_registration_contract(protocol, arguments)
+            with mock.patch(
+                "scripts.diagnostics.analyze_qualified_closure_campaign."
+                "_load_development_initial_state_contract",
+                return_value={},
+            ):
+                contract = validate_analysis_registration_contract(protocol, arguments)
             self.assertEqual(contract["registered_schedule"], [{
-                "campaign_id": "development-v4",
+                "campaign_id": "development-v5",
                 "mission_id": "mission-01",
-                "trajectory_seed": 2026080101,
-                "range_noise_seed": 2026081101,
+                "trajectory_seed": 2026080201,
+                "range_noise_seed": 2026081201,
                 "frames": 1000,
+                "initial_positions_sha256": "a" * 64,
                 "horizon_s": 500.0,
                 "conditions": ["dynamic_primary", "fixed_fim_ablation"],
             }])
@@ -1374,17 +1814,17 @@ class AnalyzerCliTests(unittest.TestCase):
             arguments.version = None
             with self.assertRaisesRegex(ValueError, "version"):
                 validate_analysis_registration_contract(protocol, arguments)
-            arguments.version = "v4"
+            arguments.version = "v5"
             protocol["analyzer_argv"] = [*protocol["analyzer_argv"], "--extra"]
             with self.assertRaisesRegex(ValueError, "analyzer argv"):
                 validate_analysis_registration_contract(protocol, arguments)
 
             protocol["analyzer_argv"] = _runtime_analyzer_argv(arguments)
-            for version in ("v1", "v2", "v3"):
+            for version in ("v1", "v2", "v3", "v4"):
                 with self.subTest(version=version):
                     arguments.version = version
                     protocol["version"] = version
-                    with self.assertRaisesRegex(ValueError, "development.*v4"):
+                    with self.assertRaisesRegex(ValueError, "development.*v5"):
                         validate_analysis_registration_contract(protocol, arguments)
 
     def test_mission_success_is_derived_from_completion_and_local_evidence(self):
@@ -1580,7 +2020,7 @@ class AnalyzerCliTests(unittest.TestCase):
             missions = []
             for row in protocol["schedule"]["missions"]:
                 missions.append({
-                    "campaign_id": "development-v4", **row,
+                    "campaign_id": "development-v5", **row,
                     "horizon_s": 500.0,
                     "conditions": ["dynamic_primary", "fixed_fim_ablation"],
                 })
@@ -1619,7 +2059,7 @@ class AnalyzerCliTests(unittest.TestCase):
             ):
                 returncode = analyzer_main([
                     "--kind", "development",
-                    "--version", "v4",
+                    "--version", "v5",
                     "--protocol", str(protocol_path),
                     "--authorization", str(authorization_path),
                     "--ablation-config", ablation_token,
@@ -1643,7 +2083,7 @@ class AnalyzerCliTests(unittest.TestCase):
             missions = []
             for row in protocol["schedule"]["missions"]:
                 mission = {
-                    "campaign_id": "development-v4", **row, "horizon_s": 500.0,
+                    "campaign_id": "development-v5", **row, "horizon_s": 500.0,
                     "conditions": ["dynamic_primary", "fixed_fim_ablation"],
                 }
                 missions.append(mission)
@@ -1691,7 +2131,7 @@ class AnalyzerCliTests(unittest.TestCase):
             ):
                 returncode = analyzer_main([
                     "--kind", "development",
-                    "--version", "v4",
+                    "--version", "v5",
                     "--protocol", str(protocol_path),
                     "--authorization", str(authorization_path),
                     "--ablation-config", ablation_token,

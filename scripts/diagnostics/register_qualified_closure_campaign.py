@@ -31,8 +31,8 @@ FROZEN_THRESHOLDS = {
 
 FROZEN_EXECUTION_ROOTS = {
     "development": {
-        "raw": "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v4",
-        "analysis": "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v4",
+        "raw": "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v5",
+        "analysis": "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v5",
     },
     "confirmatory": {
         "smoke_a_raw": "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-confirmatory-smoke-v1-a",
@@ -59,8 +59,52 @@ FROZEN_AUTHORIZATION_REQUIREMENTS = {
 }
 
 SUPPORTED_PROTOCOL_VERSIONS = {
-    "development": "v4",
+    "development": "v5",
     "confirmatory": "v1",
+}
+
+FROZEN_INITIAL_FAMILY_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "config" / "diagnostics" / "qualified_initial_family_v1.json"
+)
+
+
+def _require_literal_initial_family_path(path: Path) -> Path:
+    """Authorize only the frozen family at its literal non-symbolic path."""
+    path = Path(path)
+    if (
+        path.is_symlink()
+        or _has_symbolic_ancestor(path)
+        or path.resolve() != FROZEN_INITIAL_FAMILY_PATH.resolve()
+    ):
+        raise ValueError("development requires the literal initial-family path")
+    return path
+
+
+FROZEN_DEVELOPMENT_PREDECESSOR_STATE = {
+    "absent": tuple(
+        Path(f"/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development{suffix}/v{version}")
+        for version in range(1, 4)
+        for suffix in ("", "-analysis")
+    ),
+    "terminal": {
+        "raw": {
+            "root": "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v4",
+            "files": 28,
+            "logical_bytes": 12618979,
+            "tree_sha256": "9b915ad84aeda2b22aafbd259bf61bbc9515e3b082559bf3e5f217e14af9b5ac",
+            "manifest_name": "manifest.json",
+            "manifest_sha256": "12f71bb00720636ca610ad8d9d380dde7e92147e7bdf57589bb8915c1bf72f71",
+        },
+        "analysis": {
+            "root": "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v4",
+            "files": 3,
+            "logical_bytes": 8639,
+            "tree_sha256": "155b6b9372f91bb7b4b2476581b4270e7a372c680cd8b2ea1847ef9c5766729a",
+            "manifest_name": "manifest.json",
+            "manifest_sha256": "890174908e5df83e367edd33cb0d83960635cc94ac57fd79fafd553aef40e6f0",
+        },
+    },
 }
 
 AUTHORIZATION_FIELDS = {
@@ -69,6 +113,8 @@ AUTHORIZATION_FIELDS = {
     "user_authorization_date", "user_authorization_text",
     "user_authorization_text_sha256",
 }
+
+_INITIAL_AUDIT_CACHE = {}
 
 
 def build_qualified_closure_protocol(**kwargs) -> dict:
@@ -79,7 +125,7 @@ def build_qualified_closure_protocol(**kwargs) -> dict:
         raise ValueError("only registered development/confirmatory protocols are supported")
     if version != SUPPORTED_PROTOCOL_VERSIONS[kind]:
         raise ValueError(
-            "development requires v4 and confirmatory requires v1"
+            "development requires v5 and confirmatory requires v1"
         )
     project_root = Path(kwargs["project_root"]).resolve()
     trajectory = _seed_list(kwargs.get("trajectory_seeds"), "trajectory")
@@ -91,18 +137,18 @@ def build_qualified_closure_protocol(**kwargs) -> dict:
         raise ValueError("each registered seed list must be distinct")
     if set(trajectory) & set(ranges):
         raise ValueError("trajectory and range-noise seed lists must be disjoint")
-    development = set(range(2026080101, 2026080111)) | set(
-        range(2026081101, 2026081111)
+    development = set(range(2026080201, 2026080211)) | set(
+        range(2026081201, 2026081211)
     )
     if kind == "confirmatory" and (set(trajectory) | set(ranges)) & development:
         raise ValueError("confirmatory seeds must be development-seed disjoint")
     expected_trajectory = list(
-        range(2026080101, 2026080111)
+        range(2026080201, 2026080211)
         if kind == "development"
         else range(2026082001, 2026082061)
     )
     expected_ranges = list(
-        range(2026081101, 2026081111)
+        range(2026081201, 2026081211)
         if kind == "development"
         else range(2026083001, 2026083061)
     )
@@ -122,8 +168,12 @@ def build_qualified_closure_protocol(**kwargs) -> dict:
         "source", "binary", "base_config", "primary_config",
         "ablation_config", "dependencies", "schema",
     }
+    if kind == "development":
+        expected_bindings.add("initial_family")
     if not isinstance(bindings, dict) or set(bindings) != expected_bindings:
         raise ValueError("source/config/binary/dependency/schema bindings are incomplete")
+    if kind == "development":
+        _require_literal_initial_family_path(bindings["initial_family"])
     bound = {}
     for label in sorted(bindings):
         path = Path(bindings[label])
@@ -170,12 +220,25 @@ def build_qualified_closure_protocol(**kwargs) -> dict:
         resolved_roots.add(resolved)
         bound_roots[label] = str(resolved)
 
+    initial_state = None
+    initial_hashes = {}
+    if kind == "development":
+        initial_state = _derive_initial_state(Path(bindings["initial_family"]))
+        initial_hashes = {
+            item["trajectory_seed"]: item["positions_sha256"]
+            for item in initial_state["missions"]
+        }
+
     missions = [
         {
             "mission_id": f"mission-{index:02d}",
             "trajectory_seed": trajectory_seed,
             "range_noise_seed": range_seed,
             "frames": frames,
+            **(
+                {"initial_positions_sha256": initial_hashes[trajectory_seed]}
+                if kind == "development" else {}
+            ),
         }
         for index, (trajectory_seed, range_seed) in enumerate(
             zip(trajectory, ranges, strict=True), start=1
@@ -214,7 +277,11 @@ def build_qualified_closure_protocol(**kwargs) -> dict:
         }
 
     protocol = {
-        "schema_version": "cbf2026-qualified-closure-protocol-v1",
+        "schema_version": (
+            "cbf2026-qualified-closure-protocol-v2"
+            if kind == "development"
+            else "cbf2026-qualified-closure-protocol-v1"
+        ),
         "kind": kind,
         "version": version,
         "conditions": ["dynamic_primary", "fixed_fim_ablation"],
@@ -233,6 +300,8 @@ def build_qualified_closure_protocol(**kwargs) -> dict:
         "authorization": dict(FROZEN_AUTHORIZATION_REQUIREMENTS),
         "no_retry": True,
     }
+    if kind == "development":
+        protocol["initial_state"] = initial_state
     protocol["semantic_sha256"] = hashlib.sha256(
         _canonical_bytes(protocol)
     ).hexdigest()
@@ -244,6 +313,8 @@ def verify_registered_protocol(protocol: dict, *, allowed_claimed_roots=()) -> N
     if not isinstance(protocol, dict):
         raise ValueError("protocol is not an object")
     _validate_exact_protocol_schema(protocol)
+    if protocol.get("kind") == "development":
+        verify_development_predecessor_state()
     expected_semantic = protocol.get("semantic_sha256")
     without_identity = dict(protocol)
     without_identity.pop("semantic_sha256", None)
@@ -277,6 +348,8 @@ def verify_registered_protocol(protocol: dict, *, allowed_claimed_roots=()) -> N
                     or path.stat().st_size != identity.get("bytes")
                 ):
                     raise ValueError(f"registered {section} binding mutated: {label}")
+    if protocol.get("kind") == "development":
+        _verify_initial_state_binding(protocol)
     repository = protocol.get("repository")
     observed = _repository_identity(Path(repository["root"]))
     if observed["head"] == repository["head"]:
@@ -488,13 +561,143 @@ def _reference_selection(config: dict):
 
 
 def _json_object(path: Path, label: str) -> dict:
+    def reject_duplicate(pairs):
+        output = {}
+        for key, value in pairs:
+            if key in output:
+                raise ValueError(f"{label} contains duplicate key: {key}")
+            output[key] = value
+        return output
+
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        value = json.loads(
+            path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate
+        )
+    except (OSError, json.JSONDecodeError, ValueError) as error:
         raise ValueError(f"{label} is unreadable") from error
     if not isinstance(value, dict):
         raise ValueError(f"{label} must be a JSON object")
     return value
+
+
+def _initial_family_semantic_sha256(family: dict) -> str:
+    from scripts.diagnostics.qualified_initial_state import family_semantic_sha256
+
+    return family_semantic_sha256(family)
+
+
+def _derive_initial_state(path: Path) -> dict:
+    """Reload and independently derive the exact frozen v5 family declaration."""
+    from scripts.diagnostics.qualified_initial_state import (
+        audit_frozen_initial_family,
+        load_qualified_initial_family,
+    )
+
+    path = Path(path)
+    before = _sha256(path)
+    family = load_qualified_initial_family(path)
+    after = _sha256(path)
+    if before != after:
+        raise ValueError("initial family changed while being validated")
+    cache_key = (after, family["semantic_sha256"])
+    audit = _INITIAL_AUDIT_CACHE.get(cache_key)
+    if audit is None:
+        audit = audit_frozen_initial_family(family)
+        _INITIAL_AUDIT_CACHE[cache_key] = audit
+    schedule = family["schedule"]
+    return {
+        "family_schema_version": family["schema_version"],
+        "namespace": family["namespace"],
+        "family_semantic_sha256": family["semantic_sha256"],
+        "registered_trajectory_seeds": list(
+            schedule["registered_trajectory_seeds"]
+        ),
+        "audit_trajectory_seeds": list(range(
+            schedule["audit_seed_first"], schedule["audit_seed_last"] + 1,
+        )),
+        "missions": [
+            {
+                "trajectory_seed": item.seed,
+                "positions_sha256": item.positions_sha256,
+            }
+            for item in audit.registered.audits
+        ],
+        "frozen_summary": family["frozen_summary"],
+        "admission": family["admission"],
+        "perturbation_policy": {
+            "clamp": family["perturbation"]["clamp"],
+            "resample": family["perturbation"]["resample"],
+        },
+    }
+
+
+def _verify_initial_state_binding(protocol: dict) -> None:
+    """Reject a self-rehashed substitution of any derived v5 initial state."""
+    binding = protocol.get("bindings", {}).get("initial_family", {})
+    family_path = _require_literal_initial_family_path(binding.get("path", ""))
+    expected = _derive_initial_state(family_path)
+    if protocol.get("initial_state") != expected:
+        raise ValueError("registered initial-state derivation mutated")
+    mission_hashes = {
+        item["trajectory_seed"]: item["positions_sha256"]
+        for item in expected["missions"]
+    }
+    schedule = protocol.get("schedule", {}).get("missions")
+    if not isinstance(schedule, list) or any(
+        mission.get("initial_positions_sha256")
+            != mission_hashes.get(mission.get("trajectory_seed"))
+        for mission in schedule
+    ):
+        raise ValueError("registered initial-state mission binding mutated")
+
+
+def _directory_tree_identity(root: Path) -> dict:
+    """Hash one immutable regular-file tree by sorted logical members."""
+    root = Path(root)
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("development predecessor tree is absent or symbolic")
+    members = []
+    for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
+        if path.is_symlink() or not (path.is_file() or path.is_dir()):
+            raise ValueError("development predecessor tree contains a special member")
+        if path.is_dir():
+            continue
+        relative = path.relative_to(root).as_posix()
+        size = path.stat().st_size
+        members.append((relative, size, _sha256(path)))
+    payload = "".join(
+        f"{relative}\t{size}\t{digest}\n"
+        for relative, size, digest in members
+    ).encode("utf-8")
+    return {
+        "files": len(members),
+        "logical_bytes": sum(size for _, size, _ in members),
+        "tree_sha256": hashlib.sha256(payload).hexdigest(),
+    }
+
+
+def verify_development_predecessor_state() -> None:
+    """Require v1-v3 absence and the byte-exact terminal v4 evidence trees."""
+    state = FROZEN_DEVELOPMENT_PREDECESSOR_STATE
+    for path in state["absent"]:
+        path = Path(path)
+        if path.exists() or path.is_symlink():
+            raise ValueError("development predecessor consumed root unexpectedly exists")
+    for label, expected in state["terminal"].items():
+        root = Path(expected["root"])
+        observed = _directory_tree_identity(root)
+        expected_tree = {
+            key: expected[key]
+            for key in ("files", "logical_bytes", "tree_sha256")
+        }
+        manifest = root / expected["manifest_name"]
+        if (
+            observed != expected_tree
+            or manifest.is_symlink()
+            or not manifest.is_file()
+            or _sha256(manifest) != expected["manifest_sha256"]
+        ):
+            raise ValueError(f"development predecessor {label} tree mutated")
 
 
 def _universes(missions: int, frames: int) -> dict:
@@ -554,6 +757,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base-config", type=Path, required=True)
     parser.add_argument("--primary-config", type=Path, required=True)
     parser.add_argument("--ablation-config", type=Path, required=True)
+    parser.add_argument("--initial-family", type=Path)
     parser.add_argument("--trajectory-seeds", required=True)
     parser.add_argument("--range-noise-seeds", required=True)
     parser.add_argument("--frames", type=int, required=True)
@@ -587,6 +791,12 @@ def register_from_arguments(arguments, *, project_root=None) -> dict:
     repository = _repository_identity(project_root)
     if repository["dirty_relevant_paths"]:
         raise ValueError("dirty relevant source is not registrable")
+    if arguments.kind == "development":
+        verify_development_predecessor_state()
+        if getattr(arguments, "initial_family", None) is None:
+            raise ValueError("development initial-family binding is required")
+    elif getattr(arguments, "initial_family", None) is not None:
+        raise ValueError("confirmatory protocol must not accept --initial-family")
     for label in ("binary", "base_config", "primary_config", "ablation_config"):
         path = Path(getattr(arguments, label))
         if not path.is_file() or path.is_symlink():
@@ -660,6 +870,10 @@ def register_from_arguments(arguments, *, project_root=None) -> dict:
             "ablation_config": arguments.ablation_config,
             "dependencies": cmake_cache,
             "schema": schema_path,
+            **(
+                {"initial_family": arguments.initial_family}
+                if arguments.kind == "development" else {}
+            ),
         },
         thresholds=FROZEN_THRESHOLDS,
         dirty_relevant_paths=repository["dirty_relevant_paths"],
@@ -686,6 +900,10 @@ def register_from_arguments(arguments, *, project_root=None) -> dict:
                 tool_root / "register_qualified_closure_campaign.py",
                 tool_root / "replay_qualified_estimator.py",
                 tool_root / "analyze_qualified_estimator.py",
+                *(
+                    (tool_root / "qualified_initial_state.py",)
+                    if arguments.kind == "development" else ()
+                ),
             )
         },
         "publication": {
@@ -981,6 +1199,14 @@ def _runner_argv(arguments) -> list[str]:
         "--base-config", _path_token(arguments.base_config),
         "--primary-config", _path_token(arguments.primary_config),
         "--ablation-config", _path_token(arguments.ablation_config),
+    ])
+    if arguments.kind == "development":
+        if getattr(arguments, "initial_family", None) is None:
+            raise ValueError("development runner requires --initial-family")
+        tokens.extend(["--initial-family", _path_token(arguments.initial_family)])
+    elif getattr(arguments, "initial_family", None) is not None:
+        raise ValueError("confirmatory runner must not accept --initial-family")
+    tokens.extend([
         "--trajectory-seeds", arguments.trajectory_seeds,
         "--range-noise-seeds", arguments.range_noise_seeds,
         "--frames", str(arguments.frames),
@@ -1091,6 +1317,8 @@ def _validate_exact_protocol_schema(protocol: dict) -> None:
     }
     if kind == "confirmatory":
         expected_top.add("smoke_argv")
+    else:
+        expected_top.add("initial_state")
     if set(protocol) != expected_top:
         raise ValueError("registered protocol top-level schema is not exact")
 
@@ -1108,7 +1336,10 @@ def _validate_exact_protocol_schema(protocol: dict) -> None:
     for mission in protocol["schedule"]["missions"]:
         exact(
             mission,
-            {"mission_id", "trajectory_seed", "range_noise_seed", "frames"},
+            {
+                "mission_id", "trajectory_seed", "range_noise_seed", "frames",
+                *({"initial_positions_sha256"} if kind == "development" else set()),
+            },
             "mission",
         )
     universe_fields = {
@@ -1116,12 +1347,13 @@ def _validate_exact_protocol_schema(protocol: dict) -> None:
         "controller", "endpoint", "reconstructed", "mission",
     }
     exact(protocol["universes"], universe_fields, "universe")
-    exact(
-        protocol["bindings"],
-        {"source", "binary", "base_config", "primary_config",
-         "ablation_config", "dependencies", "schema"},
-        "binding",
-    )
+    binding_fields = {
+        "source", "binary", "base_config", "primary_config",
+        "ablation_config", "dependencies", "schema",
+    }
+    if kind == "development":
+        binding_fields.add("initial_family")
+    exact(protocol["bindings"], binding_fields, "binding")
     for identity in protocol["bindings"].values():
         exact(identity, {"path", "sha256", "bytes"}, "file identity")
     exact(protocol["thresholds"], set(FROZEN_THRESHOLDS), "threshold")
@@ -1165,13 +1397,14 @@ def _validate_exact_protocol_schema(protocol: dict) -> None:
         {"argv", "sha256", "bytes"},
         "conda identity",
     )
-    exact(
-        protocol["tooling"],
-        {"run_qualified_closure_campaign.py", "generate_qualified_measurements.py",
-         "analyze_qualified_closure_campaign.py", "register_qualified_closure_campaign.py",
-         "replay_qualified_estimator.py", "analyze_qualified_estimator.py"},
-        "tooling",
-    )
+    tooling_fields = {
+        "run_qualified_closure_campaign.py", "generate_qualified_measurements.py",
+        "analyze_qualified_closure_campaign.py", "register_qualified_closure_campaign.py",
+        "replay_qualified_estimator.py", "analyze_qualified_estimator.py",
+    }
+    if kind == "development":
+        tooling_fields.add("qualified_initial_state.py")
+    exact(protocol["tooling"], tooling_fields, "tooling")
     for identity in protocol["tooling"].values():
         exact(identity, {"path", "sha256", "bytes"}, "file identity")
     exact(protocol["publication"], {"json_path", "markdown_path"}, "publication")
@@ -1199,6 +1432,20 @@ def _validate_exact_protocol_schema(protocol: dict) -> None:
         exact(protocol["smoke_schedule"]["universes"], universe_fields, "smoke universe")
     elif protocol["smoke_schedule"] is not None:
         raise ValueError("registered protocol smoke schedule schema is not exact")
+    if kind == "development":
+        exact(protocol["initial_state"], {
+            "family_schema_version", "namespace", "family_semantic_sha256",
+            "registered_trajectory_seeds", "audit_trajectory_seeds", "missions",
+            "frozen_summary", "admission", "perturbation_policy",
+        }, "initial state")
+        if not isinstance(protocol["initial_state"]["missions"], list):
+            raise ValueError("registered protocol initial-state missions are invalid")
+        for mission in protocol["initial_state"]["missions"]:
+            exact(mission, {"trajectory_seed", "positions_sha256"}, "initial-state mission")
+        exact(
+            protocol["initial_state"]["perturbation_policy"],
+            {"clamp", "resample"}, "initial-state perturbation policy",
+        )
 
 
 def _string_argv(value) -> bool:
@@ -1211,7 +1458,11 @@ def _verify_derived_protocol_contract(protocol: dict) -> None:
     kind = protocol.get("kind")
     if (
         protocol.get("schema_version")
-            != "cbf2026-qualified-closure-protocol-v1"
+            != (
+                "cbf2026-qualified-closure-protocol-v2"
+                if kind == "development"
+                else "cbf2026-qualified-closure-protocol-v1"
+            )
         or kind not in {"development", "confirmatory"}
         or protocol.get("version") != SUPPORTED_PROTOCOL_VERSIONS.get(kind)
         or protocol.get("conditions")
@@ -1225,8 +1476,16 @@ def _verify_derived_protocol_contract(protocol: dict) -> None:
     ):
         raise ValueError("registered supervision/authorization frozen contract is invalid")
     mission_count = 10 if kind == "development" else 60
-    trajectory_start = 2026080101 if kind == "development" else 2026082001
-    range_start = 2026081101 if kind == "development" else 2026083001
+    trajectory_start = 2026080201 if kind == "development" else 2026082001
+    range_start = 2026081201 if kind == "development" else 2026083001
+    initial_state = protocol.get("initial_state")
+    initial_hashes = (
+        {
+            item["trajectory_seed"]: item["positions_sha256"]
+            for item in initial_state.get("missions", [])
+        }
+        if isinstance(initial_state, dict) else {}
+    )
     trajectory = list(range(trajectory_start, trajectory_start + mission_count))
     ranges = list(range(range_start, range_start + mission_count))
     missions = [
@@ -1235,6 +1494,10 @@ def _verify_derived_protocol_contract(protocol: dict) -> None:
             "trajectory_seed": trajectory_seed,
             "range_noise_seed": range_seed,
             "frames": 1000,
+            **(
+                {"initial_positions_sha256": initial_hashes.get(trajectory_seed)}
+                if kind == "development" else {}
+            ),
         }
         for index, (trajectory_seed, range_seed) in enumerate(
             zip(trajectory, ranges, strict=True), start=1
@@ -1267,6 +1530,7 @@ def _verify_derived_protocol_contract(protocol: dict) -> None:
     if kind == "development":
         if protocol.get("smoke_schedule") is not None:
             raise ValueError("registered derived protocol contract smoke is invalid")
+        _verify_initial_state_binding(protocol)
         return
     semantic = {
         "campaign_id": "confirmatory-smoke",
@@ -1310,6 +1574,13 @@ def _registered_argv(protocol: dict) -> dict:
         ablation_config=Path(_repository_path_token(
             bindings["ablation_config"]["path"], Path(protocol["repository"]["root"])
         )),
+        initial_family=(
+            Path(_repository_path_token(
+                bindings["initial_family"]["path"],
+                Path(protocol["repository"]["root"]),
+            ))
+            if protocol["kind"] == "development" else None
+        ),
         trajectory_seeds=(
             f"{schedule['trajectory_seeds'][0]}:{schedule['trajectory_seeds'][-1]}"
         ),

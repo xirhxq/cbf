@@ -35,8 +35,8 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
         self.project.mkdir()
         self.frozen_roots = {
             "development": {
-                "raw": str(self.root / "raw" / "v4"),
-                "analysis": str(self.root / "analysis" / "v4"),
+                "raw": str(self.root / "raw" / "v5"),
+                "analysis": str(self.root / "analysis" / "v5"),
             },
             "confirmatory": {
                 "smoke_a_raw": str(self.root / "outputs" / "smoke-a-raw"),
@@ -69,6 +69,10 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
         self.files["primary.json"].write_text(json.dumps(self.primary))
         self.files["ablation.json"].write_text(json.dumps(self.ablation))
         self.files["dependencies.txt"].write_text("ENABLE_GUROBI:BOOL=ON\n")
+        self.initial_family = (
+            Path(__file__).resolve().parents[1]
+            / "config" / "diagnostics" / "qualified_initial_family_v1.json"
+        )
 
     def roots(self):
         output = self.root / "outputs"
@@ -106,6 +110,9 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
             "dirty_relevant_paths": [],
         }
         arguments.update(overrides)
+        if arguments["kind"] == "development":
+            arguments["bindings"] = dict(arguments["bindings"])
+            arguments["bindings"].setdefault("initial_family", self.initial_family)
         return build_qualified_closure_protocol(**arguments)
 
     def authoritative(
@@ -114,8 +121,8 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
     ):
         development = kind == "development"
         count = 10 if development else 60
-        trajectory_start = 2026080101 if development else 2026082001
-        range_start = 2026081101 if development else 2026083001
+        trajectory_start = 2026080201 if development else 2026082001
+        range_start = 2026081201 if development else 2026083001
         roots = {
             label: Path(path)
             for label, path in self.frozen_roots[kind].items()
@@ -134,12 +141,13 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
             binary=self.files["Swarm"], base_config=self.files["config.json"],
             primary_config=self.files["primary.json"],
             ablation_config=self.files["ablation.json"],
+            initial_family=(self.initial_family if development else None),
             trajectory_seeds=(
-                "2026080101:2026080110" if development
+                "2026080201:2026080210" if development
                 else "2026082001:2026082060"
             ),
             range_noise_seeds=(
-                "2026081101:2026081110" if development
+                "2026081201:2026081210" if development
                 else "2026083001:2026083060"
             ), frames=1000,
             smoke_trajectory_seed=2026089001,
@@ -217,6 +225,10 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
                     "register_qualified_closure_campaign.py",
                     "replay_qualified_estimator.py",
                     "analyze_qualified_estimator.py",
+                    *(
+                        ("qualified_initial_state.py",)
+                        if development else ()
+                    ),
                 )
             },
             "publication": {
@@ -297,7 +309,7 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
         markdown_path = publication / "fixture-protocol.md"
         protocol = self.authoritative(
             json_path=protocol_path, markdown_path=markdown_path,
-            kind="development", version="v4",
+            kind="development", version="v5",
         )
         protocol["repository"] = registrar._repository_identity(self.project)
         protocol["semantic_sha256"] = registrar._semantic_sha256(protocol)
@@ -312,12 +324,12 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
             "# Independent preflight\n\nC0/I0/M0. Exact registered identities pass.\n",
             encoding="utf-8",
         )
-        authorization_text = "Continue with the registered development-v4 execution."
+        authorization_text = "Continue with the registered development-v5 execution."
         authorization = {
             "schema_version": "cbf2026-qualified-authorization-v1",
             "authorized": True,
             "kind": "development",
-            "version": "v4",
+            "version": "v5",
             "protocol_sha256": hashlib.sha256(
                 protocol_path.read_bytes()
             ).hexdigest(),
@@ -407,6 +419,28 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
 
         with self.authoritative_probes(protocol):
             with self.assertRaisesRegex(ValueError, "runner/analyzer argv"):
+                verify_registered_protocol(protocol)
+
+    def test_self_rehashed_nonliteral_initial_family_is_rejected_at_verification(self):
+        protocol = self.authoritative(kind="development", version="v5")
+        substitute = self.root / "same-bytes-external-initial-family.json"
+        substitute.write_bytes(self.initial_family.read_bytes())
+        protocol["bindings"]["initial_family"] = registrar._file_identity(
+            substitute
+        )
+        commands = registrar._registered_argv(protocol)
+        protocol["runner_argv"] = commands["runner"]
+        protocol["analyzer_argv"] = commands["analyzer"]
+        protocol["semantic_sha256"] = registrar._semantic_sha256(protocol)
+
+        with (
+            self.authoritative_probes(protocol),
+            mock.patch.object(
+                registrar, "verify_development_predecessor_state",
+                return_value=None,
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "literal initial-family"):
                 verify_registered_protocol(protocol)
 
     def test_self_rehashed_supervision_or_authorization_semantics_are_rejected(self):
@@ -503,7 +537,7 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
             json_path=protocol_path,
             markdown_path=markdown_path,
             kind="development",
-            version="v4",
+            version="v5",
         )
         protocol["bindings"]["binary"] = registrar._file_identity(binary)
         protocol["bindings"]["dependencies"] = registrar._file_identity(cmake_cache)
@@ -521,12 +555,12 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
         preflight_path = review_root / "fixture-preflight.md"
         authorization_path = review_root / "fixture-authorization.json"
         preflight_path.write_text("# Independent preflight\n\nC0/I0/M0.\n")
-        authorization_text = "Continue with the registered development-v4 execution."
+        authorization_text = "Continue with the registered development-v5 execution."
         authorization = {
             "schema_version": "cbf2026-qualified-authorization-v1",
             "authorized": True,
             "kind": "development",
-            "version": "v4",
+            "version": "v5",
             "protocol_sha256": hashlib.sha256(protocol_path.read_bytes()).hexdigest(),
             "implementation_identity": protocol["repository"]["head"],
             "preflight_sha256": hashlib.sha256(preflight_path.read_bytes()).hexdigest(),
@@ -584,10 +618,10 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
                 registrar._repository_identity(self.project),
             )
 
-    def test_failed_development_v1_v2_v3_are_consumed_and_v4_is_non_colliding(self):
+    def test_failed_development_v1_through_v4_are_consumed_and_v5_is_non_colliding(self):
         historical_paths = [
             self.root / f"development-{version}-protocol.json"
-            for version in ("v1", "v2", "v3")
+            for version in ("v1", "v2", "v3", "v4")
         ]
         historical_bytes = b'{"terminal":"failed"}\n'
         for historical_path in historical_paths:
@@ -595,26 +629,26 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
         development_arguments = {
             "count": 10,
             "kind": "development",
-            "trajectory_seeds": list(range(2026080101, 2026080111)),
-            "range_noise_seeds": list(range(2026081101, 2026081111)),
+            "trajectory_seeds": list(range(2026080201, 2026080211)),
+            "range_noise_seeds": list(range(2026081201, 2026081211)),
             "roots": {
                 label: Path(path)
                 for label, path in self.frozen_roots["development"].items()
             },
         }
 
-        for version in ("v1", "v2", "v3"):
+        for version in ("v1", "v2", "v3", "v4"):
             with self.subTest(version=version):
-                with self.assertRaisesRegex(ValueError, "development.*v4"):
+                with self.assertRaisesRegex(ValueError, "development.*v5"):
                     self.build(version=version, **development_arguments)
-        protocol = self.build(version="v4", **development_arguments)
+        protocol = self.build(version="v5", **development_arguments)
 
         for historical_path in historical_paths:
             self.assertEqual(historical_path.read_bytes(), historical_bytes)
-        self.assertEqual(protocol["version"], "v4")
+        self.assertEqual(protocol["version"], "v5")
         self.assertEqual(protocol["roots"], self.frozen_roots["development"])
-        self.assertTrue(protocol["roots"]["raw"].endswith("/v4"))
-        self.assertTrue(protocol["roots"]["analysis"].endswith("/v4"))
+        self.assertTrue(protocol["roots"]["raw"].endswith("/v5"))
+        self.assertTrue(protocol["roots"]["analysis"].endswith("/v5"))
 
     def test_uncommitted_artifacts_cannot_authorize_execution(self):
         bundle = self.prepare_registered_bundle()
@@ -786,7 +820,7 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(ValueError, "development"):
             self.build(
-                trajectory_seeds=[2026080101] + list(range(2026082002, 2026082061))
+                trajectory_seeds=[2026080201] + list(range(2026082002, 2026082061))
             )
 
     def test_smoke_schedule_is_exact_reused_and_excluded_from_denominator(self):
@@ -1018,16 +1052,17 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
                 "--input-root", raw, "--output-root", analysis,
             ])
 
-    def test_development_runner_and_analyzer_argv_bind_v4_and_ablation(self):
+    def test_development_runner_and_analyzer_argv_bind_v5_family_and_ablation(self):
         arguments = argparse.Namespace(
-            kind="development", version="v4",
+            kind="development", version="v5",
             protocol_json=Path("docs/diagnostics/development-protocol.json"),
             binary=Path("build-diagnostic/Swarm"),
             base_config=Path("config/config.json"),
             primary_config=Path("config/diagnostics/primary.json"),
             ablation_config=Path("config/diagnostics/ablation.json"),
-            trajectory_seeds="2026080101:2026080110",
-            range_noise_seeds="2026081101:2026081110", frames=1000,
+            initial_family=Path("config/diagnostics/qualified_initial_family_v1.json"),
+            trajectory_seeds="2026080201:2026080210",
+            range_noise_seeds="2026081201:2026081210", frames=1000,
             raw_root=Path("/private/tmp/development-raw"),
             analysis_root=Path("/private/tmp/development-analysis"),
         )
@@ -1035,7 +1070,7 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
         self.assertEqual(registrar._runner_argv(arguments), [
             "conda", "run", "-n", "cbf_env", "python", "-m",
             "scripts.diagnostics.run_qualified_closure_campaign",
-            "--kind", "development", "--version", "v4",
+            "--kind", "development", "--version", "v5",
             "--protocol", "docs/diagnostics/development-protocol.json",
             "--authorization",
             "docs/diagnostics/reviews/development-authorization.json",
@@ -1043,15 +1078,16 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
             "--base-config", "config/config.json",
             "--primary-config", "config/diagnostics/primary.json",
             "--ablation-config", "config/diagnostics/ablation.json",
-            "--trajectory-seeds", "2026080101:2026080110",
-            "--range-noise-seeds", "2026081101:2026081110",
+            "--initial-family", "config/diagnostics/qualified_initial_family_v1.json",
+            "--trajectory-seeds", "2026080201:2026080210",
+            "--range-noise-seeds", "2026081201:2026081210",
             "--frames", "1000",
             "--output-root", "/private/tmp/development-raw",
         ])
         self.assertEqual(registrar._analyzer_argv(arguments), [
             "conda", "run", "-n", "cbf_env", "python", "-m",
             "scripts.diagnostics.analyze_qualified_closure_campaign",
-            "--kind", "development", "--version", "v4",
+            "--kind", "development", "--version", "v5",
             "--protocol", "docs/diagnostics/development-protocol.json",
             "--authorization",
             "docs/diagnostics/reviews/development-authorization.json",
@@ -1193,19 +1229,20 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
         output = self.root / "registered"
         output.mkdir()
         arguments = argparse.Namespace(
-            kind="development", version="v4",
+            kind="development", version="v5",
             implementation_report=report, implementation_review=review,
             development_protocol=None, development_report=None,
             development_review=None, binary=binary, base_config=base,
             primary_config=primary, ablation_config=ablation,
-            trajectory_seeds="2026080101:2026080110",
-            range_noise_seeds="2026081101:2026081110", frames=1000,
+            initial_family=self.initial_family,
+            trajectory_seeds="2026080201:2026080210",
+            range_noise_seeds="2026081201:2026081210", frames=1000,
             smoke_trajectory_seed=None, smoke_range_noise_seed=None,
             smoke_frames=None, smoke_a_raw_root=None,
             smoke_a_analysis_root=None, smoke_b_raw_root=None,
             smoke_b_analysis_root=None,
-            raw_root=self.root / "raw" / "v4",
-            analysis_root=self.root / "analysis" / "v4",
+            raw_root=self.root / "raw" / "v5",
+            analysis_root=self.root / "analysis" / "v5",
             protocol_json=output / "fixture-protocol.json",
             protocol_md=output / "fixture-protocol.md",
         )
@@ -1223,7 +1260,7 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
             "smoke_schedule", "universes", "bindings", "thresholds", "roots",
             "authorization", "supervision", "no_retry", "repository",
             "review_artifacts", "build", "tooling", "publication",
-            "runner_argv", "analyzer_argv", "semantic_sha256",
+            "runner_argv", "analyzer_argv", "initial_state", "semantic_sha256",
         }
         self.assertEqual(set(protocol), expected_top)
         self.assertEqual(set(protocol["review_artifacts"]), {
@@ -1263,6 +1300,210 @@ class QualifiedClosureRegistrarTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "conda identity mutated"):
                 verify_registered_protocol(protocol)
+
+class QualifiedClosureV5InitialFamilyTests(unittest.TestCase):
+    """Freeze the development-v5 initial-family and predecessor-state contract."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="qualified-v5-registrar-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.project = self.root / "repo"
+        self.project.mkdir()
+        self.family_path = (
+            Path(__file__).resolve().parents[1]
+            / "config" / "diagnostics" / "qualified_initial_family_v1.json"
+        )
+        self.files = {}
+        for name in (
+            "source.py", "Swarm", "base.json", "primary.json", "ablation.json",
+            "dependencies.txt", "schema.json",
+        ):
+            path = self.project / name
+            path.write_text(name, encoding="utf-8")
+            self.files[name] = path
+        self.files["primary.json"].write_text(json.dumps({
+            "position_covariance": {"reference-selection": "dynamic-lower-index"}
+        }), encoding="utf-8")
+        self.files["ablation.json"].write_text(json.dumps({
+            "position_covariance": {"reference-selection": "fixed-cbf-only"}
+        }), encoding="utf-8")
+        self.roots = {
+            "raw": str(self.root / "development" / "v5"),
+            "analysis": str(self.root / "development-analysis" / "v5"),
+        }
+        self.roots_patch = mock.patch.object(
+            registrar, "FROZEN_EXECUTION_ROOTS", {
+                **registrar.FROZEN_EXECUTION_ROOTS,
+                "development": dict(self.roots),
+            },
+        )
+        self.roots_patch.start()
+        self.addCleanup(self.roots_patch.stop)
+
+    def build(self, **overrides):
+        arguments = {
+            "kind": "development",
+            "version": "v5",
+            "project_root": self.project,
+            "trajectory_seeds": list(range(2026080201, 2026080211)),
+            "range_noise_seeds": list(range(2026081201, 2026081211)),
+            "frames": 1000,
+            "roots": dict(self.roots),
+            "bindings": {
+                "source": self.files["source.py"],
+                "binary": self.files["Swarm"],
+                "base_config": self.files["base.json"],
+                "primary_config": self.files["primary.json"],
+                "ablation_config": self.files["ablation.json"],
+                "dependencies": self.files["dependencies.txt"],
+                "schema": self.files["schema.json"],
+                "initial_family": self.family_path,
+            },
+            "thresholds": copy.deepcopy(FROZEN_THRESHOLDS),
+            "dirty_relevant_paths": [],
+        }
+        arguments.update(overrides)
+        return build_qualified_closure_protocol(**arguments)
+
+    def test_v5_protocol_binds_exact_initial_family_and_per_mission_hashes(self):
+        protocol = self.build()
+
+        self.assertEqual(
+            protocol["schema_version"], "cbf2026-qualified-closure-protocol-v2"
+        )
+        self.assertEqual(protocol["version"], "v5")
+        initial = protocol["initial_state"]
+        self.assertEqual(set(initial), {
+            "family_schema_version", "namespace", "family_semantic_sha256",
+            "registered_trajectory_seeds", "audit_trajectory_seeds", "missions",
+            "frozen_summary", "admission", "perturbation_policy",
+        })
+        self.assertEqual(initial["namespace"], "cbf2026-v5-initial")
+        self.assertEqual(initial["registered_trajectory_seeds"], list(range(2026080201, 2026080211)))
+        self.assertEqual(initial["audit_trajectory_seeds"], list(range(2026080201, 2026080301)))
+        self.assertEqual(initial["perturbation_policy"], {"clamp": False, "resample": False})
+        self.assertEqual(
+            protocol["schedule"]["missions"],
+            [
+                {
+                    "mission_id": f"mission-{index:02d}",
+                    "trajectory_seed": item["trajectory_seed"],
+                    "range_noise_seed": 2026081200 + index,
+                    "frames": 1000,
+                    "initial_positions_sha256": item["positions_sha256"],
+                }
+                for index, item in enumerate(initial["missions"], start=1)
+            ],
+        )
+
+    def test_v4_and_old_development_seed_schedules_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, "development.*v5"):
+            self.build(version="v4")
+        with self.assertRaisesRegex(ValueError, "frozen sequence"):
+            self.build(trajectory_seeds=list(range(2026080101, 2026080111)))
+        with self.assertRaisesRegex(ValueError, "frozen sequence"):
+            self.build(range_noise_seeds=list(range(2026081101, 2026081111)))
+
+    def test_family_duplicate_key_and_self_rehashed_mutations_are_rejected(self):
+        duplicate = self.root / "duplicate-family.json"
+        text = self.family_path.read_text(encoding="utf-8")
+        duplicate.write_text(text.replace(
+            '"namespace": "cbf2026-v5-initial",',
+            '"namespace": "cbf2026-v5-initial",\n  "namespace": "cbf2026-v5-initial",',
+            1,
+        ), encoding="utf-8")
+        bindings = dict(self.build()["bindings"])
+        binding_paths = {
+            label: Path(identity["path"]) for label, identity in bindings.items()
+        }
+        binding_paths["initial_family"] = duplicate
+        with mock.patch.object(registrar, "FROZEN_INITIAL_FAMILY_PATH", duplicate):
+            with self.assertRaisesRegex(ValueError, "duplicate|unreadable"):
+                self.build(bindings=binding_paths)
+
+        family = json.loads(self.family_path.read_text(encoding="utf-8"))
+        family["template_positions_m"][0][0] += 0.01
+        family["semantic_sha256"] = registrar._initial_family_semantic_sha256(family)
+        mutated = self.root / "self-rehashed-family.json"
+        mutated.write_text(json.dumps(family), encoding="utf-8")
+        binding_paths["initial_family"] = mutated
+        with mock.patch.object(registrar, "FROZEN_INITIAL_FAMILY_PATH", mutated):
+            with self.assertRaises(ValueError):
+                self.build(bindings=binding_paths)
+
+        substitute = self.root / "same-bytes-different-family.json"
+        substitute.write_bytes(self.family_path.read_bytes())
+        binding_paths["initial_family"] = substitute
+        with self.assertRaisesRegex(ValueError, "literal initial-family"):
+            self.build(bindings=binding_paths)
+
+        for label, mutate in (
+            ("namespace", lambda value: value.__setitem__("namespace", "substitute")),
+            ("summary", lambda value: value["frozen_summary"]["registered"].__setitem__(
+                "minimum_barrier_m", value["frozen_summary"]["registered"]["minimum_barrier_m"] + 0.01
+            )),
+            ("admission", lambda value: value["admission"].__setitem__(
+                "minimum_qp_margin_mps", 0.69
+            )),
+            ("seed", lambda value: value["schedule"]["registered_trajectory_seeds"].__setitem__(
+                0, 2026080101
+            )),
+            ("position", lambda value: value["frozen_summary"].__setitem__(
+                "representative_positions_sha256", "0" * 64
+            )),
+        ):
+            with self.subTest(label=label):
+                candidate = json.loads(self.family_path.read_text(encoding="utf-8"))
+                mutate(candidate)
+                candidate["semantic_sha256"] = registrar._initial_family_semantic_sha256(candidate)
+                candidate_path = self.root / f"self-rehashed-{label}.json"
+                candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
+                binding_paths["initial_family"] = candidate_path
+                with mock.patch.object(
+                    registrar, "FROZEN_INITIAL_FAMILY_PATH", candidate_path
+                ):
+                    with self.assertRaises(ValueError):
+                        self.build(bindings=binding_paths)
+
+    def test_self_rehashed_protocol_initial_state_substitution_is_rejected(self):
+        protocol = self.build()
+        protocol["initial_state"]["missions"][0]["positions_sha256"] = "0" * 64
+        protocol["schedule"]["missions"][0]["initial_positions_sha256"] = "0" * 64
+        protocol["semantic_sha256"] = registrar._semantic_sha256(protocol)
+        with self.assertRaisesRegex(ValueError, "initial-state"):
+            registrar._verify_initial_state_binding(protocol)
+
+    def test_predecessor_tree_identity_rejects_absence_mutation_and_special_files(self):
+        raw = self.root / "v4-raw"
+        analysis = self.root / "v4-analysis"
+        raw.mkdir()
+        analysis.mkdir()
+        for index in range(28):
+            (raw / f"member-{index:02d}.dat").write_bytes(f"raw-{index}".encode())
+        for index in range(3):
+            (analysis / f"member-{index:02d}.dat").write_bytes(f"analysis-{index}".encode())
+        raw_manifest = raw / "member-00.dat"
+        analysis_manifest = analysis / "member-00.dat"
+        frozen = {
+            "absent": tuple(self.root / f"absent-v{version}-{kind}" for version in range(1, 4) for kind in ("raw", "analysis")),
+            "terminal": {
+                "raw": {**registrar._directory_tree_identity(raw), "root": str(raw), "manifest_sha256": registrar._sha256(raw_manifest), "manifest_name": raw_manifest.name},
+                "analysis": {**registrar._directory_tree_identity(analysis), "root": str(analysis), "manifest_sha256": registrar._sha256(analysis_manifest), "manifest_name": analysis_manifest.name},
+            },
+        }
+        with mock.patch.object(registrar, "FROZEN_DEVELOPMENT_PREDECESSOR_STATE", frozen):
+            registrar.verify_development_predecessor_state()
+            raw_manifest.write_bytes(b"mutated")
+            with self.assertRaisesRegex(ValueError, "predecessor"):
+                registrar.verify_development_predecessor_state()
+
+        raw_manifest.write_bytes(b"raw-0")
+        frozen["terminal"]["raw"] = {**registrar._directory_tree_identity(raw), "root": str(raw), "manifest_sha256": registrar._sha256(raw_manifest), "manifest_name": raw_manifest.name}
+        shutil.rmtree(analysis)
+        with mock.patch.object(registrar, "FROZEN_DEVELOPMENT_PREDECESSOR_STATE", frozen):
+            with self.assertRaisesRegex(ValueError, "predecessor"):
+                registrar.verify_development_predecessor_state()
 
 
 if __name__ == "__main__":

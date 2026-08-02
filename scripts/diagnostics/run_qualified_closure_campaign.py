@@ -30,11 +30,16 @@ START_FREE_BYTES = 8_000_000_000
 STOP_FREE_BYTES = 6_000_000_000
 CACHE_CAP_BYTES = 2_000_000_000
 DEVELOPMENT_RAW_ROOT = Path(
-    "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v4"
+    "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v5"
 )
 DEVELOPMENT_ANALYSIS_ROOT = Path(
-    "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v4"
+    "/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v5"
 )
+INITIAL_FAMILY_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "config" / "diagnostics" / "qualified_initial_family_v1.json"
+)
+_INITIAL_AUDIT_CACHE = {}
 
 
 def project_raw_estimator_tuple(
@@ -143,25 +148,12 @@ def sha256_path(path: Path) -> str:
 
 def development_schedule() -> list[dict]:
     """Return the frozen ten-mission development schedule."""
-    return [
-        {
-            "campaign_id": "development-v4",
-            "mission_id": f"mission-{index:02d}",
-            "trajectory_seed": trajectory_seed,
-            "range_noise_seed": range_noise_seed,
-            "frames": 1000,
-            "horizon_s": 500.0,
-            "conditions": ["dynamic_primary", "fixed_fim_ablation"],
-        }
-        for index, (trajectory_seed, range_noise_seed) in enumerate(
-            zip(
-                range(2026080101, 2026080111),
-                range(2026081101, 2026081111),
-                strict=True,
-            ),
-            start=1,
-        )
-    ]
+    return _schedule_from_arguments(argparse.Namespace(
+        kind="development", version="v5", smoke_id=None,
+        trajectory_seeds="2026080201:2026080210",
+        range_noise_seeds="2026081201:2026081210",
+        frames=1000, initial_family=INITIAL_FAMILY_PATH,
+    ))
 
 
 def write_schedule_no_replace(path: Path, schedule: list[dict]) -> None:
@@ -181,6 +173,8 @@ def materialize_primary_config(
     overlay_path: Path,
     output_path: Path,
     mission: dict,
+    *,
+    initial_family_path: Path | None = None,
 ) -> dict:
     """Deep-merge the registered primary overlay and bind one mission."""
     from scripts.diagnostics.qualified_config import validate_qualified_config
@@ -192,6 +186,9 @@ def materialize_primary_config(
     if overlay["position_covariance"]["reference-selection"] != "dynamic-lower-index":
         raise ValueError("Swarm may only receive the dynamic primary overlay")
     config = deep_merge(base, overlay)
+    _bind_v5_initial_positions(
+        config, mission, initial_family_path=initial_family_path
+    )
     config.setdefault("execute", {})["random-seed"] = mission["trajectory_seed"]
     config["execute"]["time-total"] = mission["horizon_s"]
     config["output_path"] = str(Path(output_path).parent)
@@ -209,6 +206,47 @@ def materialize_primary_config(
     return config
 
 
+def materialize_ablation_config(
+    base_path: Path,
+    overlay_path: Path,
+    output_path: Path,
+    mission: dict,
+    *,
+    initial_family_path: Path | None = None,
+) -> dict:
+    """Materialize the fixed-FIM overlay with the same frozen v5 positions."""
+    from scripts.diagnostics.qualified_config import validate_qualified_config
+
+    base = _read_json_object(Path(base_path), "base config")
+    overlay = _read_json_object(Path(overlay_path), "ablation overlay")
+    if not validate_qualified_config(overlay):
+        raise ValueError("ablation overlay fails strict qualified validation")
+    if overlay["position_covariance"]["reference-selection"] != "fixed-cbf-only":
+        raise ValueError("ablation overlay must select fixed-cbf-only references")
+    config = deep_merge(base, overlay)
+    _bind_v5_initial_positions(
+        config, mission, initial_family_path=initial_family_path
+    )
+    config.setdefault("execute", {})["random-seed"] = mission["trajectory_seed"]
+    config["execute"]["time-total"] = mission["horizon_s"]
+    _publish_json_no_replace(Path(output_path), config)
+    return config
+
+
+def _bind_v5_initial_positions(
+    config: dict, mission: dict, *, initial_family_path: Path | None
+) -> None:
+    if mission.get("campaign_id") != "development-v5":
+        return
+    if initial_family_path is None:
+        raise ValueError("development-v5 materialization requires initial-family")
+    positions = _load_v5_positions(initial_family_path, mission)
+    config.setdefault("initial", {})["position"] = {
+        "method": "specified",
+        "positions": [list(position) for position in positions],
+    }
+
+
 def deep_merge(base: dict, overlay: dict) -> dict:
     """Recursively merge JSON objects without mutating either operand."""
     merged = copy.deepcopy(base)
@@ -221,10 +259,71 @@ def deep_merge(base: dict, overlay: dict) -> dict:
 
 
 def _read_json_object(path: Path, label: str) -> dict:
-    value = json.loads(path.read_text(encoding="utf-8"))
+    def reject_duplicate(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"{label} contains duplicate key: {key}")
+            result[key] = value
+        return result
+
+    value = json.loads(
+        path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate
+    )
     if not isinstance(value, dict):
         raise ValueError(f"{label} must be a JSON object")
     return value
+
+
+def _derive_runtime_initial_state(path: Path):
+    from scripts.diagnostics.qualified_initial_state import (
+        audit_frozen_initial_family,
+        load_qualified_initial_family,
+    )
+
+    path = Path(path)
+    before = sha256_path(path)
+    family = load_qualified_initial_family(path)
+    after = sha256_path(path)
+    if before != after:
+        raise ValueError("initial family changed while being validated")
+    cache_key = (after, family["semantic_sha256"])
+    audit = _INITIAL_AUDIT_CACHE.get(cache_key)
+    if audit is None:
+        audit = audit_frozen_initial_family(family)
+        _INITIAL_AUDIT_CACHE[cache_key] = audit
+    schedule = family["schedule"]
+    declaration = {
+        "family_schema_version": family["schema_version"],
+        "namespace": family["namespace"],
+        "family_semantic_sha256": family["semantic_sha256"],
+        "registered_trajectory_seeds": list(schedule["registered_trajectory_seeds"]),
+        "audit_trajectory_seeds": list(range(
+            schedule["audit_seed_first"], schedule["audit_seed_last"] + 1,
+        )),
+        "missions": [
+            {"trajectory_seed": item.seed, "positions_sha256": item.positions_sha256}
+            for item in audit.registered.audits
+        ],
+        "frozen_summary": family["frozen_summary"],
+        "admission": family["admission"],
+        "perturbation_policy": {
+            "clamp": family["perturbation"]["clamp"],
+            "resample": family["perturbation"]["resample"],
+        },
+    }
+    return family, audit, declaration
+
+
+def _load_v5_positions(path: Path, mission: dict):
+    _, audit, _ = _derive_runtime_initial_state(Path(path))
+    by_seed = {item.seed: item for item in audit.registered.audits}
+    selected = by_seed.get(mission.get("trajectory_seed"))
+    if selected is None or not selected.accepted:
+        raise ValueError("mission trajectory seed is not admitted by the frozen family")
+    if selected.positions_sha256 != mission.get("initial_positions_sha256"):
+        raise ValueError("mission initial-position SHA-256 differs from frozen family")
+    return selected.positions
 
 
 def validate_new_campaign_root(
@@ -629,6 +728,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base-config", type=Path, required=True)
     parser.add_argument("--primary-config", type=Path, required=True)
     parser.add_argument("--ablation-config", type=Path, required=True)
+    parser.add_argument("--initial-family", type=Path)
     parser.add_argument("--trajectory-seeds", required=True)
     parser.add_argument("--range-noise-seeds", required=True)
     parser.add_argument("--frames", type=int, required=True)
@@ -677,11 +777,20 @@ def _runtime_runner_argv(arguments) -> list[str]:
         "--base-config", str(arguments.base_config),
         "--primary-config", str(arguments.primary_config),
         "--ablation-config", str(arguments.ablation_config),
+    ]
+    initial_family = getattr(arguments, "initial_family", None)
+    if arguments.kind == "development":
+        if initial_family is None:
+            raise ValueError("development runner requires --initial-family")
+        shared.extend(["--initial-family", str(initial_family)])
+    elif initial_family is not None:
+        raise ValueError("confirmatory runner must not accept --initial-family")
+    shared.extend([
         "--trajectory-seeds", arguments.trajectory_seeds,
         "--range-noise-seeds", arguments.range_noise_seeds,
         "--frames", str(arguments.frames),
         "--output-root", str(arguments.output_root),
-    ]
+    ])
     if arguments.kind == "confirmatory-smoke":
         return prefix + [
             "--kind", arguments.kind,
@@ -701,6 +810,9 @@ class ProductionOperations:
     def __init__(self, *, available_bytes_fn=None):
         self.protocol = None
         self.available_bytes_fn = available_bytes_fn
+        self.initial_family = None
+        self.initial_family_audit = None
+        self.initial_positions_by_seed = {}
 
     def validate_registration(self, arguments):
         from scripts.diagnostics.register_qualified_closure_campaign import (
@@ -744,6 +856,29 @@ class ProductionOperations:
             raise ValueError("runner range-noise schedule differs from protocol")
         if schedule.get("frames") != arguments.frames or protocol.get("no_retry") is not True:
             raise ValueError("runner frame/retry policy differs from protocol")
+        initial_family_path = getattr(arguments, "initial_family", None)
+        if arguments.kind == "development":
+            if initial_family_path is None:
+                raise ValueError("development runner requires --initial-family")
+            binding = protocol.get("bindings", {}).get("initial_family", {})
+            path = Path(initial_family_path)
+            if (
+                path.is_symlink() or not path.is_file()
+                or path.resolve() != Path(binding.get("path", "")).resolve()
+                or sha256_path(path) != binding.get("sha256")
+                or path.stat().st_size != binding.get("bytes")
+            ):
+                raise ValueError("initial-family identity differs from protocol")
+            family, audit, declaration = _derive_runtime_initial_state(path)
+            if declaration != protocol.get("initial_state"):
+                raise ValueError("runtime initial-family derivation differs from protocol")
+            self.initial_family = family
+            self.initial_family_audit = audit
+            self.initial_positions_by_seed = {
+                item.seed: item.positions for item in audit.registered.audits
+            }
+        elif initial_family_path is not None:
+            raise ValueError("confirmatory runner must not accept --initial-family")
         _validate_runtime_runner_argv(protocol, arguments)
         self.protocol = protocol
         return {
@@ -761,6 +896,8 @@ class ProductionOperations:
             "primary_config": arguments.primary_config,
             "ablation_config": arguments.ablation_config,
         }
+        if arguments.kind == "development":
+            mapping["initial_family"] = arguments.initial_family
         result = {}
         for label, path in mapping.items():
             path = Path(path)
@@ -794,11 +931,34 @@ class ProductionOperations:
                 "trajectory_seed": mission["trajectory_seed"],
                 "range_noise_seed": mission["range_noise_seed"],
                 "frames": mission["frames"],
+                **(
+                    {"initial_positions_sha256": mission["initial_positions_sha256"]}
+                    if mission["campaign_id"] == "development-v5" else {}
+                ),
             }
             for mission in schedule
         ]
         if projection != registered:
             raise ValueError("materialized schedule differs from registered missions")
+
+    def audit_initial_family(self, arguments, schedule):
+        if arguments.kind != "development":
+            return
+        _, audit, declaration = _derive_runtime_initial_state(arguments.initial_family)
+        if declaration != self.protocol.get("initial_state"):
+            raise ValueError("pre-root initial-family audit differs from protocol")
+        by_seed = {item.seed: item for item in audit.registered.audits}
+        for mission in schedule:
+            item = by_seed.get(mission["trajectory_seed"])
+            if (
+                item is None or not item.accepted
+                or item.positions_sha256 != mission.get("initial_positions_sha256")
+            ):
+                raise ValueError("pre-root mission initial state is not frozen and admitted")
+        self.initial_family_audit = audit
+        self.initial_positions_by_seed = {
+            item.seed: item.positions for item in audit.registered.audits
+        }
 
     def materialize_config(self, arguments, mission, config_path):
         config = materialize_primary_config(
@@ -806,11 +966,17 @@ class ProductionOperations:
             arguments.primary_config,
             config_path,
             mission,
+            initial_family_path=arguments.initial_family,
         )
         return {"config": config, "sha256": sha256_path(config_path)}
 
     def run_swarm(self, mission, mission_stage, config_path):
-        state = _SwarmStreamState(mission)
+        state = _SwarmStreamState(
+            mission,
+            expected_initial_positions=self.initial_positions_by_seed.get(
+                mission["trajectory_seed"]
+            ),
+        )
         supervisor = supervise_child_to_gzip(
             [str(self.protocol["bindings"]["binary"]["path"]), str(config_path)],
             stream_path=mission_stage / "swarm.jsonl.gz",
@@ -880,13 +1046,18 @@ class ProductionOperations:
         else:
             base = Path(self.protocol["bindings"]["base_config"]["path"])
             overlay = Path(self.protocol["bindings"]["ablation_config"]["path"])
-            config = deep_merge(
-                _read_json_object(base, "base config"),
-                _read_json_object(overlay, "ablation config"),
+            initial_family_path = (
+                Path(self.protocol["bindings"]["initial_family"]["path"])
+                if mission.get("campaign_id") == "development-v5"
+                else None
             )
-            config.setdefault("execute", {})["random-seed"] = mission["trajectory_seed"]
-            config["execute"]["time-total"] = mission["horizon_s"]
-            _publish_json_no_replace(config_path, config)
+            config = materialize_ablation_config(
+                base,
+                overlay,
+                config_path,
+                mission,
+                initial_family_path=initial_family_path,
+            )
         producer_root = _prepare_replay_namespace(
             mission_stage,
             condition,
@@ -1094,8 +1265,18 @@ def _serialize_frozen_key(value):
 class _SwarmStreamState:
     """Validate exact record schemas and the bounded Swarm lifecycle order."""
 
-    def __init__(self, mission):
+    def __init__(self, mission, *, expected_initial_positions=None):
         self.mission = mission
+        self.expected_initial_positions = (
+            None if expected_initial_positions is None
+            else tuple(tuple(float(value) for value in position)
+                       for position in expected_initial_positions)
+        )
+        if (
+            self.expected_initial_positions is not None
+            and len(self.expected_initial_positions) != 14
+        ):
+            raise ValueError("frozen initial position universe must contain 14 UAVs")
         self.initialization = 0
         self.last_controller = -1
         self.endpoint_frame = None
@@ -1170,6 +1351,12 @@ class _SwarmStreamState:
                 and row.get("robot_id") == self.initialization + 1
                 and validate_initialization_schema(row)
             )
+            if valid and self.expected_initial_positions is not None:
+                expected = self.expected_initial_positions[self.initialization]
+                observed = tuple(row["analyzer_only"]["truth_position"])
+                if observed != expected:
+                    self.reason = "initialization_truth_position_mismatch"
+                    return False
             if valid:
                 self.initialization += 1
             return valid
@@ -1278,6 +1465,27 @@ class _SwarmStreamState:
                     self.endpoint_count = 0
                     self.reason = runtime["abort_reason"]
                 return valid
+            if frame == 0 and self.expected_initial_positions is not None:
+                analyzer = row.get("analyzer_only")
+                truth = analyzer.get("truth") if isinstance(analyzer, dict) else None
+                if not isinstance(truth, list):
+                    self.reason = "frame_zero_truth_position_mismatch"
+                    return False
+                observed = {}
+                for item in truth:
+                    if not isinstance(item, dict):
+                        self.reason = "frame_zero_truth_position_mismatch"
+                        return False
+                    observed[item.get("robot_id")] = tuple(item.get("position", ()))
+                expected = {
+                    robot_id: position
+                    for robot_id, position in enumerate(
+                        self.expected_initial_positions, start=1
+                    )
+                }
+                if observed != expected:
+                    self.reason = "frame_zero_truth_position_mismatch"
+                    return False
             reset = runtime.get("reset", {})
             proposed = (
                 None if self.pending_reset is None
@@ -1951,6 +2159,9 @@ def execute_campaign(arguments, operations) -> dict:
     identities = operations.collect_identities(arguments)
     schedule = _schedule_from_arguments(arguments)
     operations.schedule_frozen(schedule)
+    family_auditor = getattr(operations, "audit_initial_family", None)
+    if arguments.kind == "development" and family_auditor is not None:
+        family_auditor(arguments, schedule)
 
     output_root = claim_campaign_root(
         Path(arguments.output_root),
@@ -2142,14 +2353,22 @@ def _schedule_from_arguments(arguments) -> list[dict]:
     if len(trajectory) != len(noise):
         raise ValueError("trajectory and range-noise seed counts differ")
     if arguments.kind == "development":
-        expected_trajectory = list(range(2026080101, 2026080111))
-        expected_noise = list(range(2026081101, 2026081111))
+        expected_trajectory = list(range(2026080201, 2026080211))
+        expected_noise = list(range(2026081201, 2026081211))
         if trajectory != expected_trajectory or noise != expected_noise:
             raise ValueError("development seed schedule is not the registered schedule")
-        if arguments.frames != 1000 or arguments.version != "v4":
-            raise ValueError("development run requires version v4 and 1000 frames")
-        campaign_id = "development-v4"
+        if arguments.frames != 1000 or arguments.version != "v5":
+            raise ValueError("development run requires version v5 and 1000 frames")
+        if getattr(arguments, "initial_family", None) is None:
+            raise ValueError("development run requires --initial-family")
+        _, initial_audit, _ = _derive_runtime_initial_state(arguments.initial_family)
+        initial_by_seed = {
+            item.seed: item for item in initial_audit.registered.audits
+        }
+        campaign_id = "development-v5"
     elif arguments.kind == "confirmatory":
+        if getattr(arguments, "initial_family", None) is not None:
+            raise ValueError("confirmatory run must not accept --initial-family")
         expected_trajectory = list(range(2026082001, 2026082061))
         expected_noise = list(range(2026083001, 2026083061))
         if trajectory != expected_trajectory or noise != expected_noise:
@@ -2158,6 +2377,8 @@ def _schedule_from_arguments(arguments) -> list[dict]:
             raise ValueError("confirmatory run requires version v1 and 1000 frames")
         campaign_id = "confirmatory-v1"
     elif arguments.kind == "confirmatory-smoke":
+        if getattr(arguments, "initial_family", None) is not None:
+            raise ValueError("confirmatory-smoke must not accept --initial-family")
         if trajectory != [2026089001] or noise != [2026089101]:
             raise ValueError("confirmatory-smoke seed schedule is not registered")
         if arguments.frames != 20 or arguments.smoke_id not in {"a", "b"}:
@@ -2176,6 +2397,10 @@ def _schedule_from_arguments(arguments) -> list[dict]:
             "frames": arguments.frames,
             "horizon_s": horizon_s,
             "conditions": ["dynamic_primary", "fixed_fim_ablation"],
+            **(
+                {"initial_positions_sha256": initial_by_seed[trajectory_seed].positions_sha256}
+                if arguments.kind == "development" else {}
+            ),
         }
         for position, (trajectory_seed, range_noise_seed) in enumerate(
             zip(trajectory, noise, strict=True), start=1

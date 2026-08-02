@@ -22,6 +22,7 @@ COMPACT_CAP_BYTES = 25_000_000
 ANALYSIS_START_FREE_BYTES = 8_000_000_000
 ANALYSIS_STOP_FREE_BYTES = 6_000_000_000
 ANALYSIS_CACHE_CAP_BYTES = 2_000_000_000
+_INITIAL_FAMILY_AUDIT_CACHE = {}
 
 
 def validate_analysis_output_root(root, *, available_bytes_fn=None):
@@ -1019,13 +1020,13 @@ def validate_analysis_registration_contract(protocol, arguments):
         output_label = "analysis"
     if protocol.get("kind") != registered_kind:
         raise ValueError("analysis kind differs from registered protocol")
-    expected_version = "v4" if registered_kind == "development" else "v1"
+    expected_version = "v5" if registered_kind == "development" else "v1"
     if (
         arguments.version != expected_version
         or protocol.get("version") != arguments.version
     ):
         if registered_kind == "development":
-            raise ValueError("development analysis requires version v4")
+            raise ValueError("development analysis requires version v5")
         raise ValueError("analysis version differs from registered protocol")
     input_root = Path(arguments.input_root)
     output_root = Path(arguments.output_root)
@@ -1050,6 +1051,10 @@ def validate_analysis_registration_contract(protocol, arguments):
     elif arguments.ablation_config is not None:
         raise ValueError("analysis argv contains an unregistered ablation config")
     _validate_runtime_analyzer_argv(protocol, arguments)
+    initial_audits = (
+        _load_development_initial_state_contract(protocol)
+        if registered_kind == "development" else None
+    )
     if smoke:
         smoke_schedule = protocol.get("smoke_schedule")
         if (
@@ -1085,6 +1090,7 @@ def validate_analysis_registration_contract(protocol, arguments):
         "registered_missions": registered_missions,
         "registered_schedule": registered_schedule,
         "analysis_protocol": analysis_protocol,
+        "initial_audits": initial_audits,
     }
 
 
@@ -1093,6 +1099,9 @@ def _registered_schedule_envelope(registered_missions, *, campaign_id):
     expected_fields = {
         "mission_id", "trajectory_seed", "range_noise_seed", "frames",
     }
+    development_v5 = campaign_id == "development-v5"
+    if development_v5:
+        expected_fields.add("initial_positions_sha256")
     if not isinstance(registered_missions, list) or not isinstance(campaign_id, str):
         raise ValueError("registered mission schedule is invalid")
     schedule = []
@@ -1105,6 +1114,10 @@ def _registered_schedule_envelope(registered_missions, *, campaign_id):
             or type(mission.get("range_noise_seed")) is not int
             or type(mission.get("frames")) is not int
             or mission["frames"] <= 0
+            or (
+                development_v5
+                and not _lower_sha256(mission.get("initial_positions_sha256"))
+            )
         ):
             raise ValueError("registered mission schedule is invalid")
         schedule.append({
@@ -1114,6 +1127,213 @@ def _registered_schedule_envelope(registered_missions, *, campaign_id):
             "conditions": ["dynamic_primary", "fixed_fim_ablation"],
         })
     return schedule
+
+
+def _load_development_initial_state_contract(protocol):
+    """Recompute the full frozen v5 family and bind its registered missions."""
+    from scripts.diagnostics.qualified_initial_state import (
+        audit_frozen_initial_family,
+        load_qualified_initial_family,
+    )
+
+    if not isinstance(protocol, dict) or protocol.get("kind") != "development":
+        raise ValueError("development initial-state protocol is invalid")
+    if protocol.get("version") != "v5":
+        raise ValueError("development initial state requires version v5")
+    identity = protocol.get("bindings", {}).get("initial_family")
+    if (
+        not isinstance(identity, dict)
+        or set(identity) != {"path", "sha256", "bytes"}
+        or not isinstance(identity.get("path"), str)
+        or not _lower_sha256(identity.get("sha256"))
+        or type(identity.get("bytes")) is not int
+        or identity["bytes"] < 0
+    ):
+        raise ValueError("development initial-family binding is invalid")
+    family_path = Path(identity["path"])
+    observed_sha256 = None
+    if (
+        family_path.is_symlink()
+        or not family_path.is_file()
+        or (observed_sha256 := _sha256(family_path)) != identity["sha256"]
+        or family_path.stat().st_size != identity["bytes"]
+    ):
+        raise ValueError("development initial-family identity differs")
+    family = load_qualified_initial_family(family_path)
+    if (
+        _sha256(family_path) != observed_sha256
+        or family_path.stat().st_size != identity["bytes"]
+    ):
+        raise ValueError("development initial-family changed during validation")
+    cache_key = (observed_sha256, family["semantic_sha256"])
+    audited = _INITIAL_FAMILY_AUDIT_CACHE.get(cache_key)
+    if audited is None:
+        audited = audit_frozen_initial_family(family)
+        _INITIAL_FAMILY_AUDIT_CACHE[cache_key] = audited
+    expected_initial_state = {
+        "family_schema_version": family["schema_version"],
+        "namespace": family["namespace"],
+        "family_semantic_sha256": family["semantic_sha256"],
+        "registered_trajectory_seeds": [
+            audit.seed for audit in audited.registered.audits
+        ],
+        "audit_trajectory_seeds": [
+            audit.seed for audit in audited.audit.audits
+        ],
+        "missions": [
+            {
+                "trajectory_seed": audit.seed,
+                "positions_sha256": audit.positions_sha256,
+            }
+            for audit in audited.registered.audits
+        ],
+        "frozen_summary": family["frozen_summary"],
+        "admission": family["admission"],
+        "perturbation_policy": {
+            "clamp": family["perturbation"]["clamp"],
+            "resample": family["perturbation"]["resample"],
+        },
+    }
+    if protocol.get("initial_state") != expected_initial_state:
+        raise ValueError("development initial state differs from frozen family")
+    scheduled = protocol.get("schedule", {}).get("missions")
+    if not isinstance(scheduled, list) or [
+        {
+            "trajectory_seed": mission.get("trajectory_seed"),
+            "positions_sha256": mission.get("initial_positions_sha256"),
+        }
+        for mission in scheduled
+    ] != expected_initial_state["missions"]:
+        raise ValueError("development schedule differs from initial state")
+    return {
+        int(audit.seed): audit for audit in audited.registered.audits
+    }
+
+
+def _read_identity_bound_json(path, identity, label):
+    """Authenticate and parse one immutable byte snapshot of a JSON member."""
+    path = Path(path)
+    if (
+        not _exact_file_identity(identity)
+        or path.is_symlink()
+        or not path.is_file()
+    ):
+        raise ValueError(f"{label} identity differs")
+    try:
+        payload = path.read_bytes()
+    except OSError as error:
+        raise ValueError(f"{label} identity differs") from error
+    if (
+        len(payload) != identity["bytes"]
+        or hashlib.sha256(payload).hexdigest() != identity["sha256"]
+    ):
+        raise ValueError(f"{label} identity differs")
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError(f"{label} is not strict JSON") from error
+    return _strict_line_object(text, label)
+
+
+def _validate_completed_mission_initial_configs(
+    mission_root, manifest, mission, initial_audit
+):
+    """Bind every completed v5 config to one admitted deterministic state."""
+    mission_root = Path(mission_root)
+    if (
+        getattr(initial_audit, "seed", None) != mission.get("trajectory_seed")
+        or getattr(initial_audit, "positions_sha256", None)
+            != mission.get("initial_positions_sha256")
+    ):
+        raise ValueError("mission initial position identity differs")
+    names = (
+        "materialized-primary.json",
+        "materialized-dynamic_primary.json",
+        "materialized-fixed_fim_ablation.json",
+    )
+    declared = manifest.get("member_identities")
+    documents = {}
+    if not isinstance(declared, dict):
+        raise ValueError("materialized initial member identities are absent")
+    for name in names:
+        path = mission_root / name
+        identity = declared.get(name)
+        documents[name] = _read_identity_bound_json(
+            path, identity, f"{name} materialized initial config"
+        )
+    expected_position = {
+        "method": "specified",
+        "positions": [list(position) for position in initial_audit.positions],
+    }
+    initial_subtrees = [document.get("initial") for document in documents.values()]
+    observed_position = (
+        initial_subtrees[0].get("position")
+        if isinstance(initial_subtrees[0], dict) else None
+    )
+    if (
+        not all(isinstance(initial, dict) for initial in initial_subtrees)
+        or any(initial != initial_subtrees[0] for initial in initial_subtrees[1:])
+        or not isinstance(observed_position, dict)
+        or set(observed_position) != {"method", "positions"}
+        or observed_position != expected_position
+    ):
+        raise ValueError("materialized initial state differs from frozen positions")
+    return declared["materialized-primary.json"]
+
+
+def _validate_measurement_config_link(
+    measurement_manifest, mission_manifest, primary_identity, mission_id
+):
+    """Close the primary-config identity chain through Swarm and measurements."""
+    expected = (
+        primary_identity.get("sha256")
+        if _exact_file_identity(primary_identity) else None
+    )
+    if (
+        expected is None
+        or measurement_manifest.get("config_sha256") != expected
+        or mission_manifest.get("swarm", {}).get("config_sha256") != expected
+    ):
+        raise ValueError(f"{mission_id} config SHA identity chain differs")
+
+
+def _validate_swarm_initial_truth(row, initial_audit):
+    """Compare both emitted initial-state witnesses with the frozen positions."""
+    if initial_audit is None:
+        return
+    expected = tuple(tuple(position) for position in initial_audit.positions)
+    if row.get("record_type") == "initialization":
+        robot_id = row.get("robot_id")
+        observed = row.get("analyzer_only", {}).get("truth_position")
+        if (
+            type(robot_id) is not int
+            or robot_id not in range(1, 15)
+            or not isinstance(observed, list)
+            or tuple(observed) != expected[robot_id - 1]
+        ):
+            raise ValueError("Swarm initialization truth differs from frozen positions")
+    elif (
+        row.get("record_type") == "controller_interval"
+        and row.get("frame_index") == 0
+    ):
+        observed = row.get("analyzer_only", {}).get("truth")
+        if not isinstance(observed, list) or len(observed) != 14:
+            raise ValueError("Swarm frame-zero truth differs from frozen positions")
+        by_robot = {}
+        for item in observed:
+            if (
+                not isinstance(item, dict)
+                or type(item.get("robot_id")) is not int
+                or item["robot_id"] not in range(1, 15)
+                or item["robot_id"] in by_robot
+                or not isinstance(item.get("position"), list)
+            ):
+                raise ValueError("Swarm frame-zero truth differs from frozen positions")
+            by_robot[item["robot_id"]] = tuple(item["position"])
+        if by_robot != {
+            robot_id: expected[robot_id - 1] for robot_id in range(1, 15)
+        }:
+            raise ValueError("Swarm frame-zero truth differs from frozen positions")
 
 
 def _validate_runtime_analyzer_argv(protocol, arguments) -> None:
@@ -1159,6 +1379,12 @@ def analyze_campaign_from_arguments(arguments) -> int:
         arguments.authorization,
         allowed_claimed_roots={contract["claimed_root"]},
     )
+    if arguments.kind == "development" and not isinstance(
+        contract.get("initial_audits"), dict
+    ):
+        contract["initial_audits"] = _load_development_initial_state_contract(
+            protocol
+        )
     input_root = Path(arguments.input_root)
     output_root = Path(arguments.output_root)
     validate_analysis_output_root(output_root)
@@ -1243,6 +1469,10 @@ def _preflight_raw_campaign(
         "campaign_id", "mission_id", "trajectory_seed", "range_noise_seed",
         "frames", "horizon_s", "conditions",
     }
+    if registered_schedule and registered_schedule[0].get(
+        "campaign_id"
+    ) == "development-v5":
+        expected_schedule_fields.add("initial_positions_sha256")
     if any(
         not isinstance(row, dict) or set(row) != expected_schedule_fields
         for row in schedule_doc["missions"]
@@ -1323,6 +1553,7 @@ def _analyze_claimed_campaign(
             report = _stream_raw_campaign(
                 input_root, contract["analysis_protocol"],
                 registered, database,
+                initial_audits=contract.get("initial_audits"),
                 disk_guard=lambda: _enforce_analysis_disk_policy(
                     output_root.parent, spool_root
                 ),
@@ -1343,7 +1574,10 @@ def _analyze_claimed_campaign(
     return 0 if manifest["status"] == "completed" and report["passed"] else 1
 
 
-def _stream_raw_campaign(input_root, protocol, missions, database, disk_guard=None):
+def _stream_raw_campaign(
+    input_root, protocol, missions, database, disk_guard=None,
+    initial_audits=None,
+):
     database.execute(
         "CREATE TABLE truth (mission TEXT, frame INTEGER, robot INTEGER, x REAL, y REAL, PRIMARY KEY(mission,frame,robot))"
     )
@@ -1404,11 +1638,24 @@ def _stream_raw_campaign(input_root, protocol, missions, database, disk_guard=No
             incomplete.append(mission_id)
             manifests_complete = 0
             continue
+        initial_audit = None
+        if initial_audits is not None:
+            initial_audit = initial_audits.get(mission["trajectory_seed"])
+            if initial_audit is None:
+                raise ValueError(f"{mission_id} has no frozen initial-state audit")
+            primary_config_identity = _validate_completed_mission_initial_configs(
+                root, manifest, mission, initial_audit
+            )
+        else:
+            primary_config_identity = manifest.get("member_identities", {}).get(
+                "materialized-primary.json"
+            )
         swarm_path = root / "swarm.jsonl.gz"
         declared_swarm_sha = manifest.get("swarm", {}).get("evidence_sha256")
         mission_success = _stream_swarm_evidence(
             swarm_path, declared_swarm_sha, mission, database,
             counters, reset_reasons, disk_guard=disk_guard,
+            expected_initial_audit=initial_audit,
         )
         measurement_root = root / "measurements"
         measurement_manifest = _read_json(
@@ -1449,6 +1696,13 @@ def _stream_raw_campaign(input_root, protocol, missions, database, disk_guard=No
                 raise ValueError(
                     f"{mission_id} measurement manifest identity differs"
                 )
+        if initial_audit is not None:
+            _validate_measurement_config_link(
+                measurement_manifest,
+                manifest,
+                primary_config_identity,
+                mission_id,
+            )
         _stream_measurement_pair(
             measurement_root / "runtime.jsonl.gz",
             measurement_root / "audit.jsonl.gz",
@@ -1730,7 +1984,7 @@ def _analyzer_observed_failed_mission_keys(mission_root, mission):
 
 def _stream_swarm_evidence(
     path, expected_sha, mission, database, counters, reset_reasons,
-    disk_guard=None,
+    disk_guard=None, expected_initial_audit=None,
 ):
     from scripts.diagnostics.run_qualified_closure_campaign import (
         _swarm_row_matches_mission,
@@ -1781,6 +2035,7 @@ def _stream_swarm_evidence(
             if record_type == "initialization":
                 if not validate_initialization_schema(row) or row["robot_id"] != initialization + 1:
                     raise ValueError("initialization schema/order mismatch")
+                _validate_swarm_initial_truth(row, expected_initial_audit)
                 initialization += 1
                 counters["initialization"] += 1
                 database.execute(
@@ -1836,6 +2091,7 @@ def _stream_swarm_evidence(
                     or len(endpoint_keys) != 232
                 ):
                     raise ValueError("controller schema/order/universe mismatch")
+                _validate_swarm_initial_truth(row, expected_initial_audit)
                 reset_runtime = (
                     None if pending_reset is None else pending_reset["runtime"]
                 )
@@ -2463,10 +2719,19 @@ def _sql_distribution(database, selector):
 
 
 def _strict_line_object(line, label):
+    def reject_duplicate_keys(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f"{label} contains duplicate JSON key: {key}")
+            value[key] = item
+        return value
+
     try:
         value = json.loads(
             line,
             parse_constant=lambda token: (_ for _ in ()).throw(ValueError(token)),
+            object_pairs_hook=reject_duplicate_keys,
         )
     except (json.JSONDecodeError, ValueError) as error:
         raise ValueError(f"{label} is not strict JSON") from error

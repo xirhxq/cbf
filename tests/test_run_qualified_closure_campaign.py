@@ -14,6 +14,8 @@ import dataclasses
 from pathlib import Path
 from unittest import mock
 
+import scripts.diagnostics.run_qualified_closure_campaign as runner
+
 from scripts.diagnostics.run_qualified_closure_campaign import (
     DEVELOPMENT_ANALYSIS_ROOT,
     DEVELOPMENT_RAW_ROOT,
@@ -454,23 +456,23 @@ class RunnerScheduleTests(unittest.TestCase):
 
         self.assertEqual(
             DEVELOPMENT_RAW_ROOT,
-            Path("/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v4"),
+            Path("/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v5"),
         )
         self.assertEqual(
             DEVELOPMENT_ANALYSIS_ROOT,
-            Path("/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v4"),
+            Path("/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v5"),
         )
         self.assertEqual(len(schedule), 10)
         self.assertEqual(
             [mission["trajectory_seed"] for mission in schedule],
-            list(range(2026080101, 2026080111)),
+            list(range(2026080201, 2026080211)),
         )
         self.assertEqual(
             [mission["range_noise_seed"] for mission in schedule],
-            list(range(2026081101, 2026081111)),
+            list(range(2026081201, 2026081211)),
         )
         self.assertTrue(all(
-            mission["campaign_id"] == "development-v4"
+            mission["campaign_id"] == "development-v5"
             and mission["frames"] == 1000
             and mission["horizon_s"] == 500.0
             and mission["conditions"]
@@ -478,20 +480,21 @@ class RunnerScheduleTests(unittest.TestCase):
             for mission in schedule
         ))
 
-    def test_development_v4_schedule_is_required_while_confirmatory_remains_v1(self):
+    def test_development_v5_schedule_is_required_while_confirmatory_remains_v1(self):
         development = argparse.Namespace(
-            kind="development", version="v4", smoke_id=None,
-            trajectory_seeds="2026080101:2026080110",
-            range_noise_seeds="2026081101:2026081110", frames=1000,
+            kind="development", version="v5", smoke_id=None,
+            initial_family=runner.INITIAL_FAMILY_PATH,
+            trajectory_seeds="2026080201:2026080210",
+            range_noise_seeds="2026081201:2026081210", frames=1000,
         )
         self.assertTrue(all(
-            mission["campaign_id"] == "development-v4"
+            mission["campaign_id"] == "development-v5"
             for mission in _schedule_from_arguments(development)
         ))
-        for version in ("v1", "v2", "v3"):
+        for version in ("v1", "v2", "v3", "v4"):
             with self.subTest(version=version):
                 development.version = version
-                with self.assertRaisesRegex(ValueError, "development.*v4"):
+                with self.assertRaisesRegex(ValueError, "development.*v5"):
                     _schedule_from_arguments(development)
 
         confirmatory = argparse.Namespace(
@@ -574,19 +577,20 @@ class RunnerScheduleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="qualified-runtime-binding-") as directory:
             root = Path(directory)
             paths = {}
-            for name in ("Swarm", "base.json", "primary.json", "ablation.json"):
+            for name in ("Swarm", "base.json", "primary.json", "ablation.json", "family.json"):
                 path = root / name
                 path.write_text("same bytes\n")
                 paths[name] = path
             arguments = argparse.Namespace(
-                kind="development", version="v4", smoke_id=None,
+                kind="development", version="v5", smoke_id=None,
                 protocol=root / "fixture-protocol.json",
                 authorization=root / "fixture-authorization.json",
                 binary=paths["Swarm"], base_config=paths["base.json"],
                 primary_config=paths["primary.json"],
                 ablation_config=paths["ablation.json"],
-                trajectory_seeds="2026080101:2026080110",
-                range_noise_seeds="2026081101:2026081110", frames=1000,
+                initial_family=paths["family.json"],
+                trajectory_seeds="2026080201:2026080210",
+                range_noise_seeds="2026081201:2026081210", frames=1000,
                 output_root=root / "raw",
             )
             protocol = {
@@ -598,6 +602,7 @@ class RunnerScheduleTests(unittest.TestCase):
                 ("base_config", arguments.base_config),
                 ("primary_config", arguments.primary_config),
                 ("ablation_config", arguments.ablation_config),
+                ("initial_family", arguments.initial_family),
             ):
                 protocol["bindings"][label] = {
                     "path": str(path.resolve()),
@@ -633,24 +638,17 @@ class RunnerScheduleTests(unittest.TestCase):
                 / "qualified_mode_hybrid_dcbf_development_v1.json"
             )
             output = root / "mission" / "config.materialized.json"
-            mission = {
-                "campaign_id": "development-v4",
-                "mission_id": "mission-01",
-                "trajectory_seed": 2026080101,
-                "range_noise_seed": 2026081101,
-                "frames": 1000,
-                "horizon_s": 500.0,
-                "conditions": ["dynamic_primary", "fixed_fim_ablation"],
-            }
+            mission = development_schedule()[0]
 
             materialized = materialize_primary_config(
-                base, overlay, output, mission
+                base, overlay, output, mission,
+                initial_family_path=runner.INITIAL_FAMILY_PATH,
             )
 
             self.assertEqual(materialized["world"]["spacing"], 10.0)
             self.assertEqual(
                 materialized["initial"]["position"]["method"],
-                "random-in-polygon",
+                "specified",
             )
             self.assertEqual(materialized["execute"]["time-step"], 0.5)
             self.assertEqual(materialized["execute"]["time-total"], 500.0)
@@ -658,7 +656,7 @@ class RunnerScheduleTests(unittest.TestCase):
                 materialized["execute"]["execution-mode"], "distributed"
             )
             self.assertEqual(
-                materialized["execute"]["random-seed"], 2026080101
+                materialized["execute"]["random-seed"], 2026080201
             )
             self.assertEqual(
                 materialized["position_covariance"]["reference-selection"],
@@ -669,9 +667,9 @@ class RunnerScheduleTests(unittest.TestCase):
             self.assertEqual(materialized["evidence-stream"], {
                 "enabled": True,
                 "schema-version": "cbf2026-qualified-evidence-v1",
-                "campaign-id": "development-v4",
-                "trajectory-seed": 2026080101,
-                "range-noise-seed": 2026081101,
+                "campaign-id": "development-v5",
+                "trajectory-seed": 2026080201,
+                "range-noise-seed": 2026081201,
                 "condition": "dynamic_primary",
             })
             self.assertEqual(json.loads(output.read_text()), materialized)
@@ -2079,37 +2077,39 @@ class RunnerProducerOrchestrationTests(unittest.TestCase):
 class RunnerCliTests(unittest.TestCase):
     def development_arguments(self, root):
         return argparse.Namespace(
-            kind="development", version="v4", smoke_id=None,
+            kind="development", version="v5", smoke_id=None,
             protocol=root / "absent-protocol.json",
             authorization=root / "absent-authorization.json",
             binary=root / "absent-Swarm",
             base_config=root / "absent-base.json",
             primary_config=root / "absent-primary.json",
             ablation_config=root / "absent-ablation.json",
-            trajectory_seeds="2026080101:2026080110",
-            range_noise_seeds="2026081101:2026081110",
+            initial_family=root / "absent-initial-family.json",
+            trajectory_seeds="2026080201:2026080210",
+            range_noise_seeds="2026081201:2026081210",
             frames=1000,
-            output_root=root / "raw" / "v4",
+            output_root=root / "raw" / "v5",
         )
 
-    def test_runtime_development_argv_uses_v4_module_entrypoint_exactly(self):
+    def test_runtime_development_argv_uses_v5_module_entrypoint_exactly(self):
         root = Path("/private/tmp/qualified-runtime-argv")
         arguments = self.development_arguments(root)
 
         self.assertEqual(_runtime_runner_argv(arguments), [
             "conda", "run", "-n", "cbf_env", "python", "-m",
             "scripts.diagnostics.run_qualified_closure_campaign",
-            "--kind", "development", "--version", "v4",
+            "--kind", "development", "--version", "v5",
             "--protocol", str(root / "absent-protocol.json"),
             "--authorization", str(root / "absent-authorization.json"),
             "--binary", str(root / "absent-Swarm"),
             "--base-config", str(root / "absent-base.json"),
             "--primary-config", str(root / "absent-primary.json"),
             "--ablation-config", str(root / "absent-ablation.json"),
-            "--trajectory-seeds", "2026080101:2026080110",
-            "--range-noise-seeds", "2026081101:2026081110",
+            "--initial-family", str(root / "absent-initial-family.json"),
+            "--trajectory-seeds", "2026080201:2026080210",
+            "--range-noise-seeds", "2026081201:2026081210",
             "--frames", "1000",
-            "--output-root", str(root / "raw" / "v4"),
+            "--output-root", str(root / "raw" / "v5"),
         ])
 
     def test_frozen_runner_reaches_registration_without_claiming_root(self):
@@ -2147,7 +2147,7 @@ class RunnerCliTests(unittest.TestCase):
         for option in (
             "--kind", "--version", "--smoke-id", "--protocol",
             "--authorization", "--binary", "--base-config",
-            "--primary-config", "--ablation-config", "--trajectory-seeds",
+            "--primary-config", "--ablation-config", "--initial-family", "--trajectory-seeds",
             "--range-noise-seeds", "--frames", "--output-root",
         ):
             self.assertIn(option, result.stdout)
@@ -2243,12 +2243,13 @@ class CampaignCoordinatorTests(unittest.TestCase):
     def arguments(self, output_root):
         import argparse
         return argparse.Namespace(
-            kind="development", version="v4", smoke_id=None,
+            kind="development", version="v5", smoke_id=None,
             protocol=Path("protocol.json"), authorization=Path("authorization.json"),
             binary=Path("Swarm"), base_config=Path("config.json"),
             primary_config=Path("primary.json"), ablation_config=Path("ablation.json"),
-            trajectory_seeds="2026080101:2026080110",
-            range_noise_seeds="2026081101:2026081110", frames=1000,
+            initial_family=runner.INITIAL_FAMILY_PATH,
+            trajectory_seeds="2026080201:2026080210",
+            range_noise_seeds="2026081201:2026081210", frames=1000,
             output_root=output_root,
         )
 
@@ -2661,6 +2662,236 @@ class Operations:
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("registered protocol", result.stderr)
             self.assertFalse(output.exists())
+
+class RunnerV5InitialFamilyTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="qualified-v5-runner-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.project = Path(__file__).resolve().parents[1]
+        self.family = (
+            self.project / "config" / "diagnostics" / "qualified_initial_family_v1.json"
+        )
+        self.base = self.project / "config" / "config.json"
+        self.primary = (
+            self.project / "config" / "diagnostics"
+            / "qualified_mode_hybrid_dcbf_development_v1.json"
+        )
+        self.ablation = (
+            self.project / "config" / "diagnostics"
+            / "qualified_mode_hybrid_dcbf_fixed_fim_ablation_v1.json"
+        )
+
+    def arguments(self, **overrides):
+        values = {
+            "kind": "development", "version": "v5", "smoke_id": None,
+            "protocol": self.root / "protocol.json",
+            "authorization": self.root / "authorization.json",
+            "binary": self.root / "Swarm", "base_config": self.base,
+            "primary_config": self.primary, "ablation_config": self.ablation,
+            "initial_family": self.family,
+            "trajectory_seeds": "2026080201:2026080210",
+            "range_noise_seeds": "2026081201:2026081210",
+            "frames": 1000, "output_root": self.root / "raw" / "v5",
+        }
+        values.update(overrides)
+        return argparse.Namespace(**values)
+
+    def test_v5_schedule_binds_exact_position_hashes_and_rejects_old_seeds(self):
+        schedule = runner._schedule_from_arguments(self.arguments())
+        self.assertEqual([mission["trajectory_seed"] for mission in schedule], list(range(2026080201, 2026080211)))
+        self.assertEqual([mission["range_noise_seed"] for mission in schedule], list(range(2026081201, 2026081211)))
+        self.assertTrue(all(mission["campaign_id"] == "development-v5" for mission in schedule))
+        self.assertTrue(all(len(mission["initial_positions_sha256"]) == 64 for mission in schedule))
+        with self.assertRaisesRegex(ValueError, "registered schedule"):
+            runner._schedule_from_arguments(self.arguments(
+                trajectory_seeds="2026080101:2026080110",
+            ))
+        with self.assertRaisesRegex(ValueError, "version v5"):
+            runner._schedule_from_arguments(self.arguments(version="v4"))
+
+    def test_development_argv_requires_initial_family_but_confirmatory_rejects_it(self):
+        arguments = self.arguments()
+        argv = _runtime_runner_argv(arguments)
+        self.assertEqual(argv[argv.index("--initial-family") + 1], str(self.family))
+
+        confirmatory = self.arguments(
+            kind="confirmatory", version="v1", initial_family=self.family,
+            trajectory_seeds="2026082001:2026082060",
+            range_noise_seeds="2026083001:2026083060",
+            output_root=self.root / "confirmatory" / "v1",
+        )
+        with self.assertRaisesRegex(ValueError, "initial-family"):
+            _runtime_runner_argv(confirmatory)
+        confirmatory.initial_family = None
+        self.assertNotIn("--initial-family", _runtime_runner_argv(confirmatory))
+
+    def test_primary_and_ablation_materialize_identical_specified_positions(self):
+        schedule = runner._schedule_from_arguments(self.arguments())
+        mission = schedule[0]
+        primary_path = self.root / "primary.materialized.json"
+        ablation_path = self.root / "ablation.materialized.json"
+        primary = materialize_primary_config(
+            self.base, self.primary, primary_path, mission,
+            initial_family_path=self.family,
+        )
+        ablation = runner.materialize_ablation_config(
+            self.base, self.ablation, ablation_path, mission,
+            initial_family_path=self.family,
+        )
+        expected = primary["initial"]["position"]
+        self.assertEqual(expected, ablation["initial"]["position"])
+        self.assertEqual(set(expected), {"method", "positions"})
+        self.assertEqual(expected["method"], "specified")
+        self.assertEqual(len(expected["positions"]), 14)
+        self.assertNotIn("polygon", json.dumps(expected).lower())
+
+    def test_confirmatory_fixed_replay_uses_pre_v5_initial_config_without_family(self):
+        mission_stage = self.root / "confirmatory-fixed-replay"
+        mission_stage.mkdir()
+        (mission_stage / "swarm-inputs").mkdir()
+        commands = mission_stage / "swarm-inputs" / "commands.jsonl.gz"
+        with gzip.open(commands, "wt", encoding="utf-8") as sink:
+            sink.write('{"frame_index":0,"commands":[]}\n')
+        measurements_path = mission_stage / "runtime.jsonl.gz"
+        with gzip.open(measurements_path, "wt", encoding="utf-8") as sink:
+            sink.write("{}\n")
+        measurement_sha256 = hashlib.sha256(
+            measurements_path.read_bytes()
+        ).hexdigest()
+        measurements = {
+            "terminal": True,
+            "status": "completed",
+            "runtime_path": measurements_path,
+            "runtime_sha256": measurement_sha256,
+            "sha256": measurement_sha256,
+            "measurement_stream_id": "a" * 64,
+            "config_sha256": "b" * 64,
+            "row_count": 1,
+        }
+        mission = {
+            "campaign_id": "confirmatory-v1",
+            "trajectory_seed": 2026082001,
+            "range_noise_seed": 2026083001,
+            "frames": 1,
+            "horizon_s": 0.5,
+        }
+
+        def supervise(_argv, **kwargs):
+            with gzip.open(
+                kwargs["stream_path"], "wt", encoding="utf-8"
+            ) as sink:
+                sink.write("{}\n")
+            return {
+                "terminal": True,
+                "status": "completed",
+                "reason": "completed",
+                "valid_rows": 1,
+            }
+
+        operations = ProductionOperations()
+        operations.protocol = {
+            "bindings": {
+                "base_config": {"path": str(self.base)},
+                "ablation_config": {"path": str(self.ablation)},
+            }
+        }
+        with (
+            mock.patch(
+                "scripts.diagnostics.run_qualified_closure_campaign."
+                "supervise_child_to_gzip",
+                side_effect=supervise,
+            ),
+            mock.patch(
+                "scripts.diagnostics.run_qualified_closure_campaign."
+                "_load_v5_positions",
+                side_effect=AssertionError(
+                    "confirmatory replay must not load the v5 initial family"
+                ),
+            ),
+        ):
+            result = operations.run_replay(
+                mission,
+                mission_stage,
+                "fixed_fim_ablation",
+                measurements,
+                {},
+            )
+
+        materialized = json.loads(
+            (mission_stage / "materialized-fixed_fim_ablation.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        base = json.loads(self.base.read_text(encoding="utf-8"))
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(materialized["initial"], base["initial"])
+        self.assertEqual(
+            materialized["position_covariance"]["reference-selection"],
+            "fixed-cbf-only",
+        )
+
+    def test_initialization_and_frame_zero_truth_must_match_frozen_positions(self):
+        schedule = runner._schedule_from_arguments(self.arguments())
+        mission = schedule[0]
+        positions = runner._load_v5_positions(self.family, mission)
+        state = _SwarmStreamState(mission, expected_initial_positions=positions)
+        identity = {
+            "schema_version": "cbf2026-qualified-evidence-v1",
+            "campaign_id": mission["campaign_id"], "condition": "dynamic_primary",
+            "trajectory_seed": mission["trajectory_seed"],
+            "range_noise_seed": mission["range_noise_seed"], "frame_index": 0,
+        }
+        for robot_id, position in enumerate(positions, start=1):
+            row = {
+                **identity, "record_type": "initialization", "robot_id": robot_id,
+                "runtime": {"local_index": (robot_id - 1) % 7 + 1},
+                "analyzer_only": {"truth_position": list(position)},
+            }
+            self.assertTrue(state(row), state.reason)
+
+        tampered = {
+            **identity, "record_type": "controller_interval",
+            "runtime": {},
+            "analyzer_only": {"truth": [
+                {"robot_id": robot_id, "position": list(position)}
+                for robot_id, position in enumerate(positions, start=1)
+            ]},
+        }
+        tampered["analyzer_only"]["truth"][0]["position"][0] += 1e-6
+        with mock.patch(
+            "scripts.diagnostics.qualified_closure_evidence.validate_controller_primitive_schema",
+            return_value=True,
+        ):
+            self.assertFalse(state(tampered))
+        self.assertEqual(state.reason, "frame_zero_truth_position_mismatch")
+
+        init_state = _SwarmStreamState(mission, expected_initial_positions=positions)
+        first = {
+            **identity, "record_type": "initialization", "robot_id": 1,
+            "runtime": {"local_index": 1},
+            "analyzer_only": {"truth_position": list(positions[0])},
+        }
+        first["analyzer_only"]["truth_position"][1] += 1e-6
+        self.assertFalse(init_state(first))
+        self.assertEqual(init_state.reason, "initialization_truth_position_mismatch")
+
+    def test_family_audit_fails_before_campaign_root_claim(self):
+        arguments = self.arguments()
+
+        class FailingAuditOperations(CampaignCoordinatorTests.FakeOperations):
+            def audit_initial_family(self, _arguments, _schedule):
+                self.events.append("initial-family-audit")
+                raise ValueError("injected initial family failure")
+
+        operations = FailingAuditOperations()
+        with self.assertRaisesRegex(ValueError, "initial family failure"):
+            execute_campaign(arguments, operations)
+        self.assertFalse(arguments.output_root.exists())
+        self.assertEqual(operations.events[:4], [
+            "validated", "identities", ("schedule", 10), "initial-family-audit",
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()
