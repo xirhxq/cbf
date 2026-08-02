@@ -17,6 +17,10 @@ from scripts.diagnostics.qualified_closure_evidence import (
     validate_initialization_schema,
     validate_mission_terminal_schema,
 )
+from scripts.diagnostics.hard_interior_selection import (
+    frozen_interior_floor,
+    solve_planar_hard_row_chebyshev,
+)
 
 
 def bounded_hard_problem(owner, row, hard_problem_id):
@@ -83,6 +87,25 @@ def collision_hard_problem(owner):
         "allocation_version": 1,
     }
     return bounded_hard_problem(owner, row, hard_problem_id)
+
+
+def interior_policy(problem, command):
+    audit = solve_planar_hard_row_chebyshev(problem)
+    return {
+        "mode": "planar-chebyshev-fraction-cap-v1",
+        "fraction": 0.1,
+        "cap_mps": 0.1,
+        "feasibility_tolerance_mps": 1e-9,
+        "planar_chebyshev_radius_mps": audit.radius_mps,
+        "enforced_floor_mps": frozen_interior_floor(audit.radius_mps),
+        "minimum_original_hard_residual_mps": min(
+            row["constant"] + sum(
+                coefficient * value
+                for coefficient, value in zip(row["coefficients"], command)
+            )
+            for row in problem["rows"]
+        ),
+    }
 
 
 class EvidenceUniverseTests(unittest.TestCase):
@@ -259,6 +282,9 @@ class ControllerPrimitiveSchemaTests(unittest.TestCase):
             "committed_hard_problem_id": "problem-1",
             "consumed_hard_problem_id": "problem-1",
         }
+        node["hard_interior_selection"] = interior_policy(
+            node["normal_problem"], node["applied_command"]
+        )
         controller = {
             "record_type": "controller_interval",
             "schema_version": "cbf2026-qualified-evidence-v1",
@@ -491,6 +517,9 @@ class IndependentReconstructionTests(unittest.TestCase):
             "committed_hard_problem_id": "3df88f9e7027386a",
             "consumed_hard_problem_id": "3df88f9e7027386a",
         }
+        node["hard_interior_selection"] = interior_policy(
+            node["normal_problem"], node["applied_command"]
+        )
         controller = {
             "record_type": "controller_interval",
             "schema_version": "cbf2026-qualified-evidence-v1",

@@ -1734,6 +1734,47 @@ private:
                 cbf2026::canonicalHardConstraintProblemHash(problem);
             const auto hardOnly =
                 robot->solveLocalHardQpEvidence(problem);
+            json hardInteriorSelection = robot->opt.value(
+                "hard_interior_selection", json()
+            );
+            const std::set<std::string> expectedInteriorFields = {
+                "mode",
+                "fraction",
+                "cap_mps",
+                "feasibility_tolerance_mps",
+                "planar_chebyshev_radius_mps",
+                "enforced_floor_mps"
+            };
+            if (!hardInteriorSelection.is_null()
+                && (!hardInteriorSelection.is_object()
+                || hardInteriorSelection.size() != expectedInteriorFields.size()
+                || std::any_of(
+                    expectedInteriorFields.begin(), expectedInteriorFields.end(),
+                    [&](const std::string& field) {
+                        return !hardInteriorSelection.contains(field);
+                    }
+                ))) {
+                throw std::runtime_error(
+                    "controller evidence interior selection is malformed"
+                );
+            }
+            if (!hardInteriorSelection.is_null()) {
+                double minimumOriginalHardResidual =
+                    std::numeric_limits<double>::infinity();
+                for (const auto& hardRow : problem.rows) {
+                    minimumOriginalHardResidual = std::min(
+                        minimumOriginalHardResidual,
+                        hardRow.constant + hardRow.coefficients.dot(command)
+                    );
+                }
+                if (!std::isfinite(minimumOriginalHardResidual)) {
+                    throw std::runtime_error(
+                        "controller evidence original hard residual is unavailable"
+                    );
+                }
+                hardInteriorSelection["minimum_original_hard_residual_mps"] =
+                    minimumOriginalHardResidual;
+            }
             double normalMinimum =
                 std::numeric_limits<double>::infinity();
             for (const auto& bound : problem.bounds) {
@@ -1750,7 +1791,7 @@ private:
                     + hardRow.coefficients.dot(command)
                 );
             }
-            nodes.push_back({
+            json evidenceNode = {
                 {"robot_id", robot->id},
                 {"local_index", robot->idInMyPart},
                 {"snapshot_version", endpoint.snapshotVersion},
@@ -1791,7 +1832,12 @@ private:
                 {"committed_hard_problem_id", committedProblemId},
                 {"consumed_hard_problem_id",
                  robot->lastConsumedHardProblemHash}
-            });
+            };
+            if (!hardInteriorSelection.is_null()) {
+                evidenceNode["hard_interior_selection"] =
+                    hardInteriorSelection;
+            }
+            nodes.push_back(evidenceNode);
         }
 
         bool resetAttempted = false;

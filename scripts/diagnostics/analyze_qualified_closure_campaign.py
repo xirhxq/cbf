@@ -2212,6 +2212,7 @@ def _controller_frame_metrics(controller, endpoint_rows):
     )
 
     runtime = controller["runtime"]
+    _verify_controller_interior_evidence(runtime["nodes"])
     reconstruction = reconstruct_controller_primitives(
         controller,
         endpoint_rows,
@@ -2236,6 +2237,61 @@ def _controller_frame_metrics(controller, endpoint_rows):
         },
         "nodes": reconstruction.nodes,
     }
+
+
+def _verify_controller_interior_evidence(nodes):
+    """Recompute every local interior policy before aggregating a frame."""
+    from scripts.diagnostics.hard_interior_selection import (
+        frozen_interior_floor,
+        solve_planar_hard_row_chebyshev,
+    )
+
+    policy_presence = ["hard_interior_selection" in node for node in nodes]
+    if not any(policy_presence):
+        return
+    if not all(policy_presence):
+        raise ValueError("controller interior policy provenance differs")
+    for node in nodes:
+        if "normal_problem" not in node:
+            raise ValueError("controller interior normal problem is absent")
+        policy = node.get("hard_interior_selection")
+        required = {
+            "mode", "fraction", "cap_mps", "feasibility_tolerance_mps",
+            "planar_chebyshev_radius_mps", "enforced_floor_mps",
+            "minimum_original_hard_residual_mps",
+        }
+        if not isinstance(policy, dict) or set(policy) != required:
+            raise ValueError("controller interior policy schema differs")
+        if (policy["mode"] != "planar-chebyshev-fraction-cap-v1"
+                or (policy["fraction"], policy["cap_mps"],
+                    policy["feasibility_tolerance_mps"]) != (0.1, 0.1, 1e-9)):
+            raise ValueError("controller interior policy differs")
+        audit = solve_planar_hard_row_chebyshev(
+            node["normal_problem"],
+            tolerance_mps=policy["feasibility_tolerance_mps"],
+        )
+        floor = frozen_interior_floor(
+            audit.radius_mps,
+            fraction=policy["fraction"],
+            cap_mps=policy["cap_mps"],
+            tolerance_mps=policy["feasibility_tolerance_mps"],
+        )
+        command = node["applied_command"]
+        original_residual = min(
+            row["constant"] + sum(
+                coefficient * value
+                for coefficient, value in zip(row["coefficients"], command)
+            )
+            for row in node["normal_problem"]["rows"]
+        )
+        if (not math.isclose(policy["planar_chebyshev_radius_mps"], audit.radius_mps,
+                             rel_tol=0.0, abs_tol=1e-12)
+                or not math.isclose(policy["enforced_floor_mps"], floor,
+                                    rel_tol=0.0, abs_tol=1e-12)
+                or not math.isclose(policy["minimum_original_hard_residual_mps"],
+                                    original_residual, rel_tol=1e-9, abs_tol=1e-9)
+                or original_residual < floor - 1e-7):
+            raise ValueError("controller interior policy reconstruction failed")
 
 
 def _validate_replay_reference_provenance(

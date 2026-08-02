@@ -9,6 +9,11 @@ from typing import Callable, Sequence
 
 import numpy as np
 
+from scripts.diagnostics.hard_interior_selection import (
+    frozen_interior_floor,
+    solve_planar_hard_row_chebyshev,
+)
+
 
 class LazyKeySequence(Sequence[tuple[object, ...]]):
     def __init__(
@@ -1883,6 +1888,15 @@ def _reconstruct_controller_primitives_impl(
                 full_commands[robot_id],
             )
         )
+        if "hard_interior_selection" in node:
+            errors.extend(
+                _audit_hard_interior_selection(
+                    robot_id,
+                    normal_problem,
+                    full_commands[robot_id],
+                    node["hard_interior_selection"],
+                )
+            )
 
     if expected_endpoint_count is None:
         expected_endpoint_count = 232 if len(raw_nodes) == 14 else len(endpoint_rows)
@@ -2371,7 +2385,11 @@ def _valid_hard_problem(problem: object, owner: int) -> bool:
             or not isinstance(edge, dict)
             or set(edge) != {"kind", "low", "high", "base_id"}
             or edge["kind"] not in {"localization", "collision"}
-            or not all(_int32(edge[field]) for field in ("low", "high", "base_id"))
+            or not all(
+                type(edge[field]) is int
+                and -(1 << 31) <= edge[field] <= (1 << 31) - 1
+                for field in ("low", "high", "base_id")
+            )
             or not 1 <= edge["low"] <= 14
             or not 1 <= edge["high"] <= 14
             or edge["base_id"] not in {-1, 0, 1, 2}
@@ -2548,6 +2566,57 @@ def _audit_problem_and_solution(
     return errors
 
 
+def _audit_hard_interior_selection(
+    robot_id: int,
+    problem: dict[str, object],
+    applied_command: np.ndarray,
+    policy: dict[str, object],
+) -> list[str]:
+    """Verify policy evidence from the consumed normal hard problem alone."""
+    errors: list[str] = []
+    try:
+        if policy["mode"] != "planar-chebyshev-fraction-cap-v1":
+            return [f"interior_policy:{robot_id}"]
+        fraction = float(policy["fraction"])
+        cap = float(policy["cap_mps"])
+        tolerance = float(policy["feasibility_tolerance_mps"])
+        if (fraction, cap, tolerance) != (0.1, 0.1, 1e-9):
+            return [f"interior_policy:{robot_id}"]
+        audit = solve_planar_hard_row_chebyshev(
+            problem, tolerance_mps=tolerance
+        )
+        expected_floor = frozen_interior_floor(
+            audit.radius_mps,
+            fraction=fraction,
+            cap_mps=cap,
+            tolerance_mps=tolerance,
+        )
+        if not math.isclose(
+            float(policy["planar_chebyshev_radius_mps"]), audit.radius_mps,
+            rel_tol=0.0, abs_tol=1e-12,
+        ):
+            errors.append(f"interior_radius:{robot_id}")
+        if not math.isclose(
+            float(policy["enforced_floor_mps"]), expected_floor,
+            rel_tol=0.0, abs_tol=1e-12,
+        ):
+            errors.append(f"interior_floor:{robot_id}")
+        original_residual = min(
+            float(row["constant"] + np.asarray(row["coefficients"], dtype=float) @ applied_command)
+            for row in problem["rows"]
+        )
+        if not math.isclose(
+            float(policy["minimum_original_hard_residual_mps"]),
+            original_residual, rel_tol=1e-9, abs_tol=1e-9,
+        ):
+            errors.append(f"interior_original_residual:{robot_id}")
+        if original_residual < expected_floor - 1e-7:
+            errors.append(f"interior_residual_below_floor:{robot_id}")
+    except (KeyError, TypeError, ValueError, OverflowError, np.linalg.LinAlgError):
+        errors.append(f"interior_policy:{robot_id}")
+    return errors
+
+
 def _valid_node(node: object, snapshot_version: int, allocation_version: int) -> bool:
     if not isinstance(node, dict):
         return False
@@ -2575,7 +2644,8 @@ def _valid_node(node: object, snapshot_version: int, allocation_version: int) ->
         "committed_hard_problem_id",
         "consumed_hard_problem_id",
     }
-    if set(node) != required:
+    optional_policy = {"hard_interior_selection"}
+    if set(node) != required and set(node) != required | optional_policy:
         return False
     references = node["references"]
     finite_scalars = (
@@ -2607,8 +2677,29 @@ def _valid_node(node: object, snapshot_version: int, allocation_version: int) ->
         and _valid_qp(node["hard_only_qp"])
         and _valid_hard_problem(node["normal_problem"], node["robot_id"])
         and _valid_hard_problem(node["hard_only_problem"], node["robot_id"])
+        and (
+            "hard_interior_selection" not in node
+            or _valid_hard_interior_selection(node["hard_interior_selection"])
+        )
         and _nonempty_string(node["committed_hard_problem_id"])
         and _nonempty_string(node["consumed_hard_problem_id"])
+    )
+
+
+def _valid_hard_interior_selection(policy: object) -> bool:
+    return (
+        isinstance(policy, dict)
+        and set(policy) == {
+            "mode", "fraction", "cap_mps", "feasibility_tolerance_mps",
+            "planar_chebyshev_radius_mps", "enforced_floor_mps",
+            "minimum_original_hard_residual_mps",
+        }
+        and policy["mode"] == "planar-chebyshev-fraction-cap-v1"
+        and all(_finite_number(policy[field]) for field in (
+            "fraction", "cap_mps", "feasibility_tolerance_mps",
+            "planar_chebyshev_radius_mps", "enforced_floor_mps",
+            "minimum_original_hard_residual_mps",
+        ))
     )
 
 
@@ -2684,6 +2775,11 @@ def _validate_controller_primitive_schema(
         if sorted(node["robot_id"] for node in nodes) != list(
             range(1, expected_nodes + 1)
         ):
+            return False
+        has_interior_policy = [
+            "hard_interior_selection" in node for node in nodes
+        ]
+        if any(has_interior_policy) and not all(has_interior_policy):
             return False
         for field in (
             "expected_endpoint_row_count",

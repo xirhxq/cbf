@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import scripts.diagnostics.qualified_closure_evidence as evidence_schema
+
 from scripts.diagnostics.qualified_closure_evidence import (
     FrozenMissionSchedule,
     audit_evidence_denominators,
@@ -29,6 +31,7 @@ NO_HOOK_SWARM_BINARY = Path(
     )
 )
 PRIMARY = ROOT / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v1.json"
+PRIMARY_V2 = ROOT / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v2.json"
 
 
 def merge_overlay(materialized, overlay):
@@ -39,9 +42,9 @@ def merge_overlay(materialized, overlay):
             materialized[key] = value
 
 
-def evidence_fixture(output_root: Path) -> dict:
+def evidence_fixture(output_root: Path, *, v2=False) -> dict:
     config = json.loads((ROOT / "config/config.json").read_text(encoding="utf-8"))
-    merge_overlay(config, json.loads(PRIMARY.read_text(encoding="utf-8")))
+    merge_overlay(config, json.loads((PRIMARY_V2 if v2 else PRIMARY).read_text(encoding="utf-8")))
     config["initial"]["position"] = {
         "method": "specified",
         "positions": [
@@ -54,8 +57,9 @@ def evidence_fixture(output_root: Path) -> dict:
             [-1450.0, 300.0], [-1250.0, 300.0],
         ],
     }
-    config["cbfs"]["without-slack"]["comm-fixed"]["alpha"]["coe"] = 10.0
-    config["cbfs"]["without-slack"]["safety"]["alpha"]["coe"] = 10.0
+    if not v2:
+        config["cbfs"]["without-slack"]["comm-fixed"]["alpha"]["coe"] = 10.0
+        config["cbfs"]["without-slack"]["safety"]["alpha"]["coe"] = 10.0
     config["execute"]["time-total"] = 1.0
     config["execute"]["random-seed"] = 7
     config["execute"]["check-constraint-violation"] = False
@@ -68,6 +72,15 @@ def evidence_fixture(output_root: Path) -> dict:
         "range-noise-seed": 201,
         "condition": "dynamic_primary",
     }
+    if v2:
+        config["initial"]["position"] = {
+            "method": "specified",
+            "positions": json.loads(
+                (ROOT / "config/diagnostics/qualified_initial_family_v1.json").read_text(
+                    encoding="utf-8"
+                )
+            )["template_positions_m"],
+        }
     return config
 
 
@@ -148,11 +161,15 @@ class SwarmEvidenceStdoutTests(unittest.TestCase):
             self.assertTrue(all(map(validate_controller_primitive_schema, controllers)))
             self.assertTrue(all(map(validate_endpoint_primitive_schema, endpoints)))
             for controller in controllers:
+                self.assertEqual(
+                    len(controller["runtime"]["nodes"]), 14
+                )
                 for node in controller["runtime"]["nodes"]:
                     self.assertIn("normal_problem", node)
                     self.assertIn("hard_only_problem", node)
                     self.assertEqual(len(node["normal_qp"]["solution"]), 3)
                     self.assertEqual(len(node["hard_only_qp"]["solution"]), 3)
+                    self.assertNotIn("hard_interior_selection", node)
             for controller in controllers:
                 frame_rows = [
                     row
@@ -519,6 +536,89 @@ class SwarmEvidenceStdoutTests(unittest.TestCase):
                 ["config.json"],
                 "evidence mode must skip legacy output files",
             )
+
+    def test_marker_declared_v2_real_stream_has_exact_policy_for_every_node(self):
+        with tempfile.TemporaryDirectory(prefix="cbf-evidence-v2-") as temporary:
+            root = Path(temporary)
+            config_path = root / "config.json"
+            config_path.write_text(
+                json.dumps(evidence_fixture(root, v2=True)), encoding="utf-8"
+            )
+            result = subprocess.run(
+                [str(SWARM_BINARY), str(config_path)], cwd=ROOT, text=True,
+                capture_output=True, timeout=30, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            records = [json.loads(line) for line in result.stdout.splitlines() if line]
+            controllers = [
+                row for row in records
+                if row.get("record_type") == "controller_interval"
+            ]
+            endpoints = [
+                row for row in records if row.get("record_type") == "endpoint_row"
+            ]
+            self.assertTrue(controllers)
+            for controller in controllers:
+                self.assertTrue(
+                    validate_controller_primitive_schema(controller),
+                    {
+                        "node": evidence_schema._valid_node(
+                            controller["runtime"]["nodes"][0], 1, 1
+                        ),
+                        "problem": evidence_schema._valid_hard_problem(
+                            controller["runtime"]["nodes"][0]["normal_problem"], 1
+                        ),
+                        "policy": evidence_schema._valid_hard_interior_selection(
+                            controller["runtime"]["nodes"][0]["hard_interior_selection"]
+                        ),
+                    },
+                )
+                nodes = controller["runtime"]["nodes"]
+                self.assertEqual(len(nodes), 14)
+                self.assertTrue(all("hard_interior_selection" in node for node in nodes))
+                self.assertTrue(all(
+                    set(node["hard_interior_selection"]) == {
+                        "mode", "fraction", "cap_mps",
+                        "feasibility_tolerance_mps",
+                        "planar_chebyshev_radius_mps",
+                        "enforced_floor_mps",
+                        "minimum_original_hard_residual_mps",
+                    }
+                    for node in nodes
+                ))
+            controller0 = controllers[0]
+            endpoint0 = [
+                row for row in endpoints
+                if row["frame_index"] == controller0["frame_index"]
+            ]
+            for field, replacement in (
+                ("fraction", 0.2), ("cap_mps", 0.2),
+                ("feasibility_tolerance_mps", 1e-8),
+                ("planar_chebyshev_radius_mps", 0.0),
+                ("enforced_floor_mps", 0.0),
+                ("minimum_original_hard_residual_mps", 0.0),
+            ):
+                forged = copy.deepcopy(controller0)
+                forged["runtime"]["nodes"][0]["hard_interior_selection"][field] = replacement
+                self.assertTrue(any(
+                    error.startswith("interior_")
+                    for error in reconstruct_controller_primitives(
+                        forged, endpoint0, 232, 119
+                    ).integrity_errors
+                ), field)
+            missing = copy.deepcopy(controller0)
+            del missing["runtime"]["nodes"][0]["hard_interior_selection"]
+            self.assertFalse(validate_controller_primitive_schema(missing))
+            yaw = copy.deepcopy(controller0)
+            yaw["runtime"]["nodes"][0]["normal_problem"]["rows"][0][
+                "coefficients"
+            ][2] = 0.1
+            self.assertTrue(any(
+                error.startswith("interior_policy:")
+                for error in reconstruct_controller_primitives(
+                    yaw, endpoint0, 232, 119
+                ).integrity_errors
+            ))
 
     def test_truth_robot_universe_is_exact_and_denominator_fail_closed(self):
         with tempfile.TemporaryDirectory(

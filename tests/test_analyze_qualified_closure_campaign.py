@@ -31,6 +31,7 @@ from scripts.diagnostics.analyze_qualified_closure_campaign import (
     validate_analysis_output_root,
     semantic_analysis_sha256,
     _controller_frame_metrics,
+    _verify_controller_interior_evidence,
     _derive_mission_success,
     _publish_claimed_analysis_bundle,
     _terminalize_claimed_analysis_failure,
@@ -411,6 +412,36 @@ class CampaignAnalyzerGateTests(unittest.TestCase):
             metrics["component_maxima"], {"vx": 1.0, "vy": 2.0, "yaw_rate": 0.1}
         )
         self.assertEqual(metrics["nodes"][1]["nu_inst"], 0.1)
+
+    def test_analyzer_rejects_forged_or_missing_interior_policy(self):
+        from tests.test_qualified_closure_evidence import (
+            bounded_hard_problem,
+            interior_policy,
+            localization_problem_row,
+        )
+
+        problem = bounded_hard_problem(
+            1, localization_problem_row(2.0), "analyzer-fixture"
+        )
+        command = [0.0, 0.0, 0.0]
+        # The hash is irrelevant to this direct analyzer reconstruction.
+        node = {
+            "normal_problem": problem,
+            "applied_command": command,
+            "hard_interior_selection": interior_policy(problem, command),
+        }
+        _verify_controller_interior_evidence([node])
+        for field, value in (
+            ("planar_chebyshev_radius_mps", 0.0),
+            ("enforced_floor_mps", 0.0),
+            ("minimum_original_hard_residual_mps", 0.0),
+        ):
+            forged = copy.deepcopy(node)
+            forged["hard_interior_selection"][field] = value
+            with self.assertRaisesRegex(ValueError, "interior"):
+                _verify_controller_interior_evidence([forged])
+        with self.assertRaisesRegex(ValueError, "provenance"):
+            _verify_controller_interior_evidence([node, {"normal_problem": problem}])
 
     def test_wrong_mode_compares_publication_to_all_physical_modes(self):
         row = {
