@@ -1,0 +1,12 @@
+{
+  "authorized": true,
+  "implementation_identity": "14a27b7cedb704aeaa49945bc21dab1df04dfef4",
+  "kind": "development",
+  "preflight_sha256": "5cc7b24591c5a0f7dfdeaaebe3160c0db3e0b1901d746f6d694fbdd2efb6a375",
+  "protocol_sha256": "edfad6cbe68c1ac1459640f71e7c2664d6702cc519804ed6414ea7e8761526f8",
+  "schema_version": "cbf2026-qualified-authorization-v1",
+  "user_authorization_date": "2026-08-02",
+  "user_authorization_text": "批准",
+  "user_authorization_text_sha256": "8cbe697b157364a5b13646285b38409dc53ec5287deeb7913493e65b275cd14d",
+  "version": "v4"
+}
