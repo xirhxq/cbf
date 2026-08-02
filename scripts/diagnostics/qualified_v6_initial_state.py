@@ -26,6 +26,10 @@ EXPECTED_V2_PATH = (
     Path(__file__).resolve().parents[2]
     / "config/diagnostics/qualified_initial_family_v2.json"
 )
+EXPECTED_V3_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "config/diagnostics/qualified_initial_family_v3.json"
+)
 EXPECTED_V1_PATH = (
     Path(__file__).resolve().parents[2]
     / "config/diagnostics/qualified_initial_family_v1.json"
@@ -172,7 +176,11 @@ def validate_qualified_v6_initial_family(family: Mapping) -> dict:
         },
         "v6 initial family",
     )
-    if family["schema_version"] != "cbf2026-qualified-initial-family-v2":
+    schema_version = family["schema_version"]
+    if type(schema_version) is not str or schema_version not in {
+        "cbf2026-qualified-initial-family-v2",
+        "cbf2026-qualified-initial-family-v3",
+    }:
         raise ValueError("v6 initial family schema version is not frozen")
     if family["namespace"] != "cbf2026-v6-initial":
         raise ValueError("v6 initial family namespace is not frozen")
@@ -198,19 +206,38 @@ def validate_qualified_v6_initial_family(family: Mapping) -> dict:
     if legacy["production_contract"]["class_k_coefficient"] != 0.1:
         raise ValueError("v6 class-K coefficient is not frozen")
 
-    policy = _keys(
-        family["controller_policy"],
-        {
+    policy_keys = {
             "class_k_coefficient", "class_k_power", "mode", "fraction",
             "cap_mps", "planar_component_max_mps", "yaw_enters_radius",
-        },
+    }
+    if schema_version == "cbf2026-qualified-initial-family-v3":
+        policy_keys |= {"schema_version", "feasibility_tolerance_mps"}
+    policy = _keys(
+        family["controller_policy"],
+        policy_keys,
         "controller policy",
     )
     _float(policy["class_k_coefficient"], 0.1, "controller class-K coefficient")
     _integer(policy["class_k_power"], 1, "controller class-K power")
-    if policy["mode"] != "planar-chebyshev-fraction-cap-v1":
+    expected_policy = (
+        ("hard-interior-v2", "planar-chebyshev-fraction-cap-v1", 0.1)
+        if schema_version == "cbf2026-qualified-initial-family-v2"
+        else ("hard-interior-v3", "planar-chebyshev-fraction-cap-v2", 0.131)
+    )
+    if schema_version == "cbf2026-qualified-initial-family-v3":
+        if (
+            type(policy["schema_version"]) is not str
+            or policy["schema_version"] != expected_policy[0]
+        ):
+            raise ValueError("controller policy schema version is not frozen")
+        _float(
+            policy["feasibility_tolerance_mps"],
+            1e-9,
+            "controller policy feasibility tolerance",
+        )
+    if policy["mode"] != expected_policy[1]:
         raise ValueError("controller policy mode is not frozen")
-    _float(policy["fraction"], 0.1, "controller policy fraction")
+    _float(policy["fraction"], expected_policy[2], "controller policy fraction")
     _float(policy["cap_mps"], 0.1, "controller policy cap")
     _float(policy["planar_component_max_mps"], 25.0, "controller component bound")
     _boolean(policy["yaw_enters_radius"], False, "controller yaw policy")
@@ -248,7 +275,7 @@ def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict:
 
 
 def load_qualified_v6_initial_family(path: Path) -> dict:
-    """Load only the canonical regular v2 declaration, never a substitute."""
+    """Load only a canonical regular historical-v2 or registered-v3 declaration."""
     path = Path(path)
     if path.is_symlink() or not path.is_file():
         raise ValueError("v6 initial family must be a regular file")
@@ -260,7 +287,11 @@ def load_qualified_v6_initial_family(path: Path) -> dict:
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ValueError("v6 initial family is not valid UTF-8 JSON") from error
     checked = validate_qualified_v6_initial_family(value)
-    if path.resolve() != EXPECTED_V2_PATH.resolve():
+    expected_path = {
+        "cbf2026-qualified-initial-family-v2": EXPECTED_V2_PATH,
+        "cbf2026-qualified-initial-family-v3": EXPECTED_V3_PATH,
+    }[checked["schema_version"]]
+    if path.resolve() != expected_path.resolve():
         raise ValueError("v6 initial family provenance is not canonical")
     return checked
 

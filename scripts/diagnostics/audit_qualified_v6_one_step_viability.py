@@ -46,7 +46,7 @@ from scripts.diagnostics.qualified_v6_initial_state import (
 )
 
 
-SCHEMA_VERSION = "cbf2026-qualified-v6-one-step-viability-v1"
+SCHEMA_VERSION = "cbf2026-qualified-v6-one-step-viability-v2"
 CLAIM_SCHEMA_VERSION = f"{SCHEMA_VERSION}-claim"
 FROZEN_SEEDS = tuple(range(2026080201, 2026080301))
 REGISTERED_SEEDS = tuple(range(2026080201, 2026080211))
@@ -56,7 +56,7 @@ MINIMUM_NEXT_LOCAL_RADIUS_MPS = 0.05
 COMPONENT_MAX_MPS = 25.0
 NUMERIC_TOLERANCE = 1e-7
 CHILD_TIMEOUT_S = 30.0
-CAMPAIGN_ID = "qualified-v6-one-step-development-gate-v1"
+CAMPAIGN_ID = "qualified-v6-one-step-development-gate-v2"
 CONDITION = "dynamic_primary"
 
 
@@ -614,6 +614,7 @@ def _validate_operation_result(
         if not isinstance(problem, Mapping) or not isinstance(problem.get("rows"), list):
             raise ValueError("normal hard problem rows are missing")
         if not isinstance(policy, Mapping) or set(policy) != {
+            "schema_version",
             "mode",
             "fraction",
             "cap_mps",
@@ -623,14 +624,16 @@ def _validate_operation_result(
             "minimum_original_hard_residual_mps",
         }:
             raise ValueError("hard-interior selection evidence is malformed")
-        if policy["mode"] != "planar-chebyshev-fraction-cap-v1":
+        if policy["schema_version"] != "hard-interior-v3":
+            raise ValueError("hard-interior selection marker differs")
+        if policy["mode"] != "planar-chebyshev-fraction-cap-v2":
             raise ValueError("hard-interior selection mode differs")
         fraction = _strict_float(policy["fraction"], "interior fraction")
         cap = _strict_float(policy["cap_mps"], "interior cap")
         tolerance = _strict_float(
             policy["feasibility_tolerance_mps"], "interior tolerance"
         )
-        if (fraction, cap, tolerance) != (0.1, 0.1, 1e-9):
+        if (fraction, cap, tolerance) != (0.131, 0.1, 1e-9):
             raise ValueError("hard-interior selection constants differ")
         independent_interior = solve_planar_hard_row_chebyshev(
             problem, tolerance_mps=tolerance
@@ -813,9 +816,9 @@ def _require_qualifying_canonical_paths(
         "binary": project_root / "build-diagnostic/Swarm",
         "base_config": project_root / "config/config.json",
         "primary_config": project_root
-        / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v2.json",
+        / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v3.json",
         "initial_family": project_root
-        / "config/diagnostics/qualified_initial_family_v2.json",
+        / "config/diagnostics/qualified_initial_family_v3.json",
         "implementation": project_root
         / "scripts/diagnostics/audit_qualified_v6_one_step_viability.py",
     }
@@ -871,7 +874,7 @@ def _audit_seed_sequence(
         primary_config, "primary config"
     )
     if not validate_qualified_config(primary):
-        raise ValueError("primary config fails exact qualified-v2 validation")
+        raise ValueError("primary config fails exact qualified-v3 validation")
     if primary["position_covariance"]["reference-selection"] != "dynamic-lower-index":
         raise ValueError("one-step gate requires the dynamic primary overlay")
     family_value, family_buffer_identity = _read_bound_json(
@@ -899,9 +902,9 @@ def _audit_seed_sequence(
     canonical_inputs = {
         "base_config": project_root / "config/config.json",
         "primary_config": project_root
-        / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v2.json",
+        / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v3.json",
         "initial_family": project_root
-        / "config/diagnostics/qualified_initial_family_v2.json",
+        / "config/diagnostics/qualified_initial_family_v3.json",
     }
     for label, canonical_path in canonical_inputs.items():
         canonical = _regular_file_identity(canonical_path, f"canonical {label}")

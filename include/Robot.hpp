@@ -2303,7 +2303,7 @@ public:
         const cbf2026::HardConstraintProblem* committedHardProblem = nullptr;
         std::optional<double> hardInteriorFloor;
         json hardInteriorSelection = json();
-        bool hardInteriorV2 = false;
+        bool hardInteriorEnabled = false;
         if (theoremAligned) {
             if (!committedCertificateState.valid
                 || committedCertificateState.version == 0) {
@@ -2332,43 +2332,54 @@ public:
                     *committedHardProblem
                 );
             const auto& cbfs = settings.at("cbfs");
-            hardInteriorV2 = settings.contains("qualified-controller");
-            if (hardInteriorV2) {
+            hardInteriorEnabled = settings.contains("qualified-controller");
+            std::string controllerSchema;
+            if (hardInteriorEnabled) {
                 const auto& marker = settings.at("qualified-controller");
                 if (!marker.is_object() || marker.size() != 1
                     || !marker.contains("schema-version")
-                    || !marker.at("schema-version").is_string()
-                    || marker.at("schema-version").get<std::string>()
-                       != "hard-interior-v2") {
+                    || !marker.at("schema-version").is_string()) {
                     throw std::invalid_argument(
-                        "theorem hard-interior v2 marker is invalid"
+                        "theorem hard-interior marker is invalid"
+                    );
+                }
+                controllerSchema = marker.at("schema-version").get<std::string>();
+                if (controllerSchema != "hard-interior-v2"
+                    && controllerSchema != "hard-interior-v3") {
+                    throw std::invalid_argument(
+                        "theorem hard-interior marker is invalid"
                     );
                 }
                 if (!cbfs.contains("hard-interior-selection")) {
                     throw std::invalid_argument(
-                        "theorem hard-interior v2 policy is unavailable"
+                        "theorem hard-interior policy is unavailable"
                     );
                 }
             } else if (cbfs.contains("hard-interior-selection")) {
                 throw std::invalid_argument(
-                    "theorem hard-interior policy requires the v2 marker"
+                    "theorem hard-interior policy requires a marker"
                 );
             }
-            if (hardInteriorV2) {
+            if (hardInteriorEnabled) {
                 const auto& policy = cbfs.at("hard-interior-selection");
                 const auto exactPolicyNumber = [](const json& value,
                                                   const double expected) {
-                    return value.is_number()
+                    return value.is_number_float()
                         && std::isfinite(value.get<double>())
                         && value.get<double>() == expected;
                 };
+                const std::string policyMode = controllerSchema
+                    == "hard-interior-v2"
+                    ? "planar-chebyshev-fraction-cap-v1"
+                    : "planar-chebyshev-fraction-cap-v2";
+                const double fraction = controllerSchema
+                    == "hard-interior-v2" ? 0.1 : 0.131;
                 if (!policy.is_object() || policy.size() != 4
                     || !policy.contains("mode")
                     || !policy.at("mode").is_string()
-                    || policy.at("mode").get<std::string>()
-                       != "planar-chebyshev-fraction-cap-v1"
+                    || policy.at("mode").get<std::string>() != policyMode
                     || !policy.contains("fraction")
-                    || !exactPolicyNumber(policy.at("fraction"), 0.1)
+                    || !exactPolicyNumber(policy.at("fraction"), fraction)
                     || !policy.contains("cap-mps")
                     || !exactPolicyNumber(policy.at("cap-mps"), 0.1)
                     || !policy.contains("feasibility-tolerance-mps")
@@ -2379,7 +2390,6 @@ public:
                         "theorem hard-interior selection policy is invalid"
                     );
                 }
-                constexpr double fraction = 0.1;
                 constexpr double capMps = 0.1;
                 constexpr double feasibilityTolerance = 1e-9;
                 const auto chebyshev = cbf2026::solvePlanarHardRowChebyshev(
@@ -2399,13 +2409,16 @@ public:
                 );
                 hardInteriorFloor = floor;
                 hardInteriorSelection = {
-                    {"mode", "planar-chebyshev-fraction-cap-v1"},
+                    {"mode", policyMode},
                     {"fraction", fraction},
                     {"cap_mps", capMps},
                     {"feasibility_tolerance_mps", feasibilityTolerance},
                     {"planar_chebyshev_radius_mps", chebyshev.radius},
                     {"enforced_floor_mps", floor}
                 };
+                if (controllerSchema == "hard-interior-v3") {
+                    hardInteriorSelection["schema_version"] = controllerSchema;
+                }
             }
         }
         const json inputLimitsConfig =
@@ -2519,10 +2532,10 @@ public:
 
             if (theoremAligned) {
                 double enforcedFloor = 0.0;
-                if (hardInteriorV2) {
+                if (hardInteriorEnabled) {
                     if (!hardInteriorFloor.has_value()) {
                         throw std::logic_error(
-                            "theorem hard-interior v2 floor is unavailable"
+                            "theorem hard-interior floor is unavailable"
                         );
                     }
                     enforcedFloor = *hardInteriorFloor;

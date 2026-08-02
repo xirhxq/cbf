@@ -145,14 +145,18 @@ json makeTheoremSettings() {
     return settings;
 }
 
-Robot paperRobotWithCommittedHardProblem() {
+Robot paperRobotWithCommittedHardProblem(
+    const std::string& schemaVersion = "hard-interior-v2",
+    const std::string& policyMode = "planar-chebyshev-fraction-cap-v1",
+    double fraction = 0.1
+) {
     json settings = makeTheoremSettings();
     settings["qualified-controller"] = {
-        {"schema-version", "hard-interior-v2"}
+        {"schema-version", schemaVersion}
     };
     settings["cbfs"]["hard-interior-selection"] = {
-        {"mode", "planar-chebyshev-fraction-cap-v1"},
-        {"fraction", 0.1},
+        {"mode", policyMode},
+        {"fraction", fraction},
         {"cap-mps", 0.1},
         {"feasibility-tolerance-mps", 1e-9}
     };
@@ -1095,6 +1099,8 @@ TEST_CASE("theorem task QP enforces the frozen local interior floor") {
 
     REQUIRE(robot.opt.contains("hard_interior_selection"));
     const auto& policy = robot.opt.at("hard_interior_selection");
+    CHECK(policy.size() == 6);
+    CHECK_FALSE(policy.contains("schema_version"));
     CHECK(policy.at("mode") == "planar-chebyshev-fraction-cap-v1");
     CHECK(policy.at("fraction") == doctest::Approx(0.10));
     CHECK(policy.at("cap_mps") == doctest::Approx(0.10));
@@ -1110,6 +1116,77 @@ TEST_CASE("theorem task QP enforces the frozen local interior floor") {
         CHECK(row.constant + row.coefficients.dot(robot.model->getControlInput())
               >= floor - 1e-7);
     }
+}
+
+TEST_CASE("v3 task QP raises only the local selection floor") {
+    Robot historical = paperRobotWithCommittedHardProblem();
+    Robot registered = paperRobotWithCommittedHardProblem(
+        "hard-interior-v3", "planar-chebyshev-fraction-cap-v2", 0.131
+    );
+    const auto historicalProblem =
+        historical.committedCertificateState.hardProblems.at(historical.id);
+    const auto registeredProblem =
+        registered.committedCertificateState.hardProblems.at(registered.id);
+    const std::string historicalHash =
+        cbf2026::canonicalHardConstraintProblemHash(historicalProblem);
+    const std::string registeredHash =
+        cbf2026::canonicalHardConstraintProblemHash(registeredProblem);
+
+    historical.optimise();
+    registered.optimise();
+
+    REQUIRE(historical.opt.contains("hard_interior_selection"));
+    REQUIRE(registered.opt.contains("hard_interior_selection"));
+    const auto& v2 = historical.opt.at("hard_interior_selection");
+    const auto& v3 = registered.opt.at("hard_interior_selection");
+    CHECK(v2.size() == 6);
+    CHECK_FALSE(v2.contains("schema_version"));
+    CHECK(v3.size() == 7);
+    CHECK(v3.at("schema_version") == "hard-interior-v3");
+    CHECK(v3.at("mode") == "planar-chebyshev-fraction-cap-v2");
+    CHECK(v3.at("fraction") == doctest::Approx(0.131));
+    CHECK(v3.at("cap_mps") == doctest::Approx(0.1));
+    CHECK(v3.at("feasibility_tolerance_mps") == doctest::Approx(1e-9));
+    CHECK(v2.at("planar_chebyshev_radius_mps")
+          == doctest::Approx(v3.at("planar_chebyshev_radius_mps").get<double>()));
+    CHECK(v2.at("enforced_floor_mps") == doctest::Approx(0.05));
+    CHECK(v3.at("enforced_floor_mps")
+          == doctest::Approx(0.131 * (0.5 - 1e-9)));
+    CHECK(historicalHash == registeredHash);
+    CHECK(historicalProblem.owner == registeredProblem.owner);
+    CHECK(historicalProblem.bounds.size() == registeredProblem.bounds.size());
+    CHECK(historicalProblem.rows.size() == registeredProblem.rows.size());
+    CHECK(historical.opt.at("nominal") == registered.opt.at("nominal"));
+    json historicalRows = historical.opt.at("cbfNoSlack");
+    json registeredRows = registered.opt.at("cbfNoSlack");
+    for (auto& row : historicalRows) {
+        row.erase("residual");
+    }
+    for (auto& row : registeredRows) {
+        row.erase("residual");
+    }
+    CHECK(historicalRows == registeredRows);
+    CHECK(historical.opt.at("cbfSlack") == registered.opt.at("cbfSlack"));
+    CHECK(historical.opt.at("input_limits") == registered.opt.at("input_limits"));
+    CHECK(historical.settings["cbfs"]["objective-function"]
+          == registered.settings["cbfs"]["objective-function"]);
+}
+
+TEST_CASE("v3 Robot rejects cross-version marker and policy tuples") {
+    Robot wrongMode = paperRobotWithCommittedHardProblem(
+        "hard-interior-v3", "planar-chebyshev-fraction-cap-v1", 0.131
+    );
+    CHECK_THROWS_AS(wrongMode.optimise(), std::invalid_argument);
+
+    Robot wrongMarker = paperRobotWithCommittedHardProblem(
+        "hard-interior-v2", "planar-chebyshev-fraction-cap-v2", 0.131
+    );
+    CHECK_THROWS_AS(wrongMarker.optimise(), std::invalid_argument);
+
+    Robot wrongFraction = paperRobotWithCommittedHardProblem(
+        "hard-interior-v3", "planar-chebyshev-fraction-cap-v2", 0.13
+    );
+    CHECK_THROWS_AS(wrongFraction.optimise(), std::invalid_argument);
 }
 
 TEST_CASE("materialized v2 contract rejects policy and marker mismatches") {

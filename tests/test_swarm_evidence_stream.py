@@ -32,6 +32,7 @@ NO_HOOK_SWARM_BINARY = Path(
 )
 PRIMARY = ROOT / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v1.json"
 PRIMARY_V2 = ROOT / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v2.json"
+PRIMARY_V3 = ROOT / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v3.json"
 
 
 def merge_overlay(materialized, overlay):
@@ -42,9 +43,12 @@ def merge_overlay(materialized, overlay):
             materialized[key] = value
 
 
-def evidence_fixture(output_root: Path, *, v2=False) -> dict:
+def evidence_fixture(output_root: Path, *, v2=False, v3=False) -> dict:
+    if v2 and v3:
+        raise ValueError("evidence fixture controller versions are exclusive")
     config = json.loads((ROOT / "config/config.json").read_text(encoding="utf-8"))
-    merge_overlay(config, json.loads((PRIMARY_V2 if v2 else PRIMARY).read_text(encoding="utf-8")))
+    overlay = PRIMARY_V3 if v3 else PRIMARY_V2 if v2 else PRIMARY
+    merge_overlay(config, json.loads(overlay.read_text(encoding="utf-8")))
     config["initial"]["position"] = {
         "method": "specified",
         "positions": [
@@ -57,7 +61,7 @@ def evidence_fixture(output_root: Path, *, v2=False) -> dict:
             [-1450.0, 300.0], [-1250.0, 300.0],
         ],
     }
-    if not v2:
+    if not v2 and not v3:
         config["cbfs"]["without-slack"]["comm-fixed"]["alpha"]["coe"] = 10.0
         config["cbfs"]["without-slack"]["safety"]["alpha"]["coe"] = 10.0
     config["execute"]["time-total"] = 1.0
@@ -72,7 +76,7 @@ def evidence_fixture(output_root: Path, *, v2=False) -> dict:
         "range-noise-seed": 201,
         "condition": "dynamic_primary",
     }
-    if v2:
+    if v2 or v3:
         config["initial"]["position"] = {
             "method": "specified",
             "positions": json.loads(
@@ -82,6 +86,35 @@ def evidence_fixture(output_root: Path, *, v2=False) -> dict:
             )["template_positions_m"],
         }
     return config
+
+
+class SwarmEvidencePolicyFixtureTests(unittest.TestCase):
+    def test_v3_fixture_binds_registered_marker_policy_without_other_changes(self):
+        with tempfile.TemporaryDirectory(prefix="cbf-evidence-v3-pure-") as temporary:
+            root = Path(temporary)
+            historical = evidence_fixture(root, v2=True)
+            registered = evidence_fixture(root, v3=True)
+        self.assertEqual(
+            registered["qualified-controller"],
+            {"schema-version": "hard-interior-v3"},
+        )
+        self.assertEqual(
+            registered["cbfs"]["hard-interior-selection"],
+            {
+                "mode": "planar-chebyshev-fraction-cap-v2",
+                "fraction": 0.131,
+                "cap-mps": 0.1,
+                "feasibility-tolerance-mps": 1e-9,
+            },
+        )
+        projected = copy.deepcopy(registered)
+        projected["qualified-controller"] = copy.deepcopy(
+            historical["qualified-controller"]
+        )
+        projected["cbfs"]["hard-interior-selection"] = copy.deepcopy(
+            historical["cbfs"]["hard-interior-selection"]
+        )
+        self.assertEqual(projected, historical)
 
 
 class SwarmEvidenceStdoutTests(unittest.TestCase):
@@ -537,12 +570,12 @@ class SwarmEvidenceStdoutTests(unittest.TestCase):
                 "evidence mode must skip legacy output files",
             )
 
-    def test_marker_declared_v2_real_stream_has_exact_policy_for_every_node(self):
-        with tempfile.TemporaryDirectory(prefix="cbf-evidence-v2-") as temporary:
+    def test_marker_declared_v3_real_stream_has_exact_policy_for_every_node(self):
+        with tempfile.TemporaryDirectory(prefix="cbf-evidence-v3-") as temporary:
             root = Path(temporary)
             config_path = root / "config.json"
             config_path.write_text(
-                json.dumps(evidence_fixture(root, v2=True)), encoding="utf-8"
+                json.dumps(evidence_fixture(root, v3=True)), encoding="utf-8"
             )
             result = subprocess.run(
                 [str(SWARM_BINARY), str(config_path)], cwd=ROOT, text=True,
@@ -578,7 +611,7 @@ class SwarmEvidenceStdoutTests(unittest.TestCase):
                 self.assertTrue(all("hard_interior_selection" in node for node in nodes))
                 self.assertTrue(all(
                     set(node["hard_interior_selection"]) == {
-                        "mode", "fraction", "cap_mps",
+                        "schema_version", "mode", "fraction", "cap_mps",
                         "feasibility_tolerance_mps",
                         "planar_chebyshev_radius_mps",
                         "enforced_floor_mps",
@@ -592,6 +625,7 @@ class SwarmEvidenceStdoutTests(unittest.TestCase):
                 if row["frame_index"] == controller0["frame_index"]
             ]
             for field, replacement in (
+                ("schema_version", "hard-interior-v2"),
                 ("fraction", 0.2), ("cap_mps", 0.2),
                 ("feasibility_tolerance_mps", 1e-8),
                 ("planar_chebyshev_radius_mps", 0.0),

@@ -2586,6 +2586,55 @@ def _audit_problem_and_solution(
     return errors
 
 
+def _hard_interior_policy_contract(
+    policy: object,
+) -> tuple[float, float, float] | None:
+    if not isinstance(policy, dict):
+        return None
+    base_fields = {
+        "mode", "fraction", "cap_mps", "feasibility_tolerance_mps",
+        "planar_chebyshev_radius_mps", "enforced_floor_mps",
+        "minimum_original_hard_residual_mps",
+    }
+    if set(policy) == base_fields:
+        expected = ("planar-chebyshev-fraction-cap-v1", 0.1)
+    elif set(policy) == base_fields | {"schema_version"}:
+        contracts = {
+            "hard-interior-v2": ("planar-chebyshev-fraction-cap-v1", 0.1),
+            "hard-interior-v3": ("planar-chebyshev-fraction-cap-v2", 0.131),
+        }
+        schema_version = policy["schema_version"]
+        if type(schema_version) is not str:
+            return None
+        expected = contracts.get(schema_version)
+        if expected is None:
+            return None
+    else:
+        return None
+    continuous = (
+        "fraction", "cap_mps", "feasibility_tolerance_mps",
+        "planar_chebyshev_radius_mps", "enforced_floor_mps",
+        "minimum_original_hard_residual_mps",
+    )
+    if not all(
+        type(policy[field]) is float and math.isfinite(policy[field])
+        for field in continuous
+    ):
+        return None
+    if (
+        policy["mode"] != expected[0]
+        or policy["fraction"] != expected[1]
+        or policy["cap_mps"] != 0.1
+        or policy["feasibility_tolerance_mps"] != 1e-9
+    ):
+        return None
+    return (
+        policy["fraction"],
+        policy["cap_mps"],
+        policy["feasibility_tolerance_mps"],
+    )
+
+
 def _audit_hard_interior_selection(
     robot_id: int,
     problem: dict[str, object],
@@ -2595,13 +2644,10 @@ def _audit_hard_interior_selection(
     """Verify policy evidence from the consumed normal hard problem alone."""
     errors: list[str] = []
     try:
-        if policy["mode"] != "planar-chebyshev-fraction-cap-v1":
+        contract = _hard_interior_policy_contract(policy)
+        if contract is None:
             return [f"interior_policy:{robot_id}"]
-        fraction = float(policy["fraction"])
-        cap = float(policy["cap_mps"])
-        tolerance = float(policy["feasibility_tolerance_mps"])
-        if (fraction, cap, tolerance) != (0.1, 0.1, 1e-9):
-            return [f"interior_policy:{robot_id}"]
+        fraction, cap, tolerance = contract
         audit = solve_planar_hard_row_chebyshev(
             problem, tolerance_mps=tolerance
         )
@@ -2715,23 +2761,7 @@ def _valid_node(node: object, snapshot_version: int, allocation_version: int) ->
 
 
 def _valid_hard_interior_selection(policy: object) -> bool:
-    return (
-        isinstance(policy, dict)
-        and set(policy) == {
-            "mode", "fraction", "cap_mps", "feasibility_tolerance_mps",
-            "planar_chebyshev_radius_mps", "enforced_floor_mps",
-            "minimum_original_hard_residual_mps",
-        }
-        and policy["mode"] == "planar-chebyshev-fraction-cap-v1"
-        and all(
-            type(policy[field]) is float and math.isfinite(policy[field])
-            for field in (
-                "fraction", "cap_mps", "feasibility_tolerance_mps",
-                "planar_chebyshev_radius_mps", "enforced_floor_mps",
-                "minimum_original_hard_residual_mps",
-            )
-        )
-    )
+    return _hard_interior_policy_contract(policy) is not None
 
 
 def _validate_controller_primitive_schema(

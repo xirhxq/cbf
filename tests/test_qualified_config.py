@@ -11,6 +11,8 @@ PRIMARY = ROOT / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v1.j
 ABLATION = ROOT / "config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v1.json"
 PRIMARY_V2 = ROOT / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v2.json"
 ABLATION_V2 = ROOT / "config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v2.json"
+PRIMARY_V3 = ROOT / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v3.json"
+ABLATION_V3 = ROOT / "config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v3.json"
 
 
 class QualifiedConfigTests(unittest.TestCase):
@@ -117,6 +119,77 @@ class QualifiedConfigTests(unittest.TestCase):
         for candidate in mutations:
             with self.subTest(candidate=candidate):
                 self.assertFalse(validate_qualified_config(candidate))
+
+    def test_v3_overlays_are_additive_and_require_the_registered_policy(self):
+        self.assertTrue(PRIMARY_V3.exists())
+        self.assertTrue(ABLATION_V3.exists())
+        if not PRIMARY_V3.exists() or not ABLATION_V3.exists():
+            return
+
+        primary_v2 = self.load(PRIMARY_V2)
+        ablation_v2 = self.load(ABLATION_V2)
+        primary_v3 = self.load(PRIMARY_V3)
+        ablation_v3 = self.load(ABLATION_V3)
+        expected_policy = {
+            "mode": "planar-chebyshev-fraction-cap-v2",
+            "fraction": 0.131,
+            "cap-mps": 0.1,
+            "feasibility-tolerance-mps": 1e-9,
+        }
+        for previous, candidate in (
+            (primary_v2, primary_v3),
+            (ablation_v2, ablation_v3),
+        ):
+            self.assertTrue(validate_qualified_config(candidate))
+            self.assertEqual(
+                candidate["qualified-controller"],
+                {"schema-version": "hard-interior-v3"},
+            )
+            self.assertEqual(
+                candidate["cbfs"]["hard-interior-selection"],
+                expected_policy,
+            )
+            projected = copy.deepcopy(candidate)
+            projected["qualified-controller"] = copy.deepcopy(
+                previous["qualified-controller"]
+            )
+            projected["cbfs"]["hard-interior-selection"] = copy.deepcopy(
+                previous["cbfs"]["hard-interior-selection"]
+            )
+            self.assertEqual(projected, previous)
+
+    def test_v3_marker_policy_pair_fails_closed_on_cross_version_and_tokens(self):
+        candidate = self.load(PRIMARY_V2)
+        candidate["qualified-controller"] = {"schema-version": "hard-interior-v3"}
+        candidate["cbfs"]["hard-interior-selection"] = {
+            "mode": "planar-chebyshev-fraction-cap-v2",
+            "fraction": 0.131,
+            "cap-mps": 0.1,
+            "feasibility-tolerance-mps": 1e-9,
+        }
+        self.assertTrue(validate_qualified_config(candidate))
+
+        mutations = (
+            (("cbfs", "hard-interior-selection", "fraction"), 0.13),
+            (("cbfs", "hard-interior-selection", "fraction"), 0.132),
+            (("cbfs", "hard-interior-selection", "fraction"), 131),
+            (("cbfs", "hard-interior-selection", "fraction"), True),
+            (("cbfs", "hard-interior-selection", "cap-mps"), 0),
+            (("cbfs", "hard-interior-selection", "feasibility-tolerance-mps"), 0),
+            (("cbfs", "hard-interior-selection", "mode"), "planar-chebyshev-fraction-cap-v1"),
+            (("qualified-controller", "schema-version"), "hard-interior-v2"),
+            (("qualified-controller", "schema-version"), ["hard-interior-v3"]),
+            (("qualified-controller", "schema-version"), {"value": "hard-interior-v3"}),
+            (("qualified-controller", "schema-version"), True),
+        )
+        for path, value in mutations:
+            with self.subTest(path=path, value=value):
+                mutated = copy.deepcopy(candidate)
+                target = mutated
+                for key in path[:-1]:
+                    target = target[key]
+                target[path[-1]] = value
+                self.assertFalse(validate_qualified_config(mutated))
 
     def test_rejects_every_forbidden_contract_mutation(self):
         mutations = []

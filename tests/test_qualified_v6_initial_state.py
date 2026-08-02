@@ -1,5 +1,7 @@
 import copy
+import hashlib
 import json
+import struct
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +13,7 @@ from scripts.diagnostics.qualified_initial_state import (
     InitialStateAdmissionError,
     load_qualified_initial_family,
 )
+from scripts.diagnostics.hard_interior_selection import frozen_interior_floor
 from scripts.diagnostics.qualified_v6_initial_state import (
     audit_frozen_v6_initial_family,
     load_qualified_v6_initial_family,
@@ -24,6 +27,14 @@ from scripts.diagnostics.qualified_v6_initial_state import (
 ROOT = Path(__file__).resolve().parents[1]
 V1_PATH = ROOT / "config/diagnostics/qualified_initial_family_v1.json"
 V2_PATH = ROOT / "config/diagnostics/qualified_initial_family_v2.json"
+V3_PATH = ROOT / "config/diagnostics/qualified_initial_family_v3.json"
+V2_PRIMARY_PATH = ROOT / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v2.json"
+V2_ABLATION_PATH = ROOT / "config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v2.json"
+HISTORICAL_V2_SHA256 = {
+    V2_PRIMARY_PATH: "ad71ca5d3e7580022b7af4d8f21767aff74dba9c0edb4d347c3c7f174614382d",
+    V2_ABLATION_PATH: "13d5a3f2dcf41ce99579c342c64008c8e915b9ff7c91bb028eb98737a958372c",
+    V2_PATH: "21d04b79e9e81ba867e28826ad43615120a4889d16e082d602e933a6a73177ef",
+}
 
 # Immutable retained development-v5 Mission-01 frame-zero evidence:
 # /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v5/
@@ -62,6 +73,130 @@ class QualifiedV6InitialFamilyTests(unittest.TestCase):
         cls.v1 = load_qualified_initial_family(V1_PATH)
         cls.v2 = load_qualified_v6_initial_family(V2_PATH)
         cls.raw = json.loads(V2_PATH.read_text(encoding="utf-8"))
+
+    def v3_candidate(self):
+        candidate = copy.deepcopy(self.raw)
+        candidate["schema_version"] = "cbf2026-qualified-initial-family-v3"
+        candidate["controller_policy"] = {
+            "schema_version": "hard-interior-v3",
+            "class_k_coefficient": 0.1,
+            "class_k_power": 1,
+            "mode": "planar-chebyshev-fraction-cap-v2",
+            "fraction": 0.131,
+            "cap_mps": 0.1,
+            "feasibility_tolerance_mps": 1e-9,
+            "planar_component_max_mps": 25.0,
+            "yaw_enters_radius": False,
+        }
+        candidate["semantic_sha256"] = v6_family_semantic_sha256(candidate)
+        return candidate
+
+    def test_v3_family_accepts_only_declared_additions_and_canonical_hash(self):
+        candidate = self.v3_candidate()
+        try:
+            checked = validate_qualified_v6_initial_family(candidate)
+        except ValueError as error:
+            self.fail(f"exact v3 family was rejected: {error}")
+        self.assertEqual(checked, candidate)
+        self.assertEqual(candidate["namespace"], self.v2["namespace"])
+        for key in candidate:
+            if key not in {"schema_version", "controller_policy", "semantic_sha256"}:
+                self.assertEqual(candidate[key], self.v2[key], key)
+        self.assertEqual(
+            candidate["semantic_sha256"], v6_family_semantic_sha256(candidate)
+        )
+
+    def test_v3_family_rejects_policy_marker_mode_fraction_and_token_mutations(self):
+        mutations = (
+            (("schema_version",), ["cbf2026-qualified-initial-family-v3"]),
+            (("schema_version",), {"value": "cbf2026-qualified-initial-family-v3"}),
+            (("schema_version",), True),
+            (("controller_policy", "schema_version"), "hard-interior-v2"),
+            (("controller_policy", "schema_version"), ["hard-interior-v3"]),
+            (("controller_policy", "schema_version"), {"value": "hard-interior-v3"}),
+            (("controller_policy", "schema_version"), True),
+            (("controller_policy", "mode"), "planar-chebyshev-fraction-cap-v1"),
+            (("controller_policy", "fraction"), 0.13),
+            (("controller_policy", "fraction"), 0.132),
+            (("controller_policy", "fraction"), 131),
+            (("controller_policy", "fraction"), True),
+            (("controller_policy", "cap_mps"), 0),
+            (("controller_policy", "feasibility_tolerance_mps"), 0),
+        )
+        for path, value in mutations:
+            with self.subTest(path=path, value=value):
+                candidate = self.v3_candidate()
+                target = candidate
+                for key in path[:-1]:
+                    target = target[key]
+                target[path[-1]] = value
+                candidate["semantic_sha256"] = v6_family_semantic_sha256(candidate)
+                with self.assertRaises(ValueError):
+                    validate_qualified_v6_initial_family(candidate)
+
+        extra = self.v3_candidate()
+        extra["controller_policy"]["extra"] = True
+        extra["semantic_sha256"] = v6_family_semantic_sha256(extra)
+        with self.assertRaises(ValueError):
+            validate_qualified_v6_initial_family(extra)
+        missing = self.v3_candidate()
+        del missing["controller_policy"]["feasibility_tolerance_mps"]
+        missing["semantic_sha256"] = v6_family_semantic_sha256(missing)
+        with self.assertRaises(ValueError):
+            validate_qualified_v6_initial_family(missing)
+
+    def test_v3_positions_are_ieee_identical_and_historical_v2_bytes_are_frozen(self):
+        self.assertTrue(V3_PATH.exists())
+        if not V3_PATH.exists():
+            return
+        v3_family = load_qualified_v6_initial_family(V3_PATH)
+        for path, expected in HISTORICAL_V2_SHA256.items():
+            self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), expected)
+        for seed in range(2026080201, 2026080301):
+            with self.subTest(seed=seed):
+                v1_positions = _materialize_seed_positions(self.v1, seed)
+                v2_positions = materialize_v6_seed_positions(self.v2, seed)
+                v3_positions = materialize_v6_seed_positions(v3_family, seed)
+                self.assertEqual(
+                    tuple(struct.pack(">dd", *point) for point in v3_positions),
+                    tuple(struct.pack(">dd", *point) for point in v2_positions),
+                )
+                self.assertEqual(v3_positions, v1_positions)
+
+    def test_registered_v2_policy_saturates_all_1400_frozen_current_problems(self):
+        candidate = self.v3_candidate()
+        try:
+            frozen = audit_frozen_v6_initial_family(candidate)
+        except ValueError as error:
+            self.fail(f"v3 frozen-universe reconstruction was rejected: {error}")
+        radii = [
+            qp.margin
+            for seed_audit in frozen.audit.audits
+            for qp in seed_audit.local_qps
+        ]
+        self.assertEqual(len(radii), 1400)
+        self.assertAlmostEqual(min(radii), 0.7658252531927233, places=12)
+        registered_floors = [
+            frozen_interior_floor(
+                radius,
+                fraction=0.131,
+                cap_mps=0.1,
+                tolerance_mps=1e-9,
+            )
+            for radius in radii
+        ]
+        historical_floors = [
+            frozen_interior_floor(
+                radius,
+                fraction=0.1,
+                cap_mps=0.1,
+                tolerance_mps=1e-9,
+            )
+            for radius in radii
+        ]
+        self.assertTrue(all(floor == 0.1 for floor in registered_floors))
+        self.assertTrue(all(floor <= radius for floor, radius in zip(registered_floors, radii)))
+        self.assertAlmostEqual(min(historical_floors), 0.07658252521927234, places=14)
 
     def test_audit_positions_are_bitwise_identical_to_v1(self):
         for seed in range(2026080201, 2026080301):

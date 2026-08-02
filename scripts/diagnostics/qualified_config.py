@@ -12,6 +12,10 @@ def _number(value: Any, expected: float) -> bool:
     return type(value) in (int, float) and math.isfinite(value) and value == expected
 
 
+def _float(value: Any, expected: float) -> bool:
+    return type(value) is float and math.isfinite(value) and value == expected
+
+
 def _integer(value: Any, expected: int) -> bool:
     return type(value) is int and value == expected
 
@@ -39,11 +43,17 @@ def validate_qualified_config(config: Mapping[str, Any]) -> bool:
         v2_root_keys = v1_root_keys | {"qualified-controller"}
         if set(config) != v1_root_keys and set(config) != v2_root_keys:
             return False
-        is_v2 = set(config) == v2_root_keys
-        if is_v2 and config["qualified-controller"] != {
-            "schema-version": "hard-interior-v2"
-        }:
-            return False
+        has_controller = set(config) == v2_root_keys
+        controller_schema = None
+        if has_controller:
+            marker = config["qualified-controller"]
+            if not _keys(marker, {"schema-version"}):
+                return False
+            controller_schema = marker["schema-version"]
+            if type(controller_schema) is not str:
+                return False
+            if controller_schema not in {"hard-interior-v2", "hard-interior-v3"}:
+                return False
 
         estimator = config["qualified-estimator"]
         if not _keys(
@@ -164,7 +174,7 @@ def validate_qualified_config(config: Mapping[str, Any]) -> bool:
         cbfs = config["cbfs"]
         v1_cbf_keys = {"uncertainty-rate", "input-limits", "without-slack"}
         v2_cbf_keys = v1_cbf_keys | {"hard-interior-selection"}
-        expected_cbf_keys = v2_cbf_keys if is_v2 else v1_cbf_keys
+        expected_cbf_keys = v2_cbf_keys if has_controller else v1_cbf_keys
         if set(cbfs) != expected_cbf_keys:
             return False
         if cbfs["uncertainty-rate"] != {"mode": "analytic-topological"}:
@@ -182,7 +192,7 @@ def validate_qualified_config(config: Mapping[str, Any]) -> bool:
         if not _keys(cbfs["without-slack"], {"safety", "comm-fixed"}):
             return False
         safety = cbfs["without-slack"]["safety"]
-        hard_class_keys = {"on", "mode", "alpha"} if is_v2 else {"on", "mode"}
+        hard_class_keys = {"on", "mode", "alpha"} if has_controller else {"on", "mode"}
         if not _keys(safety, hard_class_keys) or not _boolean(
             safety["on"], True
         ) or safety["mode"] != "allocated-pairwise":
@@ -192,17 +202,23 @@ def validate_qualified_config(config: Mapping[str, Any]) -> bool:
             comm_fixed["on"], True
         ) or comm_fixed["mode"] != "allocated-pairwise":
             return False
-        if is_v2:
+        if has_controller:
+            expected_policy = {
+                "hard-interior-v2": ("planar-chebyshev-fraction-cap-v1", 0.1),
+                "hard-interior-v3": ("planar-chebyshev-fraction-cap-v2", 0.131),
+            }[controller_schema]
             if not _keys(
                 cbfs["hard-interior-selection"],
                 {"mode", "fraction", "cap-mps", "feasibility-tolerance-mps"},
-            ) or cbfs["hard-interior-selection"]["mode"] != "planar-chebyshev-fraction-cap-v1":
+            ) or cbfs["hard-interior-selection"]["mode"] != expected_policy[0]:
                 return False
-            if not _number(cbfs["hard-interior-selection"]["fraction"], 0.1):
+            if not _float(
+                cbfs["hard-interior-selection"]["fraction"], expected_policy[1]
+            ):
                 return False
-            if not _number(cbfs["hard-interior-selection"]["cap-mps"], 0.1):
+            if not _float(cbfs["hard-interior-selection"]["cap-mps"], 0.1):
                 return False
-            if not _number(
+            if not _float(
                 cbfs["hard-interior-selection"]["feasibility-tolerance-mps"],
                 1e-9,
             ):

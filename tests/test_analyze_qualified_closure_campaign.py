@@ -452,6 +452,42 @@ class CampaignAnalyzerGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "provenance"):
             _verify_controller_interior_evidence([node, {"normal_problem": problem}])
 
+    def test_analyzer_reconstructs_registered_v3_policy_and_rejects_cross_version(self):
+        from tests.test_qualified_closure_evidence import (
+            bounded_hard_problem,
+            interior_policy,
+            localization_problem_row,
+        )
+
+        problem = bounded_hard_problem(
+            1, localization_problem_row(2.0), "analyzer-v3-fixture"
+        )
+        command = [0.0, 0.0, 0.0]
+        node = {
+            "normal_problem": problem,
+            "applied_command": command,
+            "hard_interior_selection": interior_policy(
+                problem,
+                command,
+                schema_version="hard-interior-v3",
+                mode="planar-chebyshev-fraction-cap-v2",
+                fraction=0.131,
+            ),
+        }
+        _verify_controller_interior_evidence([node])
+        for field, value in (
+            ("schema_version", "hard-interior-v2"),
+            ("mode", "planar-chebyshev-fraction-cap-v1"),
+            ("fraction", 0.13),
+            ("fraction", 0.132),
+            ("fraction", True),
+        ):
+            with self.subTest(field=field, value=value):
+                mutated = copy.deepcopy(node)
+                mutated["hard_interior_selection"][field] = value
+                with self.assertRaisesRegex(ValueError, "interior"):
+                    _verify_controller_interior_evidence([mutated])
+
     def test_wrong_mode_compares_publication_to_all_physical_modes(self):
         row = {
             "published_mode_id": "far-mode",

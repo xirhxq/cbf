@@ -2245,6 +2245,9 @@ def _verify_controller_interior_evidence(nodes):
         frozen_interior_floor,
         solve_planar_hard_row_chebyshev,
     )
+    from scripts.diagnostics.qualified_closure_evidence import (
+        _hard_interior_policy_contract,
+    )
 
     policy_presence = ["hard_interior_selection" in node for node in nodes]
     if not any(policy_presence):
@@ -2255,36 +2258,19 @@ def _verify_controller_interior_evidence(nodes):
         if "normal_problem" not in node:
             raise ValueError("controller interior normal problem is absent")
         policy = node.get("hard_interior_selection")
-        required = {
-            "mode", "fraction", "cap_mps", "feasibility_tolerance_mps",
-            "planar_chebyshev_radius_mps", "enforced_floor_mps",
-            "minimum_original_hard_residual_mps",
-        }
-        if not isinstance(policy, dict) or set(policy) != required:
-            raise ValueError("controller interior policy schema differs")
-        continuous = (
-            "fraction", "cap_mps", "feasibility_tolerance_mps",
-            "planar_chebyshev_radius_mps", "enforced_floor_mps",
-            "minimum_original_hard_residual_mps",
-        )
-        if not all(
-            type(policy[field]) is float and math.isfinite(policy[field])
-            for field in continuous
-        ):
-            raise ValueError("controller interior policy numeric token differs")
-        if (policy["mode"] != "planar-chebyshev-fraction-cap-v1"
-                or (policy["fraction"], policy["cap_mps"],
-                    policy["feasibility_tolerance_mps"]) != (0.1, 0.1, 1e-9)):
+        contract = _hard_interior_policy_contract(policy)
+        if contract is None:
             raise ValueError("controller interior policy differs")
+        fraction, cap_mps, tolerance_mps = contract
         audit = solve_planar_hard_row_chebyshev(
             node["normal_problem"],
-            tolerance_mps=policy["feasibility_tolerance_mps"],
+            tolerance_mps=tolerance_mps,
         )
         floor = frozen_interior_floor(
             audit.radius_mps,
-            fraction=policy["fraction"],
-            cap_mps=policy["cap_mps"],
-            tolerance_mps=policy["feasibility_tolerance_mps"],
+            fraction=fraction,
+            cap_mps=cap_mps,
+            tolerance_mps=tolerance_mps,
         )
         command = node["applied_command"]
         original_residual = min(

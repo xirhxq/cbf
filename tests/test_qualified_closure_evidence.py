@@ -1,6 +1,8 @@
 import copy
 import unittest
 
+import numpy as np
+
 import scripts.diagnostics.qualified_closure_evidence as evidence_schema
 
 from scripts.diagnostics.qualified_closure_evidence import (
@@ -89,15 +91,24 @@ def collision_hard_problem(owner):
     return bounded_hard_problem(owner, row, hard_problem_id)
 
 
-def interior_policy(problem, command):
+def interior_policy(
+    problem,
+    command,
+    *,
+    schema_version=None,
+    mode="planar-chebyshev-fraction-cap-v1",
+    fraction=0.1,
+):
     audit = solve_planar_hard_row_chebyshev(problem)
-    return {
-        "mode": "planar-chebyshev-fraction-cap-v1",
-        "fraction": 0.1,
+    policy = {
+        "mode": mode,
+        "fraction": fraction,
         "cap_mps": 0.1,
         "feasibility_tolerance_mps": 1e-9,
         "planar_chebyshev_radius_mps": audit.radius_mps,
-        "enforced_floor_mps": frozen_interior_floor(audit.radius_mps),
+        "enforced_floor_mps": frozen_interior_floor(
+            audit.radius_mps, fraction=fraction
+        ),
         "minimum_original_hard_residual_mps": min(
             row["constant"] + sum(
                 coefficient * value
@@ -106,6 +117,9 @@ def interior_policy(problem, command):
             for row in problem["rows"]
         ),
     }
+    if schema_version is not None:
+        policy["schema_version"] = schema_version
+    return policy
 
 
 class EvidenceUniverseTests(unittest.TestCase):
@@ -224,6 +238,51 @@ class EvidenceUniverseTests(unittest.TestCase):
 
 
 class ControllerPrimitiveSchemaTests(unittest.TestCase):
+    def test_v3_policy_marker_selects_only_the_registered_tuple(self):
+        problem = bounded_hard_problem(
+            1, localization_problem_row(2.0), "v3-policy-fixture"
+        )
+        command = [0.0, 0.0, 0.0]
+        registered = interior_policy(
+            problem,
+            command,
+            schema_version="hard-interior-v3",
+            mode="planar-chebyshev-fraction-cap-v2",
+            fraction=0.131,
+        )
+        self.assertTrue(evidence_schema._valid_hard_interior_selection(registered))
+        self.assertEqual(
+            evidence_schema._audit_hard_interior_selection(
+                1, problem, np.asarray(command, dtype=float), registered
+            ),
+            [],
+        )
+
+        for field, value in (
+            ("schema_version", "hard-interior-v2"),
+            ("schema_version", ["hard-interior-v3"]),
+            ("schema_version", {"value": "hard-interior-v3"}),
+            ("schema_version", True),
+            ("mode", "planar-chebyshev-fraction-cap-v1"),
+            ("fraction", 0.13),
+            ("fraction", 0.132),
+            ("fraction", True),
+        ):
+            with self.subTest(field=field, value=value):
+                mutated = copy.deepcopy(registered)
+                mutated[field] = value
+                self.assertFalse(
+                    evidence_schema._valid_hard_interior_selection(mutated)
+                )
+                self.assertTrue(
+                    evidence_schema._audit_hard_interior_selection(
+                        1, problem, np.asarray(command, dtype=float), mutated
+                    )
+                )
+
+        historical = interior_policy(problem, command)
+        self.assertTrue(evidence_schema._valid_hard_interior_selection(historical))
+
     def test_policy_schema_rejects_integral_radius_and_residual_tokens(self):
         problem = bounded_hard_problem(
             1, localization_problem_row(2.0), "policy-token-fixture"

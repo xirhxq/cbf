@@ -1497,6 +1497,12 @@ inline bool validateQualifiedMaterializedConfig(
                && std::isfinite(value.get<double>())
                && value.get<double>() == expected;
     };
+    const auto exactFloat = [](const nlohmann::json& value,
+                               const double expected) {
+        return value.is_number_float()
+               && std::isfinite(value.get<double>())
+               && value.get<double>() == expected;
+    };
     const auto exactInteger = [](const nlohmann::json& value,
                                  const std::int64_t expected) {
         return value.is_number_integer()
@@ -1649,20 +1655,24 @@ inline bool validateQualifiedMaterializedConfig(
             return false;
         }
         const auto& cbfs = config.at("cbfs");
-        const bool isV2 = config.contains("qualified-controller");
-        if (isV2) {
+        const bool hasController = config.contains("qualified-controller");
+        std::string controllerSchema;
+        if (hasController) {
             const auto& marker = config.at("qualified-controller");
             if (!marker.is_object() || marker.size() != 1
-                || !exactString(
-                    marker.at("schema-version"), "hard-interior-v2"
-                )) {
+                || !marker.at("schema-version").is_string()) {
+                return false;
+            }
+            controllerSchema = marker.at("schema-version").get<std::string>();
+            if (controllerSchema != "hard-interior-v2"
+                && controllerSchema != "hard-interior-v3") {
                 return false;
             }
         }
         const bool hasInteriorPolicy = cbfs.contains(
             "hard-interior-selection"
         );
-        if (isV2 != hasInteriorPolicy) {
+        if (hasController != hasInteriorPolicy) {
             return false;
         }
         if (!exactString(
@@ -1679,15 +1689,19 @@ inline bool validateQualifiedMaterializedConfig(
             )) {
             return false;
         }
-        if (isV2) {
+        if (hasController) {
+            const std::string policyMode = controllerSchema
+                == "hard-interior-v2"
+                ? "planar-chebyshev-fraction-cap-v1"
+                : "planar-chebyshev-fraction-cap-v2";
+            const double fraction = controllerSchema
+                == "hard-interior-v2" ? 0.1 : 0.131;
             const auto& policy = cbfs.at("hard-interior-selection");
             if (!policy.is_object() || policy.size() != 4
-                || !exactString(
-                    policy.at("mode"), "planar-chebyshev-fraction-cap-v1"
-                )
-                || !exactNumber(policy.at("fraction"), 0.1)
-                || !exactNumber(policy.at("cap-mps"), 0.1)
-                || !exactNumber(
+                || !exactString(policy.at("mode"), policyMode)
+                || !exactFloat(policy.at("fraction"), fraction)
+                || !exactFloat(policy.at("cap-mps"), 0.1)
+                || !exactFloat(
                     policy.at("feasibility-tolerance-mps"), 1e-9
                 )) {
                 return false;
@@ -1713,7 +1727,7 @@ inline bool validateQualifiedMaterializedConfig(
             || !exactBoolean(hard.at("comm-auto").at("on"), false)) {
             return false;
         }
-        if (isV2) {
+        if (hasController) {
             const auto exactHardAlpha = [&exactNumber, &exactInteger](
                 const nlohmann::json& hardClass
             ) {

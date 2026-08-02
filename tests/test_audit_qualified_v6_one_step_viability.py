@@ -244,8 +244,9 @@ def _normal_problem(robot_id: int) -> dict:
 
 def _policy() -> dict:
     return {
-        "mode": "planar-chebyshev-fraction-cap-v1",
-        "fraction": 0.1,
+        "schema_version": "hard-interior-v3",
+        "mode": "planar-chebyshev-fraction-cap-v2",
+        "fraction": 0.131,
         "cap_mps": 0.1,
         "feasibility_tolerance_mps": 1e-9,
         "planar_chebyshev_radius_mps": 26.0,
@@ -376,11 +377,11 @@ class QualifiedV6OneStepOrchestrationTests(unittest.TestCase):
         shutil.copyfile(ROOT / "config/config.json", self.base)
         shutil.copyfile(
             ROOT
-            / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v2.json",
+            / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v3.json",
             self.primary,
         )
         shutil.copyfile(
-            ROOT / "config/diagnostics/qualified_initial_family_v2.json",
+            ROOT / "config/diagnostics/qualified_initial_family_v3.json",
             self.family,
         )
         self.claim = self.root / "claim.json"
@@ -423,9 +424,9 @@ class QualifiedV6OneStepOrchestrationTests(unittest.TestCase):
                 binary=ROOT / "build-diagnostic/Swarm",
                 base_config=ROOT / "config/config.json",
                 primary_config=ROOT
-                / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v2.json",
+                / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v3.json",
                 initial_family=ROOT
-                / "config/diagnostics/qualified_initial_family_v2.json",
+                / "config/diagnostics/qualified_initial_family_v3.json",
                 claim=self.claim,
                 output=self.output,
                 project_root=ROOT,
@@ -674,9 +675,9 @@ class QualifiedV6OneStepOrchestrationTests(unittest.TestCase):
             "binary": ROOT / "build-diagnostic/Swarm",
             "base_config": ROOT / "config/config.json",
             "primary_config": ROOT
-            / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v2.json",
+            / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v3.json",
             "initial_family": ROOT
-            / "config/diagnostics/qualified_initial_family_v2.json",
+            / "config/diagnostics/qualified_initial_family_v3.json",
         }
         self.binary.write_bytes(canonical["binary"].read_bytes())
         self.binary.chmod(0o700)
@@ -705,6 +706,36 @@ class QualifiedV6OneStepOrchestrationTests(unittest.TestCase):
                     _audit_seed_sequence(**arguments)
                 self.assertFalse(claim.exists())
                 self.assertFalse(output.exists())
+
+    def test_old_v2_primary_and_family_paths_cannot_qualify_gate_v2(self):
+        self.assertEqual(
+            producer.SCHEMA_VERSION,
+            "cbf2026-qualified-v6-one-step-viability-v2",
+        )
+        self.assertEqual(
+            producer.CAMPAIGN_ID,
+            "qualified-v6-one-step-development-gate-v2",
+        )
+        with self.assertRaisesRegex(ValueError, "primary_config path is not canonical"):
+            producer._require_qualifying_canonical_paths(
+                binary=ROOT / "build-diagnostic/Swarm",
+                base_config=ROOT / "config/config.json",
+                primary_config=ROOT
+                / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v2.json",
+                initial_family=ROOT
+                / "config/diagnostics/qualified_initial_family_v3.json",
+                project_root=ROOT,
+            )
+        with self.assertRaisesRegex(ValueError, "initial_family path is not canonical"):
+            producer._require_qualifying_canonical_paths(
+                binary=ROOT / "build-diagnostic/Swarm",
+                base_config=ROOT / "config/config.json",
+                primary_config=ROOT
+                / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v3.json",
+                initial_family=ROOT
+                / "config/diagnostics/qualified_initial_family_v2.json",
+                project_root=ROOT,
+            )
 
     def test_integer_float_boolean_and_nonfinite_aliases_fail_end_to_end(self):
         mutations = {
@@ -1311,9 +1342,9 @@ class QualifiedV6OneStepRealBinaryTests(unittest.TestCase):
     def test_exact_binary_launches_one_declared_seed_once_in_private_temp(self):
         production_paths = (
             ROOT
-            / "docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-claim.json",
+            / "docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-v2-claim.json",
             ROOT
-            / "docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability.json",
+            / "docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-v6-one-step-viability-v2.json",
             ROOT
             / "docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v6-protocol.json",
             Path("/private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v6"),
@@ -1331,9 +1362,9 @@ class QualifiedV6OneStepRealBinaryTests(unittest.TestCase):
                 binary=self.binary,
                 base_config=ROOT / "config/config.json",
                 primary_config=ROOT
-                / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v2.json",
+                / "config/diagnostics/qualified_mode_hybrid_dcbf_development_v3.json",
                 initial_family=ROOT
-                / "config/diagnostics/qualified_initial_family_v2.json",
+                / "config/diagnostics/qualified_initial_family_v3.json",
                 claim=claim,
                 output=output,
                 project_root=ROOT,

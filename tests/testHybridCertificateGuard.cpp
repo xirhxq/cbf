@@ -4,6 +4,10 @@
 #include "cbf/HybridCertificateGuard.hpp"
 #include "Robot.hpp"
 
+#include <fstream>
+#include <stdexcept>
+#include <string>
+
 namespace {
 
 cbf2026::ActiveDag chainDag() {
@@ -165,6 +169,32 @@ json robotSettings() {
         {"debug", {{"opt-cbc", false}}},
         {"execute", {{"time-step", 0.5}}}
     };
+}
+
+json loadMaterializedConfig(const std::string& path) {
+    std::ifstream stream(path);
+    if (!stream.good()) {
+        throw std::runtime_error("unable to load diagnostic config");
+    }
+    return json::parse(stream);
+}
+
+void mergeDiagnosticOverlay(json& materialized, const json& overlay) {
+    for (const auto& [key, value] : overlay.items()) {
+        if (value.is_object()
+            && materialized.contains(key)
+            && materialized.at(key).is_object()) {
+            mergeDiagnosticOverlay(materialized[key], value);
+        } else {
+            materialized[key] = value;
+        }
+    }
+}
+
+json materializedDiagnosticConfig(const std::string& overlay) {
+    json materialized = loadMaterializedConfig("config/config.json");
+    mergeDiagnosticOverlay(materialized, loadMaterializedConfig(overlay));
+    return materialized;
 }
 
 }
@@ -1125,6 +1155,34 @@ TEST_CASE("fixed FIM ablation excludes optional dynamic references") {
     CHECK(fixedCertificate.frozenReferences.size() == 2);
     CHECK(dynamicCertificate.snapshotVersion == 8);
     CHECK(fixedCertificate.snapshotVersion == 8);
+}
+
+TEST_CASE("qualified materialized guard accepts only matched v3 policy identities") {
+    json primary = materializedDiagnosticConfig(
+        "config/diagnostics/qualified_mode_hybrid_dcbf_development_v3.json"
+    );
+    json ablation = materializedDiagnosticConfig(
+        "config/diagnostics/qualified_mode_hybrid_dcbf_fixed_fim_ablation_v3.json"
+    );
+    CHECK(cbf2026::validateQualifiedMaterializedConfig(primary, {"Gurobi"}));
+    CHECK(cbf2026::validateQualifiedMaterializedConfig(ablation, {"Gurobi"}));
+
+    json crossVersion = primary;
+    crossVersion["qualified-controller"]["schema-version"] = "hard-interior-v2";
+    CHECK_FALSE(cbf2026::validateQualifiedMaterializedConfig(
+        crossVersion, {"Gurobi"}
+    ));
+    crossVersion = primary;
+    crossVersion["cbfs"]["hard-interior-selection"]["mode"] =
+        "planar-chebyshev-fraction-cap-v1";
+    CHECK_FALSE(cbf2026::validateQualifiedMaterializedConfig(
+        crossVersion, {"Gurobi"}
+    ));
+    crossVersion = primary;
+    crossVersion["cbfs"]["hard-interior-selection"]["fraction"] = 0.13;
+    CHECK_FALSE(cbf2026::validateQualifiedMaterializedConfig(
+        crossVersion, {"Gurobi"}
+    ));
 }
 
 TEST_CASE("reset lifecycle coalesces causes and admits one transaction per frame") {
