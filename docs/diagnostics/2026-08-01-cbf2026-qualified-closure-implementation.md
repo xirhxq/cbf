@@ -803,3 +803,119 @@ must add exactly the four v4 lifecycle artifacts and pass production
 postcommit validation. Only then may the protocol-bound module runner execute
 once, followed by the module analyzer once after a terminal raw manifest.
 Only a reproduced v4 PASS with C0/I0 may open confirmatory-v1.
+
+## Development-v4 terminal failure and operative development-v5 closure
+
+This append-only section supersedes the preceding prospective v4 statement
+without changing the archived v3/v4 chronology. Development-v4 was authorized
+and its protocol-bound runner was invoked exactly once. Mission 1 stopped
+after the fourteen frame-zero initialization records because the reset guard
+proved UAV 3's bounded local hard QP infeasible. The terminal raw bundle and
+the subsequently produced terminal analysis bundle are immutable:
+
+```text
+raw root       /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v4
+raw files      28
+raw bytes      12618979
+raw tree       9b915ad84aeda2b22aafbd259bf61bbc9515e3b082559bf3e5f217e14af9b5ac
+raw manifest   12f71bb00720636ca610ad8d9d380dde7e92147e7bdf57589bb8915c1bf72f71
+
+analysis root      /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v4
+analysis files     3
+analysis bytes     8639
+analysis tree      155b6b9372f91bb7b4b2476581b4270e7a372c680cd8b2ea1847ef9c5766729a
+analysis manifest  890174908e5df83e367edd33cb0d83960635cc94ac57fd79fafd553aef40e6f0
+```
+
+The failure report and independent audits were archived at
+`e178e67bd86fe6ad9b698cfba350b7a0fefaeac8`. The reconstructed maximum
+minimum local-QP residual was approximately `-2.243905861 m/s`; this is a
+real incompatibility between the v4 random frame-zero geometry, the registered
+fixed-half allocation, the rate term, and the componentwise `+-25 m/s` input
+box. It is not a solver, row-sign, DAG, or retry failure. Development-v4 is
+consumed and must not be deleted, resumed, overwritten, or reinterpreted.
+
+Three scoped TDD commits close the prospective v5 interfaces while preserving
+the theorem, controller, input bounds, fixed CBF references, and dynamic
+FIM-only localization graph:
+
+1. `2ed6460ea06fb4d9eb9b2b082a077be0731f8d2c` preserves every rejected
+   reset-QP witness and propagates the exact rejected stage through controller
+   abort and mission terminal evidence.
+2. `cb3b8b7b794ca51291116c1d76ac49ca6cb4d0c3` freezes the deterministic
+   `cbf2026-v5-initial` family and its complete 100-seed admission audit.
+3. `6ac6e088ee5d2c6dbed9ed24c128a3225252de6f` binds that family into the
+   registrar, runner, materializers, Swarm stream validator, and independent
+   analyzer. Its parent is `cb3b8b7...` and its tree is
+   `654fea846f9fe67361842c07a527befa1fc2d3e2`.
+
+Commit `6ac6e08...` changes exactly the registrar, runner, analyzer, and their
+three test modules. Development is now protocol schema v2, protocol version
+v5, and campaign `development-v5`. The trajectory seeds are exactly
+`2026080201..2026080210`; range-noise seeds are exactly
+`2026081201..2026081210`. The canonical initial-family binding is
+`config/diagnostics/qualified_initial_family_v1.json`, whose file SHA-256 is
+`7fb8597cd89a41315cbd86ca87c0bc6e3ecb22ea3dcab8ee6278aca44743fe24`
+and semantic SHA-256 is
+`4f8070127c86149de8ebde10197e5c7a639814e03dac7d56ab17befc6d5bdb8b`.
+
+Every development lifecycle independently reloads strict duplicate-safe JSON,
+checks the literal regular-file path and byte identity, recomputes the full
+100-seed family before root allocation, and binds the exact registered-seed
+position hashes into the top-level `initial_state` and ten mission records.
+No clamp, retry, substitution, or resampling path exists. Primary and
+fixed-FIM materializations replace the complete base position generator with
+the same fourteen `method=specified` positions. The runner and analyzer both
+compare all fourteen initialization truth positions and all fourteen frame-0
+controller truth positions against the frozen seed record. The analyzer also
+authenticates all three materialized configs from one immutable byte snapshot
+each and closes the measurement-manifest, runtime-measurement, primary-config,
+and Swarm-config SHA chain.
+
+Development v1--v3 must remain absent, and both v4 trees are verified against
+the exact identities above before registration or execution can proceed.
+Confirmatory remains protocol v1 and does not consume the current development
+family. Its fixed-FIM arm retains the pre-v5 base initial configuration rather
+than reading a nonexistent `initial_family` binding. The exact-four
+protocol/Markdown/preflight/authorization topology is unchanged.
+
+The final implementation review first found one Critical confirmatory-path
+failure, two Important integrity gaps, and two Minor maintainability/test-entry
+issues. Direct RED tests reproduced the confirmatory `KeyError`, an external
+same-byte self-rehashed family substitution accepted at verify time, and a
+hash/stat/parse time-of-check-time-of-use replacement. The final code rejects
+all three, leaves one `unittest.main()` per test module, and preserves the
+development and confirmatory contracts. Non-author cross-review returned
+Critical 0 / Important 0; the Standards axis retains one Fowler-judgement
+Minor because the initial-state projection is duplicated across three
+lifecycle modules.
+
+Fresh pre-commit and post-commit integration verification each passed all
+206 selected tests. The post-commit run completed in `81.247 s`; its real
+100-seed audit took `11.605 s`. The four production modules passed
+`py_compile`, `git diff --check` passed, and the exact v4 predecessor verifier
+passed. The source porcelain after `6ac6e08...` was only the preserved
+`?? build-diagnostic/`. Both prospective v5 roots remained absent, and no
+registrar, runner, analyzer, Swarm, measurement producer, replay, empirical
+gate, paper edit, submission, push, or new scientific claim occurred.
+
+The next permitted action is a clean documentation-closure commit containing
+this report and its appended independent review. The registrar must bind that
+future exact documentation HEAD, not `6ac6e08...` directly. Only after that
+commit may the development-v5 protocol pair be generated. Independent
+preflight, exact authorization, the sole exact-four add-only child, and
+production postcommit validation are still mandatory before a single runner
+invocation. This implementation report is not a protocol, preflight,
+authorization, result, or permission to execute. Confirmatory and paper claims
+remain closed.
+
+The operative future v5 paths are:
+
+```text
+protocol JSON  docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v5-protocol.json
+protocol MD    docs/diagnostics/2026-08-02-cbf2026-qualified-closure-development-v5-protocol.md
+preflight      docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v5-preflight.md
+authorization  docs/diagnostics/reviews/2026-08-02-cbf2026-qualified-closure-development-v5-authorization.json
+raw root       /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v5
+analysis root  /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development-analysis/v5
+```

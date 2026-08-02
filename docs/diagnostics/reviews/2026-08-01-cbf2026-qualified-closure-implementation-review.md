@@ -953,3 +953,113 @@ Ready to generate the development-v4 protocol before that commit: **No**.
 
 Ready to execute development-v4, smoke, or confirmatory before the exact
 four-artifact child passes production postcommit validation: **No**.
+
+## Development-v5 frozen-initial-family integration review
+
+### Scope and method
+
+This append-only review supersedes the prospective development-v4 decision
+above. It reviews the immutable v4 terminal failure, the rejected-reset
+evidence repair, the frozen v5 initial family, and the working-tree integration
+later committed as `6ac6e088ee5d2c6dbed9ed24c128a3225252de6f`.
+
+The integration fixed point was
+`cb3b8b7b794ca51291116c1d76ac49ca6cb4d0c3`. The implementation diff
+contained exactly six files: the registrar, runner, analyzer, and their three
+test modules. Review used two independent axes. A non-author Standards reviewer
+inspected the complete diff and the fail-closed lifecycle seams. The analyzer
+author independently reviewed the registrar/runner specification conformance.
+After fixes, the Standards reviewer re-reviewed the confirmatory runner fix,
+and the analyzer-side reviewer re-reviewed the literal-path and authenticated-
+buffer fixes; no reviewer assessed a fix that they had written.
+
+The review checked these prospective requirements:
+
+- development protocol schema v2/version v5 and the non-colliding v5 roots;
+- exact trajectory/range seed schedules and per-mission position hashes;
+- literal canonical family identity and duplicate-safe full 100-seed audit
+  before any output-root allocation;
+- identical specified positions in primary and fixed-FIM materializations;
+- exact fourteen-UAV initialization and frame-zero truth equality;
+- the measurement-to-primary-config-to-Swarm SHA chain;
+- v1--v3 absence and exact immutable v4 raw/analysis trees;
+- confirmatory-v1 isolation from the current development family; and
+- preservation of the exact-four authorization topology and no-retry policy.
+
+### Findings and TDD closure
+
+The first complete Standards pass returned Critical 1 / Important 2 / Minor 2.
+The cross-specification pass independently confirmed the same Critical:
+
+1. Critical: the confirmatory fixed-FIM replay unconditionally read a
+   development-only `initial_family` binding and would fail with `KeyError`
+   after consuming its one-shot root.
+2. Important: build-time registration required the literal family path, but
+   verify-time accepted an external same-byte family after the protocol path,
+   argv, identities, and semantic hash were self-consistently recomputed.
+3. Important: the analyzer hashed and stated materialized configs before a
+   second path read for JSON parsing, allowing the parsed bytes to differ from
+   the manifest-authenticated bytes.
+4. Minor: early `unittest.main()` blocks caused direct test-file execution to
+   omit the appended v5 classes.
+5. Minor, Fowler judgement: the initial-state declaration/schema projection is
+   manually repeated in registrar, runner, and analyzer.
+
+Each Critical or Important finding received an assertion-level RED test before
+the production fix. The confirmatory regression reproduced the exact
+`KeyError`, then proved confirmatory fixed-FIM uses its pre-v5 base initial
+configuration without invoking any v5-family loader; the development arm
+still proves both materializations use the same frozen specified positions.
+The literal-path regression exercised the real registered-protocol verifier
+with an external same-byte copy and recomputed identities/argv/semantic hash;
+the final shared guard rejects external paths, leaf symlinks, and ancestor
+symlinks while accepting the canonical file. The time-of-check-time-of-use
+regression replaced the config path after the authentication read; the final
+helper reads once and applies byte length, SHA-256, strict UTF-8, and
+duplicate-safe JSON parsing to that same buffer.
+
+Both early test entry points were removed. The projection duplication remains
+as a non-blocking maintainability Minor: extracting it now would expand the
+security-sensitive change after all three lifecycle implementations had been
+independently reconciled. It must be revisited before any future initial-state
+schema version, but it does not weaken the frozen v5 contract.
+
+Final independent results were:
+
+| Axis | Critical | Important | Minor |
+| --- | ---: | ---: | ---: |
+| Standards / full six-file delta | 0 | 0 | 1 |
+| Cross-review of literal-path and one-buffer fixes | 0 | 0 | 0 |
+
+### Verification and immutable-state result
+
+The fresh combined suite
+`qualified_initial_state + qualified_closure_evidence + runner + analyzer + registrar`
+passed `206/206` both before and after commit. The post-commit run took
+`81.247 s`; the actual complete 100-seed family audit took `11.605 s`.
+The four production modules passed `py_compile`; scoped and repository
+`git diff --check` passed. The exact v4 predecessor verifier passed with
+28 raw files / 12,618,979 bytes and 3 analysis files / 8,639 bytes at their
+registered tree and manifest hashes. Both v5 roots remained absent. Source
+status after commit contained only the preserved untracked
+`build-diagnostic/`.
+
+No campaign, protocol, preflight, authorization, output root, paper edit,
+submission, or push occurred in this implementation review. The observed
+v5 family audit is admission/precondition evidence; it is not mission-wide
+localization, safety, containment, availability, or performance evidence.
+
+### Final verdict
+
+Critical: `0`; Important: `0`; Minor: `1` (maintainability only).
+
+Ready to commit this report/review documentation closure: **Yes**.
+
+Ready to generate the development-v5 protocol before that documentation
+commit: **No**.
+
+Ready to execute development-v5 before a fresh independently reviewed
+preflight, exact authorization, exact-four child, and production postcommit
+validation: **No**.
+
+Ready for confirmatory-v1 or paper claims: **No**.
