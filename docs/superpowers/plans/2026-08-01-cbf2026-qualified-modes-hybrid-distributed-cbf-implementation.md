@@ -1945,6 +1945,7 @@ Expected: terminal manifest always exists; exit zero only if all mission process
 conda run -n cbf_env python \
   scripts/diagnostics/analyze_qualified_closure_campaign.py \
   --kind development \
+  --version v1 \
   --protocol docs/diagnostics/2026-08-01-cbf2026-qualified-closure-development-v1-protocol.json \
   --authorization docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-development-v1-authorization.json \
   --input-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-development/v1 \
@@ -2109,7 +2110,7 @@ conda run -n cbf_env python scripts/diagnostics/run_qualified_closure_campaign.p
   --range-noise-seeds 2026089101:2026089101 --frames 20 \
   --output-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-confirmatory-smoke-v1-a
 conda run -n cbf_env python scripts/diagnostics/analyze_qualified_closure_campaign.py \
-  --kind confirmatory-smoke --smoke-id a \
+  --kind confirmatory-smoke --version v1 --smoke-id a \
   --protocol docs/diagnostics/2026-08-01-cbf2026-qualified-closure-confirmatory-v1-protocol.json \
   --authorization docs/diagnostics/reviews/2026-08-01-cbf2026-qualified-closure-confirmatory-v1-authorization.json \
   --input-root /private/tmp/cbf2026-qualified-mode-hybrid-dcbf-confirmatory-smoke-v1-a \

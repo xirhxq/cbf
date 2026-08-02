@@ -3,6 +3,13 @@
 from collections.abc import Mapping
 from numbers import Integral, Real
 import math
+from pathlib import Path
+import sys
+
+
+_SOURCE_ROOT = Path(__file__).resolve().parents[2]
+if str(_SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SOURCE_ROOT))
 
 import numpy as np
 
@@ -1360,3 +1367,16 @@ def reject_forbidden_protocol_fields(
 
 def _reject_forbidden_runtime_fields(value):
     reject_forbidden_protocol_fields(value)
+
+
+def main(argv=None) -> int:
+    """Run the registered replay producer with its public direct argv."""
+    from scripts.diagnostics.run_qualified_closure_campaign import (
+        _replay_producer_main,
+    )
+
+    return int(_replay_producer_main(argv))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

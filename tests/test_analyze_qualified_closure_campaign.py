@@ -1,0 +1,1318 @@
+import copy
+import json
+import tempfile
+import unittest
+import subprocess
+import sys
+import gzip
+import hashlib
+import argparse
+import sqlite3
+import io
+from contextlib import chdir, contextmanager, redirect_stderr
+from pathlib import Path
+from unittest import mock
+
+import scripts.diagnostics.register_qualified_closure_campaign as registrar
+
+from scripts.diagnostics.analyze_qualified_closure_campaign import (
+    COMPACT_CAP_BYTES,
+    analyze_qualified_closure_campaign,
+    publish_analysis_bundle,
+    stream_validated_replay_rows,
+    validate_measurement_pair_streams,
+    validate_terminal_mission_manifest,
+    validate_analysis_registration_contract,
+    _cross_mode_key_mismatch_count,
+    validate_analysis_output_root,
+    semantic_analysis_sha256,
+    _controller_frame_metrics,
+    _derive_mission_success,
+    _publish_claimed_analysis_bundle,
+    _terminalize_claimed_analysis_failure,
+    _runtime_analyzer_argv,
+    _canonical_json_identity,
+    _preflight_raw_campaign,
+    _producer_input_violations,
+    _validate_synthesized_missing_stream,
+    _validate_producer_namespace_identities,
+    _validate_replay_reference_provenance,
+    _wrong_mode_from_truth,
+    main as analyzer_main,
+)
+from tests.test_replay_qualified_estimator import build_registered_qualified_row
+from scripts.diagnostics.register_qualified_closure_campaign import (
+    FROZEN_THRESHOLDS,
+    build_qualified_closure_protocol,
+    publish_protocol,
+)
+from tests.test_generate_qualified_measurements import write_truth, read_rows
+from scripts.diagnostics.generate_qualified_measurements import generate_measurement_bundle
+from scripts.diagnostics.run_qualified_closure_campaign import (
+    ProductionOperations,
+    write_schedule_no_replace,
+)
+
+
+def write_development_registration(root, raw, analysis):
+    project = root / "protocol-project"
+    project.mkdir()
+    files = {}
+    for name in (
+        "source.py", "Swarm", "base.json", "primary.json", "ablation.json",
+        "dependencies.txt", "schema.json",
+    ):
+        path = project / name
+        path.write_text("{}\n")
+        files[name] = path
+    files["dependencies.txt"].write_text("ENABLE_GUROBI:BOOL=ON\n")
+    files["primary.json"].write_text(json.dumps({
+        "position_covariance": {"reference-selection": "dynamic-lower-index"}
+    }))
+    files["ablation.json"].write_text(json.dumps({
+        "position_covariance": {"reference-selection": "fixed-cbf-only"}
+    }))
+    protocol = build_qualified_closure_protocol(
+        kind="development", version="v1", project_root=project,
+        trajectory_seeds=list(range(2026080101, 2026080111)),
+        range_noise_seeds=list(range(2026081101, 2026081111)), frames=1000,
+        roots={"raw": raw, "analysis": analysis},
+        bindings={
+            "source": files["source.py"], "binary": files["Swarm"],
+            "base_config": files["base.json"],
+            "primary_config": files["primary.json"],
+            "ablation_config": files["ablation.json"],
+            "dependencies": files["dependencies.txt"],
+            "schema": files["schema.json"],
+        },
+        thresholds=FROZEN_THRESHOLDS, dirty_relevant_paths=[],
+    )
+    protocol_path = root / "fixture-protocol.json"
+    markdown_path = protocol_path.with_suffix(".md")
+    repository = {
+        "root": str(project.resolve()),
+        "head": "a" * 40,
+        "tree": "b" * 40,
+        "dirty_tracked_paths": [],
+        "dirty_relevant_paths": [],
+        "allowed_untracked_paths": [],
+    }
+    dependency = {
+        "argv": ["ldd", str(files["Swarm"])],
+        "returncode": 0,
+        "sha256": "c" * 64,
+        "bytes": 1,
+    }
+    conda = {
+        "argv": ["conda", "list", "--explicit"],
+        "sha256": "d" * 64,
+        "bytes": 1,
+    }
+    protocol.update({
+        "repository": repository,
+        "review_artifacts": {
+            "implementation_report": registrar._file_identity(files["source.py"]),
+            "implementation_review": registrar._file_identity(files["schema.json"]),
+        },
+        "build": {
+            "cmake_cache": registrar._file_identity(files["dependencies.txt"]),
+            "gurobi_enabled": True,
+            "binary_dependencies": dependency,
+            "conda_explicit": conda,
+        },
+        "tooling": {
+            name: registrar._file_identity(files["source.py"])
+            for name in (
+                "run_qualified_closure_campaign.py",
+                "generate_qualified_measurements.py",
+                "analyze_qualified_closure_campaign.py",
+                "register_qualified_closure_campaign.py",
+                "replay_qualified_estimator.py",
+                "analyze_qualified_estimator.py",
+            )
+        },
+        "publication": {
+            "json_path": str(protocol_path),
+            "markdown_path": str(markdown_path),
+        },
+        "supervision": dict(registrar.FROZEN_SUPERVISION),
+    })
+    commands = registrar._registered_argv(protocol)
+    protocol["runner_argv"] = commands["runner"]
+    protocol["analyzer_argv"] = commands["analyzer"]
+    protocol["semantic_sha256"] = registrar._semantic_sha256(protocol)
+    with development_registration_patches(protocol):
+        publish_protocol(protocol, protocol_path, markdown_path)
+    authorization_path = root / "reviews" / "fixture-authorization.json"
+    authorization_path.parent.mkdir()
+    authorization_path.write_text(json.dumps({
+        "schema_version": "cbf2026-qualified-authorization-v1",
+        "authorized": True, "kind": "development", "version": "v1",
+        "protocol_sha256": hashlib.sha256(protocol_path.read_bytes()).hexdigest(),
+        "implementation_identity": repository["head"],
+    }))
+    return protocol, protocol_path, authorization_path
+
+
+@contextmanager
+def development_registration_patches(protocol):
+    with (
+        mock.patch.dict(
+            registrar.FROZEN_EXECUTION_ROOTS["development"],
+            protocol["roots"],
+            clear=True,
+        ),
+        mock.patch.object(
+            registrar, "_repository_identity",
+            return_value=copy.deepcopy(protocol["repository"]),
+        ),
+        mock.patch.object(
+            registrar, "_dependency_identity",
+            return_value=copy.deepcopy(protocol["build"]["binary_dependencies"]),
+        ),
+        mock.patch.object(
+            registrar, "_command_identity",
+            return_value=copy.deepcopy(protocol["build"]["conda_explicit"]),
+        ),
+    ):
+        yield
+
+
+def write_raw_campaign_manifest(
+    raw, missions, protocol_path, authorization_path, *, status, completed
+):
+    schedule_path = raw / "schedule.json"
+    identities = {}
+    for mission in missions:
+        path = raw / mission["mission_id"] / "manifest.json"
+        identities[mission["mission_id"]] = {
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "bytes": path.stat().st_size,
+        }
+    (raw / "manifest.json").write_text(json.dumps({
+        "schema_version": "cbf2026-qualified-campaign-manifest-v1",
+        "terminal": True,
+        "status": status,
+        "reason": "completed" if status == "completed" else "launch_failure",
+        "mission_count": len(missions),
+        "completed_mission_count": completed,
+        "protocol_sha256": hashlib.sha256(protocol_path.read_bytes()).hexdigest(),
+        "authorization_sha256": hashlib.sha256(
+            authorization_path.read_bytes()
+        ).hexdigest(),
+        "schedule_sha256": hashlib.sha256(schedule_path.read_bytes()).hexdigest(),
+        "schedule_bytes": schedule_path.stat().st_size,
+        "mission_manifest_identities": identities,
+    }))
+
+
+def passing_campaign():
+    estimator = []
+    for condition, depth in (
+        ("dynamic_primary", 1),
+        ("fixed_fim_ablation", 2),
+    ):
+        for mission in ("mission-01", "mission-02"):
+            estimator.append({
+                "mission_id": mission,
+                "condition": condition,
+                "depth": depth,
+                "output_status": "fresh",
+                "fresh_expected": True,
+                "bounded_prediction": False,
+                "contained": True,
+                "error_m": 1.0,
+                "source_order_valid": True,
+                "admissible_mode_count": 1,
+                "wrong_mode": False,
+                "private_age": 0,
+            })
+    return {
+        "manifests": [
+            {"terminal": True, "status": "completed"},
+            {"terminal": True, "status": "completed"},
+        ],
+        "expected_key_count": 20,
+        "observed_key_count": 20,
+        "runtime_truth_read_count": 0,
+        "initialization_rows": [
+            {"accounted": True}, {"accounted": True},
+            {"accounted": True}, {"accounted": True},
+        ],
+        "registered_depths": {
+            "dynamic_primary": [1],
+            "fixed_fim_ablation": [2],
+        },
+        "estimator_rows": estimator,
+        "hard_rows": {"missing": 0, "duplicate": 0},
+        "controller_rows": [
+            {
+                "certificate_available": True,
+                "nu_inst": 0.1,
+                "bar_nu": 0.2,
+                "qp_status": "optimal",
+                "local_residual_min": 0.0,
+                "reconstructed_residual_min": 0.0,
+                "input_limit_excess": 0.0,
+                "true_localization_violation": False,
+                "true_collision_violation": False,
+                "allocation_stress": "passed",
+                "deadlock": False,
+            },
+            {
+                "certificate_available": True,
+                "nu_inst": 0.2,
+                "bar_nu": 0.2,
+                "qp_status": "optimal",
+                "local_residual_min": 0.1,
+                "reconstructed_residual_min": 0.1,
+                "input_limit_excess": 0.0,
+                "true_localization_violation": False,
+                "true_collision_violation": False,
+                "allocation_stress": "passed",
+                "deadlock": False,
+            },
+        ],
+        "reset_rows": [{"accepted_violation": False, "reason": "none"}],
+        "missions": [
+            {"mission_id": "mission-01", "terminal": True, "success": True},
+            {"mission_id": "mission-02", "terminal": True, "success": True},
+        ],
+        "measurement_sha256_by_condition": {
+            "dynamic_primary": "a" * 64,
+            "fixed_fim_ablation": "a" * 64,
+        },
+        "measurement_regenerated_by_analyzer": False,
+    }
+
+
+class CampaignAnalyzerGateTests(unittest.TestCase):
+    def failed(self, campaign):
+        report = analyze_qualified_closure_campaign(campaign)
+        return {
+            name
+            for name, gate in report["gates"].items()
+            if isinstance(gate, dict) and gate.get("passed") is False
+        }
+
+    def test_two_mission_synthetic_campaign_passes_every_gate_and_emits_metrics(self):
+        report = analyze_qualified_closure_campaign(passing_campaign())
+
+        self.assertTrue(report["passed"])
+        self.assertTrue(report["gates"])
+        for gate in report["gates"].values():
+            if "passed" in gate:
+                self.assertTrue({
+                    "numerator", "denominator", "comparison", "threshold",
+                    "passed", "pass_fail",
+                } <= set(gate))
+        self.assertEqual(report["errors_m"]["max"], 1.0)
+        self.assertIn("p95", report["errors_m"])
+        self.assertIn("p99", report["errors_m"])
+        self.assertEqual(report["private_age_strata"]["0"], 4)
+        self.assertEqual(report["incomplete_missions"], [])
+
+    def test_controller_metrics_come_from_independent_primitive_reconstruction(self):
+        from scripts.diagnostics.qualified_closure_evidence import (
+            CanonicalEdgeId,
+            ControllerReconstruction,
+        )
+        reconstruction = ControllerReconstruction(
+            nodes={1: {"nu_inst": 0.1, "bar_nu": 0.2}},
+            local_residuals={(CanonicalEdgeId("localization", 1, 1, 0), 1): 0.25},
+            full_residuals={CanonicalEdgeId("localization", 1, 1, 0): 0.5},
+            integrity_errors=(),
+        )
+        controller = {"runtime": {
+            "local_residual_minimum": -999.0,
+            "reconstructed_residual_minimum": -999.0,
+            "component_maxima": {"vx": 999.0, "vy": 999.0, "yaw_rate": 999.0},
+            "nodes": [{"robot_id": 1, "applied_command": [1.0, -2.0, 0.1]}],
+        }}
+        with mock.patch(
+            "scripts.diagnostics.qualified_closure_evidence.reconstruct_controller_primitives",
+            return_value=reconstruction,
+        ):
+            metrics = _controller_frame_metrics(controller, [{}] * 232)
+
+        self.assertEqual(metrics["local_residual_minimum"], 0.25)
+        self.assertEqual(metrics["reconstructed_residual_minimum"], 0.5)
+        self.assertEqual(
+            metrics["component_maxima"], {"vx": 1.0, "vy": 2.0, "yaw_rate": 0.1}
+        )
+        self.assertEqual(metrics["nodes"][1]["nu_inst"], 0.1)
+
+    def test_wrong_mode_compares_publication_to_all_physical_modes(self):
+        row = {
+            "published_mode_id": "far-mode",
+            "audit_bundle": {
+                "representatives": [
+                    {"attempt_id": "near", "estimate": [0.0, 0.0]},
+                    {"attempt_id": "far", "estimate": [10.0, 0.0]},
+                ],
+                "clustering": {"modes": [
+                    {"mode_id": "near-mode", "member_ids": ["near"]},
+                    {"mode_id": "far-mode", "member_ids": ["far"]},
+                ]},
+                "qualifications": [
+                    {"admissible": False}, {"admissible": True},
+                ],
+            },
+        }
+
+        self.assertTrue(_wrong_mode_from_truth(row, (0.1, 0.0)))
+
+    def test_launch_failure_fails_completeness_and_mission_fraction(self):
+        campaign = passing_campaign()
+        campaign["manifests"][0]["status"] = "failed"
+        campaign["missions"][0]["success"] = False
+        self.assertEqual(
+            self.failed(campaign),
+            {"complete_keys_and_manifests", "successful_mission_fraction"},
+        )
+
+    def test_wrong_unique_mode_fails_only_wrong_mode_gate(self):
+        campaign = passing_campaign()
+        campaign["estimator_rows"][0]["wrong_mode"] = True
+        self.assertEqual(
+            self.failed(campaign), {"zero_wrong_mode_fresh_publication"}
+        )
+
+    def test_missing_registered_depth_fails_depth_gate(self):
+        campaign = passing_campaign()
+        campaign["registered_depths"]["dynamic_primary"].append(3)
+        self.assertEqual(
+            self.failed(campaign), {"every_registered_depth_containment"}
+        )
+
+    def test_catastrophic_error_fails_fifty_meter_gate(self):
+        campaign = passing_campaign()
+        campaign["estimator_rows"][0]["error_m"] = 50.0001
+        self.assertEqual(
+            self.failed(campaign), {"zero_finite_error_above_50m"}
+        )
+
+    def test_ablation_errors_are_reported_without_entering_primary_denominator(self):
+        campaign = passing_campaign()
+        ablation = next(
+            row for row in campaign["estimator_rows"]
+            if row["condition"] == "fixed_fim_ablation"
+        )
+        ablation["error_m"] = 500.0
+        ablation["contained"] = False
+
+        report = analyze_qualified_closure_campaign(campaign)
+
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["ablation"]["finite_error_above_50m"], 1)
+        self.assertEqual(
+            report["gates"]["zero_finite_error_above_50m"]["denominator"], 2
+        )
+
+    def test_missing_edge_fails_hard_row_gate(self):
+        campaign = passing_campaign()
+        campaign["hard_rows"]["missing"] = 1
+        self.assertEqual(
+            self.failed(campaign), {"zero_missing_duplicate_hard_rows"}
+        )
+
+    def test_nu_excess_fails_rate_bound_gate(self):
+        campaign = passing_campaign()
+        campaign["controller_rows"][0]["nu_inst"] = 0.200000002
+        self.assertEqual(self.failed(campaign), {"zero_nu_bound_excess"})
+
+    def test_negative_residual_fails_residual_gate(self):
+        campaign = passing_campaign()
+        campaign["controller_rows"][0]["local_residual_min"] = -1.0001e-7
+        self.assertEqual(
+            self.failed(campaign), {"zero_negative_hard_residual"}
+        )
+
+    def test_infeasible_qp_fails_primary_qp_gate(self):
+        campaign = passing_campaign()
+        campaign["controller_rows"][0]["qp_status"] = "infeasible"
+        self.assertEqual(
+            self.failed(campaign), {"zero_primary_local_hard_qp_infeasibility"}
+        )
+
+    def test_input_violation_fails_input_gate(self):
+        campaign = passing_campaign()
+        campaign["controller_rows"][0]["input_limit_excess"] = 1.0001e-7
+        self.assertEqual(
+            self.failed(campaign), {"zero_input_limit_violations"}
+        )
+
+    def test_reset_violation_fails_reset_gate(self):
+        campaign = passing_campaign()
+        campaign["reset_rows"][0]["accepted_violation"] = True
+        self.assertEqual(
+            self.failed(campaign), {"zero_accepted_reset_violations"}
+        )
+
+    def test_true_distance_violation_fails_distance_gate(self):
+        campaign = passing_campaign()
+        campaign["controller_rows"][0]["true_collision_violation"] = True
+        self.assertEqual(
+            self.failed(campaign), {"zero_true_distance_violations"}
+        )
+
+    def test_incomplete_mission_fails_success_fraction_and_is_reported(self):
+        campaign = passing_campaign()
+        campaign["missions"][0]["success"] = False
+        report = analyze_qualified_closure_campaign(campaign)
+        self.assertEqual(
+            self.failed(campaign), {"successful_mission_fraction"}
+        )
+        self.assertEqual(report["incomplete_missions"], ["mission-01"])
+
+    def test_measurement_substitution_or_regeneration_is_rejected(self):
+        substituted = passing_campaign()
+        substituted["measurement_sha256_by_condition"][
+            "fixed_fim_ablation"
+        ] = "b" * 64
+        self.assertEqual(
+            self.failed(substituted), {"identical_immutable_measurements"}
+        )
+        regenerated = passing_campaign()
+        regenerated["measurement_regenerated_by_analyzer"] = True
+        self.assertEqual(
+            self.failed(regenerated), {"identical_immutable_measurements"}
+        )
+
+
+class CompactAnalysisWriterTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(
+            prefix="qualified-analysis-"
+        )
+        self.addCleanup(self.temporary.cleanup)
+        self.base = Path(self.temporary.name)
+
+    def test_just_below_twenty_five_mb_publishes_all_files_no_replace(self):
+        root = self.base / "below"
+        manifest = publish_analysis_bundle(
+            root,
+            {"schema_version": "analysis-v1", "passed": True},
+            "# PASS\n",
+            allocated_size_fn=lambda _paths: COMPACT_CAP_BYTES - 1,
+        )
+
+        self.assertEqual(manifest["status"], "completed")
+        self.assertEqual(
+            sorted(path.name for path in root.iterdir()),
+            ["analysis.json", "analysis.md", "manifest.json"],
+        )
+        with self.assertRaises(FileExistsError):
+            publish_analysis_bundle(
+                root, {}, "", allocated_size_fn=lambda _paths: 0
+            )
+
+    def test_above_twenty_five_mb_publishes_failure_manifest_only(self):
+        root = self.base / "above"
+        manifest = publish_analysis_bundle(
+            root,
+            {"schema_version": "analysis-v1", "passed": True},
+            "# too large\n",
+            allocated_size_fn=lambda _paths: COMPACT_CAP_BYTES + 1,
+        )
+
+        self.assertEqual(manifest["status"], "failed")
+        self.assertEqual(manifest["reason"], "compact_bundle_cap")
+        self.assertEqual(
+            [path.name for path in root.iterdir()], ["manifest.json"]
+        )
+
+    def test_injected_failure_before_directory_commit_exposes_no_analysis_root(self):
+        root = self.base / "transaction-failure"
+        with self.assertRaisesRegex(RuntimeError, "injected"):
+            publish_analysis_bundle(
+                root, {"schema_version": "analysis-v1"}, "# report\n",
+                publish_hook=lambda _stage: (_ for _ in ()).throw(RuntimeError("injected")),
+            )
+        self.assertFalse(root.exists())
+
+    def test_claimed_success_exposes_no_member_before_directory_exchange(self):
+        root = self.base / "claimed-success"
+        root.mkdir()
+        observed = []
+
+        def fail_exchange(stage, target):
+            observed.append((
+                sorted(path.name for path in Path(stage).iterdir()),
+                sorted(path.name for path in Path(target).iterdir()),
+            ))
+            raise RuntimeError("injected exchange failure")
+
+        with mock.patch(
+            "scripts.diagnostics.analyze_qualified_closure_campaign."
+            "_exchange_claimed_analysis_root",
+            side_effect=fail_exchange,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "exchange failure"):
+                _publish_claimed_analysis_bundle(
+                    root, {"passed": True}, "# PASS\n"
+                )
+        self.assertEqual(observed, [(
+            ["analysis.json", "analysis.md", "manifest.json"], []
+        )])
+        self.assertEqual(list(root.iterdir()), [])
+
+    def test_claimed_failure_preserves_old_bundle_until_directory_exchange(self):
+        root = self.base / "claimed-failure"
+        root.mkdir()
+        marker = root / "owned-partial"
+        marker.write_text("preserve until commit")
+
+        with mock.patch(
+            "scripts.diagnostics.analyze_qualified_closure_campaign."
+            "_exchange_claimed_analysis_root",
+            side_effect=RuntimeError("injected exchange failure"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "exchange failure"):
+                _terminalize_claimed_analysis_failure(
+                    root, ValueError("analysis failed")
+                )
+        self.assertEqual(marker.read_text(), "preserve until commit")
+        self.assertEqual([path.name for path in root.iterdir()], ["owned-partial"])
+
+
+class RawReplayStreamingTests(unittest.TestCase):
+    def write(self, path, row):
+        with path.open("xb") as raw:
+            with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as sink:
+                sink.write(json.dumps(row, separators=(",", ":")).encode() + b"\n")
+
+    def test_independent_recomputation_precedes_projection_and_detects_tamper(self):
+        with tempfile.TemporaryDirectory(prefix="qualified-raw-recompute-") as directory:
+            root = Path(directory)
+            valid = root / "valid.jsonl.gz"
+            row = build_registered_qualified_row()
+            self.write(valid, row)
+            projected = []
+            count = stream_validated_replay_rows(
+                valid, hashlib.sha256(valid.read_bytes()).hexdigest(),
+                on_valid_row=projected.append,
+            )
+            self.assertEqual(count, 1)
+            self.assertEqual(projected[0]["frame_index"], row["frame_index"])
+
+            tampered = root / "tampered.jsonl.gz"
+            row["published_mode_id"] = "forged-mode"
+            self.write(tampered, row)
+            with self.assertRaises(ValueError):
+                stream_validated_replay_rows(
+                    tampered, hashlib.sha256(tampered.read_bytes()).hexdigest(),
+                    on_valid_row=lambda _row: None,
+                )
+
+    def test_cross_mode_source_order_requires_identical_mission_frame_robot_keys(self):
+        database = sqlite3.connect(":memory:")
+        self.addCleanup(database.close)
+        database.execute(
+            "CREATE TABLE estimator (condition TEXT, mission TEXT, frame INTEGER, robot INTEGER)"
+        )
+        database.executemany(
+            "INSERT INTO estimator VALUES (?,?,?,?)",
+            [
+                ("dynamic_primary", "mission-01", 1, 1),
+                ("dynamic_primary", "mission-01", 1, 2),
+                ("fixed_fim_ablation", "mission-01", 1, 1),
+                ("fixed_fim_ablation", "mission-01", 1, 3),
+            ],
+        )
+
+        self.assertEqual(_cross_mode_key_mismatch_count(database), 2)
+
+    def test_same_keys_with_reordered_sources_fail_condition_local_verdict(self):
+        database = sqlite3.connect(":memory:")
+        self.addCleanup(database.close)
+        database.execute(
+            "CREATE TABLE measurement (mission TEXT, condition TEXT, frame INTEGER, "
+            "owner INTEGER, ordinal INTEGER, kind TEXT, reference_id INTEGER, "
+            "noisy_range REAL, ranging_sigma REAL, position_json TEXT, "
+            "covariance_json TEXT, provenance_json TEXT)"
+        )
+        for ordinal, reference_id in enumerate((0, 1)):
+            database.execute(
+                "INSERT INTO measurement VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "mission-01", "dynamic_primary", 1, 3, ordinal,
+                    "base", reference_id, 10.0 + ordinal, 0.5,
+                    json.dumps([float(reference_id), 0.0]),
+                    json.dumps([[0.0, 0.0], [0.0, 0.0]]),
+                    json.dumps([reference_id]),
+                ),
+            )
+        references = [
+            {
+                "key": ["base", reference_id],
+                "position": [float(reference_id), 0.0],
+                "range": 10.0 + reference_id,
+                "covariance": [[0.0, 0.0], [0.0, 0.0]],
+                "ranging_sigma": 0.5,
+                "base_anchor_provenance": [reference_id],
+            }
+            for reference_id in (0, 1)
+        ]
+        row = {
+            "frame_index": 1,
+            "robot_id": 3,
+            "runtime_inputs": {"references": references},
+        }
+        self.assertTrue(_validate_replay_reference_provenance(
+            database, "mission-01", "dynamic_primary", row, {}
+        ))
+        row["runtime_inputs"]["references"] = list(reversed(references))
+        with self.assertRaisesRegex(ValueError, "condition-local inputs"):
+            _validate_replay_reference_provenance(
+                database, "mission-01", "dynamic_primary", row, {}
+            )
+
+
+class RawMeasurementJoinTests(unittest.TestCase):
+    def bundle(self, root):
+        truth = root / "truth.jsonl.gz"
+        write_truth(truth)
+        output = root / "measurements"
+        manifest = generate_measurement_bundle(
+            truth, output, range_noise_seed=2026081101,
+            ranging_sigma=0.5, config_sha256="a" * 64,
+            required_edges_by_condition={
+                "dynamic_primary": [(0, 1, ("base", 0)), (0, 2, ("uav", 1))],
+                "fixed_fim_ablation": [(0, 1, ("base", 0))],
+            },
+            truth_manifest={"terminal": True, "status": "completed",
+                            "sha256": hashlib.sha256(truth.read_bytes()).hexdigest()},
+        )
+        return output, manifest
+
+    def test_exact_runtime_audit_schema_and_semantic_join_are_derived(self):
+        with tempfile.TemporaryDirectory(prefix="qualified-measurement-join-") as directory:
+            output, manifest = self.bundle(Path(directory))
+            observed = []
+            summary = validate_measurement_pair_streams(
+                output / "runtime.jsonl.gz", output / "audit.jsonl.gz",
+                runtime_sha256=manifest["runtime_sha256"],
+                audit_sha256=manifest["audit_sha256"],
+                on_pair=lambda runtime, audit: observed.append((runtime, audit)),
+            )
+            self.assertEqual(summary["row_count"], 2)
+            self.assertEqual(len(observed), 2)
+            self.assertTrue(all("truth" not in json.dumps(runtime).lower()
+                                for runtime, _audit in observed))
+
+    def test_rehashed_audit_semantic_tamper_is_rejected(self):
+        with tempfile.TemporaryDirectory(prefix="qualified-measurement-tamper-") as directory:
+            output, manifest = self.bundle(Path(directory))
+            audit_path = output / "audit.jsonl.gz"
+            rows = read_rows(audit_path)
+            rows[0]["noiseless_range"] += 1.0
+            audit_path.unlink()
+            with audit_path.open("xb") as raw:
+                with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as sink:
+                    for row in rows:
+                        sink.write(json.dumps(row, sort_keys=True).encode() + b"\n")
+            with self.assertRaises(ValueError):
+                validate_measurement_pair_streams(
+                    output / "runtime.jsonl.gz", audit_path,
+                    runtime_sha256=manifest["runtime_sha256"],
+                    audit_sha256=hashlib.sha256(audit_path.read_bytes()).hexdigest(),
+                )
+
+    def test_balanced_noiseless_and_noise_tamper_is_independently_rejected(self):
+        with tempfile.TemporaryDirectory(prefix="qualified-balanced-tamper-") as directory:
+            output, manifest = self.bundle(Path(directory))
+            audit_path = output / "audit.jsonl.gz"
+            rows = read_rows(audit_path)
+            rows[0]["noiseless_range"] += 1.0
+            rows[0]["sampled_noise"] -= 1.0
+            audit_path.unlink()
+            with audit_path.open("xb") as raw:
+                with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as sink:
+                    for row in rows:
+                        sink.write(json.dumps(row, sort_keys=True).encode() + b"\n")
+
+            with self.assertRaisesRegex(ValueError, "noiseless range"):
+                validate_measurement_pair_streams(
+                    output / "runtime.jsonl.gz", audit_path,
+                    runtime_sha256=manifest["runtime_sha256"],
+                    audit_sha256=hashlib.sha256(audit_path.read_bytes()).hexdigest(),
+                )
+
+    def test_runtime_stream_identity_is_bound_to_frozen_bundle_manifest(self):
+        with tempfile.TemporaryDirectory(prefix="qualified-measurement-identity-") as directory:
+            output, manifest = self.bundle(Path(directory))
+            runtime_path = output / "runtime.jsonl.gz"
+            rows = read_rows(runtime_path)
+            rows[0]["config_sha256"] = "f" * 64
+            runtime_path.unlink()
+            with runtime_path.open("xb") as raw:
+                with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as sink:
+                    for row in rows:
+                        sink.write(json.dumps(row, sort_keys=True).encode() + b"\n")
+
+            with self.assertRaisesRegex(ValueError, "stream identity"):
+                validate_measurement_pair_streams(
+                    runtime_path,
+                    output / "audit.jsonl.gz",
+                    runtime_sha256=hashlib.sha256(runtime_path.read_bytes()).hexdigest(),
+                    audit_sha256=manifest["audit_sha256"],
+                    config_sha256=manifest["config_sha256"],
+                    measurement_stream_id=manifest["measurement_stream_id"],
+                    expected_row_count=manifest["row_count"],
+                    range_noise_seed=2026081101,
+                )
+
+
+class RawManifestSchemaTests(unittest.TestCase):
+    def test_derived_gate_labels_cannot_be_injected_into_raw_manifest(self):
+        base = {
+            "schema_version": "cbf2026-qualified-mission-manifest-v1",
+            "terminal": True, "status": "failed", "reason": "launch_failure",
+            "mission": {"mission_id": "mission-01"},
+            "member_identities": {},
+        }
+        self.assertTrue(validate_terminal_mission_manifest(base))
+        forged = {**base, "gates": {"successful_mission_fraction": {"passed": True}}}
+        self.assertFalse(validate_terminal_mission_manifest(forged))
+
+    def test_failed_mission_stream_matches_exact_lazy_synthetic_universe(self):
+        with tempfile.TemporaryDirectory(prefix="qualified-missing-stream-") as directory:
+            root = Path(directory)
+            mission = {
+                "campaign_id": "development-v1",
+                "mission_id": "mission-01",
+                "trajectory_seed": 2026080101,
+                "range_noise_seed": 2026081101,
+                "frames": 1,
+                "conditions": ["dynamic_primary", "fixed_fim_ablation"],
+            }
+            ProductionOperations().synthesize_failed_mission(
+                mission, root, "launch_failure"
+            )
+            _validate_synthesized_missing_stream(
+                root / "synthetic-missing.jsonl.gz", mission, "launch_failure"
+            )
+
+    def test_campaign_terminal_counts_are_exact_and_status_consistent(self):
+        with tempfile.TemporaryDirectory(prefix="qualified-campaign-state-") as directory:
+            root = Path(directory)
+            protocol_path = root / "protocol.json"
+            authorization_path = root / "authorization.json"
+            protocol_path.write_text("{}\n")
+            authorization_path.write_text("{}\n")
+            registered = [{
+                "mission_id": "mission-01",
+                "trajectory_seed": 2026080101,
+                "range_noise_seed": 2026081101,
+                "frames": 1000,
+            }]
+            mission = {
+                "campaign_id": "development-v1",
+                **registered[0],
+                "horizon_s": 500.0,
+                "conditions": ["dynamic_primary", "fixed_fim_ablation"],
+            }
+            (root / "mission-01").mkdir()
+            mission_manifest = root / "mission-01" / "manifest.json"
+            mission_manifest.write_text(json.dumps({
+                "schema_version": "cbf2026-qualified-mission-manifest-v1",
+                "terminal": True,
+                "status": "failed",
+                "reason": "launch_failure",
+                "mission": mission,
+                "member_identities": {},
+            }))
+            schedule_path = root / "schedule.json"
+            write_schedule_no_replace(schedule_path, [mission])
+            campaign = {
+                "schema_version": "cbf2026-qualified-campaign-manifest-v1",
+                "terminal": True,
+                "status": "failed",
+                "reason": "launch_failure",
+                "mission_count": 1,
+                "completed_mission_count": 0,
+                "protocol_sha256": hashlib.sha256(
+                    protocol_path.read_bytes()
+                ).hexdigest(),
+                "authorization_sha256": hashlib.sha256(
+                    authorization_path.read_bytes()
+                ).hexdigest(),
+                "schedule_sha256": hashlib.sha256(
+                    schedule_path.read_bytes()
+                ).hexdigest(),
+                "schedule_bytes": schedule_path.stat().st_size,
+                "mission_manifest_identities": {
+                    "mission-01": {
+                        "sha256": hashlib.sha256(
+                            mission_manifest.read_bytes()
+                        ).hexdigest(),
+                        "bytes": mission_manifest.stat().st_size,
+                    }
+                },
+            }
+            campaign_path = root / "manifest.json"
+            campaign_path.write_text(json.dumps(campaign))
+            _preflight_raw_campaign(
+                root,
+                registered,
+                protocol_sha256=campaign["protocol_sha256"],
+                authorization_sha256=campaign["authorization_sha256"],
+            )
+
+            for field, value in (
+                ("completed_mission_count", False),
+                ("reason", "completed"),
+            ):
+                with self.subTest(field=field):
+                    tampered = {**campaign, field: value}
+                    campaign_path.write_text(json.dumps(tampered))
+                    with self.assertRaisesRegex(
+                        ValueError, "campaign manifest identity"
+                    ):
+                        _preflight_raw_campaign(
+                            root,
+                            registered,
+                            protocol_sha256=campaign["protocol_sha256"],
+                            authorization_sha256=campaign["authorization_sha256"],
+                        )
+
+
+class ProducerNamespaceIdentityTests(unittest.TestCase):
+    def identities(self):
+        runtime_sha = "a" * 64
+        command_sha = "b" * 64
+        config_sha = "c" * 64
+        stream_id = "d" * 64
+        measurement_manifest = {
+            "measurement_stream_id": stream_id,
+            "config_sha256": config_sha,
+            "row_count": 17,
+        }
+        measurement = {"sha256": runtime_sha, "bytes": 101}
+        command = {"sha256": command_sha, "bytes": 202}
+        config = {"sha256": config_sha, "bytes": 303}
+        declared = {
+            "measurements/runtime.jsonl.gz": measurement,
+            "swarm-inputs/commands.jsonl.gz": command,
+            "materialized-primary.json": config,
+            "materialized-dynamic_primary.json": config,
+        }
+        producer = {
+            "measurements.jsonl.gz": measurement,
+            "commands.jsonl.gz": command,
+            "config.json": config,
+            "measurements.manifest.json": _canonical_json_identity({
+                "schema_version": "cbf2026-qualified-producer-measurements-v1",
+                "terminal": True,
+                "status": "completed",
+                "sha256": runtime_sha,
+                "measurement_stream_id": stream_id,
+                "config_sha256": config_sha,
+                "row_count": 17,
+            }),
+            "commands.manifest.json": _canonical_json_identity({
+                "schema_version": "cbf2026-qualified-producer-commands-v1",
+                "terminal": True,
+                "status": "completed",
+                "sha256": command_sha,
+            }),
+        }
+        replay = {"config_sha256": config_sha}
+        return producer, declared, replay, measurement_manifest, runtime_sha
+
+    def validate(self, producer, declared, replay, manifest, runtime_sha):
+        _validate_producer_namespace_identities(
+            producer,
+            declared_members=declared,
+            replay=replay,
+            condition="dynamic_primary",
+            measurement_manifest=manifest,
+            runtime_sha=runtime_sha,
+            mission_id="mission-01",
+        )
+
+    def test_all_five_members_are_bound_to_mission_and_canonical_manifests(self):
+        values = self.identities()
+        self.validate(*values)
+
+        for member in ("config.json", "measurements.manifest.json",
+                       "commands.manifest.json"):
+            with self.subTest(member=member):
+                tampered = copy.deepcopy(values[0])
+                tampered[member]["sha256"] = "e" * 64
+                with self.assertRaisesRegex(ValueError, "producer namespace"):
+                    self.validate(tampered, *values[1:])
+
+        self_rewritten = copy.deepcopy(values)
+        self_rewritten[0]["config.json"] = {"sha256": "e" * 64, "bytes": 303}
+        self_rewritten[2]["config_sha256"] = "e" * 64
+        with self.assertRaisesRegex(ValueError, "producer namespace"):
+            self.validate(*self_rewritten)
+
+    def test_producer_argv_binds_entrypoint_condition_hash_frames_and_paths(self):
+        replay_script = Path(__file__).resolve().parents[1] / (
+            "scripts/diagnostics/replay_qualified_estimator.py"
+        )
+        measurement_sha = "a" * 64
+        allowed = {
+            "measurements.jsonl.gz", "measurements.manifest.json",
+            "commands.jsonl.gz", "commands.manifest.json", "config.json",
+        }
+        argv = [
+            sys.executable, str(replay_script),
+            "--condition", "dynamic_primary",
+            "--measurements", "measurements.jsonl.gz",
+            "--measurement-sha256", measurement_sha,
+            "--measurement-manifest", "measurements.manifest.json",
+            "--commands", "commands.jsonl.gz",
+            "--commands-manifest", "commands.manifest.json",
+            "--config", "config.json",
+            "--frames", "1000",
+        ]
+        kwargs = {
+            "condition": "dynamic_primary",
+            "measurement_sha256": measurement_sha,
+            "frames": 1000,
+        }
+        self.assertEqual(_producer_input_violations(argv, allowed, **kwargs), 0)
+        for flag, value in (
+            ("--condition", "fixed_fim_ablation"),
+            ("--measurement-sha256", "b" * 64),
+            ("--frames", "999"),
+            ("--config", "alternate.json"),
+        ):
+            with self.subTest(flag=flag):
+                tampered = list(argv)
+                tampered[tampered.index(flag) + 1] = value
+                self.assertEqual(
+                    _producer_input_violations(tampered, allowed, **kwargs), 1
+                )
+
+class AnalyzerCliTests(unittest.TestCase):
+    def test_runtime_analyzer_requires_version_exact_argv_and_bound_ablation_path(self):
+        with tempfile.TemporaryDirectory(prefix="qualified-analysis-binding-") as directory:
+            root = Path(directory)
+            raw, output = root / "raw", root / "analysis"
+            ablation = root / "ablation.json"
+            ablation.write_text("{}\n")
+            arguments = argparse.Namespace(
+                kind="development", version="v1", smoke_id=None,
+                protocol=root / "fixture-protocol.json",
+                authorization=root / "fixture-authorization.json",
+                input_root=raw, output_root=output,
+                ablation_config=ablation,
+            )
+            protocol = {
+                "kind": "development", "version": "v1",
+                "roots": {
+                    "raw": str(raw.resolve()),
+                    "analysis": str(output.resolve()),
+                },
+                "schedule": {"missions": []},
+                "bindings": {"ablation_config": {
+                    "path": str(ablation.resolve()),
+                    "sha256": hashlib.sha256(ablation.read_bytes()).hexdigest(),
+                    "bytes": ablation.stat().st_size,
+                }},
+                "analyzer_argv": _runtime_analyzer_argv(arguments),
+            }
+            validate_analysis_registration_contract(protocol, arguments)
+
+            substitute = root / "same-content-ablation.json"
+            substitute.write_text("{}\n")
+            arguments.ablation_config = substitute
+            with self.assertRaisesRegex(ValueError, "ablation config identity"):
+                validate_analysis_registration_contract(protocol, arguments)
+            arguments.ablation_config = ablation
+            arguments.version = None
+            with self.assertRaisesRegex(ValueError, "version"):
+                validate_analysis_registration_contract(protocol, arguments)
+            arguments.version = "v1"
+            protocol["analyzer_argv"] = [*protocol["analyzer_argv"], "--extra"]
+            with self.assertRaisesRegex(ValueError, "analyzer argv"):
+                validate_analysis_registration_contract(protocol, arguments)
+
+    def test_mission_success_is_derived_from_completion_and_local_evidence(self):
+        mission = {"frames": 1000}
+        terminal = {
+            "success": True,
+            "reason": "completed",
+            "process_outcome": "completed",
+            "declared_frames": 1000,
+            "completed_intervals": 1000,
+        }
+        self.assertTrue(_derive_mission_success(
+            terminal, mission, local_violations=0
+        ))
+        for field, value in (
+            ("completed_intervals", 999),
+            ("process_outcome", "loop_failure"),
+        ):
+            with self.subTest(field=field):
+                tampered = {**terminal, field: value}
+                self.assertFalse(_derive_mission_success(
+                    tampered, mission, local_violations=0
+                ))
+        self.assertFalse(_derive_mission_success(
+            terminal, mission, local_violations=1
+        ))
+        declared_false = {**terminal, "success": False}
+        self.assertTrue(_derive_mission_success(
+            declared_false, mission, local_violations=0
+        ))
+
+    def test_semantic_analysis_hash_excludes_only_declared_transport_identity(self):
+        first = {
+            "schema_version": "cbf2026-qualified-closure-analysis-v1",
+            "passed": True,
+            "gates": {"complete": {"passed": True}},
+            "raw_campaign_manifest_sha256": "a" * 64,
+        }
+        second = {**first, "raw_campaign_manifest_sha256": "b" * 64}
+        self.assertEqual(
+            semantic_analysis_sha256(first), semantic_analysis_sha256(second)
+        )
+        second["gates"] = {"complete": {"passed": False}}
+        self.assertNotEqual(
+            semantic_analysis_sha256(first), semantic_analysis_sha256(second)
+        )
+
+    def test_unavailable_controller_fails_availability_without_nu_claim(self):
+        campaign = passing_campaign()
+        campaign["controller_rows"][0].update({
+            "certificate_available": False,
+            "nu_inst": 1000.0,
+            "bar_nu": 0.0,
+        })
+
+        report = analyze_qualified_closure_campaign(campaign)
+
+        self.assertEqual(
+            report["gates"]["controller_certificate_availability"]["pass_fail"],
+            "FAIL",
+        )
+        self.assertEqual(
+            report["gates"]["zero_nu_bound_excess"]["pass_fail"], "PASS"
+        )
+
+    def test_analysis_requires_eight_gb_before_root_claim(self):
+        with tempfile.TemporaryDirectory(prefix="qualified-analysis-space-") as directory:
+            output = Path(directory) / "analysis" / "v1"
+            with self.assertRaisesRegex(RuntimeError, "8 GB"):
+                validate_analysis_output_root(
+                    output, available_bytes_fn=lambda _path: 7_999_999_999
+                )
+            self.assertFalse(output.exists())
+            validate_analysis_output_root(
+                output, available_bytes_fn=lambda _path: 8_000_000_000
+            )
+            self.assertFalse(output.exists())
+
+    def test_help_exposes_exact_analysis_options(self):
+        script = Path(__file__).resolve().parents[1] / "scripts" / "diagnostics" / "analyze_qualified_closure_campaign.py"
+        result = subprocess.run(
+            [sys.executable, str(script), "--help"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for option in (
+            "--kind", "--version", "--smoke-id", "--protocol",
+            "--authorization", "--input-root", "--ablation-config",
+            "--output-root",
+        ):
+            self.assertIn(option, result.stdout)
+
+    def test_confirmatory_smoke_uses_only_its_registered_roots_and_universe(self):
+        with tempfile.TemporaryDirectory(prefix="qualified-smoke-analysis-") as directory:
+            root = Path(directory)
+            protocol = {
+                "kind": "confirmatory", "version": "v1",
+                "roots": {
+                    "smoke_a_raw": str((root / "raw-a").resolve()),
+                    "smoke_a_analysis": str((root / "analysis-a").resolve()),
+                    "smoke_b_raw": str((root / "raw-b").resolve()),
+                    "smoke_b_analysis": str((root / "analysis-b").resolve()),
+                },
+                "smoke_schedule": {
+                    "trajectory_seed": 2026089001,
+                    "range_noise_seed": 2026089101,
+                    "frames": 20,
+                    "universes": {"mission": 1, "controller": 20},
+                    "included_in_scientific_denominator": False,
+                },
+                "universes": {"mission": 60, "controller": 60000},
+            }
+            arguments = argparse.Namespace(
+                kind="confirmatory-smoke", version="v1", smoke_id="a",
+                protocol=root / "protocol.json",
+                authorization=root / "authorization.json",
+                ablation_config=None,
+                input_root=root / "raw-a", output_root=root / "analysis-a",
+            )
+            protocol["smoke_argv"] = {
+                "a": {"analyzer": _runtime_analyzer_argv(arguments)}
+            }
+
+            contract = validate_analysis_registration_contract(protocol, arguments)
+
+            self.assertEqual(contract["claimed_root"], "smoke_a_raw")
+            self.assertEqual(contract["analysis_protocol"]["universes"], {
+                "mission": 1, "controller": 20,
+            })
+            self.assertEqual(contract["registered_missions"], [{
+                "mission_id": "mission-01", "trajectory_seed": 2026089001,
+                "range_noise_seed": 2026089101, "frames": 20,
+            }])
+            arguments.input_root = root / "raw-b"
+            with self.assertRaisesRegex(ValueError, "input root"):
+                validate_analysis_registration_contract(protocol, arguments)
+
+    def test_terminal_raw_member_tamper_terminalizes_claimed_analysis_root(self):
+        with tempfile.TemporaryDirectory(prefix="qualified-analyzer-cli-") as directory:
+            root = Path(directory).resolve()
+            raw = root / "raw"
+            analysis = root / "analysis"
+            protocol, protocol_path, authorization_path = (
+                write_development_registration(root, raw, analysis)
+            )
+            missions = []
+            for row in protocol["schedule"]["missions"]:
+                missions.append({
+                    "campaign_id": "development-v1", **row,
+                    "horizon_s": 500.0,
+                    "conditions": ["dynamic_primary", "fixed_fim_ablation"],
+                })
+            mission_root = raw / "mission-01"
+            mission_root.mkdir(parents=True)
+            member = mission_root / "swarm.jsonl.gz"
+            member.write_bytes(b"tampered")
+            mission = missions[0]
+            (mission_root / "manifest.json").write_text(json.dumps({
+                "schema_version": "cbf2026-qualified-mission-manifest-v1",
+                "terminal": True, "status": "completed", "mission": mission,
+                "swarm": {}, "measurements": {}, "replays": {},
+                "member_identities": {"swarm.jsonl.gz": {"sha256": "0" * 64, "bytes": 8}},
+            }))
+            for mission in missions[1:]:
+                other = raw / mission["mission_id"]
+                other.mkdir()
+                (other / "manifest.json").write_text(json.dumps({
+                    "schema_version": "cbf2026-qualified-mission-manifest-v1",
+                    "terminal": True, "status": "failed", "reason": "not_started",
+                    "mission": mission, "member_identities": {},
+                }))
+            write_schedule_no_replace(raw / "schedule.json", missions)
+            write_raw_campaign_manifest(
+                raw, missions, protocol_path, authorization_path,
+                status="failed", completed=0,
+            )
+            stderr = io.StringIO()
+            ablation_token = protocol["analyzer_argv"][
+                protocol["analyzer_argv"].index("--ablation-config") + 1
+            ]
+            with (
+                development_registration_patches(protocol),
+                chdir(Path(protocol["bindings"]["ablation_config"]["path"]).parent),
+                redirect_stderr(stderr),
+            ):
+                returncode = analyzer_main([
+                    "--kind", "development",
+                    "--version", "v1",
+                    "--protocol", str(protocol_path),
+                    "--authorization", str(authorization_path),
+                    "--ablation-config", ablation_token,
+                    "--input-root", str(raw),
+                    "--output-root", str(analysis),
+                ])
+            self.assertNotEqual(returncode, 0)
+            self.assertIn("member identity differs", stderr.getvalue())
+            failure = json.loads((analysis / "manifest.json").read_text())
+            self.assertEqual(failure["status"], "failed")
+            self.assertTrue(failure["terminal"])
+
+    def test_complete_terminal_failure_bundle_is_streamed_to_terminal_analysis(self):
+        with tempfile.TemporaryDirectory(prefix="qualified-analyzer-terminal-") as directory:
+            root = Path(directory).resolve()
+            raw, analysis = root / "raw", root / "analysis"
+            protocol, protocol_path, authorization_path = (
+                write_development_registration(root, raw, analysis)
+            )
+            raw.mkdir()
+            missions = []
+            for row in protocol["schedule"]["missions"]:
+                mission = {
+                    "campaign_id": "development-v1", **row, "horizon_s": 500.0,
+                    "conditions": ["dynamic_primary", "fixed_fim_ablation"],
+                }
+                missions.append(mission)
+                mission_root = raw / mission["mission_id"]
+                mission_root.mkdir()
+                synthetic = mission_root / "synthetic-missing.jsonl.gz"
+                with gzip.open(synthetic, "wt", encoding="utf-8") as sink:
+                    sink.write(json.dumps({
+                        "record_type": "test-placeholder",
+                        "reason": "launch_failure",
+                    }) + "\n")
+                (mission_root / "manifest.json").write_text(json.dumps({
+                    "schema_version": "cbf2026-qualified-mission-manifest-v1",
+                    "terminal": True, "status": "failed", "reason": "launch_failure",
+                    "mission": mission,
+                    "member_identities": {"synthetic-missing.jsonl.gz": {
+                        "sha256": hashlib.sha256(synthetic.read_bytes()).hexdigest(),
+                        "bytes": synthetic.stat().st_size,
+                    }},
+                }))
+            write_schedule_no_replace(raw / "schedule.json", missions)
+            write_raw_campaign_manifest(
+                raw, missions, protocol_path, authorization_path,
+                status="failed", completed=0,
+            )
+            stderr = io.StringIO()
+            validated_missing = []
+
+            def record_missing(path, mission, reason, *, mission_root):
+                self.assertEqual(Path(mission_root), Path(path).parent)
+                validated_missing.append((Path(path).name, mission["mission_id"], reason))
+
+            ablation_token = protocol["analyzer_argv"][
+                protocol["analyzer_argv"].index("--ablation-config") + 1
+            ]
+            with (
+                development_registration_patches(protocol),
+                chdir(Path(protocol["bindings"]["ablation_config"]["path"]).parent),
+                mock.patch(
+                    "scripts.diagnostics.analyze_qualified_closure_campaign."
+                    "_validate_synthesized_missing_stream",
+                    side_effect=record_missing,
+                ),
+                redirect_stderr(stderr),
+            ):
+                returncode = analyzer_main([
+                    "--kind", "development",
+                    "--version", "v1",
+                    "--protocol", str(protocol_path),
+                    "--authorization", str(authorization_path),
+                    "--ablation-config", ablation_token,
+                    "--input-root", str(raw),
+                    "--output-root", str(analysis),
+                ])
+            self.assertEqual(returncode, 1, stderr.getvalue())
+            self.assertEqual(json.loads((analysis / "manifest.json").read_text())["status"], "completed")
+            report = json.loads((analysis / "analysis.json").read_text())
+            self.assertFalse(report["passed"])
+            self.assertEqual(len(report["incomplete_missions"]), 10)
+            self.assertEqual(
+                validated_missing,
+                [
+                    ("synthetic-missing.jsonl.gz", f"mission-{index:02d}",
+                     "launch_failure")
+                    for index in range(1, 11)
+                ],
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()

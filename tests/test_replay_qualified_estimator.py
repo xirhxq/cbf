@@ -1,11 +1,19 @@
 import copy
+import contextlib
+import io
 import json
 import math
+import os
 from pathlib import Path
+import subprocess
+import sys
+import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
+import scripts.diagnostics.replay_qualified_estimator as replay_module
 from scripts.diagnostics.predictive_wnls import (
     canonical_qualified_solver,
     solve_finite_budget_wnls,
@@ -722,6 +730,88 @@ class QualifiedReplayTests(unittest.TestCase):
         )))
         with self.assertRaisesRegex(ValueError, "qualification record"):
             validate_qualified_replay_row(qualification_row)
+
+
+class QualifiedReplayProducerEntrypointTests(unittest.TestCase):
+    def producer_argv(self):
+        return [
+            "--condition", "dynamic_primary",
+            "--measurements", "measurements.jsonl.gz",
+            "--measurement-sha256", "0" * 64,
+            "--measurement-manifest", "measurements.manifest.json",
+            "--commands", "commands.jsonl.gz",
+            "--commands-manifest", "commands.manifest.json",
+            "--config", "config.json",
+            "--frames", "20",
+        ]
+
+    def test_main_delegates_direct_flags_and_preserves_exit_and_stderr(self):
+        observed = []
+
+        def fake_producer(arguments):
+            observed.append(arguments)
+            print("delegated producer failure", file=sys.stderr)
+            return 17
+
+        entrypoint = getattr(replay_module, "main", None)
+        self.assertIsNotNone(entrypoint)
+        argv = self.producer_argv()
+        stderr = io.StringIO()
+        with patch(
+            "scripts.diagnostics.run_qualified_closure_campaign."
+            "_replay_producer_main",
+            fake_producer,
+        ), contextlib.redirect_stderr(stderr):
+            return_code = entrypoint(argv)
+
+        self.assertEqual(return_code, 17)
+        self.assertEqual(observed, [argv])
+        self.assertNotIn("__replay-producer", observed[0])
+        self.assertEqual(stderr.getvalue(), "delegated producer failure\n")
+
+    def test_module_cli_accepts_producer_flags_without_hidden_subcommand(self):
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "scripts.diagnostics.replay_qualified_estimator",
+                *self.producer_argv(),
+            ],
+            cwd=Path(__file__).resolve().parents[1],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 1)
+        self.assertEqual(completed.stdout, "")
+        self.assertIn("qualified replay producer failed:", completed.stderr)
+        self.assertNotIn("unrecognized arguments", completed.stderr)
+
+    def test_absolute_script_bootstraps_imports_from_isolated_producer_cwd(self):
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "scripts" / "diagnostics" / "replay_qualified_estimator.py"
+        )
+        environment = dict(os.environ)
+        environment.pop("PYTHONPATH", None)
+        with tempfile.TemporaryDirectory(
+            prefix="qualified-replay-isolated-cwd-"
+        ) as directory:
+            completed = subprocess.run(
+                [sys.executable, str(script), *self.producer_argv()],
+                cwd=directory,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertEqual(completed.returncode, 1)
+        self.assertEqual(completed.stdout, "")
+        self.assertIn("qualified replay producer failed:", completed.stderr)
+        self.assertNotIn("ModuleNotFoundError", completed.stderr)
+        self.assertNotIn("No module named 'scripts'", completed.stderr)
 
 
 if __name__ == "__main__":
