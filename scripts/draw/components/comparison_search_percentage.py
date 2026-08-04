@@ -124,6 +124,16 @@ class ComparisonSearchPercentageComponent(BaseComponent):
             self.ax.plot(runtime, percentages * 100, color=color, linewidth=2,
                         linestyle=linestyle, label=label, zorder=3)
 
+            # Mark violation point if the run terminated early
+            final_time = runtime[-1]
+            is_violation = final_time < 300
+            if is_violation and self.show_violation_markers:
+                self.ax.plot(
+                    final_time, percentages[-1] * 100, 'x', color=color,
+                    markersize=10, markeredgewidth=2, label='_nolegend_',
+                    zorder=4,
+                )
+
             # Add fill with reduced transparency
             self.ax.fill_between(runtime, 0, percentages * 100, alpha=0.08, color=color, zorder=2)
 
