@@ -18,7 +18,82 @@ import numpy as np
 
 from scripts.diagnostics.run_qualified_closure_campaign import (
     _build_condition_replay_row,
+    _resolve_condition_references,
+    _state_seed,
 )
+from scripts.diagnostics.replay_qualified_estimator import (
+    build_qualified_replay_row,
+)
+
+
+def build_condition_row(
+    *,
+    frame: int,
+    robot_id: int,
+    raw_references: list[dict],
+    condition_state: dict,
+    held_velocity: list[float],
+    deployment_domain: dict,
+    innovation_limit: float,
+    solver,
+    mission_horizon_frames: int,
+    warm_start: bool,
+) -> dict:
+    """Mirror the producer row build with optional deployment-restart warm start."""
+    robot_state = condition_state.get(robot_id)
+    if not isinstance(robot_state, dict):
+        raise ValueError("condition-local owner state is absent")
+    references = _resolve_condition_references(
+        raw_references, condition_state, owner_id=robot_id
+    )
+    provenance = sorted({
+        anchor
+        for reference in references
+        for anchor in reference["base_anchor_provenance"]
+    })
+    if len(provenance) < 2:
+        raise ValueError("fewer than two condition-local reference anchors remain")
+    previous_public = robot_state.get("public")
+    previous_private = robot_state.get("private")
+    if frame == 0:
+        qualifier_kind = "deployment"
+        qualifier_payload = {"domain": deployment_domain}
+        applied_command_frame = None
+    elif previous_private is not None:
+        qualifier_kind = "history"
+        qualifier_payload = {"innovation_limit": innovation_limit}
+        applied_command_frame = frame - 1
+    elif warm_start:
+        qualifier_kind = "deployment"
+        qualifier_payload = {"domain": deployment_domain}
+        applied_command_frame = frame - 1
+    else:
+        qualifier_kind = "unavailable"
+        qualifier_payload = {"reason": "propagated_private_prior_unavailable"}
+        applied_command_frame = frame - 1
+    squad_local_index = robot_id if robot_id <= 7 else robot_id - 7
+    return build_qualified_replay_row(
+        frame_index=frame,
+        robot_id=robot_id,
+        squad_local_index=squad_local_index,
+        schedule_id=(
+            f"frame-{frame}:robot-{robot_id}:squad-local-{squad_local_index}"
+        ),
+        references=references,
+        solver_from_start=solver,
+        live_seed=_state_seed(previous_public),
+        private_seed=_state_seed(previous_private),
+        qualifier_kind=qualifier_kind,
+        qualifier_payload=qualifier_payload,
+        previous_public=previous_public,
+        previous_private=previous_private,
+        held_velocity=list(held_velocity),
+        applied_command_frame=applied_command_frame,
+        history_version=robot_state["history"],
+        mission_horizon_frames=mission_horizon_frames,
+        active_reference_count=len(references),
+        base_anchor_provenance=provenance,
+    )
 
 
 def _load_materialized_bases(data: dict) -> list[list[float]]:
@@ -156,6 +231,11 @@ def main() -> int:
     parser.add_argument("--frames", type=int, default=0)
     parser.add_argument("--range-noise-seed", type=int, default=2026081301)
     parser.add_argument(
+        "--warm-start",
+        action="store_true",
+        help="deployment-restart when the private prior is unavailable",
+    )
+    parser.add_argument(
         "--reference-mode",
         choices=("fixed", "dynamic"),
         default="fixed",
@@ -209,7 +289,7 @@ def main() -> int:
         for robot_id in range(1, 15):
             references = groups.get((frame_index, robot_id), [])
             try:
-                row = _build_condition_replay_row(
+                row = build_condition_row(
                     frame=frame_index,
                     robot_id=robot_id,
                     raw_references=references,
@@ -219,6 +299,7 @@ def main() -> int:
                     innovation_limit=innovation_limit,
                     solver=solver,
                     mission_horizon_frames=frames,
+                    warm_start=arguments.warm_start,
                 )
                 lifecycle = row["audit_bundle"]["lifecycle"]
                 state[robot_id]["public"] = lifecycle["public_output"]
