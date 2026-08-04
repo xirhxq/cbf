@@ -120,6 +120,7 @@ def h_loc_interpreter(data):
 
         key = f'{robot_id}_{anchor_j}'
         processed_data['constraints'][key] = {
+            'key': key,
             'category': category,
             'color': color,
             'distance': distances,
@@ -134,8 +135,9 @@ def h_loc_interpreter(data):
 class HLocComponent(BaseComponent):
     """
     Component for visualizing h_loc (localization) constraints.
-    Shows ALL distance + combined uncertainty for constrained pairs, with d_loc reference.
-    Colors: Blue = Squad 1 (robots 1-7), Green = Squad 2 (robots 8-14), Red = Base links.
+    Shows the true fixed-link distances split by squad, with d_loc
+    reference. Colors: Blue = Squad 1 (robots 1-7), Green = Squad 2
+    (robots 8-14); base links are dashed.
     """
     def __init__(self, ax, data, **kwargs):
         self.ax = ax
@@ -179,15 +181,16 @@ class HLocComponent(BaseComponent):
             for constraint in constraints:
                 distance = np.array(constraint['distance'])
                 uncertainty = np.array(constraint['uncertainty'])
-                total = np.array(constraint['total'])
                 color = constraint['color']
 
-                # Fill uncertainty buffer (lighter, more transparent)
-                self.ax.fill_between(runtime, distance, total,
-                                   alpha=0.15, color=color, linewidth=0)
-
-                # Plot distance line (thinner for many lines)
-                self.ax.plot(runtime, distance, color=color, linewidth=0.8, alpha=0.7)
+                key = constraint.get('key', '')
+                is_base_link = 'base-' in key
+                # Plot distance line (thinner for many lines; dashed for
+                # base links)
+                self.ax.plot(
+                    runtime, distance, color=color, linewidth=0.8,
+                    alpha=0.7, linestyle='--' if is_base_link else '-',
+                )
 
         # Add reference line for max_range
         self.ax.axhline(y=max_range, color='red', linestyle='--',
