@@ -642,6 +642,19 @@ public:
                   == "analytic-topological";
     }
 
+    double configuredPlanarComponentMax() const {
+        const json inputLimitsConfig =
+            settings["cbfs"].value("input-limits", json::object());
+        const double value =
+            inputLimitsConfig.value("planar-component-max", 25.0);
+        if (!std::isfinite(value) || value <= 0.0) {
+            throw std::invalid_argument(
+                "input-limits.planar-component-max must be finite and positive"
+            );
+        }
+        return value;
+    }
+
     void getCovariance(const json& config) {
         const bool theoremAligned = usesAnalyticTopologicalRateCertificate();
         certificateAvailable = false;
@@ -659,7 +672,7 @@ public:
                     inputLimitsConfig.at("planar-component-max").get<double>()
                 )
                 || inputLimitsConfig.at("planar-component-max").get<double>()
-                   != 25.0
+                   <= 0.0
                 || settings.value("model", "") != "SingleIntegrate2D"
                 || model->uSize() != 3)) {
             throw std::invalid_argument(
@@ -1687,9 +1700,9 @@ public:
         const auto& inputLimits = settings.at("cbfs").at("input-limits");
         if (!inputLimits.at("on").get<bool>()
             || inputLimits.at("planar-component-max").get<double>()
-               != 25.0) {
+               <= 0.0) {
             throw std::invalid_argument(
-                "pure theorem proposal requires the frozen planar bound"
+                "pure theorem proposal requires an enabled positive planar bound"
             );
         }
 
@@ -1791,7 +1804,7 @@ public:
         }
 
         const Point position = model->xy();
-        const double planarComponentMax = 25.0;
+        const double planarComponentMax = configuredPlanarComponentMax();
         const double speedBound = std::sqrt(2.0) * planarComponentMax;
         std::vector<cbf2026::ReferenceRateInput> rateInputs;
         const auto appendReference = [&rateInputs, &position, this](
@@ -1893,7 +1906,7 @@ public:
             );
         }
 
-        constexpr double planarComponentMax = 25.0;
+        const double planarComponentMax = configuredPlanarComponentMax();
         const double predecessorSpeedBound =
             std::sqrt(2.0) * planarComponentMax;
         std::vector<cbf2026::ReferenceRateInput> references;
@@ -1988,7 +2001,7 @@ public:
         cbf2026::HardConstraintProblem problem;
         problem.owner = id;
         problem.controlSize = model->uSize();
-        problem.planarComponentMax = 25.0;
+        problem.planarComponentMax = configuredPlanarComponentMax();
         problem.yawRateMax = 0.35;
         problem.snapshotVersion = state.version;
         problem.allocationVersion = local.allocationVersion;
@@ -2185,12 +2198,15 @@ public:
         try {
             if (problem.owner != id
                 || problem.controlSize != 3
-                || problem.planarComponentMax != 25.0
+                || !std::isfinite(problem.planarComponentMax)
+                || problem.planarComponentMax <= 0.0
                 || problem.yawRateMax != 0.35
                 || problem.bounds.size() != 6) {
                 return {{false, "invalid-problem", -inf, digest}, std::nullopt};
             }
-            const auto requiredBounds = cbf2026::theoremInputBounds();
+            const auto requiredBounds = cbf2026::theoremInputBounds(
+                problem.planarComponentMax, problem.yawRateMax
+            );
             for (std::size_t index = 0;
                  index < requiredBounds.size(); ++index) {
                 const auto& bound = problem.bounds[index];

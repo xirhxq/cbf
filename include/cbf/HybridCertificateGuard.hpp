@@ -1121,7 +1121,7 @@ inline GuardDecision validateResetTransaction(
         if (problem.owner != localQp.nodeId
             || problem.controlSize != 3
             || !std::isfinite(problem.planarComponentMax)
-            || problem.planarComponentMax != 25.0
+            || problem.planarComponentMax <= 0.0
             || !std::isfinite(problem.yawRateMax)
             || problem.yawRateMax != 0.35
             || problem.snapshotVersion != proposal.proposedVersion) {
@@ -1130,7 +1130,9 @@ inline GuardDecision validateResetTransaction(
                 "local hard-QP problem is not same-version bounded data"
             };
         }
-        const auto requiredBounds = theoremInputBounds();
+        const auto requiredBounds = theoremInputBounds(
+            problem.planarComponentMax, problem.yawRateMax
+        );
         if (problem.bounds.size() != requiredBounds.size()) {
             return {
                 GuardStatus::Rejected,
@@ -1680,10 +1682,14 @@ inline bool validateQualifiedMaterializedConfig(
                 "analytic-topological"
             )
             || !exactBoolean(cbfs.at("input-limits").at("on"), true)
-            || !exactNumber(
-                cbfs.at("input-limits").at("planar-component-max"),
-                25.0
+            || !cbfs.at("input-limits").at("planar-component-max").is_number()
+            || !std::isfinite(
+                cbfs.at("input-limits").at("planar-component-max")
+                    .get<double>()
             )
+            || cbfs.at("input-limits").at("planar-component-max")
+                   .get<double>()
+               <= 0.0
             || !exactNumber(
                 cbfs.at("input-limits").at("yaw-rate-max"), 0.35
             )) {

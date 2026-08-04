@@ -683,6 +683,25 @@ public:
             if (!feasibility.feasible || feasibility.status != "optimal") {
                 certificateUnavailableReason =
                     "continuous certificate flow produced an infeasible hard QP";
+                if (evidenceMode()) {
+                    json rowsJson = json::array();
+                    for (const auto& row : problem.rows) {
+                        rowsJson.push_back({
+                            {"owner", row.owner},
+                            {"name", row.name},
+                            {"constant", row.constant},
+                            {"coefficients", vectorJson(row.coefficients)},
+                            {"post_reset_barrier", row.postResetBarrier}
+                        });
+                    }
+                    evidenceStream->write({
+                        {"record_type", "flow_failure"},
+                        {"robot_id", robotId},
+                        {"qp_status", feasibility.status},
+                        {"row_count", static_cast<std::uint64_t>(problem.rows.size())},
+                        {"rows", std::move(rowsJson)}
+                    });
+                }
                 throw std::runtime_error(*certificateUnavailableReason);
             }
             next.hardProblems.emplace(robotId, std::move(problem));

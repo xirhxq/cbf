@@ -47,6 +47,7 @@ def main() -> int:
     parser.add_argument("--horizon", type=float, required=True)
     parser.add_argument("--trajectory-seed", type=int, default=2026080201)
     parser.add_argument("--range-noise-seed", type=int, default=2026081301)
+    parser.add_argument("--planar-component-max", type=float, default=None)
     arguments = parser.parse_args()
 
     run_id = f"{time.strftime('%Y%m%dT%H%M%S')}_{uuid.uuid4().hex[:12]}"
@@ -74,6 +75,15 @@ def main() -> int:
         mission,
         initial_family_path=V6_INITIAL_FAMILY_PATH,
     )
+    if arguments.planar_component_max is not None:
+        if arguments.planar_component_max <= 0.0:
+            raise ValueError("planar component max must be positive")
+        config["cbfs"]["input-limits"]["planar-component-max"] = (
+            arguments.planar_component_max
+        )
+        config_path.write_text(
+            json.dumps(config, indent=2, ensure_ascii=False) + "\n"
+        )
     family = json.loads(V6_INITIAL_FAMILY_PATH.read_text())
 
     preregistration = {
