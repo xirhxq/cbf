@@ -1,5 +1,5 @@
 {
- "case": "R1H-EI",
+ "case": "R1H-ABLATION-CVT-FORMATION",
  "overrides": {
   "initial": {
    "position": {
@@ -104,6 +104,11 @@
       "coe": 0.1,
       "pow": 1
      }
+    }
+   },
+   "with-slack": {
+    "cvt": {
+     "exploration-mode": "cvt"
     }
    }
   },

@@ -1,5 +1,5 @@
 {
- "case": "R1H-EI",
+ "case": "R1H-ABLATION-PURE-CVT",
  "overrides": {
   "initial": {
    "position": {
@@ -75,7 +75,7 @@
   },
   "cbfs": {
    "uncertainty-rate": {
-    "mode": "backward-difference-positive"
+    "mode": "off"
    },
    "route1": {
     "on": true,
@@ -89,7 +89,7 @@
    "without-slack": {
     "method": "all",
     "safety": {
-     "on": true,
+     "on": false,
      "mode": "pairwise",
      "consider-uncertainty": true,
      "alpha": {
@@ -98,12 +98,17 @@
      }
     },
     "comm-fixed": {
-     "on": true,
+     "on": false,
      "consider-uncertainty": true,
      "alpha": {
       "coe": 0.1,
       "pow": 1
      }
+    }
+   },
+   "with-slack": {
+    "cvt": {
+     "exploration-mode": "cvt"
     }
    }
   },

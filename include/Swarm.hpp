@@ -3154,10 +3154,10 @@ private:
     bool checkConstraintViolation() {
         std::ostream& diagnostics = evidenceMode()
             ? std::cerr : std::cout;
-        // Check h_loc constraints for violation
-        // Constraint: distance + uncertainty <= max_range
-        // Violation occurs when: distance + uncertainty1 + uncertainty2 > max_range
-        // Add buffer for numerical stability
+        // Check h_loc constraints for violation.
+        // Default (legacy) semantics: distance + FIM uncertainty > max_range
+        // with a 10% buffer. With `check-true-distance-only` enabled, the
+        // check matches the paper proposition: true link distance > max_range.
 
         // Get max_range from config
         auto commConfig = config["cbfs"]["without-slack"]["comm-fixed"];
@@ -3165,7 +3165,12 @@ private:
             return false;  // No max-range specified, cannot check
         }
         double maxRange = commConfig["max-range"];
-        double buffer = maxRange * 0.1;  // 1% buffer for numerical stability
+        bool trueDistanceOnly = config["execute"].value(
+            "check-true-distance-only", false
+        );
+        double buffer = trueDistanceOnly
+            ? config["execute"].value("check-localization-buffer-m", 0.0)
+            : maxRange * 0.1;
         double violationThreshold = maxRange + buffer;
 
         // Check all robots and their constrained pairs
@@ -3193,7 +3198,9 @@ private:
                     double otherUncertainty = otherRobot->uncertaintyFromCovarianceFunction(otherRobot->positionCovariance);
 
                     double distance = robotPos.distance_to(otherPos);
-                    double totalDistance = distance + robotUncertainty + otherUncertainty;
+                    double totalDistance = trueDistanceOnly
+                        ? distance
+                        : distance + robotUncertainty + otherUncertainty;
 
                     if (totalDistance > violationThreshold) {
                         diagnostics << "\n[Constraint Violation] Robot " << robot->id
@@ -3218,8 +3225,9 @@ private:
                     Point basePos(bases[baseId][0], bases[baseId][1]);
                     double distance = robotPos.distance_to(basePos);
 
-                    // Base has no uncertainty, only robot uncertainty
-                    double totalDistance = distance + robotUncertainty;
+                    double totalDistance = trueDistanceOnly
+                        ? distance
+                        : distance + robotUncertainty;
 
                     if (totalDistance > violationThreshold) {
                         diagnostics << "\n[Constraint Violation] Robot " << robot->id

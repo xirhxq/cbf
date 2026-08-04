@@ -47,6 +47,10 @@ def main() -> int:
     parser.add_argument("--horizon", type=float, required=True)
     parser.add_argument("--seed", type=int, default=20260727)
     parser.add_argument("--range-noise-seed", type=int, default=2026081301)
+    parser.add_argument(
+        "--ranging-sigma0", type=float, default=0.5,
+        help="short-range ranging noise sigma0 for the EKF measurement model",
+    )
     arguments = parser.parse_args()
 
     run_root = arguments.output_root
@@ -128,7 +132,8 @@ def main() -> int:
                 for entry in state["robots"]
             }
             references_by_robot = build_ekf_raw_references(
-                frame_like, bases, rng
+                frame_like, bases, rng,
+                sigma0=arguments.ranging_sigma0,
             )
             started = time.monotonic()
             outputs = service.step(

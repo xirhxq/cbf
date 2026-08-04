@@ -314,6 +314,39 @@ REGISTRIED_COMPONENTS = {
             'show_violation_markers': True,
         }
     },
+    'ablation-sp': {
+        'title': 'Ablation Search Performance Comparison',
+        'class': 'ComparisonSearchPercentageComponent',
+        'filename': 'ablation-comparison-search-percentage',
+        'figsize': (5, 3),
+        'params': {
+            'comparison_data': {
+                'uGdMS (full)': (
+                    '/private/tmp/r1h-ekf-ablation-v2/full/2026081303/'
+                    '2026-08-04_21-21-20_R1H-EI_seed_20260727_350s'
+                ),
+                'Conventional CBF': (
+                    '/private/tmp/r1h-ekf-ablation-v2/conventional/2026081303/'
+                    '2026-08-04_21-22-19_R1H-ABLATION-CONVENTIONAL_'
+                    'seed_20260727_350s'
+                ),
+                'CVT+Formation': (
+                    '/private/tmp/r1h-ekf-ablation-v2/cvt_formation/2026081303/'
+                    '2026-08-04_21-22-34_R1H-ABLATION-CVT-FORMATION_'
+                    'seed_20260727_350s'
+                ),
+                'Pure CVT': (
+                    '/private/tmp/r1h-ekf-ablation-v2/pure_cvt/2026081303/'
+                    '2026-08-04_21-23-00_R1H-ABLATION-PURE-CVT_'
+                    'seed_20260727_350s'
+                ),
+            },
+            'method_colors': [
+                'blue', 'red', 'green', 'orange',
+            ],
+            'show_violation_markers': True,
+        }
+    },
     'valid-links': {
         'title': 'Valid Links (Safe Distance Range)',
         'class': 'ValidLinksComponent',

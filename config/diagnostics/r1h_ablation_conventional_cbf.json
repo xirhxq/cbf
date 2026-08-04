@@ -1,5 +1,5 @@
 {
- "case": "R1H-EI",
+ "case": "R1H-ABLATION-CONVENTIONAL",
  "overrides": {
   "initial": {
    "position": {
@@ -75,7 +75,7 @@
   },
   "cbfs": {
    "uncertainty-rate": {
-    "mode": "backward-difference-positive"
+    "mode": "off"
    },
    "route1": {
     "on": true,
@@ -91,7 +91,7 @@
     "safety": {
      "on": true,
      "mode": "pairwise",
-     "consider-uncertainty": true,
+     "consider-uncertainty": false,
      "alpha": {
       "coe": 0.1,
       "pow": 1
@@ -99,7 +99,7 @@
     },
     "comm-fixed": {
      "on": true,
-     "consider-uncertainty": true,
+     "consider-uncertainty": false,
      "alpha": {
       "coe": 0.1,
       "pow": 1
