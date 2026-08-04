@@ -81,16 +81,6 @@ def main(argv: list[str] | None = None) -> int:
     ax.plot([0, limit], [0, limit], color="gray", ls=":", lw=1.2)
     ax.set_xlabel("Localization error (m)")
     ax.set_ylabel(r"Uncertainty radius $\varepsilon$ (m)")
-    ax.text(
-        0.02, 0.98,
-        f"containment {containment * 100:.1f}%  ·  "
-        f"median {median:.1f} m  ·  p95 {p95:.1f} m",
-        transform=ax.transAxes, va="top", ha="left", fontsize=9,
-        bbox=dict(
-            boxstyle="round", facecolor="white", alpha=0.75,
-            edgecolor="none",
-        ),
-    )
     ax.grid(alpha=0.3)
 
     ax_top.hist(errors, bins=50, color="tab:blue", alpha=0.85)
