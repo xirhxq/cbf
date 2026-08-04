@@ -38,6 +38,7 @@ def build_condition_row(
     solver,
     mission_horizon_frames: int,
     warm_start: bool,
+    anchor_inflation: float | None,
 ) -> dict:
     """Mirror the producer row build with optional deployment-restart warm start."""
     robot_state = condition_state.get(robot_id)
@@ -46,6 +47,16 @@ def build_condition_row(
     references = _resolve_condition_references(
         raw_references, condition_state, owner_id=robot_id
     )
+    if anchor_inflation is not None:
+        if anchor_inflation <= 0.0:
+            raise ValueError("anchor inflation must be positive")
+        for reference in references:
+            covariance = reference.get("covariance")
+            if covariance is not None:
+                reference["covariance"] = [
+                    [value * anchor_inflation for value in row]
+                    for row in covariance
+                ]
     provenance = sorted({
         anchor
         for reference in references
@@ -236,6 +247,12 @@ def main() -> int:
         help="deployment-restart when the private prior is unavailable",
     )
     parser.add_argument(
+        "--anchor-inflation",
+        type=float,
+        default=None,
+        help="scale resolved reference covariances (calibration factor)",
+    )
+    parser.add_argument(
         "--reference-mode",
         choices=("fixed", "dynamic"),
         default="fixed",
@@ -300,6 +317,7 @@ def main() -> int:
                     solver=solver,
                     mission_horizon_frames=frames,
                     warm_start=arguments.warm_start,
+                    anchor_inflation=arguments.anchor_inflation,
                 )
                 lifecycle = row["audit_bundle"]["lifecycle"]
                 state[robot_id]["public"] = lifecycle["public_output"]
