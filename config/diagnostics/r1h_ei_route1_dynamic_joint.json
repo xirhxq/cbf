@@ -1,0 +1,64 @@
+{
+  "case": "R1H-EI",
+  "overrides": {
+    "initial": {
+      "position": {
+        "method": "specified",
+        "positions": [
+          [-1490.000000, -120.000000],
+          [-1487.320508, -164.641016],
+          [-1450.000000, -140.000000],
+          [-1447.320508, -184.641016],
+          [-1410.000000, -160.000000],
+          [-1407.320508, -204.641016],
+          [-1370.000000, -180.000000],
+          [-1490.000000, 120.000000],
+          [-1487.320508, 164.641016],
+          [-1450.000000, 140.000000],
+          [-1447.320508, 184.641016],
+          [-1410.000000, 160.000000],
+          [-1407.320508, 204.641016],
+          [-1370.000000, 180.000000]
+        ]
+      }
+    },
+    "position_covariance": {
+      "reference-selection": "dynamic-lower-index"
+    },
+    "estimator-in-loop": {
+      "on": true,
+      "state-path": "/private/tmp/r1h-ei/state.json",
+      "estimates-path": "/private/tmp/r1h-ei/estimates.json",
+      "wait-timeout-s": 5.0
+    },
+    "cbfs": {
+      "uncertainty-rate": {"mode": "backward-difference-positive"},
+      "route1": {"on": true, "joint-resolve": true},
+      "input-limits": {
+        "on": true,
+        "planar-component-max": 50.0,
+        "yaw-rate-max": 0.35
+      },
+      "without-slack": {
+        "method": "all",
+        "safety": {
+          "on": true,
+          "mode": "pairwise",
+          "consider-uncertainty": true,
+          "alpha": {"coe": 0.1, "pow": 1}
+        },
+        "comm-fixed": {
+          "on": true,
+          "consider-uncertainty": true,
+          "alpha": {"coe": 0.1, "pow": 1}
+        }
+      }
+    },
+    "execute": {
+      "execution-mode": "distributed",
+      "random-seed": 20260727,
+      "check-constraint-violation": true
+    },
+    "debug": {"opt-cbc": false}
+  }
+}

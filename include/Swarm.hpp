@@ -7,11 +7,13 @@
 #ifdef CBF_EVIDENCE_TEST_HOOKS
 #include <cstdlib>
 #endif
+#include <algorithm>
 #include <exception>
 #include <limits>
 #include <map>
 #include <optional>
 #include <set>
+#include <unordered_set>
 #include <utility>
 #include <chrono>
 #include <cstdio>
@@ -81,6 +83,8 @@ public:
     json config;
     bool route1Mode = false;
     int route1SquadFirst = 0;
+    bool route1JointResolve = false;
+    int route1JointResolveCount = 0;
     double route1ChainLatencySeconds = 0.0;
     bool estimatorInLoop = false;
     std::string estimatorStatePath;
@@ -231,7 +235,8 @@ public:
         if (route1Mode) {
             stepData["route1"] = {
                 {"on", true},
-                {"chain_latency_s", route1ChainLatencySeconds}
+                {"chain_latency_s", route1ChainLatencySeconds},
+                {"joint_resolutions", route1JointResolveCount}
             };
         }
 
@@ -414,6 +419,290 @@ public:
                 );
             }
         }
+    }
+
+    // Bounded neighborhood coordination: when the sequential route-1 hard QP
+    // of `failedIndex` is infeasible, jointly re-solve over the failed robot
+    // and the partners appearing in its rows violated at zero input.  All
+    // hard rows stay hard; the joint problem is built from each robot's own
+    // logged rows (two-velocity form for shared rows).  Returns false when
+    // the joint problem is infeasible or cannot be formed (fail-closed).
+    bool attemptJointRoute1Resolve(
+        size_t failedIndex,
+        std::unordered_set<size_t>& solvedIndices
+    ) {
+        auto& failedRobot = *robots[failedIndex];
+        const double t = failedRobot.runtime;
+        const json inputLimitsConfig =
+            config["cbfs"].value("input-limits", json::object());
+        const double planarMax =
+            inputLimitsConfig.value("planar-component-max", 50.0);
+        const double yawMax =
+            inputLimitsConfig.value("yaw-rate-max", 0.35);
+
+        // Partners: robots whose hard row on the failed robot is violated at
+        // zero input, capped at the three most violated.
+        std::vector<std::pair<double, size_t>> violated;
+        {
+            auto f = failedRobot.model->f();
+            auto g = failedRobot.model->g();
+            auto x = failedRobot.model->getX();
+            for (auto &[name, cbf] : failedRobot.cbfNoSlack.cbfs) {
+                const bool anchorRow =
+                    name.rfind("safetyCBF(#", 0) == 0
+                    || name.rfind("fixedCommCBF(#", 0) == 0;
+                if (!anchorRow) continue;
+                VectorXd uCoe = cbf.constraintUCoe(f, g, x, t);
+                double constValue =
+                    cbf.constraintConstWithTime(f, g, x, t);
+                if (constValue >= -1e-9) continue;
+                const size_t hash = name.find('#');
+                int otherId = std::stoi(name.substr(hash + 1));
+                if (otherId < 1
+                    || otherId > static_cast<int>(robots.size())) {
+                    continue;
+                }
+                const size_t otherIndex =
+                    static_cast<size_t>(otherId - 1);
+                if (otherIndex == failedIndex) continue;
+                violated.push_back({constValue, otherIndex});
+            }
+        }
+        if (violated.empty()) return false;
+        std::sort(violated.begin(), violated.end());
+        std::vector<size_t> partners;
+        for (auto &[violation, otherIndex] : violated) {
+            if (partners.size() >= 3) break;
+            if (std::find(partners.begin(), partners.end(), otherIndex)
+                == partners.end()) {
+                partners.push_back(otherIndex);
+            }
+        }
+
+        const int partnerCount = static_cast<int>(partners.size());
+        const int jointVars = 3 + 2 * partnerCount;
+        auto jointOptimiser = createOptimiser(
+            config["optimiser"], config["cbfs"]["objective-function"]
+        );
+        jointOptimiser->start(jointVars, jointVars);
+
+        Eigen::VectorXd target = Eigen::VectorXd::Zero(jointVars);
+        {
+            const auto nominal =
+                failedRobot.opt.value("nominal", json::object());
+            target[0] = nominal.value("vx", 0.0);
+            target[1] = nominal.value("vy", 0.0);
+            target[2] = nominal.value("yawRateRad", 0.0);
+        }
+        for (int p = 0; p < partnerCount; ++p) {
+            auto velocity = robots[partners[p]]->model->getVelocity();
+            target[3 + 2 * p] = velocity[0];
+            target[4 + 2 * p] = velocity[1];
+        }
+        jointOptimiser->setObjective(target);
+
+        const auto slotOf = [&](size_t robotIndex) -> int {
+            if (robotIndex == failedIndex) return 0;
+            for (int p = 0; p < partnerCount; ++p) {
+                if (partners[p] == robotIndex) return 3 + 2 * p;
+            }
+            return -1;
+        };
+
+        const auto addJointRows = [&](size_t robotIndex) -> bool {
+            auto& robot = *robots[robotIndex];
+            auto f = robot.model->f();
+            auto g = robot.model->g();
+            auto x = robot.model->getX();
+            const int selfSlot = slotOf(robotIndex);
+            if (selfSlot < 0) return false;
+            for (auto &[name, cbf] : robot.cbfNoSlack.cbfs) {
+                VectorXd uCoe = cbf.constraintUCoe(f, g, x, t);
+                double constValue =
+                    cbf.constraintConstWithTime(f, g, x, t);
+                Eigen::VectorXd jointCoe =
+                    Eigen::VectorXd::Zero(jointVars);
+                int otherIndex = -1;
+                if (name.rfind("safetyCBF(#", 0) == 0
+                    || name.rfind("fixedCommCBF(#", 0) == 0) {
+                    const size_t hash = name.find('#');
+                    int otherId = std::stoi(name.substr(hash + 1));
+                    if (otherId >= 1
+                        && otherId <= static_cast<int>(robots.size())) {
+                        otherIndex = otherId - 1;
+                    }
+                }
+                const int otherSlot =
+                    otherIndex >= 0 ? slotOf(otherIndex) : -1;
+                if (otherSlot >= 0) {
+                    // Two-velocity form:
+                    // coe·u_self - coe·u_other
+                    //     >= -const - coe·v_other_current.
+                    jointCoe[selfSlot] += uCoe[0];
+                    jointCoe[selfSlot + 1] += uCoe[1];
+                    if (selfSlot == 0) {
+                        jointCoe[2] += uCoe[2];
+                    } else if (std::abs(uCoe[2]) > 1e-12) {
+                        return false;
+                    }
+                    jointCoe[otherSlot] -= uCoe[0];
+                    jointCoe[otherSlot + 1] -= uCoe[1];
+                    auto otherVel =
+                        robots[otherIndex]->model->getVelocity();
+                    const double rhs =
+                        -constValue
+                        - (uCoe[0] * otherVel[0]
+                           + uCoe[1] * otherVel[1]);
+                    jointOptimiser->addLinearConstraint(jointCoe, rhs);
+                } else {
+                    jointCoe[selfSlot] = uCoe[0];
+                    jointCoe[selfSlot + 1] = uCoe[1];
+                    if (selfSlot == 0) {
+                        jointCoe[2] = uCoe[2];
+                    } else if (std::abs(uCoe[2]) > 1e-12) {
+                        return false;
+                    }
+                    jointOptimiser->addLinearConstraint(
+                        jointCoe, -constValue
+                    );
+                }
+            }
+            return true;
+        };
+
+        if (!addJointRows(failedIndex)) return false;
+        for (int p = 0; p < partnerCount; ++p) {
+            if (!addJointRows(partners[p])) return false;
+        }
+
+        const auto addBound = [&](int variable, double limit) {
+            Eigen::VectorXd upper = Eigen::VectorXd::Zero(jointVars);
+            upper[variable] = 1.0;
+            jointOptimiser->addLinearConstraint(upper, -limit);
+            Eigen::VectorXd lower = Eigen::VectorXd::Zero(jointVars);
+            lower[variable] = -1.0;
+            jointOptimiser->addLinearConstraint(lower, -limit);
+        };
+        for (int v = 0; v < jointVars; ++v) {
+            addBound(v, v == 2 ? yawMax : planarMax);
+        }
+
+        auto result = jointOptimiser->solve();
+        const json solverStatus = jointOptimiser->getStatus();
+        if (solverStatus.value("status", "") != "optimal") {
+            return false;
+        }
+        const Eigen::VectorXd solution = result.head(jointVars);
+
+        std::vector<size_t> resolved = {failedIndex};
+        resolved.insert(resolved.end(), partners.begin(), partners.end());
+        std::map<size_t, Eigen::VectorXd> preJointVelocities;
+        for (size_t index : resolved) {
+            preJointVelocities[index] =
+                robots[index]->model->getVelocity();
+        }
+
+        Eigen::VectorXd failedInput(3);
+        failedInput << solution[0], solution[1], solution[2];
+        failedRobot.model->setControlInput(failedInput);
+        failedRobot.opt["status"] = "success";
+        failedRobot.opt["result"] = {
+            {"vx", solution[0]},
+            {"vy", solution[1]},
+            {"yawRateRad", solution[2]}
+        };
+        json partnerIds = json::array();
+        json partnerPreviousVelocities = json::array();
+        for (int p = 0; p < partnerCount; ++p) {
+            partnerIds.push_back(robots[partners[p]]->id);
+            const auto& previous = preJointVelocities[partners[p]];
+            partnerPreviousVelocities.push_back(
+                {previous[0], previous[1]}
+            );
+        }
+        failedRobot.opt["joint_resolution"] = {
+            {"phase", "joint"},
+            {"partners", partnerIds},
+            {"partner_previous_velocities", partnerPreviousVelocities}
+        };
+
+        for (int p = 0; p < partnerCount; ++p) {
+            auto& partner = *robots[partners[p]];
+            const double yawRate =
+                partner.opt.value("result", json::object())
+                    .value("yawRateRad", 0.0);
+            Eigen::VectorXd partnerInput(3);
+            partnerInput << solution[3 + 2 * p],
+                            solution[4 + 2 * p],
+                            yawRate;
+            partner.model->setControlInput(partnerInput);
+            partner.opt["result"] = {
+                {"vx", solution[3 + 2 * p]},
+                {"vy", solution[4 + 2 * p]},
+                {"yawRateRad", yawRate}
+            };
+            partner.opt["joint_resolution"] = {
+                {"phase", "joint"},
+                {"requested_by", failedRobot.id}
+            };
+        }
+
+        // Log residuals for every hard row with the applied joint commands
+        // (two-velocity correction for rows shared with a joint partner).
+        for (size_t index : resolved) {
+            auto& robot = *robots[index];
+            auto f = robot.model->f();
+            auto g = robot.model->g();
+            auto x = robot.model->getX();
+            const int selfSlot = slotOf(index);
+            for (auto &[name, cbf] : robot.cbfNoSlack.cbfs) {
+                VectorXd uCoe = cbf.constraintUCoe(f, g, x, t);
+                double constValue =
+                    cbf.constraintConstWithTime(f, g, x, t);
+                double residual = constValue
+                    + uCoe[0] * solution[selfSlot]
+                    + uCoe[1] * solution[selfSlot + 1];
+                if (selfSlot == 0) {
+                    residual += uCoe[2] * solution[2];
+                }
+                int otherIndex = -1;
+                if (name.rfind("safetyCBF(#", 0) == 0
+                    || name.rfind("fixedCommCBF(#", 0) == 0) {
+                    const size_t hash = name.find('#');
+                    int otherId = std::stoi(name.substr(hash + 1));
+                    if (otherId >= 1
+                        && otherId <= static_cast<int>(robots.size())) {
+                        otherIndex = otherId - 1;
+                    }
+                }
+                if (otherIndex >= 0 && slotOf(otherIndex) >= 0) {
+                    const auto& otherPre = preJointVelocities[otherIndex];
+                    residual += uCoe[0] * (
+                        otherPre[0] - solution[slotOf(otherIndex)]
+                    ) + uCoe[1] * (
+                        otherPre[1] - solution[slotOf(otherIndex) + 1]
+                    );
+                }
+                for (auto &row : robot.opt["cbfNoSlack"]) {
+                    if (row.value("name", "") == name) {
+                        row["residual"] = residual;
+                        break;
+                    }
+                }
+            }
+        }
+
+        for (size_t index : resolved) {
+            for (auto &otherRobot : robots) {
+                otherRobot->comm->receiveVelocity2D(
+                    robots[index]->id,
+                    robots[index]->model->getVelocity()
+                );
+            }
+            solvedIndices.insert(index);
+        }
+        ++route1JointResolveCount;
+        return true;
     }
 
     // External data injection interface (for simulation environment)
@@ -949,6 +1238,9 @@ public:
             route1SquadFirst =
                 config["cbfs"].value("route1", json::object())
                     .value("squad-first", 0);
+            route1JointResolve =
+                config["cbfs"].value("route1", json::object())
+                    .value("joint-resolve", false);
             const auto estimatorConfig =
                 config.value("estimator-in-loop", json::object());
             estimatorInLoop = estimatorConfig.value("on", false);
@@ -1030,9 +1322,23 @@ public:
                         solveOrder = {7, 8, 9, 10, 11, 12, 13,
                                       0, 1, 2, 3, 4, 5, 6};
                     }
+                    std::unordered_set<size_t> jointSolved;
                     for (const size_t robotIndex : solveOrder) {
+                        if (jointSolved.count(robotIndex) > 0) {
+                            continue;
+                        }
                         auto &robot = robots[robotIndex];
-                        robot->optimise();
+                        try {
+                            robot->optimise();
+                        } catch (...) {
+                            if (!route1JointResolve
+                                || !attemptJointRoute1Resolve(
+                                    robotIndex, jointSolved
+                                )) {
+                                throw;
+                            }
+                            continue;
+                        }
                         for (auto &otherRobot: robots) {
                             otherRobot->comm->receiveVelocity2D(
                                 robot->id,
