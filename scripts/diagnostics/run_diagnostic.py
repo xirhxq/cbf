@@ -311,6 +311,8 @@ def run_diagnostic(
         "RG": project_root / "config" / "diagnostics" / "rg_fixed_geometry.json",
         "RGP": project_root / "config" / "diagnostics" / "rgp_fixed_geometry_pairwise.json",
         "R1H": project_root / "config" / "diagnostics" / "r1h_route1_dynamic.json",
+        "R1H2": project_root / "config" / "diagnostics" / "r1h2_route1_dynamic_tight.json",
+        "R1H3": project_root / "config" / "diagnostics" / "r1h3_route1_dynamic_wide.json",
         "R1D": project_root / "config" / "diagnostics" / "r1d_target_architecture.json",
         "RB": project_root / "config" / "diagnostics" / "rb_bounded.json",
         "RBP": project_root / "config" / "diagnostics" / "rbp_pairwise.json",
@@ -488,7 +490,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--case",
         required=True,
-        choices=("H0", "C1", "U0", "C0", "R", "RG", "RGP", "R1H", "R1D", "RB", "RBP"),
+        choices=("H0", "C1", "U0", "C0", "R", "RG", "RGP", "R1H", "R1H2", "R1H3", "R1D", "RB", "RBP"),
     )
     parser.add_argument("--horizon", required=True, type=float, metavar="SECONDS")
     parser.add_argument("--seed", required=True, type=int)
