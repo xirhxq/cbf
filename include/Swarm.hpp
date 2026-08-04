@@ -10,6 +10,7 @@
 #include <exception>
 #include <limits>
 #include <map>
+#include <optional>
 #include <set>
 #include <utility>
 
@@ -1691,6 +1692,15 @@ private:
         }
 
         const auto rateEvidence = reconstructRateEvidenceState();
+        std::optional<std::string> controllerSchemaVersion = std::nullopt;
+        if (config.contains("qualified-controller")
+            && config["qualified-controller"].is_object()
+            && config["qualified-controller"].contains("schema-version")
+            && config["qualified-controller"]["schema-version"].is_string()) {
+            controllerSchemaVersion =
+                config["qualified-controller"]["schema-version"]
+                    .get<std::string>();
+        }
         json nodes = json::array();
         double maximumVx = 0.0;
         double maximumVy = 0.0;
@@ -1737,27 +1747,9 @@ private:
             json hardInteriorSelection = robot->opt.value(
                 "hard_interior_selection", json()
             );
-            const std::set<std::string> expectedInteriorFields = {
-                "mode",
-                "fraction",
-                "cap_mps",
-                "feasibility_tolerance_mps",
-                "planar_chebyshev_radius_mps",
-                "enforced_floor_mps"
-            };
-            if (!hardInteriorSelection.is_null()
-                && (!hardInteriorSelection.is_object()
-                || hardInteriorSelection.size() != expectedInteriorFields.size()
-                || std::any_of(
-                    expectedInteriorFields.begin(), expectedInteriorFields.end(),
-                    [&](const std::string& field) {
-                        return !hardInteriorSelection.contains(field);
-                    }
-                ))) {
-                throw std::runtime_error(
-                    "controller evidence interior selection is malformed"
-                );
-            }
+            cbf2026::diagnostics::validateHardInteriorSelectionEvidence(
+                controllerSchemaVersion, hardInteriorSelection
+            );
             if (!hardInteriorSelection.is_null()) {
                 double minimumOriginalHardResidual =
                     std::numeric_limits<double>::infinity();

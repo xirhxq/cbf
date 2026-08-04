@@ -3,15 +3,72 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <optional>
 #include <ostream>
+#include <set>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace cbf2026::diagnostics {
+
+inline void validateHardInteriorSelectionEvidence(
+    const std::optional<std::string>& controllerSchemaVersion,
+    const nlohmann::json& hardInteriorSelection
+) {
+    constexpr const char* malformed =
+        "controller evidence interior selection is malformed";
+    const std::set<std::string> publicFields = {
+        "mode",
+        "fraction",
+        "cap_mps",
+        "feasibility_tolerance_mps",
+        "planar_chebyshev_radius_mps",
+        "enforced_floor_mps"
+    };
+    const auto hasAllPublicFields = [&]() {
+        return std::all_of(
+            publicFields.begin(), publicFields.end(),
+            [&](const std::string& field) {
+                return hardInteriorSelection.contains(field);
+            }
+        );
+    };
+    if (!controllerSchemaVersion.has_value()) {
+        if (!hardInteriorSelection.is_null()) {
+            throw std::runtime_error(malformed);
+        }
+        return;
+    }
+    const std::string& schema = *controllerSchemaVersion;
+    if (schema == "hard-interior-v2") {
+        if (!hardInteriorSelection.is_object()
+            || hardInteriorSelection.size() != publicFields.size()
+            || hardInteriorSelection.contains("schema_version")
+            || !hasAllPublicFields()) {
+            throw std::runtime_error(malformed);
+        }
+        return;
+    }
+    if (schema == "hard-interior-v3") {
+        const auto schemaIt = hardInteriorSelection.find("schema_version");
+        if (!hardInteriorSelection.is_object()
+            || hardInteriorSelection.size() != publicFields.size() + 1U
+            || schemaIt == hardInteriorSelection.end()
+            || !schemaIt->is_string()
+            || schemaIt->get<std::string>() != "hard-interior-v3"
+            || !hasAllPublicFields()) {
+            throw std::runtime_error(malformed);
+        }
+        return;
+    }
+    throw std::runtime_error(malformed);
+}
 
 template<typename Witness>
 class ExactResetWitnessStore {

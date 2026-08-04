@@ -1,0 +1,64 @@
+{
+  "case": "R1D",
+  "overrides": {
+    "initial": {
+      "position": {
+        "method": "specified",
+        "positions": [
+          [-1490.000000, -120.000000],
+          [-1487.320508, -164.641016],
+          [-1450.000000, -140.000000],
+          [-1447.320508, -184.641016],
+          [-1410.000000, -160.000000],
+          [-1407.320508, -204.641016],
+          [-1370.000000, -180.000000],
+          [-1490.000000, 120.000000],
+          [-1487.320508, 164.641016],
+          [-1450.000000, 140.000000],
+          [-1447.320508, 184.641016],
+          [-1410.000000, 160.000000],
+          [-1407.320508, 204.641016],
+          [-1370.000000, 180.000000]
+        ]
+      }
+    },
+    "qualified-controller": {"schema-version": "hard-interior-v3"},
+    "position_covariance": {
+      "reference-selection": "dynamic-lower-index",
+      "ranging_sigma": 0.5,
+      "singular-distance-tolerance-m": 1e-8,
+      "relative-spectral-threshold": 1e-12
+    },
+    "cbfs": {
+      "uncertainty-rate": {"mode": "analytic-topological"},
+      "input-limits": {
+        "on": true,
+        "planar-component-max": 25.0,
+        "yaw-rate-max": 0.35
+      },
+      "hard-interior-selection": {
+        "mode": "planar-chebyshev-fraction-cap-v2",
+        "fraction": 0.131,
+        "cap-mps": 0.1,
+        "feasibility-tolerance-mps": 1e-9
+      },
+      "without-slack": {
+        "safety": {
+          "on": true,
+          "mode": "allocated-pairwise",
+          "alpha": {"coe": 0.1, "pow": 1}
+        },
+        "comm-fixed": {
+          "on": true,
+          "mode": "allocated-pairwise",
+          "alpha": {"coe": 0.1, "pow": 1}
+        }
+      }
+    },
+    "execute": {
+      "execution-mode": "distributed",
+      "random-seed": 20260727,
+      "check-constraint-violation": true
+    }
+  }
+}
