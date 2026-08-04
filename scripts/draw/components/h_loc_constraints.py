@@ -218,8 +218,9 @@ class HLocComponent(BaseComponent):
         # Custom legend
         self.ax.legend(handles=legend_elements[:-1], loc='best', fontsize=9)
 
-        # Set y-axis limit to show d_loc clearly
-        self.ax.set_ylim(bottom=0, top=max_range)  # Show full range including d_loc
+        # Set y-axis limit with a little headroom above d_loc so the
+        # reference line is not clipped and the margin is clearly visible.
+        self.ax.set_ylim(bottom=0, top=max_range + 50)
 
     def update(self, frame):
         pass
