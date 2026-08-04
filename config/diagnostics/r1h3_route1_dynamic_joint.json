@@ -1,0 +1,58 @@
+{
+  "case": "R1H3-JOINT",
+  "overrides": {
+    "initial": {
+      "position": {
+        "method": "specified",
+        "positions": [
+          [-1500.515385, -144.0],
+          [-1497.299995, -197.569219],
+          [-1452.515385, -168.0],
+          [-1449.299995, -221.569219],
+          [-1404.515385, -192.0],
+          [-1401.299995, -245.569219],
+          [-1356.515385, -216.0],
+          [-1500.515385, 144.0],
+          [-1497.299995, 197.569219],
+          [-1452.515385, 168.0],
+          [-1449.299995, 221.569219],
+          [-1404.515385, 192.0],
+          [-1401.299995, 245.569219],
+          [-1356.515385, 216.0]
+        ]
+      }
+    },
+    "position_covariance": {
+      "reference-selection": "dynamic-lower-index"
+    },
+    "cbfs": {
+      "uncertainty-rate": {"mode": "backward-difference-positive"},
+      "route1": {"on": true, "joint-resolve": true},
+      "input-limits": {
+        "on": true,
+        "planar-component-max": 50.0,
+        "yaw-rate-max": 0.35
+      },
+      "without-slack": {
+        "method": "all",
+        "safety": {
+          "on": true,
+          "mode": "pairwise",
+          "consider-uncertainty": true,
+          "alpha": {"coe": 0.1, "pow": 1}
+        },
+        "comm-fixed": {
+          "on": true,
+          "consider-uncertainty": true,
+          "alpha": {"coe": 0.1, "pow": 1}
+        }
+      }
+    },
+    "execute": {
+      "execution-mode": "distributed",
+      "random-seed": 20260727,
+      "check-constraint-violation": true
+    },
+    "debug": {"opt-cbc": false}
+  }
+}
