@@ -460,7 +460,6 @@ def _canonical_public_state(
             set(value) != PREDICTED_PUBLIC_FIELDS
             or age not in (1, 2)
             or value.get("epsilon") is not None
-            or value.get("base_anchor_provenance") != []
         ):
             return None
     else:
@@ -497,6 +496,11 @@ def _propagate_public_state(previous_public: object, velocity: np.ndarray) -> di
     if next_age > MAX_PUBLIC_PREDICTION_AGE:
         return _make_unavailable_public("prediction_expired")
     radius = 3.0 * math.sqrt(float(np.linalg.eigvalsh(next_covariance)[-1]))
+    previous_provenance = (
+        previous_public.get("base_anchor_provenance", [])
+        if isinstance(previous_public, Mapping)
+        else []
+    )
     return {
         "output_status": "predicted",
         "estimate": next_estimate.tolist(),
@@ -504,7 +508,7 @@ def _propagate_public_state(previous_public: object, velocity: np.ndarray) -> di
         "epsilon": None,
         "prediction_age": next_age,
         "aged_modeled_radius": radius,
-        "base_anchor_provenance": [],
+        "base_anchor_provenance": list(previous_provenance),
     }
 
 
@@ -517,6 +521,11 @@ def _retained_public_prediction(value: object) -> Mapping:
         return _make_unavailable_public("no_qualified_public_output")
     _, estimate, covariance, age = state
     radius = 3.0 * math.sqrt(float(np.linalg.eigvalsh(covariance)[-1]))
+    previous_provenance = (
+        value.get("base_anchor_provenance", [])
+        if isinstance(value, Mapping)
+        else []
+    )
     return {
         "output_status": "predicted",
         "estimate": estimate.tolist(),
@@ -524,7 +533,7 @@ def _retained_public_prediction(value: object) -> Mapping:
         "epsilon": None,
         "prediction_age": age,
         "aged_modeled_radius": radius,
-        "base_anchor_provenance": [],
+        "base_anchor_provenance": list(previous_provenance),
     }
 
 

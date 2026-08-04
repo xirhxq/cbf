@@ -779,7 +779,21 @@ def enumerate_qualified_starts(
         analytic: list[QualifiedStart] = []
         for branch, estimate in _circle_branches(first, second):
             analytic.append(QualifiedStart("circle", estimate, pair_keys, branch))
-        return tuple(sorted(analytic, key=stable_attempt_id))
+        # Recursive-prior repair: with exactly two references the two circle
+        # branches are ambiguous; include the live/private prior seeds so the
+        # previous-frame estimate can participate in mode selection.
+        for kind, seed in (("live", live_seed), ("private", private_seed)):
+            estimate = _seed_estimate(seed)
+            if estimate is not None:
+                analytic.append(QualifiedStart(kind, estimate, reference_keys))
+        unique: list[QualifiedStart] = []
+        for start in sorted(analytic, key=stable_attempt_id):
+            if all(
+                _point_distance(start.estimate, kept.estimate) > 1e-9
+                for kept in unique
+            ):
+                unique.append(start)
+        return tuple(unique)
     unique: list[QualifiedStart] = []
     for start in sorted(tentative, key=stable_attempt_id):
         if all(_point_distance(start.estimate, kept.estimate) > 1e-9 for kept in unique):
