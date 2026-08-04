@@ -51,6 +51,11 @@ def main() -> int:
         "--ranging-sigma0", type=float, default=0.5,
         help="short-range ranging noise sigma0 for the EKF measurement model",
     )
+    parser.add_argument(
+        "--initial-jitter-m", type=float, default=0.0,
+        help="per-axis uniform jitter (m) added to the nominal deployment "
+             "positions, deterministic in the simulation seed",
+    )
     arguments = parser.parse_args()
 
     run_root = arguments.output_root
@@ -72,6 +77,22 @@ def main() -> int:
         marker.unlink(missing_ok=True)
 
     data = json.loads(config_path.read_text())
+    if arguments.initial_jitter_m > 0.0:
+        position_rng = np.random.default_rng(arguments.seed)
+        positions = data["initial"]["position"]["positions"]
+        jittered = [
+            [
+                float(x) + position_rng.uniform(
+                    -arguments.initial_jitter_m, arguments.initial_jitter_m
+                ),
+                float(y) + position_rng.uniform(
+                    -arguments.initial_jitter_m, arguments.initial_jitter_m
+                ),
+            ]
+            for x, y in positions
+        ]
+        data["initial"]["position"]["positions"] = jittered
+        config_path.write_text(json.dumps(data, indent=2) + "\n")
     bases = _load_materialized_bases({"config": data})
     deployment = {
         index + 1: [float(x) for x in position]

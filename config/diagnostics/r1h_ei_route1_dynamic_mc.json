@@ -1,0 +1,53 @@
+{
+  "case": "R1H-EI-MC",
+  "overrides": {
+    "initial": {
+      "position": {
+        "method": "random-in-polygon",
+        "polygon": [
+          [-1490.0, -200.0],
+          [-1490.0, 200.0],
+          [-1370.0, 200.0],
+          [-1370.0, -200.0]
+        ]
+      }
+    },
+    "position_covariance": {
+      "reference-selection": "dynamic-lower-index"
+    },
+    "estimator-in-loop": {
+      "on": true,
+      "state-path": "/private/tmp/r1h-ei-mc/state.json",
+      "estimates-path": "/private/tmp/r1h-ei-mc/estimates.json",
+      "wait-timeout-s": 5.0
+    },
+    "cbfs": {
+      "uncertainty-rate": {"mode": "backward-difference-positive"},
+      "route1": {"on": true},
+      "input-limits": {
+        "on": true,
+        "planar-component-max": 50.0,
+        "yaw-rate-max": 0.35
+      },
+      "without-slack": {
+        "method": "all",
+        "safety": {
+          "on": true,
+          "mode": "pairwise",
+          "consider-uncertainty": true,
+          "alpha": {"coe": 0.1, "pow": 1}
+        },
+        "comm-fixed": {
+          "on": true,
+          "consider-uncertainty": true,
+          "alpha": {"coe": 0.1, "pow": 1}
+        }
+      }
+    },
+    "execute": {
+      "execution-mode": "distributed",
+      "check-constraint-violation": true
+    },
+    "debug": {"opt-cbc": false}
+  }
+}
