@@ -96,9 +96,19 @@ def main() -> int:
         stderr=(run_root / "stderr.log").open("wb"),
     )
     timing = []
+    early_termination = False
     try:
         for frame in range(frames):
-            _wait_for(state_ready, 5.0)
+            if process.poll() is not None:
+                early_termination = True
+                break
+            try:
+                _wait_for(state_ready, 5.0)
+            except TimeoutError:
+                if process.poll() is not None:
+                    early_termination = True
+                    break
+                raise
             state = json.loads(state_path.read_text())
             state_ready.unlink(missing_ok=True)
             assert state["frame_index"] == frame
@@ -159,7 +169,28 @@ def main() -> int:
     (run_root / "estimator-timing.json").write_text(
         json.dumps({"per_frame_seconds": timing}, indent=1) + "\n"
     )
+    termination_reason = None
+    if early_termination:
+        stdout_text = (run_root / "stdout.log").read_text(
+            errors="ignore"
+        )
+        if "Coverage complete" in stdout_text:
+            termination_reason = "coverage_complete"
+        else:
+            termination_reason = "sim_exited_early"
+    (run_root / "termination.json").write_text(
+        json.dumps(
+            {
+                "reason": termination_reason,
+                "frames_served": len(timing),
+                "returncode": process.returncode,
+            },
+            indent=1,
+        )
+        + "\n"
+    )
     print("EI run finished, returncode", process.returncode)
+    print("termination:", termination_reason, "frames_served", len(timing))
     print("frames", frames, "mean estimator solve s", round(float(np.mean(timing)), 4))
     return 0 if process.returncode == 0 else 1
 

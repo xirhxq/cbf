@@ -57,7 +57,8 @@
     "execute": {
       "execution-mode": "distributed",
       "random-seed": 20260727,
-      "check-constraint-violation": true
+      "check-constraint-violation": true,
+      "terminate-on-coverage-complete": true
     },
     "debug": {"opt-cbc": false}
   }

@@ -86,6 +86,7 @@ public:
     bool route1JointResolve = false;
     int route1JointResolveCount = 0;
     double route1ChainLatencySeconds = 0.0;
+    bool terminateOnCoverageComplete = false;
     bool estimatorInLoop = false;
     std::string estimatorStatePath;
     std::string estimatorEstimatesPath;
@@ -1167,6 +1168,8 @@ public:
     void run() {
         auto settings = config["execute"];
         double tTotal = settings["time-total"], tStep = settings["time-step"];
+        terminateOnCoverageComplete =
+            settings.value("terminate-on-coverage-complete", false);
 
         exchangeData();
         if (evidenceMode()) {
@@ -1375,6 +1378,16 @@ public:
 
                 frameLogAttempted = true;
                 logOnce();
+                if (terminateOnCoverageComplete
+                    && gridWorldGroundTruth.getPercentage()
+                       >= 1.0 - 1e-12) {
+                    std::ostream& termination = evidenceMode()
+                        ? std::cerr : std::cout;
+                    termination
+                        << "\n[Simulation Terminated] Coverage complete at t="
+                        << robots[0]->runtime << "s" << std::endl;
+                    break;
+                }
                 for (auto &robot: robots) robot->stepTimeForward(tStep);
             }
             catch (...) {
