@@ -45,3 +45,28 @@
 - 无 warm-start；未跑 official registrar/analyzer 全链；
 - 该结果不改变 estimator calibration 负证据结论，但提供了
   "可用时包络良好"的正向补充。
+
+## 修正（v2 重跑，适配器状态处理修正后）
+
+状态计数不变（fresh 2,172 / predicted 9 / unavailable 7,619），
+unavailable 原因分类（修正前有 2,146 行 "previous public state
+schema is invalid" 为适配器伪影，修正后消失）：
+
+| 原因 | 行数 | 含义 |
+| --- | --- | --- |
+| fewer than two condition-local reference anchors remain | 4,299 | 参考链断裂：低 index 队友不可用后，剩余可用锚点 <2 |
+| no_valid_public_prior | 2,160 | 上一帧无有效先验（自身连续不可用的结果） |
+| qualified references must contain at least two records | 1,151 | 解析后参考 <2（链断的另一种表现） |
+| qualified protocol payload is not bounded | 8 | 行超 4096 节点契约（罕见） |
+| prediction_expired | 1 | 预测过期 |
+
+**时序模式**：robot 1（纯 base 参考）全程 fresh；大多数机器人
+t≈150–300 s（远端、ε 峰值时段）开始断链不可用；robot 5 最早
+（t≈1.5–2.5 s）。即"大部分时间不说话"发生在任务后半程的
+多跳远端区域——上游不可用沿参考链向下游传播。
+
+**warm-start 对比尝试**：`replay_localization_calibration` 的
+strict/restart 双策略对 R1H data+manifest 返回 runner_setup_error
+（输入 manifest 格式不兼容，需要官方 calibration bundle）；
+管线记录的 warm-start recovery 在官方轨迹上曾把 dynamic
+exact-direct 不可用从 15,469/139,720 降至 0/139,720。

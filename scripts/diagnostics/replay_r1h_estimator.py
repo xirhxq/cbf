@@ -223,7 +223,7 @@ def main() -> int:
                     "robot_id": robot_id,
                     "unavailable_reason": f"{type(error).__name__}: {error}",
                 })
-                state[robot_id]["public"] = {"output_status": "unavailable"}
+                state[robot_id]["public"] = None
                 state[robot_id]["private"] = None
 
     summary = {
