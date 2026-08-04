@@ -26,6 +26,52 @@ from scripts.diagnostics.replay_qualified_estimator import (
 )
 
 
+def _hold_record(
+    *,
+    frame_index: int,
+    robot_id: int,
+    state: dict,
+    deployment_positions: dict[int, list[float]],
+    hold_age: int,
+) -> dict:
+    """Build a controller-facing degraded 'hold' output.
+
+    Uses the last certified estimate if available, otherwise the known
+    deployment position; epsilon grows linearly with the hold age using the
+    planar speed bound (50 m/s) and a deployment-scale base (30 m) when no
+    certified epsilon exists.
+    """
+    previous = state.get(robot_id, {}).get("public")
+    if (
+        isinstance(previous, dict)
+        and previous.get("estimate") is not None
+    ):
+        estimate = previous["estimate"]
+        base_epsilon = previous.get("epsilon")
+        if base_epsilon is None:
+            covariance = previous.get("modeled_covariance")
+            if covariance is not None:
+                eigen = np.linalg.eigvalsh(np.asarray(covariance, dtype=float))
+                base_epsilon = 3.0 * float(np.sqrt(max(eigen[-1], 0.0)))
+            else:
+                base_epsilon = 30.0
+    else:
+        estimate = deployment_positions[robot_id]
+        base_epsilon = 30.0
+    elapsed = hold_age * 0.5  # seconds since last certified output
+    epsilon = base_epsilon + 50.0 * elapsed
+    return {
+        "frame_index": frame_index,
+        "robot_id": robot_id,
+        "output_status": "hold",
+        "estimate": estimate,
+        "epsilon": float(epsilon),
+        "hold_age": hold_age,
+        "reason": "unavailable_fallback",
+        "schema_version": "cbf2026-r1h-estimator-hold-v1",
+    }
+
+
 def build_condition_row(
     *,
     frame: int,
@@ -264,6 +310,13 @@ def main() -> int:
 
     data = json.loads(arguments.data.read_text())
     frames = arguments.frames or len(data["state"])
+    deployment_positions = {
+        robot["id"]: [
+            float(robot["state"]["x"]),
+            float(robot["state"]["y"]),
+        ]
+        for robot in data["state"][0]["robots"]
+    }
     bases = _load_materialized_bases(data)
     groups = build_raw_reference_groups(
         data,
@@ -300,6 +353,7 @@ def main() -> int:
         robot: {"public": None, "private": None, "history": 0}
         for robot in range(1, 15)
     }
+    hold_age = {robot: 0 for robot in range(1, 15)}
     rows = []
     for frame_index in range(frames):
         held = commands[frame_index]
@@ -325,13 +379,31 @@ def main() -> int:
                 state[robot_id]["history"] = (
                     lifecycle["history_version"] + 1
                 )
-                rows.append(row)
+                if row["audit_bundle"]["lifecycle"]["public_output"].get(
+                    "output_status"
+                ) in ("fresh", "predicted"):
+                    hold_age[robot_id] = 0
+                    rows.append(row)
+                else:
+                    rows.append(_hold_record(
+                        frame_index=frame_index,
+                        robot_id=robot_id,
+                        state=state,
+                        deployment_positions=deployment_positions,
+                        hold_age=hold_age[robot_id] + 1,
+                    ))
+                    hold_age[robot_id] += 1
+                    state[robot_id]["public"] = None
+                    state[robot_id]["private"] = None
             except Exception as error:  # fail-closed unavailable record
-                rows.append({
-                    "frame_index": frame_index,
-                    "robot_id": robot_id,
-                    "unavailable_reason": f"{type(error).__name__}: {error}",
-                })
+                rows.append(_hold_record(
+                    frame_index=frame_index,
+                    robot_id=robot_id,
+                    state=state,
+                    deployment_positions=deployment_positions,
+                    hold_age=hold_age[robot_id] + 1,
+                ))
+                hold_age[robot_id] += 1
                 state[robot_id]["public"] = None
                 state[robot_id]["private"] = None
 
