@@ -70,3 +70,29 @@ strict/restart 双策略对 R1H data+manifest 返回 runner_setup_error
 （输入 manifest 格式不兼容，需要官方 calibration bundle）；
 管线记录的 warm-start recovery 在官方轨迹上曾把 dynamic
 exact-direct 不可用从 15,469/139,720 降至 0/139,720。
+
+## 修正 v3（base 优先参考策略；研究者质疑驱动）
+
+研究者质疑"为什么没有有效先验 / 是否与 FIM 用同一动态 DAG"，
+取证发现适配器策略 bug：cap-4 的"固定参考 + 最近补齐"会把可见 base
+挤掉（robot 5 在 t=1.5 s 距 base 仅 220/235 m，却选了 4 个更近 UAV），
+而 WNLS 多起点引导依赖 base 锚点。修正为**固定参考 → 可见 base →
+最近 UAV** 后：
+
+| 指标 | v2（最近补齐） | v3（base 优先） |
+| --- | --- | --- |
+| fresh / predicted / unavailable | 2,172 / 9 / 7,619 | **2,318 / 12 / 7,470** |
+| 可用率 | 22.2% | **23.8%** |
+| containment \|err\|≤ε | 99.63% | 99.61% |
+| err p50 / p95 | 0.69 / 2.54 m | 0.65 / 2.51 m |
+
+- robot 5 最早断链从 t≈1.5 s 推迟到 **t≈250 s**；
+- 剩余不可用 7,470 中 **5,155（69%）无 base 可见**（深离岸区域），
+  2,315 有 base 但仍不可用；
+- 结论：估计器与 FIM 使用同一动态 DAG（`covariance_formation`），
+  但两者失效模式不同——FIM 优雅退化（ε 增大、仍输出），WNLS
+  fail-closed（无 base 锚点/无合格 mode 就拒绝输出）；
+  深离岸区动态图无 base 可加，与 FIM ε 峰值同源；
+- "无有效先验"是 fail-closed 的连锁结果：上一帧 unavailable →
+  无 prior → 继续 unavailable（适配器异常分支清空状态使该效应更强）；
+  warm-start（从部署位置重启先验）正是针对此的管线机制。

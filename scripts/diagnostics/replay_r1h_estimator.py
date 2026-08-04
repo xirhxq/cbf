@@ -110,11 +110,21 @@ def build_raw_reference_groups(
                 fixed_refs = [
                     ref for ref in references if ref["key"] in fixed_keys
                 ]
-                extra_refs = [
+                base_refs = [
                     ref for ref in references if ref["key"] not in fixed_keys
+                    and ref["key"][0] == "base"
                 ]
-                extra_refs.sort(key=lambda ref: float(ref["true_range"]))
-                references = fixed_refs + extra_refs[: max(0, max_references - len(fixed_refs))]
+                uav_refs = [
+                    ref for ref in references
+                    if ref["key"] not in fixed_keys and ref["key"][0] == "uav"
+                ]
+                base_refs.sort(key=lambda ref: float(ref["true_range"]))
+                uav_refs.sort(key=lambda ref: float(ref["true_range"]))
+                extra_refs = base_refs + uav_refs
+                references = (
+                    fixed_refs
+                    + extra_refs[: max(0, max_references - len(fixed_refs))]
+                )
             groups[(frame_index, robot_id)] = references
     return groups
 
