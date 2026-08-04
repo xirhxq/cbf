@@ -79,8 +79,10 @@ def main(argv: list[str] | None = None) -> int:
     ax.scatter(errors, epsilons, s=4, alpha=0.25, color="tab:green")
     limit = max(errors.max(), epsilons.max()) * 1.05
     ax.plot([0, limit], [0, limit], color="gray", ls=":", lw=1.2)
-    ax.set_xlabel("Localization error (m)")
-    ax.set_ylabel(r"Uncertainty radius $\varepsilon$ (m)")
+    ax.set_xlabel(r"$|p-\hat p|$ (m)")
+    ax.set_ylabel(
+        r"$\varepsilon_i = 3\sqrt{\lambda_{\max}(\mathbf{\Sigma}_i)}$ (m)"
+    )
     ax.grid(alpha=0.3)
 
     ax_top.hist(errors, bins=50, color="tab:blue", alpha=0.85)

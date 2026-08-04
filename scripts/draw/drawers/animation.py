@@ -68,8 +68,13 @@ class AnimationDrawer(BaseDrawer):
                     all_artists.extend(artists)
 
             current_time = self.data["state"][num]["runtime"]
+            is_last_frame = num == len(self.data["state"]) - 1
             for shot_time in shot_times:
-                if abs(current_time - shot_time) < interval / 2 and shot_time not in saved_shots:
+                if shot_time in saved_shots:
+                    continue
+                near = abs(current_time - shot_time) < interval / 2
+                end_edge = is_last_frame and abs(current_time - shot_time) <= interval
+                if near or end_edge:
                     saved_shots.add(shot_time)
                     shot_filename = os.path.join(
                         self.folder,

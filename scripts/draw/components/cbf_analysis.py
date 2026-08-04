@@ -41,7 +41,31 @@ class ConstraintCBFsComponent(BaseComponent):
         # Define colors for different CBF types
         colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
 
-        for idx, cbf_name in enumerate(self.cbf_names):
+        safety_names = [name for name in self.cbf_names if 'safety' in name.lower()]
+        other_names = [name for name in self.cbf_names if name not in safety_names]
+
+        # Aggregate all safety rows into a single worst-case line so the
+        # legend stays compact when UAV 7 has many pairwise safety rows.
+        if safety_names:
+            min_safety = [
+                min(
+                    self.cbf_values[name][idx]
+                    for name in safety_names
+                    if not np.isnan(self.cbf_values[name][idx])
+                )
+                if any(
+                    not np.isnan(self.cbf_values[name][idx])
+                    for name in safety_names
+                )
+                else np.nan
+                for idx in range(len(self.time))
+            ]
+            self.ax.plot(
+                self.time, min_safety,
+                label='min $h_{safety}$', linewidth=2.0, color='#d62728',
+            )
+
+        for idx, cbf_name in enumerate(other_names):
             # Create clean LaTeX-style label
             if 'fixedCommCBF' in cbf_name:
                 # Extract anchor ID, e.g., "fixedCommCBF(#1)" -> "h_loc^1"
@@ -61,7 +85,7 @@ class ConstraintCBFsComponent(BaseComponent):
                 # Fallback: use simple text label
                 label = cbf_name
 
-            color = colors[idx % len(colors)]
+            color = colors[(idx + 1) % len(colors)]
             self.ax.plot(self.time, self.cbf_values[cbf_name], label=label, linewidth=1.5, color=color)
 
         self.ax.axhline(y=0, color='black', linestyle='--', alpha=0.5, linewidth=1)

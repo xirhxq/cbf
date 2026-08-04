@@ -24,6 +24,9 @@ from .comparison_search_percentage import ComparisonSearchPercentageComponent
 from .valid_links import ValidLinksComponent
 from .monte_carlo_sp import MonteCarloSearchPercentageComponent
 from .uncertainty_chain import PositionUncertaintyRepresentative, PositionUncertaintyBoxplot
+from .estimator_error import EstimatorErrorComponent
+from .constraint_margin import ConstraintMarginComponent
+from .ekf_epsilon import EKFEpsilonRepresentative, EKFEpsilonBoxplot
 
 REGISTRIED_COMPONENTS = {
     'map': {
@@ -38,6 +41,9 @@ REGISTRIED_COMPONENTS = {
             'show_cov_ellipse': False,
             'show_cov_text': False,
             'annotation_font_size': 12,
+            'show_time_title': False,
+            'robot_annotation': False,
+            'shotList': [0, 50, 100, 200, 300, 350],
             # 'shotList': [0.5, 100, 200, 300, 400, 500]
         }
     },
@@ -358,6 +364,52 @@ REGISTRIED_COMPONENTS = {
         'params': {
             'time_point': 150.0,
             'uav_range': list(range(7))
+        }
+    },
+    'estimator-error': {
+        'title': 'Localization Error vs Uncertainty Radius',
+        'class': 'EstimatorErrorComponent',
+        'filename': 'estimator-error',
+        'figsize': (5, 3),
+        'expand': False,
+        'params': {
+            'estimates_log': (
+                '/private/tmp/r1h-ekf-full/G1/2026081303/estimates-log.jsonl'
+            )
+        }
+    },
+    'constraint-margin': {
+        'title': 'Hard-Constraint Margins',
+        'class': 'ConstraintMarginComponent',
+        'filename': 'constraint-margin',
+        'figsize': (5, 3),
+        'expand': False,
+    },
+    'ekf-epsilon': {
+        'title': 'EKF Uncertainty Radius (UAV 1, 3, 5, 7)',
+        'class': 'EKFEpsilonRepresentative',
+        'filename': 'ekf-epsilon',
+        'figsize': (5, 3),
+        'expand': False,
+        'params': {
+            'id_list': [0, 2, 4, 6],
+            'estimates_log': (
+                '/private/tmp/r1h-ekf-full/G1/2026081303/estimates-log.jsonl'
+            )
+        }
+    },
+    'ekf-epsilon-boxplot': {
+        'title': 'EKF Uncertainty Boxplot (t=150s)',
+        'class': 'EKFEpsilonBoxplot',
+        'filename': 'ekf-epsilon-boxplot',
+        'figsize': (5, 3),
+        'expand': False,
+        'params': {
+            'time_point': 150.0,
+            'uav_range': list(range(7)),
+            'estimates_log': (
+                '/private/tmp/r1h-ekf-full/G1/2026081303/estimates-log.jsonl'
+            )
         }
     },
     'polygon-comparison-sp': {

@@ -79,7 +79,7 @@ class HSafeComponent(BaseComponent):
 
         # Labels and styling
         self.ax.set_xlabel('Time (s)')
-        self.ax.set_ylabel('Distance (m)')
+        self.ax.set_ylabel('Minimum inter-UAV distance (m)')
         self.ax.set_title('Safety Constraints ($h_{safe}$)')
         self.ax.grid(True, alpha=0.3)
         self.ax.legend(loc='best', fontsize=9)

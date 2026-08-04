@@ -20,7 +20,9 @@ class MapAnimationComponent(BaseComponent):
         self.worldX = [data[0] for data in self.data["para"]["world"]["boundary"]]
         self.worldY = [data[1] for data in self.data["para"]["world"]["boundary"]]
         self.gridWorldJson = self.data["para"]["gridWorld"]
-        self.robotAnnotation = True
+        self.robotAnnotation = kwargs.get('params', {}).get(
+            'robot_annotation', True
+        )
         self.showYaw = True
         self.showCVT = True
         self.showAxis = False
