@@ -52,6 +52,9 @@ public:
     cbf2026::NodeRateCertificate rateCertificate =
         cbf2026::baseRateCertificate(0, 0);
     bool certificateAvailable = false;
+    bool estimatorInLoop = false;
+    Point estimatorPosition;
+    double estimatorEpsilon = 0.0;
     std::uint64_t certificateSnapshotVersion = 0;
     std::uint64_t certificateAllocationVersion = 0;
     std::optional<cbf2026::EndpointCertificateSnapshot>
@@ -640,6 +643,14 @@ public:
                && settings["cbfs"].contains("uncertainty-rate")
                && settings["cbfs"]["uncertainty-rate"].value("mode", "off")
                   == "analytic-topological";
+    }
+
+    void applyEstimatorInput(
+        const Point& position, double epsilon, bool active
+    ) {
+        estimatorInLoop = active;
+        estimatorPosition = position;
+        estimatorEpsilon = epsilon;
     }
 
     double configuredPlanarComponentMax() const {
@@ -1284,9 +1295,9 @@ public:
             );
         }
 
-        const double myUncertainty = useAnalyticRate
-            ? rateCertificate.epsilon
-            : currentUncertainty;
+        const double myUncertainty = estimatorInLoop
+            ? estimatorEpsilon
+            : (useAnalyticRate ? rateCertificate.epsilon : currentUncertainty);
         std::string uncertaintyRateMode = "off";
         if (settings["cbfs"].contains("uncertainty-rate")) {
             uncertaintyRateMode =
@@ -1314,7 +1325,9 @@ public:
                 : 0.0;
 
             auto fixedFormationCommH = [this, otherPoint, otherVel, maxRange, k, isAnchor, myUncertainty, otherUncertainty, considerUncertainty](VectorXd x, double t) {
-                Point myPosition = model->extractXYFromVector(x);
+                Point myPosition = estimatorInLoop
+                    ? estimatorPosition
+                    : model->extractXYFromVector(x);
                 double distance = myPosition.distance_to(otherPoint);
                 double h = k * (maxRange - distance);
 
@@ -1330,7 +1343,9 @@ public:
 
             // Analytical spatial gradient: dhdx = -k * (p - p_anchor_rel) / ||p - p_anchor_rel||
             auto dhdx = [this, otherPoint, otherVel, k](VectorXd x, double t) -> VectorXd {
-                Point myPosition = model->extractXYFromVector(x);
+                Point myPosition = estimatorInLoop
+                    ? estimatorPosition
+                    : model->extractXYFromVector(x);
                 Point diff = myPosition - otherPoint;
                 double distance = diff.len();
                 if (distance < 1e-8) {
@@ -1344,7 +1359,9 @@ public:
 
             // Analytical temporal derivative: dhdt = k * (p - p_anchor_rel) · v_anchor / ||p - p_anchor_rel||
             auto dhdt = [this, otherPoint, otherVel, k, uncertaintyRateSum](VectorXd x, double t) -> double {
-                Point myPosition = model->extractXYFromVector(x);
+                Point myPosition = estimatorInLoop
+                    ? estimatorPosition
+                    : model->extractXYFromVector(x);
                 Point diff = myPosition - otherPoint;
                 double distance = diff.len();
                 if (distance < 1e-8) {
@@ -1399,9 +1416,9 @@ public:
             setAllocatedSafetyCBF(config);
             return;
         }
-        const double myUncertainty = useAnalyticRate
-            ? rateCertificate.epsilon
-            : currentUncertainty;
+        const double myUncertainty = estimatorInLoop
+            ? estimatorEpsilon
+            : (useAnalyticRate ? rateCertificate.epsilon : currentUncertainty);
         const double myUncertaintyRate = useAnalyticRate
             ? rateCertificate.epsilonRateBound
             : uncertaintyRate;
@@ -1419,7 +1436,9 @@ public:
             double currentRobustH;
         };
         std::vector<SafetyPair> safetyPairs;
-        Point myPosition = model->xy();
+        Point myPosition = estimatorInLoop
+            ? estimatorPosition
+            : model->xy();
         for (auto &[otherId, otherPosition]: comm->_othersPos) {
             if (id == otherId) continue;
             if (route1Mode && otherId > id) continue;
@@ -1496,7 +1515,9 @@ public:
                 uncertaintySum,
                 k
             ](VectorXd x, double t) {
-                Point currentPosition = model->extractXYFromVector(x);
+                Point currentPosition = estimatorInLoop
+                    ? estimatorPosition
+                    : model->extractXYFromVector(x);
                 return k * (
                     currentPosition.distance_to(otherPosition) -
                     safeDistance -
@@ -1508,7 +1529,9 @@ public:
                 otherPosition = pair.position,
                 k
             ](VectorXd x, double t) -> VectorXd {
-                Point currentPosition = model->extractXYFromVector(x);
+                Point currentPosition = estimatorInLoop
+                    ? estimatorPosition
+                    : model->extractXYFromVector(x);
                 Point diff = currentPosition - otherPosition;
                 double distance = diff.len();
                 if (distance < 1e-8) {
@@ -1526,7 +1549,9 @@ public:
                 uncertaintyRateSum,
                 k
             ](VectorXd x, double t) -> double {
-                Point currentPosition = model->extractXYFromVector(x);
+                Point currentPosition = estimatorInLoop
+                    ? estimatorPosition
+                    : model->extractXYFromVector(x);
                 Point diff = currentPosition - otherPosition;
                 double distance = diff.len();
                 if (distance < 1e-8) {

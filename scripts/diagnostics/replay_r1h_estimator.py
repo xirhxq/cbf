@@ -161,6 +161,102 @@ def _load_materialized_bases(data: dict) -> list[list[float]]:
     return [[-1550.0, -300.0], [-1550.0, 0.0], [-1550.0, 300.0]]
 
 
+def build_frame_raw_references(
+    frame: dict,
+    bases: list[list[float]],
+    rng: np.random.Generator,
+    reference_mode: str = "fixed",
+    max_references: int | None = None,
+) -> dict[int, list[dict]]:
+    """Build one frame's raw reference records keyed by robot_id."""
+    fixed_formations = {
+        entry["id"]: entry for entry in frame.get("formation", [])
+    }
+    formations = {
+        entry["id"]: entry
+        for entry in frame.get(
+            "formation" if reference_mode == "fixed" else "covariance_formation",
+            [],
+        )
+    }
+    groups: dict[int, list[dict]] = {}
+    for robot in frame["robots"]:
+        robot_id = robot["id"]
+        position = np.asarray(
+            [robot["state"]["x"], robot["state"]["y"]], dtype=float
+        )
+        formation = formations.get(robot_id, {})
+        references: list[dict] = []
+        for base_id in formation.get("baseIds", []):
+            base_position = np.asarray(bases[base_id], dtype=float)
+            true_range = float(np.linalg.norm(position - base_position))
+            noise = float(rng.normal(0.0, 0.5))
+            references.append({
+                "key": ("base", int(base_id)),
+                "position": list(base_position),
+                "range": true_range + noise,
+                "true_range": true_range,
+                "covariance": [[0.0, 0.0], [0.0, 0.0]],
+                "ranging_sigma": 0.5,
+                "base_anchor_provenance": [int(base_id)],
+            })
+        for anchor_id in formation.get("anchorIds", []):
+            anchor = next(
+                (r for r in frame["robots"] if r["id"] == anchor_id),
+                None,
+            )
+            if anchor is None:
+                continue
+            anchor_position = np.asarray(
+                [anchor["state"]["x"], anchor["state"]["y"]], dtype=float
+            )
+            true_range = float(np.linalg.norm(position - anchor_position))
+            noise = float(rng.normal(0.0, 0.5))
+            references.append({
+                "key": ("uav", int(anchor_id)),
+                "range": true_range + noise,
+                "true_range": true_range,
+                "ranging_sigma": 0.5,
+            })
+        references.sort(key=lambda ref: ref["key"])
+        if (
+            reference_mode == "dynamic"
+            and max_references is not None
+            and len(references) > max_references
+        ):
+            fixed_keys = {
+                ("base", int(base_id))
+                for base_id in fixed_formations.get(robot_id, {}).get(
+                    "baseIds", []
+                )
+            } | {
+                ("uav", int(anchor_id))
+                for anchor_id in fixed_formations.get(robot_id, {}).get(
+                    "anchorIds", []
+                )
+            }
+            fixed_refs = [
+                ref for ref in references if ref["key"] in fixed_keys
+            ]
+            base_refs = [
+                ref for ref in references
+                if ref["key"] not in fixed_keys and ref["key"][0] == "base"
+            ]
+            uav_refs = [
+                ref for ref in references
+                if ref["key"] not in fixed_keys and ref["key"][0] == "uav"
+            ]
+            base_refs.sort(key=lambda ref: float(ref["true_range"]))
+            uav_refs.sort(key=lambda ref: float(ref["true_range"]))
+            extra_refs = base_refs + uav_refs
+            references = (
+                fixed_refs
+                + extra_refs[: max(0, max_references - len(fixed_refs))]
+            )
+        groups[robot_id] = references
+    return groups
+
+
 def build_raw_reference_groups(
     data: dict,
     bases: list[list[float]],
@@ -170,93 +266,17 @@ def build_raw_reference_groups(
     max_references: int | None = None,
 ) -> dict[tuple[int, int], list[dict]]:
     """Return raw reference records keyed by (frame, robot_id)."""
-    state = data["state"]
     rng = np.random.default_rng(range_noise_seed)
     groups: dict[tuple[int, int], list[dict]] = {}
-    for frame_index, frame in enumerate(state[:frames]):
-        fixed_formations = {
-            entry["id"]: entry for entry in frame.get("formation", [])
-        }
-        formations = {
-            entry["id"]: entry
-            for entry in frame.get(
-                "formation" if reference_mode == "fixed" else "covariance_formation",
-                [],
-            )
-        }
-        for robot in frame["robots"]:
-            robot_id = robot["id"]
-            position = np.asarray(
-                [robot["state"]["x"], robot["state"]["y"]], dtype=float
-            )
-            formation = formations.get(robot_id, {})
-            references: list[dict] = []
-            for base_id in formation.get("baseIds", []):
-                base_position = np.asarray(bases[base_id], dtype=float)
-                true_range = float(np.linalg.norm(position - base_position))
-                noise = float(rng.normal(0.0, 0.5))
-                references.append({
-                    "key": ("base", int(base_id)),
-                    "position": list(base_position),
-                    "range": true_range + noise,
-                    "true_range": true_range,
-                    "covariance": [[0.0, 0.0], [0.0, 0.0]],
-                    "ranging_sigma": 0.5,
-                    "base_anchor_provenance": [int(base_id)],
-                })
-            for anchor_id in formation.get("anchorIds", []):
-                anchor = next(
-                    (r for r in frame["robots"] if r["id"] == anchor_id),
-                    None,
-                )
-                if anchor is None:
-                    continue
-                anchor_position = np.asarray(
-                    [anchor["state"]["x"], anchor["state"]["y"]], dtype=float
-                )
-                true_range = float(np.linalg.norm(position - anchor_position))
-                noise = float(rng.normal(0.0, 0.5))
-                references.append({
-                    "key": ("uav", int(anchor_id)),
-                    "range": true_range + noise,
-                    "true_range": true_range,
-                    "ranging_sigma": 0.5,
-                })
-            references.sort(key=lambda ref: ref["key"])
-            if (
-                reference_mode == "dynamic"
-                and max_references is not None
-                and len(references) > max_references
-            ):
-                fixed_keys = {
-                    ("base", int(base_id))
-                    for base_id in fixed_formations.get(robot_id, {}).get(
-                        "baseIds", []
-                    )
-                } | {
-                    ("uav", int(anchor_id))
-                    for anchor_id in fixed_formations.get(robot_id, {}).get(
-                        "anchorIds", []
-                    )
-                }
-                fixed_refs = [
-                    ref for ref in references if ref["key"] in fixed_keys
-                ]
-                base_refs = [
-                    ref for ref in references if ref["key"] not in fixed_keys
-                    and ref["key"][0] == "base"
-                ]
-                uav_refs = [
-                    ref for ref in references
-                    if ref["key"] not in fixed_keys and ref["key"][0] == "uav"
-                ]
-                base_refs.sort(key=lambda ref: float(ref["true_range"]))
-                uav_refs.sort(key=lambda ref: float(ref["true_range"]))
-                extra_refs = base_refs + uav_refs
-                references = (
-                    fixed_refs
-                    + extra_refs[: max(0, max_references - len(fixed_refs))]
-                )
+    for frame_index, frame in enumerate(data["state"][:frames]):
+        frame_groups = build_frame_raw_references(
+            frame,
+            bases,
+            rng,
+            reference_mode=reference_mode,
+            max_references=max_references,
+        )
+        for robot_id, references in frame_groups.items():
             groups[(frame_index, robot_id)] = references
     return groups
 

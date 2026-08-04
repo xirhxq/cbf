@@ -14,6 +14,9 @@
 #include <set>
 #include <utility>
 #include <chrono>
+#include <cstdio>
+#include <fstream>
+#include <thread>
 
 template<typename UpdateAction, typename LogAction>
 std::exception_ptr recoverFailedIteration(
@@ -77,6 +80,10 @@ public:
     json config;
     bool route1Mode = false;
     double route1ChainLatencySeconds = 0.0;
+    bool estimatorInLoop = false;
+    std::string estimatorStatePath;
+    std::string estimatorEstimatesPath;
+    double estimatorWaitTimeoutSeconds = 5.0;
     GridWorld gridWorldGroundTruth;
     json updatedGridWorldGroundTruth;
     std::string folderName;
@@ -314,6 +321,97 @@ public:
                 otherRobot->comm->receiveUncertaintyRate(robot->id, uncertaintyRate);
             }
         };
+    }
+
+    bool estimatorFileExists(const std::string& path) const {
+        std::ifstream stream(path);
+        return stream.good();
+    }
+
+    void writeEstimatorState(std::uint64_t frameIndex) {
+        json state = {
+            {"frame_index", frameIndex},
+            {"robots", json::array()}
+        };
+        for (auto &robot : robots) {
+            const auto velocity = robot->model->getVelocity();
+            state["robots"].push_back({
+                {"id", robot->id},
+                {"x", robot->model->xy().x},
+                {"y", robot->model->xy().y},
+                {"vx", velocity[0]},
+                {"vy", velocity[1]},
+                {"covariance_formation", robot->myCovarianceFormation}
+            });
+        }
+        {
+            std::ofstream out(estimatorStatePath);
+            out << state.dump() << '\n';
+        }
+        std::ofstream ready(estimatorStatePath + ".ready");
+        ready << frameIndex << '\n';
+    }
+
+    void readEstimatorEstimates(std::uint64_t frameIndex) {
+        const auto started = std::chrono::steady_clock::now();
+        while (!estimatorFileExists(estimatorEstimatesPath)) {
+            if (std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - started
+                ).count() > estimatorWaitTimeoutSeconds) {
+                throw std::runtime_error(
+                    "estimator-in-loop timeout waiting for estimates"
+                );
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        json estimates;
+        {
+            std::ifstream in(estimatorEstimatesPath);
+            in >> estimates;
+        }
+        std::remove(estimatorEstimatesPath.c_str());
+        if (estimates.value("frame_index", -1)
+            != static_cast<std::int64_t>(frameIndex)) {
+            throw std::runtime_error("estimator-in-loop frame mismatch");
+        }
+        for (const auto &entry : estimates.value("robots", json::array())) {
+            const int id = entry.value("id", -1);
+            const auto estimate = entry.value("estimate", json::array());
+            if (id < 1 || id > n || estimate.size() != 2) {
+                throw std::runtime_error(
+                    "estimator-in-loop estimate schema invalid"
+                );
+            }
+            const Point position(
+                estimate[0].get<double>(), estimate[1].get<double>()
+            );
+            const double epsilon = entry.value("epsilon", 0.0);
+            if (epsilon <= 0.0) {
+                throw std::runtime_error(
+                    "estimator-in-loop epsilon invalid"
+                );
+            }
+            auto &robot = robots.at(id - 1);
+            robot->applyEstimatorInput(position, epsilon, true);
+            for (auto &other : robots) {
+                other->comm->receivePosition2D(id, position);
+            }
+        }
+    }
+
+    void estimatorFrameExchange(std::uint64_t frameIndex) {
+        writeEstimatorState(frameIndex);
+        readEstimatorEstimates(frameIndex);
+    }
+
+    void restoreTruthPositions() {
+        for (auto &robot : robots) {
+            for (auto &other : robots) {
+                other->comm->receivePosition2D(
+                    robot->id, robot->model->xy()
+                );
+            }
+        }
     }
 
     // External data injection interface (for simulation environment)
@@ -846,6 +944,22 @@ public:
         } else {
             route1Mode =
                 config["cbfs"].value("route1", json::object()).value("on", false);
+            const auto estimatorConfig =
+                config.value("estimator-in-loop", json::object());
+            estimatorInLoop = estimatorConfig.value("on", false);
+            if (estimatorInLoop) {
+                estimatorStatePath = estimatorConfig.value("state-path", "");
+                estimatorEstimatesPath =
+                    estimatorConfig.value("estimates-path", "");
+                estimatorWaitTimeoutSeconds =
+                    estimatorConfig.value("wait-timeout-s", 5.0);
+                if (estimatorStatePath.empty()
+                    || estimatorEstimatesPath.empty()) {
+                    throw std::invalid_argument(
+                        "estimator-in-loop paths are required"
+                    );
+                }
+            }
             for (auto &robot: robots) robot->presetCBF();
         }
 
@@ -888,6 +1002,13 @@ public:
                 for (auto &robot: robots) robot->updateGridWorld();
                 updateGridWorld();
                 checkUpdatedGridWorld();
+                if (estimatorInLoop) {
+                    estimatorFrameExchange(
+                        static_cast<std::uint64_t>(
+                            std::llround(robots[0]->runtime / tStep)
+                        )
+                    );
+                }
                 for (auto &robot: robots) robot->postsetCBF();
 
                 if (isCentralizedExecution()) {
@@ -910,6 +1031,9 @@ public:
                         ).count();
                 } else {
                     for (auto &robot: robots) robot->optimise();
+                }
+                if (estimatorInLoop) {
+                    restoreTruthPositions();
                 }
 
                 // if (checkConstraintViolation()) {
