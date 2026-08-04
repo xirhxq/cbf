@@ -16,14 +16,16 @@ import numpy as np
 from scipy.optimize import linprog
 
 
-PLANAR_LIMIT_MPS = 50.0
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("data_path", type=Path)
     parser.add_argument("robot_id", type=int)
+    parser.add_argument(
+        "--limit", type=float, default=50.0,
+        help="planar input limit used by the run (default 50.0)",
+    )
     arguments = parser.parse_args(argv)
+    planar_limit = arguments.limit
 
     frames = json.loads(arguments.data_path.read_text())["state"]
     frame = frames[-1]
@@ -54,11 +56,11 @@ def main(argv: list[str] | None = None) -> int:
         upper = [0.0, 0.0, 0.0]
         upper[variable] = 1.0
         inequality_matrix.append(upper)
-        inequality_bounds.append(PLANAR_LIMIT_MPS)
+        inequality_bounds.append(planar_limit)
         lower = [0.0, 0.0, 0.0]
         lower[variable] = -1.0
         inequality_matrix.append(lower)
-        inequality_bounds.append(PLANAR_LIMIT_MPS)
+        inequality_bounds.append(planar_limit)
 
     result = linprog(
         c=[0.0, 0.0, -1.0],
