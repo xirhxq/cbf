@@ -349,7 +349,8 @@ public:
                 {"y", robot->model->xy().y},
                 {"vx", velocity[0]},
                 {"vy", velocity[1]},
-                {"covariance_formation", robot->myCovarianceFormation}
+                {"covariance_formation", robot->myCovarianceFormation},
+                {"formation", robot->myFormation}
             });
         }
         {

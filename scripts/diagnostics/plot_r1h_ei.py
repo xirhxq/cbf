@@ -61,7 +61,9 @@ def main(argv: list[str] | None = None) -> int:
     tiers = [
         sorted(
             {robot["tier"] for robot in frame["robots"]},
-            key=lambda name: ("fresh", "predicted", "hold").index(name),
+            key=lambda name: (
+                "fresh", "predicted", "coast", "hold"
+            ).index(name),
         )
         for frame in estimates
     ]
@@ -87,7 +89,12 @@ def main(argv: list[str] | None = None) -> int:
     axes[1].legend()
     axes[1].grid(alpha=0.3)
 
-    tier_colors = {"fresh": "tab:green", "predicted": "tab:blue", "hold": "tab:red"}
+    tier_colors = {
+        "fresh": "tab:green",
+        "predicted": "tab:blue",
+        "coast": "tab:red",
+        "hold": "tab:red",
+    }
     frame_tier = [
         max(frame["robots"], key=lambda r: tier_colors.get(r["tier"], "")).get(
             "tier"

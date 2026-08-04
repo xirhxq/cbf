@@ -1,10 +1,11 @@
 """Python driver for the estimator-in-the-loop R1H-EI experiment.
 
 Runs the Swarm simulator as a subprocess; at every control frame the simulator
-writes truth state to a file and waits, the driver runs the real qualified WNLS
-estimator for all robots, writes estimates back, and the simulator applies them
-to its CBF construction.  This is the true closed loop (estimates shape the
-control, control shapes the trajectory, trajectory shapes the measurements).
+writes truth state to a file and waits, the driver runs a basic extended
+Kalman filter estimator for all robots, writes estimates back, and the
+simulator applies them to its CBF construction.  This is the true closed loop
+(estimates shape the control, control shapes the trajectory, trajectory
+shapes the measurements).
 """
 
 from __future__ import annotations
@@ -18,12 +19,12 @@ from pathlib import Path
 
 import numpy as np
 
-from scripts.diagnostics.estimator_service import EstimatorInLoopService
-from scripts.diagnostics.run_diagnostic import materialize_config
-from scripts.diagnostics.replay_r1h_estimator import (
-    build_frame_raw_references,
-    _load_materialized_bases,
+from scripts.diagnostics.ekf_estimator_service import (
+    EKFInLoopService,
+    build_ekf_raw_references,
 )
+from scripts.diagnostics.run_diagnostic import materialize_config
+from scripts.diagnostics.replay_r1h_estimator import _load_materialized_bases
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -74,17 +75,11 @@ def main() -> int:
             data["initial"]["position"]["positions"]
         )
     }
-    estimator_config = json.loads(
-        (PROJECT_ROOT / "config" / "diagnostics"
-         / "qualified_mode_hybrid_dcbf_development_v3.json").read_text()
-    )
     frames = int(round(arguments.horizon / 0.5))
-    service = EstimatorInLoopService(
-        estimator_config=estimator_config,
+    service = EKFInLoopService(
         deployment_positions=deployment,
-        mission_horizon_frames=frames,
-        warm_start=True,
-        anchor_inflation=1.26,
+        bases=bases,
+        anchor_covariance_scale=3.0,
     )
     rng = np.random.default_rng(arguments.range_noise_seed)
     estimates_log = run_root / "estimates-log.jsonl"
@@ -124,23 +119,21 @@ def main() -> int:
                     entry["covariance_formation"]
                     for entry in state["robots"]
                 ],
+                "formation": [
+                    entry["formation"] for entry in state["robots"]
+                ],
             }
             held = {
                 entry["id"]: [entry["vx"], entry["vy"]]
                 for entry in state["robots"]
             }
-            references_by_robot = build_frame_raw_references(
-                frame_like, bases, rng,
-                reference_mode="dynamic", max_references=3,
+            references_by_robot = build_ekf_raw_references(
+                frame_like, bases, rng
             )
-            references = {
-                (frame, robot_id): references_by_robot.get(robot_id, [])
-                for robot_id in range(1, 15)
-            }
             started = time.monotonic()
             outputs = service.step(
                 frame_index=frame,
-                raw_reference_groups=references,
+                raw_reference_groups=references_by_robot,
                 held_commands=held,
             )
             elapsed = time.monotonic() - started

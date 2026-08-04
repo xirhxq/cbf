@@ -50,6 +50,9 @@ class EstimatorInLoopService:
         self.hold_age = {
             robot: 0 for robot in sorted(deployment_positions)
         }
+        self.hold_speed = {
+            robot: 0.0 for robot in sorted(deployment_positions)
+        }
 
         def solver_from_start(start, references):
             return solve_finite_budget_wnls(
@@ -70,6 +73,7 @@ class EstimatorInLoopService:
                 "history": 0,
             }
             self.hold_age[robot] = 0
+            self.hold_speed[robot] = 0.0
 
     def step(
         self,
@@ -114,6 +118,12 @@ class EstimatorInLoopService:
                         lifecycle["history_version"] + 1
                     )
                     self.hold_age[robot_id] = 0
+                    velocity = np.asarray(
+                        held_commands[robot_id], dtype=float
+                    )
+                    self.hold_speed[robot_id] = float(
+                        np.linalg.norm(velocity)
+                    )
                     outputs[robot_id] = {
                         "estimate": estimate,
                         "epsilon": epsilon,
@@ -130,6 +140,11 @@ class EstimatorInLoopService:
                 state=self.state,
                 deployment_positions=self.deployment_positions,
                 hold_age=self.hold_age[robot_id] + 1,
+                growth_rate=(
+                    self.hold_speed[robot_id]
+                    if self.hold_speed[robot_id] > 0.0
+                    else 50.0
+                ),
             )
             self.hold_age[robot_id] += 1
             self.state[robot_id]["public"] = None

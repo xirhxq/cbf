@@ -33,13 +33,14 @@ def _hold_record(
     state: dict,
     deployment_positions: dict[int, list[float]],
     hold_age: int,
+    growth_rate: float = 50.0,
 ) -> dict:
     """Build a controller-facing degraded 'hold' output.
 
     Uses the last certified estimate if available, otherwise the known
     deployment position; epsilon grows linearly with the hold age using the
-    planar speed bound (50 m/s) and a deployment-scale base (30 m) when no
-    certified epsilon exists.
+    last known planar speed (growth_rate, defaulting to the 50 m/s bound)
+    and a deployment-scale base (30 m) when no certified epsilon exists.
     """
     previous = state.get(robot_id, {}).get("public")
     if (
@@ -59,7 +60,7 @@ def _hold_record(
         estimate = deployment_positions[robot_id]
         base_epsilon = 30.0
     elapsed = hold_age * 0.5  # seconds since last certified output
-    epsilon = base_epsilon + 50.0 * elapsed
+    epsilon = base_epsilon + growth_rate * elapsed
     return {
         "frame_index": frame_index,
         "robot_id": robot_id,

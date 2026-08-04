@@ -397,6 +397,7 @@ public:
     }
 
     void presetCBF() {
+        setupFormation();
         if (settings["cbfs"]["without-slack"]["energy"]["on"]) setEnergyCBF();
         if (settings["cbfs"]["with-slack"]["target-yaw"]["on"]) setTargetYawCBF();
     }
