@@ -47,3 +47,23 @@ row-size contract 172。
 - 单 seed、单轨迹；warm-start 为 deployment-restart 变体
   （qualifier 替换），非官方 protocol 注册；
 - 非 formal gate；ε 仍为 WNLS modeled covariance（非 safety 证书）。
+
+## 不可用机理（具体帧取证，t=300 s）
+
+robot 3 在 t=300 s：参考 = uav1(723 m)、uav2(828 m)，两个前驱
+（r1/r2）均为 fresh——**参考齐全**，但 audit_bundle 显示：
+
+- clustering：2 个 mode（两个 circle 分支），均 admissible
+  （deployment_side，score 8.11 与 1303.27）；
+- decision：**unavailable，reason = `multiple_admissible_modes`**。
+
+即：**两个圆相交有两个候选解，缺少第三个参考来消歧，
+估计器拒绝猜测**——这是模式唯一性门（fail-closed），不是数值失败。
+
+随后 r3 不可用 → r5（依赖 r3 作锚点）被 resolver 丢弃该参考，
+剩余 <2 → "fewer than two anchors" 不可用 → r7 同样——**链式传播**。
+
+深离岸区可见参考恰好只有 2 个（无 base、无第三 UAV），
+所以慢性歧义不可用；FIM 对同一几何"优雅退化"（ε 变大仍输出），
+估计器则拒绝输出。warm-start 修复的是"无先验"，
+但无法制造第三个锚点，故剩余 38% 不可用主要是**参考不足的歧义边界**。
