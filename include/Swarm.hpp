@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <numeric>
 #include <thread>
 
 template<typename UpdateAction, typename LogAction>
@@ -79,6 +80,7 @@ public:
     json stepData;
     json config;
     bool route1Mode = false;
+    int route1SquadFirst = 0;
     double route1ChainLatencySeconds = 0.0;
     bool estimatorInLoop = false;
     std::string estimatorStatePath;
@@ -944,6 +946,9 @@ public:
         } else {
             route1Mode =
                 config["cbfs"].value("route1", json::object()).value("on", false);
+            route1SquadFirst =
+                config["cbfs"].value("route1", json::object())
+                    .value("squad-first", 0);
             const auto estimatorConfig =
                 config.value("estimator-in-loop", json::object());
             estimatorInLoop = estimatorConfig.value("on", false);
@@ -1016,7 +1021,17 @@ public:
                     centralizedOptimise();
                 } else if (route1Mode) {
                     const auto route1Start = std::chrono::steady_clock::now();
-                    for (auto &robot: robots) {
+                    std::vector<size_t> solveOrder(robots.size());
+                    std::iota(solveOrder.begin(), solveOrder.end(), 0);
+                    if (route1SquadFirst == 2 && robots.size() == 14) {
+                        // Squad 2 (robots 8-14, indices 7-13) first, then
+                        // squad 1 (robots 1-7, indices 0-6); intra-squad
+                        // order stays low -> high.
+                        solveOrder = {7, 8, 9, 10, 11, 12, 13,
+                                      0, 1, 2, 3, 4, 5, 6};
+                    }
+                    for (const size_t robotIndex : solveOrder) {
+                        auto &robot = robots[robotIndex];
                         robot->optimise();
                         for (auto &otherRobot: robots) {
                             otherRobot->comm->receiveVelocity2D(
