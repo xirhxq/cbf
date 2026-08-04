@@ -1367,6 +1367,8 @@ public:
 
     void setSafetyCBF(const json& config) {
         if (settings["num"] == 1) return;
+        const bool route1Mode =
+            settings["cbfs"].value("route1", json::object()).value("on", false);
 
         for (auto it = cbfNoSlack.cbfs.begin(); it != cbfNoSlack.cbfs.end();) {
             if (it->first == "safetyCBF" ||
@@ -1420,6 +1422,7 @@ public:
         Point myPosition = model->xy();
         for (auto &[otherId, otherPosition]: comm->_othersPos) {
             if (id == otherId) continue;
+            if (route1Mode && otherId > id) continue;
 
             double otherUncertainty = 0.0;
             double otherUncertaintyRate = 0.0;

@@ -13,6 +13,7 @@
 #include <optional>
 #include <set>
 #include <utility>
+#include <chrono>
 
 template<typename UpdateAction, typename LogAction>
 std::exception_ptr recoverFailedIteration(
@@ -74,6 +75,8 @@ public:
     json data;
     json stepData;
     json config;
+    bool route1Mode = false;
+    double route1ChainLatencySeconds = 0.0;
     GridWorld gridWorldGroundTruth;
     json updatedGridWorldGroundTruth;
     std::string folderName;
@@ -216,6 +219,12 @@ public:
             stepData["covariance_formation"].push_back(robot->myCovarianceFormation);
         }
         stepData["update"] = updatedGridWorldGroundTruth;
+        if (route1Mode) {
+            stepData["route1"] = {
+                {"on", true},
+                {"chain_latency_s", route1ChainLatencySeconds}
+            };
+        }
 
         if (isCentralizedExecution()) {
             json centralizedData = opt;
@@ -835,6 +844,8 @@ public:
             initializeCentralizedOptimization();
             presetCBFs();
         } else {
+            route1Mode =
+                config["cbfs"].value("route1", json::object()).value("on", false);
             for (auto &robot: robots) robot->presetCBF();
         }
 
@@ -882,6 +893,21 @@ public:
                 if (isCentralizedExecution()) {
                     postsetCBFs();
                     centralizedOptimise();
+                } else if (route1Mode) {
+                    const auto route1Start = std::chrono::steady_clock::now();
+                    for (auto &robot: robots) {
+                        robot->optimise();
+                        for (auto &otherRobot: robots) {
+                            otherRobot->comm->receiveVelocity2D(
+                                robot->id,
+                                robot->model->getVelocity()
+                            );
+                        }
+                    }
+                    route1ChainLatencySeconds =
+                        std::chrono::duration<double>(
+                            std::chrono::steady_clock::now() - route1Start
+                        ).count();
                 } else {
                     for (auto &robot: robots) robot->optimise();
                 }
