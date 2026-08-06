@@ -319,7 +319,7 @@
         "compensate-velocity": true,
         "consider-uncertainty": true,
         "alpha": {
-          "coe": 0.1,
+          "coe": 0.05,
           "pow": 1
         }
       },
