@@ -294,7 +294,7 @@
       },
       "safety": {
         "name": "safetyCBF",
-        "on": true,
+        "on": false,
         "//mode": [
           "minimum",
           "pairwise"
@@ -302,7 +302,7 @@
         "mode": "pairwise",
         "safe-distance": 10.0,
         "k": 1.0,
-        "consider-uncertainty": true,
+        "consider-uncertainty": false,
         "alpha": {
           "coe": 0.1,
           "pow": 1
@@ -335,7 +335,7 @@
         }
       },
       "route1": {
-        "on": true,
+        "on": false,
         "squad-first": 0,
         "joint-resolve": true
       }
@@ -356,6 +356,6 @@
   },
   "estimator-in-loop": {
     "on": true,
-    "process-noise-mps": 0.5
+    "process-noise-mps": 3.0
   }
 }
