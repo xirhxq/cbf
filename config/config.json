@@ -294,15 +294,15 @@
       },
       "safety": {
         "name": "safetyCBF",
-        "on": false,
+        "on": true,
         "//mode": [
           "minimum",
           "pairwise"
         ],
         "mode": "pairwise",
         "safe-distance": 10.0,
-        "k": 3.0,
-        "consider-uncertainty": false,
+        "k": 1.0,
+        "consider-uncertainty": true,
         "alpha": {
           "coe": 0.1,
           "pow": 1
@@ -313,7 +313,7 @@
         "on": true,
         "mode": "scissor",
         "max-range": 850.0,
-        "k": 3.0,
+        "k": 5.0,
         "min-neighbour-id-offset": -2,
         "max-neighbour-id-offset": 0,
         "compensate-velocity": true,
