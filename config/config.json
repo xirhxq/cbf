@@ -302,7 +302,7 @@
         "mode": "pairwise",
         "safe-distance": 10.0,
         "k": 1.0,
-        "consider-uncertainty": false,
+        "consider-uncertainty": true,
         "alpha": {
           "coe": 0.1,
           "pow": 1
