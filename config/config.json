@@ -356,6 +356,6 @@
   },
   "estimator-in-loop": {
     "on": true,
-    "process-noise-mps": 1.0
+    "process-noise-mps": 2.0
   }
 }
