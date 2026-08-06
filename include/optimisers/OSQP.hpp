@@ -62,10 +62,11 @@ public:
         has_error = false;
         last_error_message = "";
         last_error_code = 0;
-        solver.clearSolver();
-        // Clear the data to allow re-setting the hessian and constraints
+        // IMPORTANT: clear data BEFORE clearSolver — after clearSolver(),
+        // the internal data object may be freed, making data()-> a UAF.
         solver.data()->clearHessianMatrix();
         solver.data()->clearLinearConstraintsMatrix();
+        solver.clearSolver();
     }
 
     void start(int total_size, int u_sz) override {
