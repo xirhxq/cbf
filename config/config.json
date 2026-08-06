@@ -302,7 +302,7 @@
         "mode": "pairwise",
         "safe-distance": 10.0,
         "k": 1.0,
-        "consider-uncertainty": true,
+        "consider-uncertainty": false,
         "alpha": {
           "coe": 0.1,
           "pow": 1
@@ -317,7 +317,7 @@
         "min-neighbour-id-offset": -2,
         "max-neighbour-id-offset": 0,
         "compensate-velocity": true,
-        "consider-uncertainty": true,
+        "consider-uncertainty": false,
         "alpha": {
           "coe": 0.1,
           "pow": 1
