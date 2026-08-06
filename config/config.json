@@ -312,7 +312,7 @@
         "name": "commFixedCBF",
         "on": true,
         "mode": "scissor",
-        "max-range": 900.0,
+        "max-range": 850.0,
         "k": 1.0,
         "min-neighbour-id-offset": -2,
         "max-neighbour-id-offset": 0,
@@ -356,6 +356,6 @@
   },
   "estimator-in-loop": {
     "on": true,
-    "process-noise-mps": 1.0
+    "process-noise-mps": 0.5
   }
 }
