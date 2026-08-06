@@ -316,7 +316,7 @@
         "k": 1.0,
         "min-neighbour-id-offset": -2,
         "max-neighbour-id-offset": 0,
-        "compensate-velocity": true,
+        "compensate-velocity": false,
         "consider-uncertainty": true,
         "alpha": {
           "coe": 0.1,
