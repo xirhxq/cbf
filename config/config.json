@@ -342,11 +342,15 @@
       "centralized"
     ],
     "execution-mode": "distributed",
-    "time-total": 1000,
+    "time-total": 500,
     "time-step": 0.5,
     "check-constraint-violation": false
   },
   "debug": {
     "opt-cbc": false
+  },
+  "estimator-in-loop": {
+    "on": true,
+    "process-noise-mps": 3.0
   }
 }
