@@ -227,8 +227,8 @@
       "mode": "backward-difference-positive"
     },
     "input-limits": {
-      "on": false,
-      "planar-component-max": 25.0,
+      "on": true,
+      "planar-component-max": 50.0,
       "yaw-rate-max": 0.35
     },
     "with-slack": {
@@ -294,12 +294,12 @@
       },
       "safety": {
         "name": "safetyCBF",
-        "on": false,
+        "on": true,
         "//mode": [
           "minimum",
           "pairwise"
         ],
-        "mode": "minimum",
+        "mode": "pairwise",
         "safe-distance": 10.0,
         "k": 1.0,
         "consider-uncertainty": true,
@@ -333,6 +333,11 @@
           "coe": 0.1,
           "pow": 1
         }
+      },
+      "route1": {
+        "on": true,
+        "squad-first": 0,
+        "joint-resolve": true
       }
     }
   },
