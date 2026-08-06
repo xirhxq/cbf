@@ -47,6 +47,16 @@ struct BridgeExperimentConfig {
     int goalDiversionLookaheadSteps = 0;
     double goalDiversionLookaheadDistance = 0.0;
     double goalDiversionLookaheadRadial = 0.0;
+    bool goalDiversionMultiPair = false;
+    bool gammaStarFeedbackEnabled = false;
+    double gammaStarSafeThreshold = 1.0;
+    double gammaStarAccelHalfBox = 2.0;
+    int gammaStarDirectionCount = 8;
+    int gammaStarMagnitudeCount = 3;
+    double gammaStarCandidateScale = 1.0;
+    int gammaStarLookaheadSteps = 1;
+    double gammaStarPredictiveThreshold = 0.0;
+    int gammaStarLookaheadDistance = 0;
     BridgeTargetConfig target;
 };
 
@@ -155,6 +165,7 @@ inline BridgeExperimentConfig loadBridgeExperimentConfig(const json &config) {
         bridge.goalDiversionLookaheadSteps = diversion.value("lookahead-steps", bridge.goalDiversionLookaheadSteps);
         bridge.goalDiversionLookaheadDistance = diversion.value("lookahead-distance-threshold", bridge.goalDiversionDistance);
         bridge.goalDiversionLookaheadRadial = diversion.value("lookahead-radial-threshold", bridge.goalDiversionRadial);
+        bridge.goalDiversionMultiPair = diversion.value("multi-pair", bridge.goalDiversionMultiPair);
         auto assertPosFinite = [](double value, const char *field) {
             if (value <= 0.0 || !std::isfinite(value)) {
                 throw std::invalid_argument(
@@ -184,6 +195,52 @@ inline BridgeExperimentConfig loadBridgeExperimentConfig(const json &config) {
         if (bridge.goalDiversionLookaheadSteps > 0) {
             assertPosFinite(bridge.goalDiversionLookaheadDistance, "lookahead-distance-threshold");
             assertPosFinite(bridge.goalDiversionLookaheadRadial, "lookahead-radial-threshold");
+        }
+        if (bridge.goalDiversionMultiPair && bridge.goalDiversionPairScope == "named-pair") {
+            throw std::invalid_argument(
+                "bridge.nominal.goal-diversion.multi-pair requires pair-scope 'all'");
+        }
+    }
+
+    if (source.contains("nominal") && source.at("nominal").contains("gamma-star-feedback")) {
+        const json &feedback = source.at("nominal").at("gamma-star-feedback");
+        bridge.gammaStarFeedbackEnabled = feedback.value("enabled", false);
+        bridge.gammaStarSafeThreshold = feedback.value("safe-threshold", bridge.gammaStarSafeThreshold);
+        bridge.gammaStarAccelHalfBox = feedback.value("accel-half-box", bridge.gammaStarAccelHalfBox);
+        bridge.gammaStarDirectionCount = feedback.value("direction-count", bridge.gammaStarDirectionCount);
+        bridge.gammaStarMagnitudeCount = feedback.value("magnitude-count", bridge.gammaStarMagnitudeCount);
+        bridge.gammaStarCandidateScale = feedback.value("candidate-scale", bridge.gammaStarCandidateScale);
+        bridge.gammaStarLookaheadSteps = feedback.value("lookahead-steps", bridge.gammaStarLookaheadSteps);
+        bridge.gammaStarPredictiveThreshold = feedback.value("predictive-threshold", bridge.gammaStarPredictiveThreshold);
+        bridge.gammaStarLookaheadDistance = feedback.value("lookahead-distance", bridge.gammaStarLookaheadDistance);
+        auto assertNonNegFinite = [](double value, const char *field) {
+            if (!std::isfinite(value) || value < 0.0) {
+                throw std::invalid_argument(
+                    std::string("bridge.nominal.gamma-star-feedback.") + field
+                    + " must be non-negative and finite");
+            }
+        };
+        assertNonNegFinite(bridge.gammaStarSafeThreshold, "safe-threshold");
+        if (bridge.gammaStarAccelHalfBox <= 0.0 || !std::isfinite(bridge.gammaStarAccelHalfBox)) {
+            throw std::invalid_argument(
+                "bridge.nominal.gamma-star-feedback.accel-half-box must be positive and finite");
+        }
+        if (bridge.gammaStarDirectionCount < 2 || !std::isfinite(static_cast<double>(bridge.gammaStarDirectionCount))) {
+            throw std::invalid_argument(
+                "bridge.nominal.gamma-star-feedback.direction-count must be at least 2");
+        }
+        if (bridge.gammaStarMagnitudeCount < 1 || !std::isfinite(static_cast<double>(bridge.gammaStarMagnitudeCount))) {
+            throw std::invalid_argument(
+                "bridge.nominal.gamma-star-feedback.magnitude-count must be at least 1");
+        }
+        if (bridge.gammaStarLookaheadSteps < 1 || !std::isfinite(static_cast<double>(bridge.gammaStarLookaheadSteps))) {
+            throw std::invalid_argument(
+                "bridge.nominal.gamma-star-feedback.lookahead-steps must be at least 1");
+        }
+        assertNonNegFinite(bridge.gammaStarPredictiveThreshold, "predictive-threshold");
+        if (bridge.gammaStarLookaheadDistance < 0 || !std::isfinite(static_cast<double>(bridge.gammaStarLookaheadDistance))) {
+            throw std::invalid_argument(
+                "bridge.nominal.gamma-star-feedback.lookahead-distance must be non-negative and finite");
         }
     }
 
@@ -228,6 +285,16 @@ inline json makeBridgeMetadata(const json &config, const BridgeExperimentConfig 
         {"goal_diversion_lookahead_steps", bridge.goalDiversionLookaheadSteps},
         {"goal_diversion_lookahead_distance_threshold", bridge.goalDiversionLookaheadDistance},
         {"goal_diversion_lookahead_radial_threshold", bridge.goalDiversionLookaheadRadial},
+        {"goal_diversion_multi_pair", bridge.goalDiversionMultiPair},
+        {"gamma_star_feedback_enabled", bridge.gammaStarFeedbackEnabled},
+        {"gamma_star_feedback_safe_threshold", bridge.gammaStarSafeThreshold},
+        {"gamma_star_feedback_accel_half_box", bridge.gammaStarAccelHalfBox},
+        {"gamma_star_feedback_direction_count", bridge.gammaStarDirectionCount},
+        {"gamma_star_feedback_magnitude_count", bridge.gammaStarMagnitudeCount},
+        {"gamma_star_feedback_candidate_scale", bridge.gammaStarCandidateScale},
+        {"gamma_star_feedback_lookahead_steps", bridge.gammaStarLookaheadSteps},
+        {"gamma_star_feedback_predictive_threshold", bridge.gammaStarPredictiveThreshold},
+        {"gamma_star_feedback_lookahead_distance", bridge.gammaStarLookaheadDistance},
         {"area_width_m", bridgeWorldExtent(config, 0)},
         {"area_height_m", bridgeWorldExtent(config, 1)},
         {"horizon_s", config.at("execute").at("time-total").get<double>()},

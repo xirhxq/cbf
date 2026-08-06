@@ -379,6 +379,334 @@ private:
         }
     }
 
+    struct GammaStarHalfSpace {
+        double ax = 0.0;
+        double ay = 0.0;
+        double constTerm = 0.0;
+        std::string neighbourId;
+    };
+
+    struct GammaStarFeedbackSafetyParams {
+        double effectiveSafeDistance = 0.0;
+        double k = 1.0;
+        double lambda1 = 1.0;
+        double lambda2 = 1.0;
+        double k1 = 2.0;
+        double k0 = 1.0;
+        double sampledDataReserve = 0.0;
+        bool usePairStateReserve = false;
+        double pairStateReserveDistance = 0.0;
+        double pairStateReserveRadial = 0.0;
+        double pairStateReserveVelocityGain = 0.0;
+        double pairStateReserveSampleTime = 0.0;
+        double pairStateReserveMax = std::numeric_limits<double>::infinity();
+    };
+
+    GammaStarFeedbackSafetyParams gammaStarFeedbackSafetyParams() const {
+        GammaStarFeedbackSafetyParams params;
+        auto safetyConfig = config["cbfs"]["without-slack"]["safety"];
+        double safeDistance = safetyConfig["safe-distance"];
+        double tighteningMargin = safetyConfig.value("safe-distance-tightening-margin", 0.0);
+        params.effectiveSafeDistance = safeDistance + tighteningMargin;
+        params.k = safetyConfig.contains("k") ? static_cast<double>(safetyConfig["k"]) : 1.0;
+        params.lambda1 = secondOrderLambda1();
+        params.lambda2 = secondOrderLambda2();
+        params.k1 = params.lambda1 + params.lambda2;
+        params.k0 = params.lambda1 * params.lambda2;
+        params.sampledDataReserve = secondOrderSampledDataReserve();
+        params.pairStateReserveSampleTime = config.value("execute", json::object()).value("time-step", 0.0);
+        if (config.contains("pair-state-reserve")) {
+            const json &pairReserveConfig = config["pair-state-reserve"];
+            params.usePairStateReserve = pairReserveConfig.value("enabled", false);
+            params.pairStateReserveDistance = pairReserveConfig.value("distance-threshold", 0.0);
+            params.pairStateReserveRadial = pairReserveConfig.value("radial-threshold", 0.0);
+            params.pairStateReserveVelocityGain = pairReserveConfig.value("velocity-gain", 0.0);
+            params.pairStateReserveSampleTime = pairReserveConfig.value("sample-time", params.pairStateReserveSampleTime);
+            params.pairStateReserveMax = pairReserveConfig.value("max-reserve", params.pairStateReserveMax);
+        }
+        return params;
+    }
+
+    std::vector<GammaStarHalfSpace> gammaStarFeedbackHalfSpaces(
+            int robotId,
+            const std::map<int, Point> &positions,
+            const std::map<int, Eigen::VectorXd> &velocities,
+            const GammaStarFeedbackSafetyParams &params) const {
+        std::vector<GammaStarHalfSpace> edges;
+        auto selfPosIt = positions.find(robotId);
+        auto selfVelIt = velocities.find(robotId);
+        if (selfPosIt == positions.end() || selfVelIt == velocities.end()) {
+            return edges;
+        }
+        Point pi = selfPosIt->second;
+        Eigen::VectorXd vi = selfVelIt->second;
+        if (vi.size() < 2) {
+            return edges;
+        }
+        for (const auto &entry : positions) {
+            int otherId = entry.first;
+            if (otherId == robotId) {
+                continue;
+            }
+            Point pj = entry.second;
+            auto velIt = velocities.find(otherId);
+            if (velIt == velocities.end()) {
+                continue;
+            }
+            Eigen::VectorXd vj = velIt->second;
+            if (vj.size() < 2) {
+                continue;
+            }
+            PairwiseDistanceKinematics kin;
+            Eigen::Vector2d r(pi.x - pj.x, pi.y - pj.y);
+            double distance = r.norm();
+            if (distance < 1e-9) {
+                continue;
+            }
+            kin.distance = distance;
+            kin.normal = r / distance;
+            kin.relativeVelocity << vi(0) - vj(0), vi(1) - vj(1);
+            kin.radialVelocity = kin.normal.dot(kin.relativeVelocity);
+            double speedSquared = kin.relativeVelocity.squaredNorm();
+            kin.curvature = (speedSquared - kin.radialVelocity * kin.radialVelocity) / distance;
+
+            double h = params.k * (kin.distance - params.effectiveSafeDistance);
+            double hdot = params.k * kin.radialVelocity;
+            double hddotConst = params.k * kin.curvature;
+            double reserve = params.sampledDataReserve;
+            if (params.usePairStateReserve
+                && kin.distance < params.pairStateReserveDistance
+                && kin.radialVelocity < -params.pairStateReserveRadial) {
+                double closingRate = std::max(0.0, -kin.radialVelocity);
+                double pairReserve = params.pairStateReserveVelocityGain * closingRate * params.pairStateReserveSampleTime;
+                if (pairReserve > params.pairStateReserveMax) {
+                    pairReserve = params.pairStateReserveMax;
+                }
+                reserve += pairReserve;
+            }
+            GammaStarHalfSpace edge;
+            edge.ax = params.k * kin.normal.x();
+            edge.ay = params.k * kin.normal.y();
+            edge.constTerm = hddotConst + params.k1 * hdot + params.k0 * h - reserve;
+            edge.neighbourId = std::to_string(otherId);
+            edges.push_back(edge);
+        }
+        return edges;
+    }
+
+    double gammaStarValueAt(
+            const std::vector<GammaStarHalfSpace> &edges,
+            double accelHalfBox) const {
+        if (edges.empty()) {
+            return std::numeric_limits<double>::infinity();
+        }
+        Eigen::Vector2d vertices[4] = {
+                {-accelHalfBox, -accelHalfBox},
+                {accelHalfBox, -accelHalfBox},
+                {-accelHalfBox, accelHalfBox},
+                {accelHalfBox, accelHalfBox}
+        };
+        double best = -std::numeric_limits<double>::infinity();
+        for (const auto &vertex : vertices) {
+            double worst = std::numeric_limits<double>::infinity();
+            for (const auto &edge : edges) {
+                double residual = edge.constTerm - (edge.ax * vertex.x() + edge.ay * vertex.y());
+                if (residual < worst) {
+                    worst = residual;
+                }
+            }
+            if (worst > best) {
+                best = worst;
+            }
+        }
+        return best;
+    }
+
+    struct GammaStarFeedbackResult {
+        bool active = false;
+        double currentGammaStar = 0.0;
+        double predictiveGammaStar = 0.0;
+        double selectedGammaStar = 0.0;
+        double selectedAccelX = 0.0;
+        double selectedAccelY = 0.0;
+        int evaluatedCandidates = 0;
+        std::string dominantNeighbour;
+        std::string triggerSource;
+    };
+
+    GammaStarFeedbackResult gammaStarFeedbackNominal(
+            int robotId,
+            const std::map<int, Point> &positions,
+            const std::map<int, Eigen::VectorXd> &velocities,
+            const GammaStarFeedbackSafetyParams &params) const {
+        GammaStarFeedbackResult result;
+        auto edges = gammaStarFeedbackHalfSpaces(robotId, positions, velocities, params);
+        if (edges.empty()) {
+            return result;
+        }
+        double accelHalfBox = bridgeConfig.gammaStarAccelHalfBox;
+        double dt = config.at("execute").at("time-step").get<double>();
+        int lookaheadSteps = std::max(1, bridgeConfig.gammaStarLookaheadSteps);
+
+        auto selfPosIt = positions.find(robotId);
+        auto selfVelIt = velocities.find(robotId);
+        Point pi = selfPosIt->second;
+        Eigen::VectorXd vi = selfVelIt->second;
+
+        double currentGamma = gammaStarValueAt(edges, accelHalfBox);
+        result.currentGammaStar = currentGamma;
+
+        std::map<int, Point> zohPositions = positions;
+        std::map<int, Eigen::VectorXd> zohVelocities = velocities;
+        for (int step = 1; step <= lookaheadSteps; ++step) {
+            std::map<int, Point> stepPositions;
+            std::map<int, Eigen::VectorXd> stepVelocities;
+            for (const auto &entry : zohPositions) {
+                int otherId = entry.first;
+                auto velIt = zohVelocities.find(otherId);
+                if (velIt == zohVelocities.end()) {
+                    stepPositions[otherId] = entry.second;
+                    stepVelocities[otherId] = Eigen::VectorXd::Zero(2);
+                } else {
+                    Eigen::VectorXd ov = velIt->second;
+                    stepPositions[otherId] = Point(entry.second.x + ov(0) * dt,
+                                                   entry.second.y + ov(1) * dt);
+                    stepVelocities[otherId] = ov;
+                }
+            }
+            zohPositions = stepPositions;
+            zohVelocities = stepVelocities;
+        }
+        auto predEdgesZoh = gammaStarFeedbackHalfSpaces(robotId, zohPositions, zohVelocities, params);
+        double zohGamma = predEdgesZoh.empty()
+                          ? std::numeric_limits<double>::infinity()
+                          : gammaStarValueAt(predEdgesZoh, accelHalfBox);
+        result.predictiveGammaStar = zohGamma;
+
+        bool currentTrigger = currentGamma < bridgeConfig.gammaStarSafeThreshold;
+        bool predictiveTrigger = bridgeConfig.gammaStarPredictiveThreshold > 0.0
+                                 && zohGamma < bridgeConfig.gammaStarPredictiveThreshold;
+        bool lookaheadDistanceTrigger = false;
+        if (bridgeConfig.gammaStarLookaheadDistance > 0) {
+            for (const auto &entry : positions) {
+                if (entry.first == robotId) continue;
+                auto zohIt = zohPositions.find(entry.first);
+                if (zohIt == zohPositions.end()) continue;
+                double dist = zohIt->second.distance_to(zohPositions.at(robotId));
+                if (dist < static_cast<double>(bridgeConfig.gammaStarLookaheadDistance)) {
+                    auto velIt = velocities.find(entry.first);
+                    Eigen::VectorXd ov = velIt != velocities.end() ? velIt->second : Eigen::VectorXd::Zero(2);
+                    Eigen::Vector2d rel(vi(0) - ov(0), vi(1) - ov(1));
+                    Eigen::Vector2d nrm(zohIt->second.x - zohPositions.at(robotId).x,
+                                        zohIt->second.y - zohPositions.at(robotId).y);
+                    double nlen = nrm.norm();
+                    if (nlen > 1e-9 && nrm.dot(rel) < 0.0) {
+                        lookaheadDistanceTrigger = true;
+                    }
+                    break;
+                }
+            }
+        }
+        if (!currentTrigger && !predictiveTrigger && !lookaheadDistanceTrigger) {
+            return result;
+        }
+        result.active = true;
+        if (currentTrigger) {
+            result.triggerSource = "current";
+        } else if (predictiveTrigger) {
+            result.triggerSource = "predictive";
+        } else {
+            result.triggerSource = "lookahead-distance";
+        }
+
+        int dirCount = std::max(2, bridgeConfig.gammaStarDirectionCount);
+        int magCount = std::max(1, bridgeConfig.gammaStarMagnitudeCount);
+        double scale = bridgeConfig.gammaStarCandidateScale;
+
+        double bestGamma = -std::numeric_limits<double>::infinity();
+        double bestAx = 0.0;
+        double bestAy = 0.0;
+        std::string bestNeighbour;
+        int evaluated = 0;
+
+        for (int dir = 0; dir < dirCount; ++dir) {
+            double angle = 2.0 * M_PI * static_cast<double>(dir) / static_cast<double>(dirCount);
+            double dirX = std::cos(angle);
+            double dirY = std::sin(angle);
+            for (int mag = 1; mag <= magCount; ++mag) {
+                double magnitude = (static_cast<double>(mag) / static_cast<double>(magCount))
+                                   * accelHalfBox * scale;
+                double candAx = dirX * magnitude;
+                double candAy = dirY * magnitude;
+
+                Point selfPos = pi;
+                Eigen::VectorXd selfVel = vi;
+                std::map<int, Point> predPositions;
+                std::map<int, Eigen::VectorXd> predVelocities;
+                for (const auto &entry : positions) {
+                    if (entry.first == robotId) continue;
+                    auto velIt = velocities.find(entry.first);
+                    predPositions[entry.first] = entry.second;
+                    predVelocities[entry.first] = velIt != velocities.end()
+                                                  ? velIt->second
+                                                  : Eigen::VectorXd::Zero(2);
+                }
+
+                for (int step = 1; step <= lookaheadSteps; ++step) {
+                    selfPos = Point(selfPos.x + selfVel(0) * dt + 0.5 * candAx * dt * dt,
+                                    selfPos.y + selfVel(1) * dt + 0.5 * candAy * dt * dt);
+                    selfVel << selfVel(0) + candAx * dt, selfVel(1) + candAy * dt;
+                    std::map<int, Point> nextPositions;
+                    std::map<int, Eigen::VectorXd> nextVelocities;
+                    for (const auto &entry : predPositions) {
+                        auto velIt = predVelocities.find(entry.first);
+                        Eigen::VectorXd ov = velIt != predVelocities.end()
+                                             ? velIt->second
+                                             : Eigen::VectorXd::Zero(2);
+                        nextPositions[entry.first] = Point(entry.second.x + ov(0) * dt,
+                                                           entry.second.y + ov(1) * dt);
+                        nextVelocities[entry.first] = ov;
+                    }
+                    predPositions = nextPositions;
+                    predVelocities = nextVelocities;
+                }
+                predPositions[robotId] = selfPos;
+                predVelocities[robotId] = selfVel;
+
+                auto predEdges = gammaStarFeedbackHalfSpaces(
+                        robotId, predPositions, predVelocities, params);
+                if (predEdges.empty()) {
+                    continue;
+                }
+                double predGamma = gammaStarValueAt(predEdges, accelHalfBox);
+                ++evaluated;
+                if (predGamma > bestGamma) {
+                    bestGamma = predGamma;
+                    bestAx = candAx;
+                    bestAy = candAy;
+                    double worst = std::numeric_limits<double>::infinity();
+                    for (const auto &edge : predEdges) {
+                        double residual = edge.constTerm;
+                        if (residual < worst) {
+                            worst = residual;
+                            bestNeighbour = edge.neighbourId;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!std::isfinite(bestGamma)) {
+            return result;
+        }
+        result.selectedGammaStar = bestGamma;
+        result.selectedAccelX = bestAx;
+        result.selectedAccelY = bestAy;
+        result.evaluatedCandidates = evaluated;
+        result.dominantNeighbour = bestNeighbour;
+        return result;
+    }
+
     void applyBridgeNominalControls() {
         if (!bridgeConfig.enabled) {
             return;
@@ -406,13 +734,53 @@ private:
         for (auto &robot : robots) {
             positions[robot->id] = robot->model->xy();
         }
-        std::map<int, Eigen::VectorXd> goalDiversionVelocities;
-        if (bridgeConfig.goalDiversionEnabled) {
+        std::map<int, Eigen::VectorXd> velocities;
+        if (bridgeConfig.goalDiversionEnabled || bridgeConfig.gammaStarFeedbackEnabled) {
             for (auto &robot : robots) {
-                goalDiversionVelocities[robot->id] = robot->model->getVelocity();
+                velocities[robot->id] = robot->model->getVelocity();
+            }
+        }
+        std::map<int, Eigen::VectorXd> goalDiversionVelocities = velocities;
+        GammaStarFeedbackSafetyParams gammaStarParams{};
+        std::map<int, GammaStarFeedbackResult> gammaStarFeedbackResults;
+        int gammaStarFeedbackActiveCount = 0;
+        int gammaStarFeedbackEvaluatedCandidates = 0;
+        double gammaStarFeedbackMinCurrent = std::numeric_limits<double>::infinity();
+        double gammaStarFeedbackMinSelected = std::numeric_limits<double>::infinity();
+        json gammaStarFeedbackLinks = json::array();
+        if (bridgeConfig.gammaStarFeedbackEnabled) {
+            gammaStarParams = gammaStarFeedbackSafetyParams();
+            for (auto &robot : robots) {
+                GammaStarFeedbackResult fb = gammaStarFeedbackNominal(
+                        robot->id, positions, velocities, gammaStarParams);
+                gammaStarFeedbackResults[robot->id] = fb;
+                if (fb.active) {
+                    ++gammaStarFeedbackActiveCount;
+                    gammaStarFeedbackEvaluatedCandidates += fb.evaluatedCandidates;
+                    if (std::isfinite(fb.currentGammaStar)) {
+                        gammaStarFeedbackMinCurrent = std::min(gammaStarFeedbackMinCurrent, fb.currentGammaStar);
+                    }
+                    if (std::isfinite(fb.selectedGammaStar)) {
+                        gammaStarFeedbackMinSelected = std::min(gammaStarFeedbackMinSelected, fb.selectedGammaStar);
+                    }
+                    gammaStarFeedbackLinks.push_back({
+                        {"robot", robot->id},
+                        {"current_gamma_star", fb.currentGammaStar},
+                        {"predictive_gamma_star", std::isfinite(fb.predictiveGammaStar)
+                                                      ? json(fb.predictiveGammaStar)
+                                                      : json(nullptr)},
+                        {"selected_gamma_star", fb.selectedGammaStar},
+                        {"selected_accel_x", fb.selectedAccelX},
+                        {"selected_accel_y", fb.selectedAccelY},
+                        {"evaluated_candidates", fb.evaluatedCandidates},
+                        {"dominant_neighbour", fb.dominantNeighbour},
+                        {"trigger_source", fb.triggerSource}
+                    });
+                }
             }
         }
         std::map<int, Point> goalDiversionOffsets;
+        std::map<int, std::vector<Point>> goalDiversionPerPairOffsets;
         json goalDiversionLinks = json::array();
         int goalDiversionActiveCount = 0;
         if (bridgeConfig.goalDiversionEnabled) {
@@ -496,10 +864,13 @@ private:
                         magnitude = bridgeConfig.goalDiversionMaxOffset;
                     }
                     Point offset = awayUnit * magnitude;
-                    auto existing = goalDiversionOffsets.find(divergeId);
-                    if (existing == goalDiversionOffsets.end()
-                        || offset.len() > existing->second.len()) {
-                        goalDiversionOffsets[divergeId] = offset;
+                    goalDiversionPerPairOffsets[divergeId].push_back(offset);
+                    if (!bridgeConfig.goalDiversionMultiPair) {
+                        auto existing = goalDiversionOffsets.find(divergeId);
+                        if (existing == goalDiversionOffsets.end()
+                            || offset.len() > existing->second.len()) {
+                            goalDiversionOffsets[divergeId] = offset;
+                        }
                     }
                     ++goalDiversionActiveCount;
                     goalDiversionLinks.push_back({
@@ -517,6 +888,24 @@ private:
                     });
                 }
             }
+            if (bridgeConfig.goalDiversionMultiPair) {
+                for (auto &entry : goalDiversionPerPairOffsets) {
+                    int robotId = entry.first;
+                    const std::vector<Point> &pairOffsets = entry.second;
+                    double sumX = 0.0;
+                    double sumY = 0.0;
+                    for (const auto &off : pairOffsets) {
+                        sumX += off.x;
+                        sumY += off.y;
+                    }
+                    Point consensus(sumX, sumY);
+                    double consensusLen = consensus.len();
+                    if (consensusLen > bridgeConfig.goalDiversionMaxOffset) {
+                        consensus = consensus * (bridgeConfig.goalDiversionMaxOffset / consensusLen);
+                    }
+                    goalDiversionOffsets[robotId] = consensus;
+                }
+            }
             stepData["bridge"]["nominal"]["goal_diversion"] = {
                 {"enabled", true},
                 {"active_count", goalDiversionActiveCount},
@@ -527,6 +916,7 @@ private:
                 {"lookahead_steps", bridgeConfig.goalDiversionLookaheadSteps},
                 {"lookahead_distance_threshold", bridgeConfig.goalDiversionLookaheadDistance},
                 {"lookahead_radial_threshold", bridgeConfig.goalDiversionLookaheadRadial},
+                {"multi_pair", bridgeConfig.goalDiversionMultiPair},
                 {"links", goalDiversionLinks}
             };
         }
@@ -869,7 +1259,40 @@ private:
                     nominal(2) = yawRate;
                 }
             }
+            if (bridgeConfig.gammaStarFeedbackEnabled) {
+                auto fbIt = gammaStarFeedbackResults.find(robot->id);
+                if (fbIt != gammaStarFeedbackResults.end() && fbIt->second.active) {
+                    const auto &fb = fbIt->second;
+                    nominal(0) = fb.selectedAccelX;
+                    nominal(1) = fb.selectedAccelY;
+                    if (nominal.size() > 2) {
+                        nominal(2) = 0.0;
+                    }
+                }
+            }
             robot->setNominalControlOverride(nominal);
+        }
+        if (bridgeConfig.gammaStarFeedbackEnabled) {
+            stepData["bridge"]["nominal"]["gamma_star_feedback"] = {
+                {"enabled", true},
+                {"safe_threshold", bridgeConfig.gammaStarSafeThreshold},
+                {"accel_half_box", bridgeConfig.gammaStarAccelHalfBox},
+                {"direction_count", bridgeConfig.gammaStarDirectionCount},
+                {"magnitude_count", bridgeConfig.gammaStarMagnitudeCount},
+                {"candidate_scale", bridgeConfig.gammaStarCandidateScale},
+                {"lookahead_steps", bridgeConfig.gammaStarLookaheadSteps},
+                {"predictive_threshold", bridgeConfig.gammaStarPredictiveThreshold},
+                {"lookahead_distance", bridgeConfig.gammaStarLookaheadDistance},
+                {"active_count", gammaStarFeedbackActiveCount},
+                {"evaluated_candidates", gammaStarFeedbackEvaluatedCandidates},
+                {"min_current_gamma_star", std::isfinite(gammaStarFeedbackMinCurrent)
+                                              ? json(gammaStarFeedbackMinCurrent)
+                                              : json(nullptr)},
+                {"min_selected_gamma_star", std::isfinite(gammaStarFeedbackMinSelected)
+                                                ? json(gammaStarFeedbackMinSelected)
+                                                : json(nullptr)},
+                {"links", gammaStarFeedbackLinks}
+            };
         }
         if (predictiveGateEnabled) {
             stepData["bridge"]["nominal"]["predictive_active_gate"] = {

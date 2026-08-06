@@ -21,6 +21,8 @@ public:
     MultiCBF cbfNoSlack;
     std::unordered_map<std::string, CBF> cbfSlack;
     std::unordered_map<std::string, SecondOrderCBF> secondOrderCbfNoSlack;
+    std::unordered_map<std::string, SecondOrderCBF> secondOrderCbfSlack;
+    bool hocbfFeasibilitySlackEnabled = false;
     std::unique_ptr<BaseModel> model;
     json opt;
     std::unique_ptr<OptimiserBase> optimiser;
@@ -926,6 +928,17 @@ public:
         return bound;
     }
 
+    bool isHocbfFeasibilitySlackEnabled() const {
+        if (!isSecondOrderCbfEnabled()) {
+            return false;
+        }
+        const json& highOrder = settings["cbfs"]["high-order"];
+        if (!highOrder.contains("feasibility-slack")) {
+            return false;
+        }
+        return highOrder["feasibility-slack"].value("enabled", false);
+    }
+
     void addSecondOrderAccelerationBounds(json &jsonControlBounds) {
         if (!hasSecondOrderAccelerationBound()) {
             return;
@@ -1251,6 +1264,16 @@ public:
                 setSafetyCBF(cbfConfig["without-slack"]["safety"]);
             }
         }
+
+        hocbfFeasibilitySlackEnabled = isHocbfFeasibilitySlackEnabled();
+        if (hocbfFeasibilitySlackEnabled) {
+            for (auto& [name, cbf] : secondOrderCbfNoSlack) {
+                secondOrderCbfSlack[name] = std::move(cbf);
+            }
+            secondOrderCbfNoSlack.clear();
+        } else {
+            secondOrderCbfSlack.clear();
+        }
     }
 
     void optimise() {
@@ -1285,7 +1308,9 @@ public:
             auto x = model->getX();
 
             int uSize = model->uSize();
-            int slackSize = cbfSlack.size();
+            int cvtSlackSize = cbfSlack.size();
+            int hocbfSlackSize = secondOrderCbfSlack.size();
+            int slackSize = cvtSlackSize + hocbfSlackSize;
             int totalSize = uSize + slackSize;
 
             optimiser->start(totalSize, uSize);
@@ -1358,6 +1383,28 @@ public:
                 });
                 ++cnt;
             }
+
+            json jsonSecondOrderCBFSlack = json::array();
+            for (auto &[name, cbf]: secondOrderCbfSlack) {
+                auto evaluation = cbf.evaluateConstraint(x, runtime);
+                secondOrderEvaluations[name] = evaluation;
+                Eigen::VectorXd coe = makeSlackConstraintCoefficients(evaluation.uCoe, slackSize, cnt);
+
+                optimiser->addLinearConstraint(coe, -evaluation.constTerm);
+
+                jsonSecondOrderCBFSlack.emplace_back(json{
+                        {"name",  cbf.name},
+                        {"coe",   model->control2Json(evaluation.uCoe)},
+                        {"const", evaluation.constTerm},
+                        {"h", evaluation.h},
+                        {"hdot", evaluation.hdot},
+                        {"psi1", evaluation.psi1},
+                        {"sampledDataReserve", evaluation.sampledDataReserve},
+                        {"hocbf", evaluation.constTerm}
+                });
+                ++cnt;
+            }
+            opt["hocbfSlack"] = jsonSecondOrderCBFSlack;
             opt["cbfSlack"] = jsonCBFSlack;
 
             auto result = optimiser->solve();

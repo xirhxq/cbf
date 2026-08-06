@@ -38,6 +38,7 @@ class SuiteSpec:
     enable_task_aware_reserve: bool = False
     enable_goal_diversion: bool = False
     enable_goal_diversion_predictive: bool = False
+    enable_goal_diversion_multipair: bool = False
     support_chain_guard_scope: str = "first-anchor"
 
 
@@ -56,6 +57,7 @@ def default_active_search_suite_specs(
     include_task_aware_state_reserve: bool = False,
     include_goal_diversion: bool = False,
     include_goal_diversion_predictive: bool = False,
+    include_goal_diversion_multipair: bool = False,
     predictive_reserve_margin: float = 25.0,
     state_reserve_distance: float = 120.0,
     state_reserve_radial: float = 4.0,
@@ -136,6 +138,22 @@ def default_active_search_suite_specs(
                     robust_switch_margin=predictive_reserve_margin,
                     enable_task_aware_reserve=True,
                     enable_goal_diversion_predictive=True,
+                    support_chain_guard_scope="first-anchor",
+                )
+            )
+        if include_goal_diversion_multipair:
+            specs.append(
+                SuiteSpec(
+                    source_row="R4",
+                    label="AS_HOCBF_TASK_RESERVE_DIVERT_PRED_MP",
+                    enable_nominal_guard=True,
+                    search_policy="active-predictive",
+                    enable_predictive_gate=True,
+                    topology_policy="adaptive-chain",
+                    robust_switch_margin=predictive_reserve_margin,
+                    enable_task_aware_reserve=True,
+                    enable_goal_diversion_predictive=True,
+                    enable_goal_diversion_multipair=True,
                     support_chain_guard_scope="first-anchor",
                 )
             )
@@ -412,6 +430,7 @@ def apply_goal_diversion(
     lookahead_steps: int = 0,
     lookahead_distance_threshold: float | None = None,
     lookahead_radial_threshold: float | None = None,
+    multi_pair: bool = False,
 ) -> None:
     nominal = config.setdefault("bridge", {}).setdefault("nominal", {})
     payload = {
@@ -436,7 +455,34 @@ def apply_goal_diversion(
             if lookahead_radial_threshold is not None
             else radial_threshold
         )
+    if multi_pair:
+        payload["multi-pair"] = True
     nominal["goal-diversion"] = payload
+
+
+def apply_gamma_star_feedback(
+    config: dict[str, Any],
+    safe_threshold: float = 1.0,
+    accel_half_box: float = 2.0,
+    direction_count: int = 8,
+    magnitude_count: int = 3,
+    candidate_scale: float = 1.0,
+    lookahead_steps: int = 1,
+    predictive_threshold: float = 0.0,
+    lookahead_distance: int = 0,
+) -> None:
+    nominal = config.setdefault("bridge", {}).setdefault("nominal", {})
+    nominal["gamma-star-feedback"] = {
+        "enabled": True,
+        "safe-threshold": float(safe_threshold),
+        "accel-half-box": float(accel_half_box),
+        "direction-count": int(direction_count),
+        "magnitude-count": int(magnitude_count),
+        "candidate-scale": float(candidate_scale),
+        "lookahead-steps": int(lookahead_steps),
+        "predictive-threshold": float(predictive_threshold),
+        "lookahead-distance": int(lookahead_distance),
+    }
 
 
 def apply_completion_stress_config(config: dict[str, Any]) -> None:
@@ -513,6 +559,7 @@ def run_active_search_bridge_suite(
     include_task_aware_state_reserve: bool = False,
     include_goal_diversion: bool = False,
     include_goal_diversion_predictive: bool = False,
+    include_goal_diversion_multipair: bool = False,
     predictive_reserve_margin: float = 25.0,
     state_reserve_distance: float = 120.0,
     state_reserve_radial: float = 4.0,
@@ -694,6 +741,7 @@ def run_active_search_bridge_suite(
                     lookahead_steps=goal_diversion_lookahead_steps,
                     lookahead_distance_threshold=goal_diversion_lookahead_distance,
                     lookahead_radial_threshold=goal_diversion_lookahead_radial,
+                    multi_pair=spec.enable_goal_diversion_multipair,
                 )
             if spec.enable_state_dependent_edge_reserve:
                 apply_predictive_state_dependent_edge_reserve(config)
@@ -772,6 +820,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--belief-concentration-mode", type=str, default="mass", choices=["mass", "ridge", "gradient", "information_gain", "explore_mass", "verify", "hybrid"])
     parser.add_argument("--include-goal-diversion", action="store_true")
     parser.add_argument("--include-goal-diversion-predictive", action="store_true")
+    parser.add_argument("--include-goal-diversion-multipair", action="store_true")
     parser.add_argument("--goal-diversion-distance", type=float, default=120.0)
     parser.add_argument("--goal-diversion-radial", type=float, default=4.0)
     parser.add_argument("--goal-diversion-separation-scale", type=float, default=4.0)
@@ -814,6 +863,7 @@ def main() -> int:
         include_task_aware_state_reserve=args.include_task_aware_state_reserve,
         include_goal_diversion=args.include_goal_diversion,
         include_goal_diversion_predictive=args.include_goal_diversion_predictive,
+        include_goal_diversion_multipair=args.include_goal_diversion_multipair,
         predictive_reserve_margin=args.predictive_reserve_margin,
         state_reserve_distance=args.state_reserve_distance,
         state_reserve_radial=args.state_reserve_radial,

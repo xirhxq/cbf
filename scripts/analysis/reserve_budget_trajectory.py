@@ -411,7 +411,7 @@ def render_figure(results: list[dict[str, Any]], fig_path: Path) -> None:
     ax.axhline(0.0, color="black", linewidth=0.8, linestyle=":")
     ax.set_xlabel("runtime (s)")
     ax.set_ylabel(r"$\gamma_i^\star(x_k;\rho)$  (m/s$^2$)")
-    ax.set_title("Reserve-feasibility budget trajectory on AS_HOCBF_TASK_RESERVE")
+    ax.set_title(r"Reserve-feasibility budget $\gamma_i^\star$")
     ax.legend(fontsize=7, ncol=1, loc="best")
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
