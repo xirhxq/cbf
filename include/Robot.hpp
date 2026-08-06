@@ -2506,6 +2506,11 @@ public:
             uNominal.setZero();
         }
             optimiser->clear();
+            // Per-solve fresh optimiser to avoid OsqpEigen heap corruption
+            // from repeated clearSolver+initSolver on a long-lived Solver.
+            optimiser = createOptimiser(
+                settings.at("optimiser").get<std::string>(),
+                settings.at("cbfs").at("objective-function"));
 
             auto f = model->f();
             auto g = model->g();

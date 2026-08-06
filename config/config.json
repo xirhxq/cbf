@@ -1,24 +1,45 @@
 {
   "world": {
     "boundary": [
-      [-1500, -1500],
-      [1500, -1500],
-      [1500, 1500],
-      [-1500, 1500]
+      [
+        -1500,
+        -1500
+      ],
+      [
+        1500,
+        -1500
+      ],
+      [
+        1500,
+        1500
+      ],
+      [
+        -1500,
+        1500
+      ]
     ],
-    "charge":[
+    "charge": [
       {
-        "position": [-300, 100],
+        "position": [
+          -300,
+          100
+        ],
         "radius": 10.0,
         "charge-rate": 5.0
       },
       {
-        "position": [0, 100],
+        "position": [
+          0,
+          100
+        ],
         "radius": 10.0,
         "charge-rate": 5.0
       },
       {
-        "position": [300, 100],
+        "position": [
+          300,
+          100
+        ],
         "radius": 10.0,
         "charge-rate": 5.0
       }
@@ -30,40 +51,113 @@
   "formation": {
     "parts": 2,
     "bases-id": [
-      [1, 0],
-      [1, 2]
+      [
+        1,
+        0
+      ],
+      [
+        1,
+        2
+      ]
     ]
   },
   "bases": [
-    [-1550, -300],
-    [-1550, 0],
-    [-1550, 300]
+    [
+      -1550,
+      -300
+    ],
+    [
+      -1550,
+      0
+    ],
+    [
+      -1550,
+      300
+    ]
   ],
   "initial": {
     "position": {
-      "//method": ["specified", "random-in-polygon", "random-in-world"],
-      "method": "random-in-polygon",
+      "//method": [
+        "specified",
+        "random-in-polygon",
+        "random-in-world"
+      ],
+      "method": "specified",
       "polygon": [
-        [-1490, -200],
-        [-1490, 200],
-        [-1370, 200],
-        [-1370, -200]
+        [
+          -1490,
+          -200
+        ],
+        [
+          -1490,
+          200
+        ],
+        [
+          -1370,
+          200
+        ],
+        [
+          -1370,
+          -200
+        ]
       ],
       "positions": [
-        [-1490, -120],
-        [-1470, -130],
-        [-1450, -140],
-        [-1430, -150],
-        [-1410, -160],
-        [-1390, -170],
-        [-1370, -180],
-        [-1490, 120],
-        [-1470, 130],
-        [-1450, 140],
-        [-1430, 150],
-        [-1410, 160],
-        [-1390, 170],
-        [-1370, 180]
+        [
+          -1490,
+          -120
+        ],
+        [
+          -1470,
+          -130
+        ],
+        [
+          -1450,
+          -140
+        ],
+        [
+          -1430,
+          -150
+        ],
+        [
+          -1410,
+          -160
+        ],
+        [
+          -1390,
+          -170
+        ],
+        [
+          -1370,
+          -180
+        ],
+        [
+          -1490,
+          120
+        ],
+        [
+          -1470,
+          130
+        ],
+        [
+          -1450,
+          140
+        ],
+        [
+          -1430,
+          150
+        ],
+        [
+          -1410,
+          160
+        ],
+        [
+          -1390,
+          170
+        ],
+        [
+          -1370,
+          180
+        ]
       ]
     },
     "battery": {
@@ -77,7 +171,10 @@
     "discharge-rate": 0.5
   },
   "uncertainty": {
-    "//method": ["dist", "const"],
+    "//method": [
+      "dist",
+      "const"
+    ],
     "method": "dist",
     "const": {
       "epsilon": 100
@@ -90,11 +187,18 @@
   "position_covariance": {
     "enable": true,
     "ranging_sigma": 0.5,
-    "//uncertainty-type": ["std_avg", "max_eigenvalue"],
+    "//uncertainty-type": [
+      "std_avg",
+      "max_eigenvalue"
+    ],
     "uncertainty-type": "max_eigenvalue"
   },
   "searching": {
-    "//method": ["downward", "front-sector", "front-cone"],
+    "//method": [
+      "downward",
+      "front-sector",
+      "front-cone"
+    ],
     "method": "front-sector",
     "downward": {
       "radius": 200.0
@@ -110,13 +214,16 @@
       "camera-pitch-deg": 30.0
     }
   },
-  "optimiser": "Gurobi",
+  "optimiser": "OSQP",
   "cbfs": {
     "objective-function": {
       "k_delta": 10.0
     },
     "uncertainty-rate": {
-      "//mode": ["off", "backward-difference-positive"],
+      "//mode": [
+        "off",
+        "backward-difference-positive"
+      ],
       "mode": "backward-difference-positive"
     },
     "input-limits": {
@@ -128,7 +235,12 @@
       "cvt": {
         "name": "cvtCBF",
         "on": true,
-        "//exploration-mode": ["centroid", "intelligent", "nearest-unexplored", "cvt"],
+        "//exploration-mode": [
+          "centroid",
+          "intelligent",
+          "nearest-unexplored",
+          "cvt"
+        ],
         "exploration-mode": "nearest-unexplored",
         "front-focus-distance": 400.0,
         "kp": 5.0,
@@ -157,12 +269,18 @@
       }
     },
     "without-slack": {
-      "//method": ["all", "min"],
+      "//method": [
+        "all",
+        "min"
+      ],
       "method": "all",
       "energy": {
         "name": "energyCBF",
         "on": false,
-        "//energy-value": ["self", "neighbour-min"],
+        "//energy-value": [
+          "self",
+          "neighbour-min"
+        ],
         "energy-value": "neighbour-min",
         "normalize": {
           "on": false,
@@ -177,7 +295,10 @@
       "safety": {
         "name": "safetyCBF",
         "on": false,
-        "//mode": ["minimum", "pairwise"],
+        "//mode": [
+          "minimum",
+          "pairwise"
+        ],
         "mode": "minimum",
         "safe-distance": 10.0,
         "k": 1.0,
@@ -216,9 +337,12 @@
     }
   },
   "execute": {
-    "//execution-mode": ["distributed", "centralized"],
+    "//execution-mode": [
+      "distributed",
+      "centralized"
+    ],
     "execution-mode": "distributed",
-    "time-total": 500,
+    "time-total": 1000,
     "time-step": 0.5,
     "check-constraint-violation": false
   },
