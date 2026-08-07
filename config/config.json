@@ -248,7 +248,7 @@
           "coe": 1.0,
           "pow": 1
         },
-        "kp-follower": 3.5
+        "kp-follower": 3.0
       },
       "cvt-yaw": {
         "name": "cvtYawCBF",
