@@ -321,7 +321,7 @@
         "alpha": {
           "coe": 0.1,
           "pow": -1,
-          "sat": 4.5
+          "sat": 3.8
         }
       },
       "comm-auto": {
