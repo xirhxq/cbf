@@ -247,7 +247,8 @@
         "alpha": {
           "coe": 1.0,
           "pow": 1
-        }
+        },
+        "kp-follower": 3.0
       },
       "cvt-yaw": {
         "name": "cvtYawCBF",
@@ -319,7 +320,7 @@
         "compensate-velocity": true,
         "consider-uncertainty": true,
         "alpha": {
-          "coe": 0.2,
+          "coe": 0.1,
           "pow": -1,
           "sat": 4.0
         }

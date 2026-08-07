@@ -1658,9 +1658,17 @@ public:
         if (config.contains("cvt") && config["cvt"]["on"]) {
             CBF cvtDistanceCBF;
             cvtDistanceCBF.name = config["cvt"]["name"];
-            cvtDistanceCBF.h = [cvtCenter, config, this](VectorXd x, double t) {
+            // Per-robot CVT kp: explorers (first 2 in each squad, idInMyPart
+            // in {1,2}) keep the full kp for fast coverage; followers use a
+            // gentler kp (config "kp-follower", defaults to kp) to avoid the
+            // CVT slingshot that catapults chain-tail UAVs past the comm
+            // boundary before the CBF can brake.
+            const double kpExplorer = config["cvt"].value("kp", 5.0);
+            const double kpFollower = config["cvt"].value("kp-follower", kpExplorer);
+            const bool isExplorer = (idInMyPart == 1 || idInMyPart == 2);
+            const double kp = isExplorer ? kpExplorer : kpFollower;
+            cvtDistanceCBF.h = [cvtCenter, kp, this](VectorXd x, double t) {
                 Point myPosition = this->model->extractXYFromVector(x);
-                double kp = config["cvt"]["kp"];
                 double distance = cvtCenter.distance_to(myPosition);
                 return -kp * distance;
             };
