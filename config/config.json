@@ -228,7 +228,7 @@
     },
     "input-limits": {
       "on": true,
-      "planar-component-max": 50.0,
+      "planar-component-max": 25.0,
       "yaw-rate-max": 0.35
     },
     "with-slack": {
