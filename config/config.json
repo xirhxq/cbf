@@ -243,7 +243,7 @@
         ],
         "exploration-mode": "nearest-unexplored",
         "front-focus-distance": 400.0,
-        "kp": 3.0,
+        "kp": 5.0,
         "alpha": {
           "coe": 1.0,
           "pow": 1
