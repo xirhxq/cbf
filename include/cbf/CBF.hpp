@@ -18,6 +18,8 @@ private:
     // Class-k function parameters: alpha(h) = c * h^k
     double alpha_c = 0.1;
     int alpha_k = 3;
+    // Saturation limit for the tanh-recovery custom alpha (h<0 side). 0 = unused.
+    double alpha_sat = 0.0;
 
 public:
     CBF() {
@@ -31,7 +33,30 @@ public:
         }
         alpha_c = coefficient;
         alpha_k = power;
+        alpha_sat = 0.0;
         alpha = [coefficient, power](double h) { return coefficient * std::pow(h, power); };
+    }
+
+    // Set alpha as a piecewise class-K with saturated tanh recovery on h<0.
+    //   h >= 0: alpha(h) = safe_coe * h            (identical to linear class-K)
+    //   h <  0: alpha(h) = -sat * tanh((-h)/sat)   (recovers, saturating at +sat)
+    // Rationale: on the safe side zero disturbance vs linear; on the violation
+    // side demands a recovery rate up to `sat` (e.g. 4.0 < 5.0 physical cap),
+    // strong enough to break a steady-state violation equilibrium yet never
+    // exceeding the acceleration-limited feasibility bound, so the hard (no-slack)
+    // CBF constraint cannot drive the QP infeasible at any violation depth.
+    void setAlphaTanhRecovery(double safe_coe, double sat) {
+        if (safe_coe <= 0.0 || sat <= 0.0) {
+            throw std::invalid_argument("safe_coe and sat must be positive");
+        }
+        alpha_c = safe_coe;
+        alpha_k = -1;       // sentinel: tanh-recovery custom mode
+        alpha_sat = sat;
+        alpha = [safe_coe, sat](double h) {
+            return (h >= 0.0)
+                ? safe_coe * h
+                : -sat * std::tanh((-h) / sat);
+        };
     }
 
     void setAlphaCustom(std::function<double(double)> custom_alpha) {
@@ -40,6 +65,7 @@ public:
 
     double getAlphaCoefficient() const { return alpha_c; }
     int getAlphaPower() const { return alpha_k; }
+    double getAlphaSat() const { return alpha_sat; }
 
     double dh(VectorXd x, double t, int i){
         VectorXd nxt = x, pre = x;

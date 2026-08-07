@@ -1378,7 +1378,16 @@ public:
             commCBF.dhdx_analytical = dhdx;
             commCBF.dhdt_analytical = dhdt;
             ClassKParameters alphaParameters = readClassKParameters(config, 0.1, 1);
-            commCBF.setAlphaClassK(alphaParameters.coefficient, alphaParameters.power);
+            if (alphaParameters.power == -1) {
+                // Custom tanh-saturated recovery: h>=0 linear (safe_coe), h<0
+                // recovers at up to `sat` (< 5 m/s physical cap) to break the
+                // steady-state comm violation equilibrium without QP infeasibility.
+                const double sat = config.value("alpha", json::object())
+                    .value("sat", 4.0);
+                commCBF.setAlphaTanhRecovery(alphaParameters.coefficient, sat);
+            } else {
+                commCBF.setAlphaClassK(alphaParameters.coefficient, alphaParameters.power);
+            }
             cbfNoSlack.cbfs[commCBF.name] = commCBF;
         }
     }
@@ -2623,7 +2632,8 @@ public:
                             {"coe",   model->control2Json(uCoe)},
                             {"const", constraintConstWithTime},
                             {"alpha_coe", cbf.getAlphaCoefficient()},
-                            {"alpha_pow", cbf.getAlphaPower()}
+                            {"alpha_pow", cbf.getAlphaPower()},
+                            {"alpha_sat", cbf.getAlphaSat()}
                     });
                     hardConstraintCoefficients.push_back(uCoe);
                 }
