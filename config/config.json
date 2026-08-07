@@ -313,7 +313,7 @@
         "on": true,
         "mode": "scissor",
         "max-range": 850.0,
-        "k": 0.7,
+        "k": 1.0,
         "min-neighbour-id-offset": -2,
         "max-neighbour-id-offset": 0,
         "compensate-velocity": true,
