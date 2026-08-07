@@ -319,8 +319,9 @@
         "compensate-velocity": true,
         "consider-uncertainty": true,
         "alpha": {
-          "coe": 0.5,
-          "pow": 1
+          "coe": 0.1,
+          "pow": -1,
+          "sat": 4.5
         }
       },
       "comm-auto": {
