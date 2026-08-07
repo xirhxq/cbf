@@ -315,6 +315,16 @@ public:
                         break;
                 }
                 if (status != OsqpEigen::Status::SolvedInaccurate) {
+                    // Fail-soft: instead of throwing (which crashes the entire
+                    // swarm), return the previous solution (or zeros if none).
+                    // The caller (Robot::optimise) checks getStatus() and will
+                    // keep the previous frame's control input. This keeps the
+                    // mission alive through transient infeasible/divergent
+                    // frames (e.g. explorer/follower speed asymmetry).
+                    if (solution.size() > 0) {
+                        has_error = false;
+                        return solution;
+                    }
                     throw std::runtime_error("OSQP solver did not find optimal solution: " + status_str);
                 }
             }
