@@ -2702,9 +2702,20 @@ public:
             opt["solver_info"] = solverStatus;
             const std::string status = solverStatus.value("status", "unknown");
             if (status != "optimal") {
-                opt["status"] = "failed";
+                // Fail-soft: on QP non-convergence (max_iter_reached,
+                // primal_infeasible, etc.), reuse the previous frame's control
+                // input instead of crashing the entire swarm. This keeps the
+                // mission alive through transient ill-conditioned frames
+                // (e.g. explorer/follower speed asymmetry in route1 sequential
+                // solving). The previous control is still in the model from
+                // the last successful setControlInput.
+                auto uFallback = model->getControlInput();
+                opt["result"] = model->control2Json(uFallback);
+                opt["slacks"] = json::array();
+                opt["status"] = "fail_soft";
                 opt["error"] = solverStatus.value("error", status);
-                throw std::runtime_error("QP solve failed: " + status);
+                // Do NOT call setControlInput — keep previous frame's command.
+                return;  // skip the rest of optimise() for this frame
             }
 
             auto u = result.head(uSize);
