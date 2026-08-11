@@ -12,6 +12,13 @@ struct BridgeGammaStarResidual2D {
     double constant = 0.0;
 };
 
+inline BridgeGammaStarResidual2D bridgeGammaStarResidualFromAffineMargin(
+        double controlAx,
+        double controlAy,
+        double constant) {
+    return {-controlAx, -controlAy, constant};
+}
+
 namespace bridge_gamma_star_detail {
 
 struct EpigraphHalfspace3D {

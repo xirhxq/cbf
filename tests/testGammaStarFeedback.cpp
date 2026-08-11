@@ -29,6 +29,16 @@ double fourCornerGamma(
 
 }  // namespace
 
+TEST_CASE("Affine-margin adapter preserves the physical acceleration sign") {
+    const auto residual = bridgeGammaStarResidualFromAffineMargin(1.0, -2.0, 0.5);
+    const auto valueAt = [&](double ax, double ay) {
+        return residual.constant - residual.ax * ax - residual.ay * ay;
+    };
+
+    CHECK(valueAt(1.0, 0.5) == doctest::Approx(0.5));
+    CHECK(valueAt(-1.0, 0.5) == doctest::Approx(-1.5));
+}
+
 TEST_CASE("Exact gamma-star keeps an interior optimum that corner scoring misses") {
     const std::vector<BridgeGammaStarResidual2D> residuals = {
             {1.0, 0.0, 0.5},

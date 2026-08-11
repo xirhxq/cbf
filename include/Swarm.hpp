@@ -504,7 +504,10 @@ private:
         std::vector<BridgeGammaStarResidual2D> residuals;
         residuals.reserve(edges.size());
         for (const auto &edge : edges) {
-            residuals.push_back({edge.ax, edge.ay, edge.constTerm});
+            residuals.push_back(bridgeGammaStarResidualFromAffineMargin(
+                    edge.ax,
+                    edge.ay,
+                    edge.constTerm));
         }
         return exactBridgeGammaStar2D(residuals, accelHalfBox);
     }
