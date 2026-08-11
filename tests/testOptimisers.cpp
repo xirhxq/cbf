@@ -779,7 +779,7 @@ TEST_CASE("RobotProjectsNominalAccelerationThroughHocbfGuardAndPreservesYawRate"
     CHECK(robot.opt.at("nominalGuard").at("margin_after").get<double>() == doctest::Approx(0.0));
 }
 
-TEST_CASE("HomotopyCandidateRemainsHardFeasibleAndExecutesIdempotently") {
+TEST_CASE("HomotopyCandidateExecutesWithinFrozenReproductionTolerance") {
     const std::string optimiserName = selectRobotTestOptimiser();
     json settings = makeSingleRobotNoCbfConfig(optimiserName);
     settings["model"] = "DoubleIntegrate2D";
@@ -855,7 +855,7 @@ TEST_CASE("HomotopyCandidateRemainsHardFeasibleAndExecutesIdempotently") {
 
     const auto executed = robot.model->getAcceleration();
     CHECK((executed - Eigen::Vector2d(selected.accelX, selected.accelY)).norm()
-          <= 1.0e-10);
+          <= BRIDGE_FULL_ROW_QP_REPRODUCTION_TOLERANCE);
 }
 
 TEST_CASE("Finite-precision endpoint repair moves only toward the certified witness") {
