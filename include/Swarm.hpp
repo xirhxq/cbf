@@ -6,8 +6,10 @@
 #include "bridge/BridgeSearchTracker.hpp"
 #include "bridge/BridgeTopology.hpp"
 #include "bridge/ExactGammaStar2D.hpp"
+#include "bridge/FullRowPredictiveFeedback.hpp"
+#include "bridge/FullRowPredictionAudit.hpp"
 #include "bridge/LookaheadCollisionGate.hpp"
-#include "bridge/TaskAwareGammaSelector.hpp"
+#include "bridge/ReserveTaskHomotopy.hpp"
 
 
 class Swarm {
@@ -40,6 +42,9 @@ public:
     bool bridgeHasPreviousSupportChainMargin = false;
     double bridgePreviousSupportChainMinMargin = std::numeric_limits<double>::infinity();
     double bridgeCurrentEffectiveReserveMargin = 0.0;
+    std::uint64_t bridgeFeedbackStepIndex = 0;
+    std::vector<BridgePredictionAuditEntry> bridgePendingPredictionAudits;
+    std::map<int, Point> bridgePreviousTaskGoals;
 public:
     Swarm(json &settings)
             : config(settings),
@@ -65,6 +70,17 @@ public:
         if (bridgeConfig.enabled) {
             bridgeSearch = BridgeSearchTracker(config, bridgeConfig);
             bridgeTopologyConfig = loadBridgeTopologyConfig(config);
+            if (!bridgeTopologyConfig.fixedReferences.empty()) {
+                const int baseCount = robots.empty()
+                        ? 0
+                        : static_cast<int>(robots.front()->bases.size());
+                validateBridgeFixedReferences(
+                        bridgeTopologyConfig.fixedReferences, n, baseCount);
+            }
+            if (bridgeConfig.gammaStarFeedbackEnabled) {
+                validateBridgeSingleTriangularLadder(
+                        bridgeTopologyConfig.fixedReferences);
+            }
         }
     }
 
@@ -77,8 +93,20 @@ public:
     }
 
     void endLog() {
+        json terminalRobots = json::array();
+        for (auto &robot : robots) {
+            terminalRobots.push_back(robot->getState());
+        }
+        data["terminal"] = {
+                {"runtime", robots.empty() ? 0.0 : robots.front()->runtime},
+                {"robots", terminalRobots},
+        };
         if (bridgeConfig.enabled) {
             data["bridge"]["final_search_map"] = bridgeSearch.finalMapJson();
+            if (bridgeConfig.gammaStarFeedbackEnabled) {
+                data["bridge"]["prediction_audit_unresolved_at_horizon"] =
+                        bridgePendingPredictionAudits.size();
+            }
         }
         ofstream << std::fixed << std::setprecision(6) << data;
         ofstream.close();
@@ -291,8 +319,8 @@ public:
                 updateGridWorld();
                 checkUpdatedGridWorld();
                 applyBridgeTopology();
-                applyBridgeNominalControls();
                 for (auto &robot: robots) robot->postsetCBF();
+                applyBridgeNominalControls();
                 applyBridgeNominalFeasibilityGuard();
 
                 if (isCentralizedExecution()) {
@@ -300,6 +328,7 @@ public:
                     centralizedOptimise();
                 } else {
                     for (auto &robot: robots) robot->optimise();
+                    finalizeBridgeFeedbackExecutionDiagnostics();
                 }
 
                 // if (checkConstraintViolation()) {
@@ -319,21 +348,39 @@ public:
                 for (auto &robot: robots) robot->stepTimeForward(tStep);
             }
             catch (...) {
+                std::string terminationMessage = "unknown exception";
+                try {
+                    throw;
+                }
+                catch (const std::exception &error) {
+                    terminationMessage = error.what();
+                }
+                catch (...) {
+                }
+                data["termination"] = {
+                        {"status", "exception"},
+                        {"runtime", robots.empty()
+                                ? 0.0 : robots.front()->runtime},
+                        {"message", terminationMessage},
+                };
                 for (auto &robot: robots) robot->updateGridWorld();
                 logOnce();
                 endLog();
                 printf("Data so far has been saved in %s\n", filename.c_str());
-                try {
-                    throw;
-                }
-                catch (std::exception &e) {
-                    std::cerr << e.what() << std::endl;
-                }
-                catch (...) {
-                    std::cerr << "Unknown error" << std::endl;
-                }
+                std::cerr << terminationMessage << std::endl;
                 break;
             }
+        }
+
+        if (!data.contains("termination")) {
+            data["termination"] = {
+                    {"status", robots.empty()
+                            || robots.front()->runtime >= tTotal
+                                    ? "horizon" : "stopped"},
+                    {"runtime", robots.empty()
+                            ? 0.0 : robots.front()->runtime},
+                    {"message", nullptr},
+            };
         }
 
         printf("\nAfter %.4lf seconds\n", robots[0]->runtime);
@@ -367,8 +414,24 @@ private:
         for (auto &robot : robots) {
             positions[robot->id] = robot->model->xy();
         }
-        bridgeTopologyDecision = chooseBridgeTopology(positions, bridgeTopologyConfig, bridgeConfig.topologyPolicy);
+        bridgeTopologyDecision = chooseBridgeTopology(
+                positions,
+                bridgeTopologyConfig,
+                bridgeConfig.topologyPolicy,
+                bridgeFixedBases());
         for (auto &robot : robots) {
+            auto referenceIt = bridgeTopologyDecision.references.find(robot->id);
+            if (referenceIt != bridgeTopologyDecision.references.end()) {
+                robot->setBridgeFormationOverride(
+                    referenceIt->second.anchorIds,
+                    referenceIt->second.baseIds);
+                continue;
+            }
+            if (bridgeConfig.topologyPolicy == "fixed"
+                && !bridgeTopologyConfig.fixedReferences.empty()) {
+                throw std::runtime_error(
+                    "fixed bridge topology omitted robot " + std::to_string(robot->id));
+            }
             auto it = bridgeTopologyDecision.anchorIds.find(robot->id);
             if (it == bridgeTopologyDecision.anchorIds.end()) {
                 robot->clearBridgeFormationOverride();
@@ -382,349 +445,593 @@ private:
         }
     }
 
-    struct GammaStarHalfSpace {
-        double ax = 0.0;
-        double ay = 0.0;
-        double constTerm = 0.0;
-        std::string neighbourId;
-    };
-
-    struct GammaStarFeedbackSafetyParams {
-        double effectiveSafeDistance = 0.0;
-        double k = 1.0;
-        double lambda1 = 1.0;
-        double lambda2 = 1.0;
-        double k1 = 2.0;
-        double k0 = 1.0;
-        double sampledDataReserve = 0.0;
-        bool usePairStateReserve = false;
-        double pairStateReserveDistance = 0.0;
-        double pairStateReserveRadial = 0.0;
-        double pairStateReserveVelocityGain = 0.0;
-        double pairStateReserveSampleTime = 0.0;
-        double pairStateReserveMax = std::numeric_limits<double>::infinity();
-    };
-
-    GammaStarFeedbackSafetyParams gammaStarFeedbackSafetyParams() const {
-        GammaStarFeedbackSafetyParams params;
-        auto safetyConfig = config["cbfs"]["without-slack"]["safety"];
-        double safeDistance = safetyConfig["safe-distance"];
-        double tighteningMargin = safetyConfig.value("safe-distance-tightening-margin", 0.0);
-        params.effectiveSafeDistance = safeDistance + tighteningMargin;
-        params.k = safetyConfig.contains("k") ? static_cast<double>(safetyConfig["k"]) : 1.0;
-        params.lambda1 = secondOrderLambda1();
-        params.lambda2 = secondOrderLambda2();
-        params.k1 = params.lambda1 + params.lambda2;
-        params.k0 = params.lambda1 * params.lambda2;
-        params.sampledDataReserve = secondOrderSampledDataReserve();
-        params.pairStateReserveSampleTime = config.value("execute", json::object()).value("time-step", 0.0);
-        if (config.contains("pair-state-reserve")) {
-            const json &pairReserveConfig = config["pair-state-reserve"];
-            params.usePairStateReserve = pairReserveConfig.value("enabled", false);
-            params.pairStateReserveDistance = pairReserveConfig.value("distance-threshold", 0.0);
-            params.pairStateReserveRadial = pairReserveConfig.value("radial-threshold", 0.0);
-            params.pairStateReserveVelocityGain = pairReserveConfig.value("velocity-gain", 0.0);
-            params.pairStateReserveSampleTime = pairReserveConfig.value("sample-time", params.pairStateReserveSampleTime);
-            params.pairStateReserveMax = pairReserveConfig.value("max-reserve", params.pairStateReserveMax);
+    std::map<int, BridgePredictionState2D> bridgePredictionStates() const {
+        std::map<int, BridgePredictionState2D> states;
+        for (const auto &robot : robots) {
+            states[robot->id] = {
+                    robot->model->xy(),
+                    robot->model->getVelocity(),
+                    robot->model->getAcceleration(),
+            };
         }
-        return params;
+        return states;
     }
 
-    std::vector<GammaStarHalfSpace> gammaStarFeedbackHalfSpaces(
-            int robotId,
-            const std::map<int, Point> &positions,
-            const std::map<int, Eigen::VectorXd> &velocities,
-            const GammaStarFeedbackSafetyParams &params) const {
-        std::vector<GammaStarHalfSpace> edges;
-        auto selfPosIt = positions.find(robotId);
-        auto selfVelIt = velocities.find(robotId);
-        if (selfPosIt == positions.end() || selfVelIt == velocities.end()) {
-            return edges;
+    std::map<int, Point> bridgeFixedBases() const {
+        std::map<int, Point> bases;
+        if (robots.empty()) {
+            return bases;
         }
-        Point pi = selfPosIt->second;
-        Eigen::VectorXd vi = selfVelIt->second;
-        if (vi.size() < 2) {
-            return edges;
+        for (size_t index = 0; index < robots.front()->bases.size(); ++index) {
+            bases[static_cast<int>(index)] = robots.front()->bases[index];
         }
-        for (const auto &entry : positions) {
-            int otherId = entry.first;
-            if (otherId == robotId) {
-                continue;
-            }
-            Point pj = entry.second;
-            auto velIt = velocities.find(otherId);
-            if (velIt == velocities.end()) {
-                continue;
-            }
-            Eigen::VectorXd vj = velIt->second;
-            if (vj.size() < 2) {
-                continue;
-            }
-            PairwiseDistanceKinematics kin;
-            Eigen::Vector2d r(pi.x - pj.x, pi.y - pj.y);
-            double distance = r.norm();
-            if (distance < 1e-9) {
-                continue;
-            }
-            kin.distance = distance;
-            kin.normal = r / distance;
-            kin.relativeVelocity << vi(0) - vj(0), vi(1) - vj(1);
-            kin.radialVelocity = kin.normal.dot(kin.relativeVelocity);
-            double speedSquared = kin.relativeVelocity.squaredNorm();
-            kin.curvature = (speedSquared - kin.radialVelocity * kin.radialVelocity) / distance;
+        return bases;
+    }
 
-            double h = params.k * (kin.distance - params.effectiveSafeDistance);
-            double hdot = params.k * kin.radialVelocity;
-            double hddotConst = params.k * kin.curvature;
-            double reserve = params.sampledDataReserve;
-            if (params.usePairStateReserve
-                && kin.distance < params.pairStateReserveDistance
-                && kin.radialVelocity < -params.pairStateReserveRadial) {
-                double closingRate = std::max(0.0, -kin.radialVelocity);
-                double pairReserve = params.pairStateReserveVelocityGain * closingRate * params.pairStateReserveSampleTime;
-                if (pairReserve > params.pairStateReserveMax) {
-                    pairReserve = params.pairStateReserveMax;
+    std::vector<BridgeFullRowDescriptor> bridgeFullRowDescriptors() const {
+        const json &safety = config.at("cbfs").at("without-slack").at("safety");
+        const json &communication =
+                config.at("cbfs").at("without-slack").at("comm-fixed");
+        const double lambda1 = secondOrderLambda1();
+        const double lambda2 = secondOrderLambda2();
+        const double reserve = secondOrderSampledDataReserve();
+        const PairwiseSecondOrderRowSpec safetySpec{
+                PairwiseSecondOrderBarrierKind::CollisionLower,
+                safety.at("safe-distance").get<double>(),
+                0.0,
+                safety.value("k", 1.0),
+                lambda1,
+                lambda2,
+                reserve,
+        };
+        const PairwiseSecondOrderRowSpec communicationSpec{
+                PairwiseSecondOrderBarrierKind::CommunicationUpper,
+                communication.at("max-range").get<double>(),
+                0.0,
+                communication.value("k", 1.0),
+                lambda1,
+                lambda2,
+                reserve,
+        };
+
+        std::vector<BridgeFullRowDescriptor> rows;
+        for (const auto &owner : robots) {
+            for (const auto &reference : robots) {
+                if (owner->id == reference->id) {
+                    continue;
                 }
-                reserve += pairReserve;
+                rows.push_back({
+                        "secondOrderSafetyCBF(#"
+                                + std::to_string(reference->id) + ")",
+                        owner->id,
+                        BridgeReferenceKind::Mobile,
+                        reference->id,
+                        safetySpec,
+                });
             }
-            GammaStarHalfSpace edge;
-            edge.ax = params.k * kin.normal.x();
-            edge.ay = params.k * kin.normal.y();
-            edge.constTerm = hddotConst + params.k1 * hdot + params.k0 * h - reserve;
-            edge.neighbourId = std::to_string(otherId);
-            edges.push_back(edge);
+
+            const auto fixedIt = bridgeTopologyDecision.references.find(owner->id);
+            if (fixedIt == bridgeTopologyDecision.references.end()) {
+                throw std::runtime_error(
+                        "full-row feedback is missing fixed references for robot "
+                        + std::to_string(owner->id));
+            }
+            for (int baseId : fixedIt->second.baseIds) {
+                rows.push_back({
+                        "secondOrderFixedCommCBF(base-"
+                                + std::to_string(baseId) + ")",
+                        owner->id,
+                        BridgeReferenceKind::FixedBase,
+                        baseId,
+                        communicationSpec,
+                });
+            }
+            for (int anchorId : fixedIt->second.anchorIds) {
+                rows.push_back({
+                        "secondOrderFixedCommCBF(#"
+                                + std::to_string(anchorId) + ")",
+                        owner->id,
+                        BridgeReferenceKind::Mobile,
+                        anchorId,
+                        communicationSpec,
+                });
+            }
         }
-        return edges;
+        return rows;
     }
 
-    double gammaStarValueAt(
-            const std::vector<GammaStarHalfSpace> &edges,
-            double accelHalfBox) const {
-        if (edges.empty()) {
-            return std::numeric_limits<double>::infinity();
-        }
-        std::vector<BridgeGammaStarResidual2D> residuals;
-        residuals.reserve(edges.size());
-        for (const auto &edge : edges) {
-            residuals.push_back(bridgeGammaStarResidualFromAffineMargin(
-                    edge.ax,
-                    edge.ay,
-                    edge.constTerm));
-        }
-        return exactBridgeGammaStar2D(residuals, accelHalfBox);
-    }
-
-    struct GammaStarFeedbackResult {
-        bool active = false;
-        double currentGammaStar = 0.0;
-        double predictiveGammaStar = 0.0;
-        double selectedGammaStar = 0.0;
+    struct FullRowFeedbackResult {
+        bool evaluated = false;
+        bool selected = false;
         double selectedAccelX = 0.0;
         double selectedAccelY = 0.0;
-        bool taskReserveSatisfied = false;
-        bool nominalRetained = false;
-        double taskDeviation = std::numeric_limits<double>::infinity();
-        int evaluatedCandidates = 0;
-        std::string dominantNeighbour;
-        std::string triggerSource;
+        json diagnostic = json::object();
+        std::vector<std::map<int, BridgePredictionState2D>> selectedForecast;
+        std::vector<double> selectedStepBudgets;
     };
 
-    GammaStarFeedbackResult gammaStarFeedbackNominal(
+    json bridgeFullRowBudgetAudit(
+            const std::map<int, BridgePredictionState2D> &states,
+            const std::map<int, Point> &fixedBases,
+            const std::vector<BridgeFullRowDescriptor> &descriptors) const {
+        json robotAudits = json::array();
+        double minimumGamma = std::numeric_limits<double>::infinity();
+        bool allValid = true;
+        for (const auto &robot : robots) {
+            const auto evaluatedRows = evaluateBridgeFullRows(
+                    robot->id, states, fixedBases, descriptors);
+            std::vector<BridgeGammaStarResidual2D> residuals;
+            std::vector<std::string> expectedIdentities;
+            residuals.reserve(evaluatedRows.size());
+            expectedIdentities.reserve(evaluatedRows.size());
+            for (const auto &evaluated : evaluatedRows) {
+                residuals.push_back(
+                        bridgeGammaStarResidualFromAffineMargin(
+                                evaluated.row.uCoe(0),
+                                evaluated.row.uCoe(1),
+                                evaluated.row.constTerm));
+                expectedIdentities.push_back(evaluated.identity);
+            }
+
+            const bool installedHard =
+                    !robot->secondOrderCbfNoSlack.empty()
+                    && robot->secondOrderCbfSlack.empty();
+            const bool installedSoft =
+                    robot->secondOrderCbfNoSlack.empty()
+                    && !robot->secondOrderCbfSlack.empty();
+            std::vector<std::string> installedIdentities;
+            const auto &installedRows = installedSoft
+                    ? robot->secondOrderCbfSlack
+                    : robot->secondOrderCbfNoSlack;
+            installedIdentities.reserve(installedRows.size());
+            for (const auto &[identity, cbf] : installedRows) {
+                (void) cbf;
+                installedIdentities.push_back(identity);
+            }
+            std::sort(expectedIdentities.begin(), expectedIdentities.end());
+            std::sort(installedIdentities.begin(), installedIdentities.end());
+            const bool rowIdentityConsistent =
+                    expectedIdentities == installedIdentities;
+            const bool rowClassConsistent = installedHard || installedSoft;
+            const auto solution = solveExactBridgeGammaStar2D(
+                    residuals, secondOrderAccelerationBound());
+            const bool valid = solution.valid
+                    && rowIdentityConsistent && rowClassConsistent;
+            if (solution.valid) {
+                minimumGamma = std::min(minimumGamma, solution.gamma);
+            }
+            allValid = allValid && valid;
+            robotAudits.push_back({
+                    {"robot", robot->id},
+                    {"valid", valid},
+                    {"execution_class", installedSoft ? "soft"
+                            : installedHard ? "hard" : "invalid"},
+                    {"row_identity_consistent", rowIdentityConsistent},
+                    {"row_class_consistent", rowClassConsistent},
+                    {"row_identities", expectedIdentities},
+                    {"installed_row_identities", installedIdentities},
+                    {"current_gamma_star", solution.valid
+                            ? json(solution.gamma) : json(nullptr)},
+                    {"current_hard_set_feasible",
+                            solution.valid && solution.gamma >= 0.0},
+                    {"gamma_witness", solution.valid
+                            ? json{{"ax", solution.accelX},
+                                   {"ay", solution.accelY}}
+                            : json(nullptr)},
+            });
+        }
+        return {
+                {"valid", allValid},
+                {"minimum_gamma_star", std::isfinite(minimumGamma)
+                        ? json(minimumGamma) : json(nullptr)},
+                {"all_current_hard_sets_feasible",
+                        allValid && minimumGamma >= 0.0},
+                {"robots", robotAudits},
+        };
+    }
+
+    FullRowFeedbackResult fullRowFeedbackNominal(
             int robotId,
-            const std::map<int, Point> &positions,
-            const std::map<int, Eigen::VectorXd> &velocities,
-            const GammaStarFeedbackSafetyParams &params,
+            const std::map<int, BridgePredictionState2D> &states,
+            const std::map<int, Point> &fixedBases,
+            const std::vector<BridgeFullRowDescriptor> &descriptors,
             double nominalAccelX,
             double nominalAccelY) const {
-        GammaStarFeedbackResult result;
-        auto edges = gammaStarFeedbackHalfSpaces(robotId, positions, velocities, params);
-        if (edges.empty()) {
+        FullRowFeedbackResult result;
+        result.evaluated = true;
+        const double accelerationBound = secondOrderAccelerationBound();
+        const double dt = config.at("execute").at("time-step").get<double>();
+        const auto evaluatedRows = evaluateBridgeFullRows(
+                robotId, states, fixedBases, descriptors);
+
+        std::vector<BridgeGammaStarResidual2D> residuals;
+        std::vector<BridgeHocbfHalfspace2D> constraints;
+        json rowLog = json::array();
+        json rowIdentities = json::array();
+        for (const auto &evaluated : evaluatedRows) {
+            residuals.push_back(bridgeGammaStarResidualFromAffineMargin(
+                    evaluated.row.uCoe(0),
+                    evaluated.row.uCoe(1),
+                    evaluated.row.constTerm));
+            constraints.push_back({
+                    evaluated.row.uCoe(0),
+                    evaluated.row.uCoe(1),
+                    -evaluated.row.constTerm,
+            });
+            rowIdentities.push_back(evaluated.identity);
+            rowLog.push_back({
+                    {"identity", evaluated.identity},
+                    {"u_coe", {evaluated.row.uCoe(0), evaluated.row.uCoe(1)}},
+                    {"const_term", evaluated.row.constTerm},
+                    {"h", evaluated.row.h},
+                    {"hdot", evaluated.row.hdot},
+                    {"psi1", evaluated.row.psi1},
+                    {"total_reserve", evaluated.row.totalReserve},
+            });
+        }
+
+        if (robotId < 1 || robotId > static_cast<int>(robots.size())) {
+            result.diagnostic = {
+                    {"robot", robotId},
+                    {"evaluated", true},
+                    {"selected", false},
+                    {"scoring_valid", false},
+                    {"scoring_error", "invalid robot id for installed-row audit"},
+                    {"full_row_identities", rowIdentities},
+                    {"current_rows", rowLog},
+            };
             return result;
         }
-        double accelHalfBox = bridgeConfig.gammaStarAccelHalfBox;
-        double dt = config.at("execute").at("time-step").get<double>();
-        int lookaheadSteps = std::max(1, bridgeConfig.gammaStarLookaheadSteps);
-
-        auto selfPosIt = positions.find(robotId);
-        auto selfVelIt = velocities.find(robotId);
-        Point pi = selfPosIt->second;
-        Eigen::VectorXd vi = selfVelIt->second;
-
-        double currentGamma = gammaStarValueAt(edges, accelHalfBox);
-        result.currentGammaStar = currentGamma;
-
-        std::map<int, Point> zohPositions = positions;
-        std::map<int, Eigen::VectorXd> zohVelocities = velocities;
-        for (int step = 1; step <= lookaheadSteps; ++step) {
-            std::map<int, Point> stepPositions;
-            std::map<int, Eigen::VectorXd> stepVelocities;
-            for (const auto &entry : zohPositions) {
-                int otherId = entry.first;
-                auto velIt = zohVelocities.find(otherId);
-                if (velIt == zohVelocities.end()) {
-                    stepPositions[otherId] = entry.second;
-                    stepVelocities[otherId] = Eigen::VectorXd::Zero(2);
-                } else {
-                    Eigen::VectorXd ov = velIt->second;
-                    stepPositions[otherId] = Point(entry.second.x + ov(0) * dt,
-                                                   entry.second.y + ov(1) * dt);
-                    stepVelocities[otherId] = ov;
-                }
+        const bool softExecution =
+                bridgeConfig.gammaStarFeedbackConstraintExecution == "soft";
+        const Robot *robot = robots[robotId - 1].get();
+        std::vector<std::string> expectedIdentities =
+                rowIdentities.get<std::vector<std::string>>();
+        std::vector<std::string> installedIdentities;
+        std::vector<std::string> oppositeClassIdentities;
+        const auto appendIdentities = [](
+                const auto &rows,
+                std::vector<std::string> *identities) {
+            identities->reserve(rows.size());
+            for (const auto &[identity, cbf] : rows) {
+                (void) cbf;
+                identities->push_back(identity);
             }
-            zohPositions = stepPositions;
-            zohVelocities = stepVelocities;
-        }
-        auto predEdgesZoh = gammaStarFeedbackHalfSpaces(robotId, zohPositions, zohVelocities, params);
-        double zohGamma = predEdgesZoh.empty()
-                          ? std::numeric_limits<double>::infinity()
-                          : gammaStarValueAt(predEdgesZoh, accelHalfBox);
-        result.predictiveGammaStar = zohGamma;
-
-        bool currentTrigger = currentGamma < bridgeConfig.gammaStarSafeThreshold;
-        bool predictiveTrigger = bridgeConfig.gammaStarPredictiveThreshold > 0.0
-                                 && zohGamma < bridgeConfig.gammaStarPredictiveThreshold;
-        bool lookaheadDistanceTrigger = false;
-        if (bridgeConfig.gammaStarLookaheadDistance > 0) {
-            std::vector<BridgeLookaheadNeighbourState2D> lookaheadNeighbours;
-            lookaheadNeighbours.reserve(positions.size());
-            for (const auto &entry : positions) {
-                if (entry.first == robotId) continue;
-                auto zohIt = zohPositions.find(entry.first);
-                if (zohIt == zohPositions.end()) continue;
-                auto velIt = velocities.find(entry.first);
-                Eigen::VectorXd ov = velIt != velocities.end()
-                                     ? velIt->second
-                                     : Eigen::VectorXd::Zero(2);
-                lookaheadNeighbours.push_back({
-                        zohIt->second.x, zohIt->second.y, ov(0), ov(1)});
-            }
-            const Point &zohSelf = zohPositions.at(robotId);
-            lookaheadDistanceTrigger = bridgeLookaheadDistanceClosingTrigger(
-                    zohSelf.x, zohSelf.y, vi(0), vi(1),
-                    lookaheadNeighbours,
-                    static_cast<double>(bridgeConfig.gammaStarLookaheadDistance));
-        }
-        if (!currentTrigger && !predictiveTrigger && !lookaheadDistanceTrigger) {
-            return result;
-        }
-        result.active = true;
-        if (currentTrigger) {
-            result.triggerSource = "current";
-        } else if (predictiveTrigger) {
-            result.triggerSource = "predictive";
+        };
+        if (softExecution) {
+            appendIdentities(robot->secondOrderCbfSlack, &installedIdentities);
+            appendIdentities(
+                    robot->secondOrderCbfNoSlack, &oppositeClassIdentities);
         } else {
-            result.triggerSource = "lookahead-distance";
+            appendIdentities(robot->secondOrderCbfNoSlack, &installedIdentities);
+            appendIdentities(
+                    robot->secondOrderCbfSlack, &oppositeClassIdentities);
+        }
+        std::sort(expectedIdentities.begin(), expectedIdentities.end());
+        std::sort(installedIdentities.begin(), installedIdentities.end());
+        std::sort(
+                oppositeClassIdentities.begin(),
+                oppositeClassIdentities.end());
+        const bool preScoreIdentityConsistent =
+                expectedIdentities == installedIdentities;
+        const bool preScoreClassConsistent = oppositeClassIdentities.empty();
+        if (!preScoreIdentityConsistent || !preScoreClassConsistent) {
+            result.diagnostic = {
+                    {"robot", robotId},
+                    {"evaluated", true},
+                    {"selected", false},
+                    {"scoring_valid", false},
+                    {"scoring_error",
+                            "predictor rows do not match the installed execution ledger"},
+                    {"current_rows", rowLog},
+                    {"full_row_identities", rowIdentities},
+                    {"pre_score_row_execution_class",
+                            softExecution ? "soft" : "hard"},
+                    {"pre_score_installed_row_identities",
+                            installedIdentities},
+                    {"pre_score_opposite_class_row_identities",
+                            oppositeClassIdentities},
+                    {"pre_score_row_identity_consistent",
+                            preScoreIdentityConsistent},
+                    {"pre_score_row_class_consistent",
+                            preScoreClassConsistent},
+                    {"pre_score_constraint_ledger_consistent", false},
+                    {"candidates", json::array()},
+            };
+            return result;
         }
 
-        int dirCount = std::max(2, bridgeConfig.gammaStarDirectionCount);
-        int magCount = std::max(1, bridgeConfig.gammaStarMagnitudeCount);
-        double scale = bridgeConfig.gammaStarCandidateScale;
-
-        std::vector<BridgeTaskAwareGammaCandidate> candidates;
-        candidates.push_back({nominalAccelX, nominalAccelY,
-                              -std::numeric_limits<double>::infinity()});
-        int evaluated = 0;
-
-        for (int dir = 0; dir < dirCount; ++dir) {
-            double angle = 2.0 * M_PI * static_cast<double>(dir) / static_cast<double>(dirCount);
-            double dirX = std::cos(angle);
-            double dirY = std::sin(angle);
-            for (int mag = 1; mag <= magCount; ++mag) {
-                double magnitude = (static_cast<double>(mag) / static_cast<double>(magCount))
-                                   * accelHalfBox * scale;
-                candidates.push_back({dirX * magnitude, dirY * magnitude,
-                                      -std::numeric_limits<double>::infinity()});
-            }
-        }
-
-        std::vector<BridgeTaskAwareGammaCandidate> scoredCandidates;
-        scoredCandidates.reserve(candidates.size());
-        std::vector<std::string> scoredDominantNeighbours;
-        scoredDominantNeighbours.reserve(candidates.size());
-        for (const auto &candidate : candidates) {
-            double candAx = candidate.accelX;
-            double candAy = candidate.accelY;
-
-            Point selfPos = pi;
-            Eigen::VectorXd selfVel = vi;
-            std::map<int, Point> predPositions;
-            std::map<int, Eigen::VectorXd> predVelocities;
-            for (const auto &entry : positions) {
-                if (entry.first == robotId) continue;
-                auto velIt = velocities.find(entry.first);
-                predPositions[entry.first] = entry.second;
-                predVelocities[entry.first] = velIt != velocities.end()
-                                              ? velIt->second
-                                              : Eigen::VectorXd::Zero(2);
-            }
-
-            for (int step = 1; step <= lookaheadSteps; ++step) {
-                selfPos = Point(selfPos.x + selfVel(0) * dt + 0.5 * candAx * dt * dt,
-                                selfPos.y + selfVel(1) * dt + 0.5 * candAy * dt * dt);
-                selfVel << selfVel(0) + candAx * dt, selfVel(1) + candAy * dt;
-                std::map<int, Point> nextPositions;
-                std::map<int, Eigen::VectorXd> nextVelocities;
-                for (const auto &entry : predPositions) {
-                    auto velIt = predVelocities.find(entry.first);
-                    Eigen::VectorXd ov = velIt != predVelocities.end()
-                                         ? velIt->second
-                                         : Eigen::VectorXd::Zero(2);
-                    nextPositions[entry.first] = Point(entry.second.x + ov(0) * dt,
-                                                       entry.second.y + ov(1) * dt);
-                    nextVelocities[entry.first] = ov;
-                }
-                predPositions = nextPositions;
-                predVelocities = nextVelocities;
-            }
-            predPositions[robotId] = selfPos;
-            predVelocities[robotId] = selfVel;
-
-            auto predEdges = gammaStarFeedbackHalfSpaces(
-                    robotId, predPositions, predVelocities, params);
-            if (predEdges.empty()) {
-                continue;
-            }
-            double predGamma = gammaStarValueAt(predEdges, accelHalfBox);
-            double worst = std::numeric_limits<double>::infinity();
-            std::string dominantNeighbour;
-            for (const auto &edge : predEdges) {
-                if (edge.constTerm < worst) {
-                    worst = edge.constTerm;
-                    dominantNeighbour = edge.neighbourId;
-                }
-            }
-            ++evaluated;
-            scoredCandidates.push_back({candAx, candAy, predGamma});
-            scoredDominantNeighbours.push_back(dominantNeighbour);
-        }
-
-        const auto selection = bridgeSelectTaskAwareGammaCandidate(
-                scoredCandidates,
+        const auto current = solveExactBridgeGammaStar2D(
+                residuals, accelerationBound);
+        const auto legacy = projectBridgeHocbfNominalAcceleration(
                 nominalAccelX,
                 nominalAccelY,
-                bridgeConfig.gammaStarSafeThreshold);
+                accelerationBound,
+                constraints,
+                0.0);
+        const auto certifiedLegacy = certifyBridgeHocbfEndpointTowardWitness(
+                legacy.projected_ax,
+                legacy.projected_ay,
+                current.accelX,
+                current.accelY,
+                accelerationBound,
+                constraints,
+                BRIDGE_FULL_ROW_NUMERICAL_REPAIR_TOLERANCE);
+        const double currentWitnessMargin = current.valid
+                ? bridgeHocbfMinMargin(
+                        constraints, current.accelX, current.accelY)
+                : -std::numeric_limits<double>::infinity();
+        const bool currentInfeasible = !current.valid || !legacy.feasible
+                || current.gamma < 0.0 || currentWitnessMargin < 0.0
+                || !certifiedLegacy.valid;
+        const bool certifiedNegativeCurrentHardSet =
+                current.valid && std::isfinite(current.gamma)
+                && current.gamma < 0.0;
+        result.diagnostic = {
+                {"robot", robotId},
+                {"evaluated", true},
+                {"current_gamma_star", current.valid ? json(current.gamma) : json(nullptr)},
+                {"current_gamma_witness", current.valid
+                        ? json{{"ax", current.accelX}, {"ay", current.accelY}}
+                        : json(nullptr)},
+                {"current_gamma_witness_margin", current.valid
+                        ? json(currentWitnessMargin) : json(nullptr)},
+                {"legacy_projection_raw", legacy.feasible
+                        ? json{{"ax", legacy.projected_ax},
+                               {"ay", legacy.projected_ay},
+                               {"minimum_margin", legacy.margin_after}}
+                        : json(nullptr)},
+                {"legacy_execution_certified_numeric", certifiedLegacy.valid
+                        ? json{{"ax", certifiedLegacy.accelX},
+                               {"ay", certifiedLegacy.accelY}}
+                        : json(nullptr)},
+                {"legacy_numerical_repair", {
+                        {"valid", certifiedLegacy.valid},
+                        {"repaired", certifiedLegacy.repaired},
+                        {"mix_toward_gamma_witness", certifiedLegacy.repairMix},
+                        {"norm", certifiedLegacy.repairNorm},
+                        {"margin_before", certifiedLegacy.marginBefore},
+                        {"margin_after", certifiedLegacy.marginAfter},
+                }},
+                {"current_rows", rowLog},
+                {"full_row_identities", rowIdentities},
+                {"pre_score_row_execution_class",
+                        softExecution ? "soft" : "hard"},
+                {"pre_score_installed_row_identities",
+                        installedIdentities},
+                {"pre_score_opposite_class_row_identities",
+                        oppositeClassIdentities},
+                {"pre_score_row_identity_consistent", true},
+                {"pre_score_row_class_consistent", true},
+                {"pre_score_constraint_ledger_consistent", true},
+                {"current_infeasible", currentInfeasible},
+                {"certified_negative_current_hard_set",
+                        certifiedNegativeCurrentHardSet},
+                {"selected", false},
+                {"candidates", json::array()},
+        };
+        if (currentInfeasible) {
+            return result;
+        }
+
+        auto candidates = buildReserveTaskHomotopy(
+                certifiedLegacy.accelX,
+                certifiedLegacy.accelY,
+                current.accelX,
+                current.accelY,
+                static_cast<size_t>(bridgeConfig.gammaStarHomotopyIntervals));
+        std::vector<BridgeFullRowScore> scores(candidates.size());
+        for (size_t candidateIndex = 0;
+             candidateIndex < candidates.size(); ++candidateIndex) {
+            auto &candidate = candidates[candidateIndex];
+            const auto candidateCertification =
+                    certifyBridgeHocbfEndpointTowardWitness(
+                            candidate.accelX,
+                            candidate.accelY,
+                            current.accelX,
+                            current.accelY,
+                            accelerationBound,
+                            constraints,
+                            BRIDGE_FULL_ROW_NUMERICAL_REPAIR_TOLERANCE);
+            if (!candidateCertification.valid) {
+                result.diagnostic["scoring_valid"] = false;
+                result.diagnostic["scoring_error"] =
+                        "homotopy candidate failed exact current-feasibility certification";
+                return result;
+            }
+            candidate.accelX = candidateCertification.accelX;
+            candidate.accelY = candidateCertification.accelY;
+            const auto score = scoreFullRowCandidate(
+                    robotId,
+                    Eigen::Vector2d(candidate.accelX, candidate.accelY),
+                    states,
+                    fixedBases,
+                    descriptors,
+                    accelerationBound,
+                    dt,
+                    bridgeConfig.gammaStarLookaheadSteps);
+            if (!score.valid) {
+                result.diagnostic["scoring_valid"] = false;
+                return result;
+            }
+            candidate.predictedBudget = score.minimumBudget;
+            scores[candidateIndex] = score;
+            result.diagnostic["candidates"].push_back({
+                    {"alpha", candidate.alpha},
+                    {"accel_x", candidate.accelX},
+                    {"accel_y", candidate.accelY},
+                    {"predicted_minimum_budget", score.minimumBudget},
+                    {"step_budgets", score.stepBudgets},
+                    {"step_dominant_rows", score.stepDominantRows},
+                    {"worst_step", score.worstStep},
+                    {"dominant_row", score.dominantRow},
+                    {"current_minimum_margin",
+                            candidateCertification.marginAfter},
+                    {"numerical_repair", {
+                            {"repaired", candidateCertification.repaired},
+                            {"mix_toward_gamma_witness",
+                                    candidateCertification.repairMix},
+                            {"norm", candidateCertification.repairNorm},
+                    }},
+            });
+        }
+        result.diagnostic["scoring_valid"] = true;
+
+        const auto selection =
+                bridgeConfig.gammaStarFeedbackSelectionRule == "maximum-reserve"
+                ? selectMaximumReserveHomotopy(
+                        candidates,
+                        certifiedLegacy.accelX,
+                        certifiedLegacy.accelY,
+                        bridgeConfig.gammaStarPredictiveGate,
+                        bridgeConfig.nominalGuardTolerance)
+                : selectReserveTaskHomotopy(
+                        candidates,
+                        certifiedLegacy.accelX,
+                        certifiedLegacy.accelY,
+                        bridgeConfig.gammaStarPredictiveGate,
+                        bridgeConfig.nominalGuardTolerance);
         if (!selection.selected) {
             return result;
         }
-        result.selectedGammaStar = selection.gamma;
+
+        const size_t selectedIndex = selection.candidateIndex;
+        if (selectedIndex >= scores.size()) {
+            return result;
+        }
+
+        const double currentMargin = bridgeHocbfMinMargin(
+                constraints, selection.accelX, selection.accelY);
+        if (currentMargin < 0.0) {
+            result.diagnostic["selection_error"] =
+                    "selected candidate is outside the exact current hard set";
+            result.diagnostic["candidate_current_feasible"] = false;
+            result.diagnostic["current_candidate_minimum_margin"] =
+                    currentMargin;
+            return result;
+        }
+        result.selected = true;
         result.selectedAccelX = selection.accelX;
         result.selectedAccelY = selection.accelY;
-        result.taskReserveSatisfied = selection.reserveSatisfied;
-        result.nominalRetained = selection.nominalRetained;
-        result.taskDeviation = selection.taskDeviation;
-        result.evaluatedCandidates = evaluated;
-        for (size_t candidateIndex = 0;
-             candidateIndex < scoredCandidates.size();
-             ++candidateIndex) {
-            const auto &candidate = scoredCandidates[candidateIndex];
-            if (std::abs(candidate.accelX - selection.accelX) <= 1.0e-12
-                && std::abs(candidate.accelY - selection.accelY) <= 1.0e-12
-                && std::abs(candidate.gamma - selection.gamma) <= 1.0e-12) {
-                result.dominantNeighbour = scoredDominantNeighbours[candidateIndex];
-                break;
-            }
+        result.diagnostic["selected"] = true;
+        result.diagnostic["selection_rule"] =
+                bridgeConfig.gammaStarFeedbackSelectionRule;
+        result.diagnostic["selected_alpha"] = selection.alpha;
+        result.diagnostic["selected_accel_x"] = selection.accelX;
+        result.diagnostic["selected_accel_y"] = selection.accelY;
+        result.diagnostic["selected_predictive_minimum_budget"] =
+                selection.predictedBudget;
+        result.diagnostic["gate_satisfied"] = selection.gateSatisfied;
+        result.diagnostic["fallback_used"] = !selection.gateSatisfied;
+        result.diagnostic["nominal_retained"] = selection.nominalRetained;
+        result.diagnostic["task_deviation"] = selection.taskDeviation;
+        result.diagnostic["dominant_row"] = scores[selectedIndex].dominantRow;
+        result.diagnostic["worst_step"] = scores[selectedIndex].worstStep;
+        result.diagnostic["current_candidate_minimum_margin"] = currentMargin;
+        result.diagnostic["candidate_current_feasible"] =
+                true;
+        result.selectedForecast = rolloutBridgePredictionStates(
+                robotId,
+                Eigen::Vector2d(selection.accelX, selection.accelY),
+                states,
+                dt,
+                bridgeConfig.gammaStarLookaheadSteps);
+        result.selectedStepBudgets = scores[selectedIndex].stepBudgets;
+        if (result.selectedForecast.size()
+                != result.selectedStepBudgets.size()) {
+            result.selected = false;
+            result.diagnostic["selected"] = false;
+            result.diagnostic["prediction_audit_ready"] = false;
+            return result;
         }
+        result.diagnostic["prediction_audit_ready"] = true;
         return result;
+    }
+
+    static json bridgePredictionStateJson(
+            const BridgePredictionState2D &state) {
+        return {
+                {"position", {state.position.x, state.position.y}},
+                {"velocity", {state.velocity(0), state.velocity(1)}},
+                {"held_acceleration", {
+                        state.heldAcceleration(0),
+                        state.heldAcceleration(1)}},
+        };
+    }
+
+    static json bridgePredictionAuditJson(
+            const BridgePredictionAuditResult &audit) {
+        json stateErrors = json::array();
+        for (const auto &state : audit.stateErrors) {
+            stateErrors.push_back({
+                    {"robot", state.robotId},
+                    {"predicted", bridgePredictionStateJson(state.predicted)},
+                    {"observed", bridgePredictionStateJson(state.observed)},
+                    {"position_error_m", state.positionError},
+                    {"velocity_error_mps", state.velocityError},
+                    {"held_acceleration_error_mps2", state.accelerationError},
+            });
+        }
+        return {
+                {"valid", audit.valid},
+                {"error", audit.error.empty() ? json(nullptr) : json(audit.error)},
+                {"origin_step", audit.originStep},
+                {"due_step", audit.dueStep},
+                {"observed_step", audit.observedStep},
+                {"origin_time_s", audit.originTime},
+                {"predicted_time_s", audit.predictedTime},
+                {"observed_time_s", audit.observedTime},
+                {"robot", audit.robotId},
+                {"horizon_step", audit.horizonStep},
+                {"predicted_budget", audit.predictedBudget},
+                {"actual_budget", audit.valid
+                        ? json(audit.actualBudget) : json(nullptr)},
+                {"budget_error_actual_minus_predicted", audit.valid
+                        ? json(audit.budgetError) : json(nullptr)},
+                {"max_position_error_m", audit.maxPositionError},
+                {"max_velocity_error_mps", audit.maxVelocityError},
+                {"max_held_acceleration_error_mps2",
+                        audit.maxAccelerationError},
+                {"states", stateErrors},
+        };
+    }
+
+    void attachBridgePredictionAuditLog(
+            const std::vector<BridgePredictionAuditResult> &resolvedAudits) {
+        json auditLog = json::array();
+        double maxPositionError = 0.0;
+        double maxVelocityError = 0.0;
+        double maxAccelerationError = 0.0;
+        double maxAbsoluteBudgetError = 0.0;
+        int invalidAudits = 0;
+        for (const auto &audit : resolvedAudits) {
+            auditLog.push_back(bridgePredictionAuditJson(audit));
+            if (!audit.valid) {
+                ++invalidAudits;
+                continue;
+            }
+            maxPositionError = std::max(
+                    maxPositionError, audit.maxPositionError);
+            maxVelocityError = std::max(
+                    maxVelocityError, audit.maxVelocityError);
+            maxAccelerationError = std::max(
+                    maxAccelerationError, audit.maxAccelerationError);
+            maxAbsoluteBudgetError = std::max(
+                    maxAbsoluteBudgetError, std::abs(audit.budgetError));
+        }
+        stepData["bridge"]["nominal"]["gamma_star_feedback"]
+                ["prediction_audit"] = {
+                        {"step", bridgeFeedbackStepIndex},
+                        {"resolved_count", resolvedAudits.size()},
+                        {"invalid_count", invalidAudits},
+                        {"pending_count", bridgePendingPredictionAudits.size()},
+                        {"max_position_error_m", maxPositionError},
+                        {"max_velocity_error_mps", maxVelocityError},
+                        {"max_held_acceleration_error_mps2",
+                                maxAccelerationError},
+                        {"max_absolute_budget_error", maxAbsoluteBudgetError},
+                        {"resolved", auditLog},
+                };
     }
 
     void applyBridgeNominalControls() {
@@ -736,6 +1043,26 @@ private:
         double maxAcceleration = config.at("bridge").at("nominal").value("max-acceleration", 2.0);
         double maxYawRate = config.at("bridge").at("nominal").value("max-yaw-rate", 0.35);
 
+        std::map<int, BridgePredictionState2D> feedbackStates =
+                bridgePredictionStates();
+        std::map<int, Point> feedbackBases = bridgeFixedBases();
+        std::vector<BridgeFullRowDescriptor> feedbackRows =
+                bridgeFullRowDescriptors();
+        stepData["bridge"]["nominal"]["full_row_budget_audit"] =
+                bridgeFullRowBudgetAudit(
+                        feedbackStates, feedbackBases, feedbackRows);
+        std::vector<BridgePredictionAuditResult> resolvedPredictionAudits;
+        if (bridgeConfig.gammaStarFeedbackEnabled) {
+            resolvedPredictionAudits = resolveBridgePredictionAudits(
+                    bridgeFeedbackStepIndex,
+                    robots.front()->runtime,
+                    feedbackStates,
+                    feedbackBases,
+                    feedbackRows,
+                    secondOrderAccelerationBound(),
+                    bridgePendingPredictionAudits);
+        }
+
         if (bridgeTopologyConfig.failSafeHold) {
             stepData["bridge"]["nominal"]["fail_safe"] = {
                 {"enabled", true},
@@ -746,6 +1073,22 @@ private:
         if (bridgeTopologyConfig.failSafeHold && bridgeTopologyDecision.failSafe) {
             for (auto &robot : robots) {
                 robot->setNominalControlOverride(Eigen::VectorXd::Zero(robot->model->uSize()));
+            }
+            if (bridgeConfig.gammaStarFeedbackEnabled) {
+                stepData["bridge"]["nominal"]["gamma_star_feedback"] = {
+                        {"enabled", true},
+                        {"mode", bridgeConfig.gammaStarFeedbackMode},
+                        {"analysis_role",
+                                bridgeConfig.gammaStarFeedbackAnalysisRole},
+                        {"selection_rule",
+                                bridgeConfig.gammaStarFeedbackSelectionRule},
+                        {"constraint_execution",
+                                bridgeConfig.gammaStarFeedbackConstraintExecution},
+                        {"control_skipped_due_to_fail_safe", true},
+                        {"links", json::array()},
+                };
+                attachBridgePredictionAuditLog(resolvedPredictionAudits);
+                ++bridgeFeedbackStepIndex;
             }
             return;
         }
@@ -761,18 +1104,15 @@ private:
             }
         }
         std::map<int, Eigen::VectorXd> goalDiversionVelocities = velocities;
-        GammaStarFeedbackSafetyParams gammaStarParams{};
         int gammaStarFeedbackActiveCount = 0;
         int gammaStarFeedbackEvaluatedCandidates = 0;
         double gammaStarFeedbackMinCurrent = std::numeric_limits<double>::infinity();
-        double gammaStarFeedbackMinSelected = std::numeric_limits<double>::infinity();
+        double gammaStarFeedbackMinPredicted = std::numeric_limits<double>::infinity();
         json gammaStarFeedbackLinks = json::array();
-        if (bridgeConfig.gammaStarFeedbackEnabled) {
-            gammaStarParams = gammaStarFeedbackSafetyParams();
-        }
         std::map<int, Point> goalDiversionOffsets;
         std::map<int, std::vector<Point>> goalDiversionPerPairOffsets;
         json goalDiversionLinks = json::array();
+        json taskGoalLinks = json::array();
         int goalDiversionActiveCount = 0;
         if (bridgeConfig.goalDiversionEnabled) {
             std::vector<int> orderedIds;
@@ -1044,6 +1384,17 @@ private:
         for (auto &robot : robots) {
             Point position = robot->model->xy();
             Point goal = bridgeSearch.chooseGoal(position, bridgeConfig.searchPolicy);
+            const auto previousTaskGoal = bridgePreviousTaskGoals.find(robot->id);
+            const bool taskGoalChanged = previousTaskGoal
+                            != bridgePreviousTaskGoals.end()
+                    && previousTaskGoal->second.distance_to(goal) > 1.0e-9;
+            taskGoalLinks.push_back({
+                    {"robot", robot->id},
+                    {"x", goal.x},
+                    {"y", goal.y},
+                    {"changed", taskGoalChanged},
+            });
+            bridgePreviousTaskGoals[robot->id] = goal;
             if (predictiveGateEnabled) {
                 auto anchorIt = bridgeTopologyDecision.anchorIds.find(robot->id);
                 if (anchorIt != bridgeTopologyDecision.anchorIds.end() && !anchorIt->second.empty()) {
@@ -1251,71 +1602,94 @@ private:
                 }
             }
             if (bridgeConfig.gammaStarFeedbackEnabled) {
-                const auto fb = gammaStarFeedbackNominal(
+                auto fb = fullRowFeedbackNominal(
                         robot->id,
-                        positions,
-                        velocities,
-                        gammaStarParams,
+                        feedbackStates,
+                        feedbackBases,
+                        feedbackRows,
                         nominal(0),
                         nominal(1));
-                if (fb.active) {
-                    ++gammaStarFeedbackActiveCount;
-                    gammaStarFeedbackEvaluatedCandidates += fb.evaluatedCandidates;
-                    if (std::isfinite(fb.currentGammaStar)) {
-                        gammaStarFeedbackMinCurrent = std::min(
-                                gammaStarFeedbackMinCurrent, fb.currentGammaStar);
+                fb.diagnostic["task_reference"] = {
+                        {"ax", nominal(0)}, {"ay", nominal(1)}};
+                gammaStarFeedbackEvaluatedCandidates += static_cast<int>(
+                        fb.diagnostic.value("candidates", json::array()).size());
+                if (fb.diagnostic.contains("current_gamma_star")
+                    && fb.diagnostic["current_gamma_star"].is_number()) {
+                    gammaStarFeedbackMinCurrent = std::min(
+                            gammaStarFeedbackMinCurrent,
+                            fb.diagnostic["current_gamma_star"].get<double>());
+                }
+                if (fb.selected) {
+                    const double alpha = fb.diagnostic.value("selected_alpha", 0.0);
+                    if (alpha > bridgeConfig.nominalGuardTolerance) {
+                        ++gammaStarFeedbackActiveCount;
                     }
-                    if (std::isfinite(fb.selectedGammaStar)) {
-                        gammaStarFeedbackMinSelected = std::min(
-                                gammaStarFeedbackMinSelected, fb.selectedGammaStar);
-                    }
-                    gammaStarFeedbackLinks.push_back({
-                        {"robot", robot->id},
-                        {"current_gamma_star", fb.currentGammaStar},
-                        {"predictive_gamma_star", std::isfinite(fb.predictiveGammaStar)
-                                                      ? json(fb.predictiveGammaStar)
-                                                      : json(nullptr)},
-                        {"selected_gamma_star", fb.selectedGammaStar},
-                        {"selected_accel_x", fb.selectedAccelX},
-                        {"selected_accel_y", fb.selectedAccelY},
-                        {"task_reserve_satisfied", fb.taskReserveSatisfied},
-                        {"nominal_retained", fb.nominalRetained},
-                        {"task_deviation", fb.taskDeviation},
-                        {"evaluated_candidates", fb.evaluatedCandidates},
-                        {"dominant_neighbour", fb.dominantNeighbour},
-                        {"trigger_source", fb.triggerSource}
-                    });
+                    gammaStarFeedbackMinPredicted = std::min(
+                            gammaStarFeedbackMinPredicted,
+                            fb.diagnostic.value(
+                                    "selected_predictive_minimum_budget",
+                                    std::numeric_limits<double>::infinity()));
                     nominal(0) = fb.selectedAccelX;
                     nominal(1) = fb.selectedAccelY;
-                    if (nominal.size() > 2) {
-                        nominal(2) = 0.0;
+                    auto entries = buildBridgePredictionAuditEntries(
+                            bridgeFeedbackStepIndex,
+                            robot->runtime,
+                            robot->id,
+                            dt,
+                            fb.selectedForecast,
+                            fb.selectedStepBudgets);
+                    if (entries.size()
+                            != static_cast<size_t>(
+                                    bridgeConfig.gammaStarLookaheadSteps)) {
+                        throw std::runtime_error(
+                                "selected full-row forecast could not be registered for audit");
                     }
+                    bridgePendingPredictionAudits.insert(
+                            bridgePendingPredictionAudits.end(),
+                            entries.begin(),
+                            entries.end());
                 }
+                gammaStarFeedbackLinks.push_back(fb.diagnostic);
             }
             robot->setNominalControlOverride(nominal);
         }
+        stepData["bridge"]["nominal"]["task_goals"] = taskGoalLinks;
         if (bridgeConfig.gammaStarFeedbackEnabled) {
+            json fixedReferenceMap = json::object();
+            for (const auto &[robotId, references] :
+                 bridgeTopologyDecision.references) {
+                fixedReferenceMap[std::to_string(robotId)] = {
+                        {"anchor_ids", references.anchorIds},
+                        {"base_ids", references.baseIds},
+                };
+            }
             stepData["bridge"]["nominal"]["gamma_star_feedback"] = {
                 {"enabled", true},
-                {"safe_threshold", bridgeConfig.gammaStarSafeThreshold},
-                {"accel_half_box", bridgeConfig.gammaStarAccelHalfBox},
-                {"direction_count", bridgeConfig.gammaStarDirectionCount},
-                {"magnitude_count", bridgeConfig.gammaStarMagnitudeCount},
-                {"candidate_scale", bridgeConfig.gammaStarCandidateScale},
-                {"task_reserve", bridgeConfig.gammaStarSafeThreshold},
+                {"mode", bridgeConfig.gammaStarFeedbackMode},
+                {"analysis_role", bridgeConfig.gammaStarFeedbackAnalysisRole},
+                {"selection_rule", bridgeConfig.gammaStarFeedbackSelectionRule},
+                {"constraint_execution",
+                        bridgeConfig.gammaStarFeedbackConstraintExecution},
+                {"homotopy_intervals", bridgeConfig.gammaStarHomotopyIntervals},
                 {"lookahead_steps", bridgeConfig.gammaStarLookaheadSteps},
-                {"predictive_threshold", bridgeConfig.gammaStarPredictiveThreshold},
-                {"lookahead_distance", bridgeConfig.gammaStarLookaheadDistance},
+                {"predictive_gate", bridgeConfig.gammaStarPredictiveGate},
+                {"physical_acceleration_bound", secondOrderAccelerationBound()},
+                {"communication_distance_m", 850.0},
+                {"safety_distance_m", 10.0},
+                {"fixed_references", fixedReferenceMap},
                 {"active_count", gammaStarFeedbackActiveCount},
                 {"evaluated_candidates", gammaStarFeedbackEvaluatedCandidates},
                 {"min_current_gamma_star", std::isfinite(gammaStarFeedbackMinCurrent)
                                               ? json(gammaStarFeedbackMinCurrent)
                                               : json(nullptr)},
-                {"min_selected_gamma_star", std::isfinite(gammaStarFeedbackMinSelected)
-                                                ? json(gammaStarFeedbackMinSelected)
-                                                : json(nullptr)},
+                {"min_selected_predictive_budget",
+                        std::isfinite(gammaStarFeedbackMinPredicted)
+                                ? json(gammaStarFeedbackMinPredicted)
+                                : json(nullptr)},
                 {"links", gammaStarFeedbackLinks}
             };
+            attachBridgePredictionAuditLog(resolvedPredictionAudits);
+            ++bridgeFeedbackStepIndex;
         }
         if (predictiveGateEnabled) {
             stepData["bridge"]["nominal"]["predictive_active_gate"] = {
@@ -1378,6 +1752,213 @@ private:
         }
         for (auto &robot : robots) {
             robot->applySecondOrderNominalFeasibilityGuard(bridgeConfig.nominalGuardTolerance);
+        }
+    }
+
+    void finalizeBridgeFeedbackExecutionDiagnostics() {
+        if (!bridgeConfig.enabled || !bridgeConfig.gammaStarFeedbackEnabled
+            || !stepData.contains("bridge")
+            || !stepData["bridge"].contains("nominal")
+            || !stepData["bridge"]["nominal"].contains("gamma_star_feedback")) {
+            return;
+        }
+
+        json &feedback =
+                stepData["bridge"]["nominal"]["gamma_star_feedback"];
+        if (!feedback.contains("links") || !feedback["links"].is_array()) {
+            return;
+        }
+        for (auto &link : feedback["links"]) {
+            const int robotId = link.value("robot", 0);
+            if (robotId < 1 || robotId > static_cast<int>(robots.size())) {
+                link["execution_consistent"] = false;
+                link["diagnostic_error"] = "invalid robot id";
+                continue;
+            }
+            Robot *robot = robots[robotId - 1].get();
+
+            std::vector<std::string> expectedRows;
+            if (link.contains("full_row_identities")) {
+                expectedRows = link["full_row_identities"]
+                        .get<std::vector<std::string>>();
+            }
+            const bool softExecution =
+                    bridgeConfig.gammaStarFeedbackConstraintExecution == "soft";
+            std::vector<std::string> installedRows;
+            if (softExecution) {
+                installedRows.reserve(robot->secondOrderCbfSlack.size());
+                for (const auto &[identity, cbf] : robot->secondOrderCbfSlack) {
+                    (void) cbf;
+                    installedRows.push_back(identity);
+                }
+            } else {
+                installedRows.reserve(robot->secondOrderCbfNoSlack.size());
+                for (const auto &[identity, cbf] : robot->secondOrderCbfNoSlack) {
+                    (void) cbf;
+                    installedRows.push_back(identity);
+                }
+            }
+            std::sort(expectedRows.begin(), expectedRows.end());
+            std::sort(installedRows.begin(), installedRows.end());
+            link["row_execution_class"] = softExecution ? "soft" : "hard";
+            link["installed_row_identities"] = installedRows;
+            link[softExecution ? "installed_soft_row_identities"
+                               : "installed_hard_row_identities"] = installedRows;
+            link["row_identity_consistent"] = expectedRows == installedRows;
+            link["guard"] = robot->nominalGuardDiagnostic;
+            const bool selected = link.value("selected", false);
+            const bool softCurrentInfeasibleFallback =
+                    softExecution
+                    && !selected
+                    && link.value("current_infeasible", false)
+                    && link.value(
+                            "certified_negative_current_hard_set", false)
+                    && link.value(
+                            "pre_score_constraint_ledger_consistent", false);
+            link["soft_current_infeasible_fallback"] =
+                    softCurrentInfeasibleFallback;
+
+            const Eigen::Vector2d guarded(
+                    robot->nominalControlOverride(0),
+                    robot->nominalControlOverride(1));
+            const Eigen::Vector2d executed = robot->model->getAcceleration();
+            double guardDifference = std::numeric_limits<double>::infinity();
+            double qpDifference = std::numeric_limits<double>::infinity();
+            double softFallbackTaskGuardDifference =
+                    std::numeric_limits<double>::infinity();
+            if (selected) {
+                const Eigen::Vector2d candidate(
+                        link.at("selected_accel_x").get<double>(),
+                        link.at("selected_accel_y").get<double>());
+                guardDifference = (guarded - candidate).norm();
+                qpDifference = (executed - candidate).norm();
+            } else if (softCurrentInfeasibleFallback
+                       && link.contains("task_reference")
+                       && link["task_reference"].is_object()
+                       && link["task_reference"].contains("ax")
+                       && link["task_reference"].contains("ay")
+                       && link["task_reference"]["ax"].is_number()
+                       && link["task_reference"]["ay"].is_number()) {
+                const Eigen::Vector2d taskReference(
+                        link["task_reference"]["ax"].get<double>(),
+                        link["task_reference"]["ay"].get<double>());
+                softFallbackTaskGuardDifference =
+                        (guarded - taskReference).norm();
+            }
+            double qpMinimumPhysicalMargin =
+                    std::numeric_limits<double>::infinity();
+            double qpMinimumRelaxedMargin =
+                    std::numeric_limits<double>::infinity();
+            double qpMaximumSlack = 0.0;
+            double qpMinimumSlack = std::numeric_limits<double>::infinity();
+            double qpSlackLowerBoundViolation = 0.0;
+            size_t qpSlackCount = 0;
+            const char *rowLogName = softExecution
+                                     ? "hocbfSlack" : "hocbfNoSlack";
+            if (robot->opt.contains(rowLogName)
+                && robot->opt[rowLogName].is_array()) {
+                for (const auto &row : robot->opt[rowLogName]) {
+                    if (row.contains("hocbf") && row["hocbf"].is_number()) {
+                        const double physicalMargin =
+                                row["hocbf"].get<double>();
+                        qpMinimumPhysicalMargin = std::min(
+                                qpMinimumPhysicalMargin, physicalMargin);
+                        const bool hasSlack = row.contains("slack")
+                                              && row["slack"].is_number();
+                        const double slack = hasSlack
+                                ? row["slack"].get<double>() : 0.0;
+                        if (softExecution && hasSlack) {
+                            ++qpSlackCount;
+                            qpMaximumSlack = std::max(qpMaximumSlack, slack);
+                            qpMinimumSlack = std::min(qpMinimumSlack, slack);
+                            qpSlackLowerBoundViolation = std::max(
+                                    qpSlackLowerBoundViolation,
+                                    std::max(0.0, -slack));
+                        }
+                        qpMinimumRelaxedMargin = std::min(
+                                qpMinimumRelaxedMargin,
+                                row.value(
+                                        "hocbf_with_slack",
+                                        physicalMargin + slack));
+                    }
+                }
+            }
+            const bool solverOptimal =
+                    robot->opt.value("status", "failed") == "success";
+            const double accelerationBound = secondOrderAccelerationBound();
+            const double accelerationBoxViolation = std::max({
+                    0.0,
+                    std::abs(executed(0)) - accelerationBound,
+                    std::abs(executed(1)) - accelerationBound});
+            link["guard_output"] = {
+                    {"ax", guarded(0)}, {"ay", guarded(1)}};
+            link["qp_output"] = {
+                    {"ax", executed(0)}, {"ay", executed(1)}};
+            link["guard_candidate_difference"] = selected
+                    ? json(guardDifference) : json(nullptr);
+            link["qp_candidate_difference"] = selected
+                    ? json(qpDifference) : json(nullptr);
+            link["soft_fallback_task_guard_difference"] =
+                    softCurrentInfeasibleFallback
+                    && std::isfinite(softFallbackTaskGuardDifference)
+                            ? json(softFallbackTaskGuardDifference)
+                            : json(nullptr);
+            link["guard_reproduction_tolerance"] =
+                    BRIDGE_FULL_ROW_GUARD_REPRODUCTION_TOLERANCE;
+            link["qp_reproduction_tolerance"] =
+                    BRIDGE_FULL_ROW_QP_REPRODUCTION_TOLERANCE;
+            link["qp_hard_margin_tolerance"] =
+                    BRIDGE_FULL_ROW_QP_HARD_MARGIN_TOLERANCE;
+            link["qp_minimum_physical_row_margin"] =
+                    std::isfinite(qpMinimumPhysicalMargin)
+                            ? json(qpMinimumPhysicalMargin) : json(nullptr);
+            link["qp_minimum_hard_margin"] =
+                    !softExecution && std::isfinite(qpMinimumPhysicalMargin)
+                            ? json(qpMinimumPhysicalMargin) : json(nullptr);
+            link["qp_minimum_relaxed_row_margin"] =
+                    softExecution && std::isfinite(qpMinimumRelaxedMargin)
+                            ? json(qpMinimumRelaxedMargin) : json(nullptr);
+            link["qp_maximum_slack"] = softExecution
+                    && qpSlackCount > 0
+                            ? json(qpMaximumSlack) : json(nullptr);
+            link["qp_minimum_slack"] = softExecution
+                    && qpSlackCount > 0
+                            ? json(qpMinimumSlack) : json(nullptr);
+            link["qp_slack_lower_bound_violation"] = softExecution
+                    ? json(qpSlackLowerBoundViolation) : json(nullptr);
+            link["qp_slack_count"] = softExecution
+                    ? json(qpSlackCount) : json(nullptr);
+            link["acceleration_bound"] = accelerationBound;
+            link["qp_acceleration_box_violation"] =
+                    accelerationBoxViolation;
+            link["solver_optimal"] = solverOptimal;
+            const double relevantRowMargin = softExecution
+                    ? qpMinimumRelaxedMargin : qpMinimumPhysicalMargin;
+            const bool slackConsistent = !softExecution
+                    || (qpSlackCount == installedRows.size()
+                        && std::isfinite(qpMinimumSlack)
+                        && qpSlackLowerBoundViolation
+                                <= BRIDGE_FULL_ROW_QP_HARD_MARGIN_TOLERANCE);
+            const bool selectionExecutionConsistent = selected
+                    ? (link.value("candidate_current_feasible", false)
+                       && guardDifference
+                            <= BRIDGE_FULL_ROW_GUARD_REPRODUCTION_TOLERANCE
+                       && qpDifference
+                            <= BRIDGE_FULL_ROW_QP_REPRODUCTION_TOLERANCE)
+                    : (softCurrentInfeasibleFallback
+                       && softFallbackTaskGuardDifference
+                            <= BRIDGE_FULL_ROW_GUARD_REPRODUCTION_TOLERANCE);
+            link["execution_consistent"] =
+                    link.value("pre_score_constraint_ledger_consistent", false)
+                    && link["row_identity_consistent"].get<bool>()
+                    && selectionExecutionConsistent
+                    && solverOptimal
+                    && slackConsistent
+                    && std::isfinite(relevantRowMargin)
+                    && relevantRowMargin
+                            >= -BRIDGE_FULL_ROW_QP_HARD_MARGIN_TOLERANCE
+                    && accelerationBoxViolation
+                            <= BRIDGE_FULL_ROW_QP_HARD_MARGIN_TOLERANCE;
         }
     }
 
@@ -1791,7 +2372,10 @@ private:
 
         auto result = optimizer->solve();
 
-        optimizer->write("centralized_optimization.lp");
+        if (config.value("debug", json::object()).value(
+                    "write-centralized-optimization-model", false)) {
+            optimizer->write("centralized_optimization.lp");
+        }
 
         auto u = result.head(uSize);
         opt["result"] = convertCentralizedControlToJson(u);

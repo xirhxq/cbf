@@ -1,0 +1,162 @@
+{
+  "world": {
+    "boundary": [[0.0, 0.0], [2000.0, 0.0], [2000.0, 2000.0], [0.0, 2000.0]],
+    "charge": [],
+    "spacing": 100.0
+  },
+  "num": 4,
+  "dim": 4,
+  "formation": {
+    "parts": 1,
+    "bases-id": [[0, 1]]
+  },
+  "bases": [[250.0, 1000.0], [250.0, 1552.5]],
+  "initial": {
+    "position": {
+      "method": "specified",
+      "positions": [
+        [728.4790355909023, 1276.25],
+        [728.4790355909023, 723.75],
+        [1206.9580711818046, 1000.0],
+        [1206.9580711818046, 447.5]
+      ]
+    },
+    "velocity": {
+      "values": [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]
+    },
+    "battery": {
+      "min": 4100.0,
+      "max": 4100.0
+    },
+    "yawDeg": 0.0
+  },
+  "model": "DoubleIntegrate2D",
+  "model-params": {
+    "discharge-rate": 0.0
+  },
+  "uncertainty": {
+    "method": "const",
+    "const": {
+      "epsilon": 0.0
+    }
+  },
+  "position_covariance": {
+    "enable": false
+  },
+  "searching": {
+    "method": "downward",
+    "downward": {
+      "radius": 150.0
+    }
+  },
+  "optimiser": "Gurobi",
+  "cbfs": {
+    "objective-function": {
+      "k_delta": 10.0
+    },
+    "high-order": {
+      "enabled": true,
+      "lambda1": 1.0,
+      "lambda2": 1.0,
+      "acceleration-bound": 2.0,
+      "sampled-data-reserve": 0.0,
+      "feasibility-slack": {
+        "enabled": false
+      }
+    },
+    "with-slack": {
+      "cvt": {"on": false},
+      "cvt-yaw": {"on": false},
+      "target-yaw": {"on": false}
+    },
+    "without-slack": {
+      "method": "all",
+      "energy": {"on": false},
+      "safety": {
+        "on": true,
+        "safe-distance": 10.0,
+        "safe-distance-tightening-margin": 0.0,
+        "k": 1.0,
+        "consider-uncertainty": false,
+        "pair-state-reserve": {
+          "enabled": false,
+          "velocity-gain": 0.0,
+          "sample-time": 0.5,
+          "acceleration-gain": 0.0,
+          "neighbor-acceleration-bound": 0.0,
+          "max-reserve": 0.0
+        }
+      },
+      "comm-fixed": {
+        "on": true,
+        "max-range": 850.0,
+        "range-tightening-margin": 0.0,
+        "k": 1.0,
+        "compensate-velocity": true,
+        "consider-uncertainty": false,
+        "state-dependent-reserve": {
+          "enabled": false,
+          "velocity-gain": 0.0,
+          "sample-time": 0.5,
+          "acceleration-gain": 0.0,
+          "neighbor-acceleration-bound": 0.0,
+          "max-reserve": 0.0
+        }
+      },
+      "comm-auto": {"on": false}
+    }
+  },
+  "bridge": {
+    "enabled": true,
+    "row": "legacy",
+    "search-policy": "coverage",
+    "topology-policy": "fixed",
+    "safety-filter": "second-order-hocbf",
+    "topology": {
+      "max-range": 850.0,
+      "uncertainty-multiplier": 0.0,
+      "certified-margin": 0.0,
+      "certified-only": true,
+      "fail-safe-hold": true,
+      "fixed-references": {
+        "1": {"anchor-ids": [], "base-ids": [0, 1]},
+        "2": {"anchor-ids": [1], "base-ids": [0]},
+        "3": {"anchor-ids": [2, 1], "base-ids": []},
+        "4": {"anchor-ids": [3, 2], "base-ids": []}
+      }
+    },
+    "nominal": {
+      "max-speed": 8.0,
+      "max-acceleration": 2.0,
+      "max-yaw-rate": 0.35,
+      "guard": {
+        "enabled": true,
+        "mode": "hocbf-feasible-projection",
+        "tolerance": 1e-9
+      }
+    },
+    "search": {
+      "clarity-weight": 1.0,
+      "belief-weight": 0.0,
+      "travel-weight": 0.0005,
+      "goal-boundary-margin": 0.0,
+      "coverage-completion-threshold": 1.0
+    },
+    "target": {
+      "x": 1350.0,
+      "y": 450.0,
+      "radius": 50.0
+    }
+  },
+  "execute": {
+    "execution-mode": "distributed",
+    "time-total": 900.0,
+    "time-step": 0.5,
+    "random-seed": 20261501,
+    "check-constraint-violation": false
+  },
+  "debug": {
+    "opt-cbc": false,
+    "write-centralized-optimization-model": false
+  }
+}

@@ -7,8 +7,38 @@
 #include <cmath>
 #include <limits>
 #include <map>
+#include <set>
+#include <stdexcept>
 #include <string>
 #include <vector>
+
+struct BridgeFormationReferences {
+    std::vector<int> anchorIds;
+    std::vector<int> baseIds;
+
+    bool operator==(const BridgeFormationReferences &other) const {
+        return anchorIds == other.anchorIds && baseIds == other.baseIds;
+    }
+};
+
+using BridgeFixedReferenceMap = std::map<int, BridgeFormationReferences>;
+
+inline BridgeFixedReferenceMap bridgeSingleTriangularLadderReferences() {
+    return {
+            {1, {{}, {0, 1}}},
+            {2, {{1}, {0}}},
+            {3, {{2, 1}, {}}},
+            {4, {{3, 2}, {}}},
+    };
+}
+
+inline void validateBridgeSingleTriangularLadder(
+        const BridgeFixedReferenceMap &references) {
+    if (references != bridgeSingleTriangularLadderReferences()) {
+        throw std::invalid_argument(
+                "bridge fixed references must equal the declared single triangular ladder");
+    }
+}
 
 struct BridgeTopologyConfig {
     double maxRange = 1200.0;
@@ -24,6 +54,7 @@ struct BridgeTopologyConfig {
     double certifiedMargin = 0.0;
     bool certifiedOnly = false;
     bool failSafeHold = false;
+    BridgeFixedReferenceMap fixedReferences;
 };
 
 struct BridgeTopologyDecision {
@@ -37,8 +68,53 @@ struct BridgeTopologyDecision {
     double minFimEigenvalue = 0.0;
     double relaySupportMargin = std::numeric_limits<double>::quiet_NaN();
     std::map<int, std::vector<int>> anchorIds;
+    BridgeFixedReferenceMap references;
     json log = json::object();
 };
+
+inline void validateBridgeFixedReferences(
+        const BridgeFixedReferenceMap &references,
+        int robotCount,
+        int baseCount) {
+    if (robotCount <= 0 || baseCount < 0) {
+        throw std::invalid_argument("bridge fixed-reference counts must be valid");
+    }
+    if (static_cast<int>(references.size()) != robotCount) {
+        throw std::invalid_argument("bridge fixed references must define every robot exactly once");
+    }
+
+    for (int robotId = 1; robotId <= robotCount; ++robotId) {
+        auto entry = references.find(robotId);
+        if (entry == references.end()) {
+            throw std::invalid_argument("bridge fixed references have a missing robot id");
+        }
+        const auto &robotReferences = entry->second;
+        if (robotReferences.anchorIds.size() + robotReferences.baseIds.size() != 2) {
+            throw std::invalid_argument("each bridge robot must have exactly two fixed references");
+        }
+
+        std::set<int> uniqueAnchors;
+        for (int anchorId : robotReferences.anchorIds) {
+            if (anchorId < 1 || anchorId >= robotId || anchorId > robotCount) {
+                throw std::invalid_argument(
+                    "bridge mobile references must be valid strict predecessors");
+            }
+            if (!uniqueAnchors.insert(anchorId).second) {
+                throw std::invalid_argument("bridge mobile references must be unique");
+            }
+        }
+
+        std::set<int> uniqueBases;
+        for (int baseId : robotReferences.baseIds) {
+            if (baseId < 0 || baseId >= baseCount) {
+                throw std::invalid_argument("bridge base reference id is out of range");
+            }
+            if (!uniqueBases.insert(baseId).second) {
+                throw std::invalid_argument("bridge base references must be unique");
+            }
+        }
+    }
+}
 
 struct BridgeOneStepSupportGoal {
     Point goal;
@@ -217,7 +293,8 @@ inline BridgeOneStepSupportGoal bridgeChooseBetterOneStepSupportGoal(
 inline BridgeTopologyDecision chooseBridgeTopology(
     const std::map<int, Point> &positions,
     const BridgeTopologyConfig &config,
-    const std::string &policy
+    const std::string &policy,
+    const std::map<int, Point> &fixedBasePositions = {}
 ) {
     BridgeTopologyDecision decision;
     if (positions.empty()) {
@@ -226,6 +303,112 @@ inline BridgeTopologyDecision chooseBridgeTopology(
             {"accepted", false},
             {"certified", false},
             {"fail_safe", config.certifiedOnly}
+        };
+        return decision;
+    }
+
+    if (policy == "fixed" && !config.fixedReferences.empty()) {
+        decision.accepted = true;
+        decision.references = config.fixedReferences;
+        decision.minRobustMargin = std::numeric_limits<double>::infinity();
+        decision.minFimEigenvalue = std::numeric_limits<double>::infinity();
+        json referenceLog = json::object();
+        json geometryLog = json::array();
+
+        for (const auto &[robotId, references] : config.fixedReferences) {
+            decision.anchorIds[robotId] = references.anchorIds;
+            referenceLog[std::to_string(robotId)] = {
+                {"anchor_ids", references.anchorIds},
+                {"base_ids", references.baseIds}
+            };
+            auto self = positions.find(robotId);
+            if (self == positions.end()) {
+                decision.accepted = false;
+                geometryLog.push_back({
+                        {"owner_robot", robotId},
+                        {"resolved", false},
+                        {"error", "missing owner robot"},
+                });
+                continue;
+            }
+            for (int anchorId : references.anchorIds) {
+                auto anchor = positions.find(anchorId);
+                if (anchor == positions.end()) {
+                    decision.accepted = false;
+                    geometryLog.push_back({
+                            {"owner_robot", robotId},
+                            {"reference_kind", "mobile"},
+                            {"reference_id", anchorId},
+                            {"resolved", false},
+                    });
+                    continue;
+                }
+                const double distance = anchor->second.distance_to(self->second);
+                double margin = bridgeRobustMargin(anchor->second, self->second, config);
+                decision.minRobustMargin = std::min(decision.minRobustMargin, margin);
+                decision.minFimEigenvalue = std::min(
+                    decision.minFimEigenvalue,
+                    bridgeFimDiagnostic(margin, config));
+                geometryLog.push_back({
+                        {"owner_robot", robotId},
+                        {"reference_kind", "mobile"},
+                        {"reference_id", anchorId},
+                        {"resolved", true},
+                        {"distance", distance},
+                        {"physical_margin", config.maxRange - distance},
+                        {"robust_margin", margin},
+                });
+            }
+            for (int baseId : references.baseIds) {
+                auto base = fixedBasePositions.find(baseId);
+                if (base == fixedBasePositions.end()) {
+                    decision.accepted = false;
+                    geometryLog.push_back({
+                            {"owner_robot", robotId},
+                            {"reference_kind", "base"},
+                            {"reference_id", baseId},
+                            {"resolved", false},
+                    });
+                    continue;
+                }
+                const double distance = base->second.distance_to(self->second);
+                const double margin = bridgeRobustMargin(
+                        base->second, self->second, config);
+                decision.minRobustMargin = std::min(
+                        decision.minRobustMargin, margin);
+                decision.minFimEigenvalue = std::min(
+                        decision.minFimEigenvalue,
+                        bridgeFimDiagnostic(margin, config));
+                geometryLog.push_back({
+                        {"owner_robot", robotId},
+                        {"reference_kind", "base"},
+                        {"reference_id", baseId},
+                        {"resolved", true},
+                        {"distance", distance},
+                        {"physical_margin", config.maxRange - distance},
+                        {"robust_margin", margin},
+                });
+            }
+        }
+        decision.certified = decision.accepted
+                             && std::isfinite(decision.minRobustMargin)
+                             && decision.minRobustMargin >= config.certifiedMargin;
+        decision.failSafe = config.certifiedOnly && !decision.certified;
+        decision.log = {
+            {"accepted", decision.accepted},
+            {"certified", decision.certified},
+            {"certified_only", config.certifiedOnly},
+            {"fail_safe", decision.failSafe},
+            {"fail_safe_hold", config.failSafeHold},
+            {"certified_margin", config.certifiedMargin},
+            {"max_range", config.maxRange},
+            {"min_robust_margin", std::isfinite(decision.minRobustMargin)
+                    ? json(decision.minRobustMargin) : json(nullptr)},
+            {"min_fim_eigenvalue", std::isfinite(decision.minFimEigenvalue)
+                    ? json(decision.minFimEigenvalue) : json(nullptr)},
+            {"fixed", true},
+            {"references", referenceLog},
+            {"geometry", geometryLog},
         };
         return decision;
     }
@@ -301,6 +484,7 @@ inline BridgeTopologyDecision chooseBridgeTopology(
         }
 
         decision.anchorIds[id] = anchors;
+        decision.references[id].anchorIds = anchors;
         decision.minRobustMargin = std::min(decision.minRobustMargin, acceptedMargin);
         decision.minFimEigenvalue = std::min(decision.minFimEigenvalue, bridgeFimDiagnostic(acceptedMargin, config));
     }
@@ -342,6 +526,28 @@ inline BridgeTopologyConfig loadBridgeTopologyConfig(const json &config) {
     topology.certifiedMargin = source.value("certified-margin", topology.certifiedMargin);
     topology.certifiedOnly = source.value("certified-only", topology.certifiedOnly);
     topology.failSafeHold = source.value("fail-safe-hold", topology.failSafeHold);
+    if (source.contains("fixed-references")) {
+        const json &fixed = source.at("fixed-references");
+        if (!fixed.is_object()) {
+            throw std::invalid_argument("bridge.topology.fixed-references must be an object");
+        }
+        for (const auto &[robotKey, value] : fixed.items()) {
+            int robotId = 0;
+            try {
+                robotId = std::stoi(robotKey);
+            } catch (...) {
+                throw std::invalid_argument(
+                    "bridge.topology.fixed-references keys must be integer robot ids");
+            }
+            if (!value.is_object()) {
+                throw std::invalid_argument("each fixed-reference entry must be an object");
+            }
+            BridgeFormationReferences references;
+            references.anchorIds = value.value("anchor-ids", std::vector<int>{});
+            references.baseIds = value.value("base-ids", std::vector<int>{});
+            topology.fixedReferences[robotId] = references;
+        }
+    }
     if (source.contains("denial-center")) {
         topology.denialCenter = Point(source.at("denial-center").at(0).get<double>(),
                                       source.at("denial-center").at(1).get<double>());

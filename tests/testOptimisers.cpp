@@ -6,6 +6,7 @@
 #include "doctest.h"
 #include "Robot.hpp"
 #include "Swarm.hpp"
+#include "bridge/ReserveTaskHomotopy.hpp"
 #include <Eigen/Dense>
 #include <chrono>
 #include <random>
@@ -101,6 +102,162 @@ json makeSingleRobotNoCbfConfig(const std::string &optimiser_name) {
         }}
     };
 }
+
+json makeFullRowSingleLadderSwarmConfig(
+        const std::string &optimiserName,
+        const std::filesystem::path &outputPath) {
+    return {
+        {"world", {
+            {"boundary", {{0.0, 0.0}, {3000.0, 0.0},
+                          {3000.0, 2600.0}, {0.0, 2600.0}}},
+            {"charge", json::array()},
+            {"spacing", 100.0}
+        }},
+        {"num", 4},
+        {"dim", 4},
+        {"formation", {
+            {"parts", 1},
+            {"bases-id", {{0, 1}}}
+        }},
+        {"bases", {{200.0, 1200.0}, {200.0, 2049.0}}},
+        {"initial", {
+            {"position", {
+                {"method", "specified"},
+                {"positions", {
+                    {935.255567813, 1624.5},
+                    {935.255567813, 775.5},
+                    {1670.511135626, 1200.0},
+                    {1670.511135626, 351.0}
+                }}
+            }},
+            {"velocity", {{"values", {
+                {0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}
+            }}}},
+            {"battery", {{"min", 4100.0}, {"max", 4100.0}}},
+            {"yawDeg", 0.0}
+        }},
+        {"model", "DoubleIntegrate2D"},
+        {"model-params", {{"discharge-rate", 0.0}}},
+        {"position_covariance", {{"enable", false}}},
+        {"searching", {
+            {"method", "downward"},
+            {"downward", {{"radius", 150.0}}}
+        }},
+        {"optimiser", optimiserName},
+        {"cbfs", {
+            {"objective-function", {{"k_delta", 10.0}}},
+            {"high-order", {
+                {"enabled", true},
+                {"lambda1", 1.0},
+                {"lambda2", 1.0},
+                {"acceleration-bound", 2.0},
+                {"sampled-data-reserve", 0.0},
+                {"feasibility-slack", {{"enabled", false}}}
+            }},
+            {"with-slack", {
+                {"cvt", {{"on", false}}},
+                {"cvt-yaw", {{"on", false}}},
+                {"target-yaw", {{"on", false}}}
+            }},
+            {"without-slack", {
+                {"method", "all"},
+                {"energy", {{"on", false}}},
+                {"safety", {
+                    {"on", true},
+                    {"safe-distance", 10.0},
+                    {"safe-distance-tightening-margin", 0.0},
+                    {"consider-uncertainty", false},
+                    {"pair-state-reserve", {
+                        {"enabled", false},
+                        {"velocity-gain", 0.0},
+                        {"sample-time", 0.1},
+                        {"acceleration-gain", 0.0},
+                        {"neighbor-acceleration-bound", 0.0},
+                        {"max-reserve", 0.0}
+                    }}
+                }},
+                {"comm-fixed", {
+                    {"on", true},
+                    {"max-range", 850.0},
+                    {"range-tightening-margin", 0.0},
+                    {"k", 1.0},
+                    {"compensate-velocity", true},
+                    {"consider-uncertainty", false},
+                    {"state-dependent-reserve", {
+                        {"enabled", false},
+                        {"velocity-gain", 0.0},
+                        {"sample-time", 0.1},
+                        {"acceleration-gain", 0.0},
+                        {"neighbor-acceleration-bound", 0.0},
+                        {"max-reserve", 0.0}
+                    }}
+                }},
+                {"comm-auto", {{"on", false}}}
+            }}
+        }},
+        {"bridge", {
+            {"enabled", true},
+            {"row", "test"},
+            {"search-policy", "coverage"},
+            {"topology-policy", "fixed"},
+            {"safety-filter", "second-order-hocbf"},
+            {"topology", {
+                {"max-range", 850.0},
+                {"uncertainty-multiplier", 0.0},
+                {"certified-margin", 0.0},
+                {"certified-only", true},
+                {"fail-safe-hold", true},
+                {"fixed-references", {
+                    {"1", {{"anchor-ids", json::array()}, {"base-ids", {0, 1}}}},
+                    {"2", {{"anchor-ids", {1}}, {"base-ids", {0}}}},
+                    {"3", {{"anchor-ids", {2, 1}}, {"base-ids", json::array()}}},
+                    {"4", {{"anchor-ids", {3, 2}}, {"base-ids", json::array()}}}
+                }}
+            }},
+            {"nominal", {
+                {"max-speed", 8.0},
+                {"max-acceleration", 2.0},
+                {"max-yaw-rate", 0.35},
+                {"guard", {
+                    {"enabled", true},
+                    {"mode", "hocbf-feasible-projection"},
+                    {"tolerance", 1.0e-9}
+                }},
+                {"gamma-star-feedback", {
+                    {"enabled", true},
+                    {"mode", "reserve-task-homotopy"},
+                    {"analysis-role", "main"},
+                    {"homotopy-intervals", 8},
+                    {"lookahead-steps", 4},
+                    {"predictive-gate", 0.0}
+                }}
+            }},
+            {"target", {{"x", 1800.0}, {"y", 1800.0}, {"radius", 50.0}}}
+        }},
+        {"execute", {
+            {"execution-mode", "distributed"},
+            {"time-total", 2.5},
+            {"time-step", 0.5},
+            {"random-seed", 20261501},
+            {"check-constraint-violation", false}
+        }},
+        {"debug", {{"opt-cbc", false}}},
+        {"output_path", outputPath.string()},
+        {"run_suffix", "_full_row_swarm_test"}
+    };
+}
+
+struct ScopedTestDirectory {
+    explicit ScopedTestDirectory(std::filesystem::path pathIn)
+            : path(std::move(pathIn)) {
+        std::filesystem::create_directories(path);
+    }
+    ~ScopedTestDirectory() {
+        std::error_code error;
+        std::filesystem::remove_all(path, error);
+    }
+    std::filesystem::path path;
+};
 
 double objectiveValue(const Eigen::VectorXd &nominal,
                       const Eigen::VectorXd &solution,
@@ -302,6 +459,31 @@ TEST_CASE("SlackConstraintCoefficientsAppendSingleActiveSlack") {
     CHECK(coe(4) == doctest::Approx(0.0));
     CHECK(coe(5) == doctest::Approx(1.0));
     CHECK(coe(6) == doctest::Approx(0.0));
+}
+
+TEST_CASE("Gurobi preserves an explicit infeasible status without reading a solution") {
+#ifdef ENABLE_GUROBI
+    json settings = {{"k_delta", 10.0}};
+    Gurobi optimiser(settings);
+    optimiser.start(1, 1);
+    optimiser.setObjective(Eigen::VectorXd::Zero(1));
+    Eigen::VectorXd positive(1);
+    positive << 1.0;
+    Eigen::VectorXd negative(1);
+    negative << -1.0;
+    optimiser.addLinearConstraint(positive, 1.0);
+    optimiser.addLinearConstraint(negative, 1.0);
+
+    const Eigen::VectorXd result = optimiser.solve();
+    const json status = optimiser.getStatus();
+
+    CHECK(result.norm() == doctest::Approx(0.0));
+    CHECK(status.at("status") == "infeasible");
+    CHECK(status.at("objective_value").is_null());
+    CHECK(status.at("constraints_count") == 2);
+#else
+    MESSAGE("Gurobi is unavailable; explicit infeasible status was not tested");
+#endif
 }
 
 TEST_CASE("RealDataReplayProblemsCanBeLoaded") {
@@ -595,6 +777,504 @@ TEST_CASE("RobotProjectsNominalAccelerationThroughHocbfGuardAndPreservesYawRate"
     CHECK(robot.opt.at("nominalGuard").at("feasible").get<bool>());
     CHECK(robot.opt.at("nominalGuard").at("margin_before").get<double>() == doctest::Approx(-1.0));
     CHECK(robot.opt.at("nominalGuard").at("margin_after").get<double>() == doctest::Approx(0.0));
+}
+
+TEST_CASE("HomotopyCandidateRemainsHardFeasibleAndExecutesIdempotently") {
+    const std::string optimiserName = selectRobotTestOptimiser();
+    json settings = makeSingleRobotNoCbfConfig(optimiserName);
+    settings["model"] = "DoubleIntegrate2D";
+    settings["cbfs"]["high-order"] = {
+        {"enabled", true},
+        {"acceleration-bound", 2.0}
+    };
+
+    const std::vector<BridgeHocbfHalfspace2D> constraints = {
+            {1.0, 0.0, 0.0},
+            {-1.0, 0.0, -1.0},
+    };
+    const auto legacy = projectBridgeHocbfNominalAcceleration(
+            -1.0, 0.0, 2.0, constraints, 1.0e-12);
+    REQUIRE(legacy.feasible);
+    CHECK(legacy.projected_ax == doctest::Approx(0.0).epsilon(1.0e-12));
+
+    const auto reserve = solveExactBridgeGammaStar2D({
+            bridgeGammaStarResidualFromAffineMargin(1.0, 0.0, 0.0),
+            bridgeGammaStarResidualFromAffineMargin(-1.0, 0.0, 1.0),
+    }, 2.0);
+    REQUIRE(reserve.valid);
+    CHECK(reserve.accelX == doctest::Approx(0.5).epsilon(1.0e-12));
+
+    auto candidates = buildReserveTaskHomotopy(
+            legacy.projected_ax, legacy.projected_ay,
+            reserve.accelX, reserve.accelY, 4);
+    for (auto &candidate : candidates) {
+        candidate.predictedBudget = candidate.alpha >= 0.5 ? 0.1 : -0.1;
+    }
+    const auto selected = selectReserveTaskHomotopy(
+            candidates,
+            legacy.projected_ax, legacy.projected_ay,
+            0.0);
+    REQUIRE(selected.selected);
+    CHECK(selected.alpha == doctest::Approx(0.5));
+    CHECK(bridgeHocbfMinMargin(
+            constraints, selected.accelX, selected.accelY) >= -1.0e-12);
+
+    Robot robot(1, settings);
+    SecondOrderCBF lower;
+    lower.name = "homotopyLower";
+    lower.k0 = 0.0;
+    lower.k1 = 0.0;
+    lower.lambda1 = 1.0;
+    lower.h = [](const VectorXd &, double) { return 0.0; };
+    lower.hdot = [](const VectorXd &, double) { return 0.0; };
+    lower.hddotConst = [](const VectorXd &, double) { return 0.0; };
+    lower.uCoe = [](const VectorXd &, double) {
+        VectorXd coefficients = VectorXd::Zero(3);
+        coefficients(0) = 1.0;
+        return coefficients;
+    };
+    SecondOrderCBF upper = lower;
+    upper.name = "homotopyUpper";
+    upper.hddotConst = [](const VectorXd &, double) { return 1.0; };
+    upper.uCoe = [](const VectorXd &, double) {
+        VectorXd coefficients = VectorXd::Zero(3);
+        coefficients(0) = -1.0;
+        return coefficients;
+    };
+    robot.secondOrderCbfNoSlack[lower.name] = lower;
+    robot.secondOrderCbfNoSlack[upper.name] = upper;
+
+    VectorXd nominal = VectorXd::Zero(3);
+    nominal(0) = selected.accelX;
+    nominal(1) = selected.accelY;
+    robot.setNominalControlOverride(nominal);
+    robot.applySecondOrderNominalFeasibilityGuard(1.0e-12);
+    CHECK(robot.nominalGuardDiagnostic.at("projection_norm").get<double>()
+          <= 1.0e-12);
+    robot.optimise();
+
+    const auto executed = robot.model->getAcceleration();
+    CHECK((executed - Eigen::Vector2d(selected.accelX, selected.accelY)).norm()
+          <= 1.0e-10);
+}
+
+TEST_CASE("Finite-precision endpoint repair moves only toward the certified witness") {
+    const std::vector<BridgeHocbfHalfspace2D> constraints = {
+            {1.0, 0.0, 0.0},
+            {-1.0, 0.0, -1.0},
+    };
+    const auto repair = certifyBridgeHocbfEndpointTowardWitness(
+            -5.0e-13, 0.25,
+            0.5, 0.25,
+            2.0,
+            constraints);
+
+    REQUIRE(repair.valid);
+    CHECK(repair.repaired);
+    CHECK(repair.repairMix > 0.0);
+    CHECK(repair.repairMix < 1.0e-9);
+    CHECK(repair.repairNorm < 1.0e-9);
+    CHECK(repair.marginBefore < 0.0);
+    CHECK(repair.marginAfter >= 0.0);
+    CHECK(bridgeHocbfMinMargin(
+            constraints, repair.accelX, repair.accelY) >= 0.0);
+
+    const auto unchanged = certifyBridgeHocbfEndpointTowardWitness(
+            0.25, 0.25,
+            0.5, 0.25,
+            2.0,
+            constraints);
+    REQUIRE(unchanged.valid);
+    CHECK_FALSE(unchanged.repaired);
+    CHECK(unchanged.accelX == doctest::Approx(0.25));
+    CHECK(unchanged.accelY == doctest::Approx(0.25));
+
+    const double boundaryCandidate = 0.3665856765818431;
+    const std::vector<BridgeHocbfHalfspace2D> ulpConstraints = {{
+            1.0,
+            0.0,
+            std::nextafter(
+                    boundaryCandidate,
+                    std::numeric_limits<double>::infinity()),
+    }};
+    const auto ulpRepair = certifyBridgeHocbfEndpointTowardWitness(
+            boundaryCandidate, 1.3650549828132403,
+            0.5, 0.0,
+            2.0,
+            ulpConstraints);
+    REQUIRE(ulpRepair.valid);
+    CHECK(ulpRepair.repaired);
+    CHECK(ulpRepair.repairNorm <= BRIDGE_FULL_ROW_NUMERICAL_REPAIR_TOLERANCE);
+    CHECK(ulpRepair.marginBefore < 0.0);
+    CHECK(ulpRepair.marginAfter >= 0.0);
+}
+
+TEST_CASE("Full-row single-ladder Swarm step preserves rows execution and prediction audit") {
+    const auto available = getAvailableOptimisers();
+    if (std::find(available.begin(), available.end(), "Gurobi")
+            == available.end()) {
+        WARN("Gurobi is unavailable; full-row Swarm integration was not run");
+        return;
+    }
+
+    const auto uniqueSuffix = std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+    ScopedTestDirectory output(
+            std::filesystem::temp_directory_path()
+            / ("cbf-full-row-swarm-" + uniqueSuffix));
+    auto settings = makeFullRowSingleLadderSwarmConfig(
+            "Gurobi", output.path);
+    Swarm swarm(settings);
+    swarm.run();
+
+    REQUIRE(swarm.data.at("state").size() == 5);
+    bool exercisedActiveSelectedRow = false;
+    bool exercisedPositiveIntervention = false;
+    std::set<int> auditedOriginZeroHorizons;
+    const std::map<int, std::vector<std::string>> expectedRows = {
+            {1, {
+                    "secondOrderFixedCommCBF(base-0)",
+                    "secondOrderFixedCommCBF(base-1)",
+                    "secondOrderSafetyCBF(#2)",
+                    "secondOrderSafetyCBF(#3)",
+                    "secondOrderSafetyCBF(#4)"}},
+            {2, {
+                    "secondOrderFixedCommCBF(#1)",
+                    "secondOrderFixedCommCBF(base-0)",
+                    "secondOrderSafetyCBF(#1)",
+                    "secondOrderSafetyCBF(#3)",
+                    "secondOrderSafetyCBF(#4)"}},
+            {3, {
+                    "secondOrderFixedCommCBF(#1)",
+                    "secondOrderFixedCommCBF(#2)",
+                    "secondOrderSafetyCBF(#1)",
+                    "secondOrderSafetyCBF(#2)",
+                    "secondOrderSafetyCBF(#4)"}},
+            {4, {
+                    "secondOrderFixedCommCBF(#2)",
+                    "secondOrderFixedCommCBF(#3)",
+                    "secondOrderSafetyCBF(#1)",
+                    "secondOrderSafetyCBF(#2)",
+                    "secondOrderSafetyCBF(#3)"}},
+    };
+    for (const auto &step : swarm.data.at("state")) {
+        const auto &topology = step.at("bridge").at("topology");
+        CHECK(topology.at("fixed") == true);
+        CHECK(topology.at("certified") == true);
+        CHECK(topology.at("geometry").size() == 8);
+
+        const auto &feedback = step.at("bridge").at("nominal")
+                .at("gamma_star_feedback");
+        const auto &budgetAudit = step.at("bridge").at("nominal")
+                .at("full_row_budget_audit");
+        CHECK(budgetAudit.at("valid") == true);
+        CHECK(budgetAudit.at("robots").size() == 4);
+        CHECK(budgetAudit.at("minimum_gamma_star").is_number());
+        const auto &taskGoals = step.at("bridge").at("nominal")
+                .at("task_goals");
+        CHECK(taskGoals.size() == 4);
+        for (const auto &taskGoal : taskGoals) {
+            CHECK(taskGoal.at("robot").is_number_integer());
+            CHECK(taskGoal.at("x").is_number());
+            CHECK(taskGoal.at("y").is_number());
+            CHECK(taskGoal.at("changed").is_boolean());
+        }
+        REQUIRE(feedback.at("links").size() == 4);
+        for (const auto &link : feedback.at("links")) {
+            INFO(link.dump(2));
+            const int robotId = link.at("robot").get<int>();
+            CHECK(link.at("selected") == true);
+            if (!link.at("selected").get<bool>()) {
+                continue;
+            }
+            CHECK(link.at("candidate_current_feasible") == true);
+            CHECK(link.at("pre_score_constraint_ledger_consistent") == true);
+            CHECK(link.at("pre_score_row_identity_consistent") == true);
+            CHECK(link.at("pre_score_row_class_consistent") == true);
+            CHECK(link.at("pre_score_row_execution_class") == "hard");
+            CHECK(link.at("row_identity_consistent") == true);
+            CHECK(link.at("execution_consistent") == true);
+            CHECK(link.at("row_execution_class") == "hard");
+            CHECK(link.at("installed_hard_row_identities")
+                  == expectedRows.at(robotId));
+            CHECK(link.at("guard_candidate_difference").get<double>()
+                  <= BRIDGE_FULL_ROW_GUARD_REPRODUCTION_TOLERANCE);
+            CHECK(link.at("qp_candidate_difference").get<double>()
+                  <= BRIDGE_FULL_ROW_QP_REPRODUCTION_TOLERANCE);
+            CHECK(link.at("solver_optimal") == true);
+            CHECK(link.at("qp_minimum_hard_margin").get<double>()
+                  >= -BRIDGE_FULL_ROW_QP_HARD_MARGIN_TOLERANCE);
+            CHECK(link.at("qp_acceleration_box_violation").get<double>()
+                  <= BRIDGE_FULL_ROW_QP_HARD_MARGIN_TOLERANCE);
+            exercisedPositiveIntervention = exercisedPositiveIntervention
+                    || link.at("selected_alpha").get<double>() > 0.0;
+            exercisedActiveSelectedRow = exercisedActiveSelectedRow
+                    || link.at("current_candidate_minimum_margin").get<double>()
+                            <= 1.0e-8;
+            if (link.at("current_candidate_minimum_margin").get<double>()
+                    <= 1.0e-8) {
+                double minimumMargin = std::numeric_limits<double>::infinity();
+                std::string minimumIdentity;
+                for (const auto &row : link.at("current_rows")) {
+                    const double margin = row.at("const_term").get<double>()
+                            + row.at("u_coe").at(0).get<double>()
+                                    * link.at("selected_accel_x").get<double>()
+                            + row.at("u_coe").at(1).get<double>()
+                                    * link.at("selected_accel_y").get<double>();
+                    if (margin < minimumMargin) {
+                        minimumMargin = margin;
+                        minimumIdentity = row.at("identity").get<std::string>();
+                    }
+                }
+                CHECK(minimumMargin
+                      >= -BRIDGE_FULL_ROW_NUMERICAL_REPAIR_TOLERANCE);
+                CHECK(minimumIdentity.find("secondOrderFixedCommCBF") == 0);
+            }
+        }
+        const auto &audit = feedback.at("prediction_audit");
+        CHECK(audit.at("invalid_count") == 0);
+        for (const auto &resolved : audit.at("resolved")) {
+            if (resolved.at("origin_step") == 0) {
+                auditedOriginZeroHorizons.insert(
+                        resolved.at("horizon_step").get<int>());
+            }
+        }
+    }
+    CHECK(exercisedActiveSelectedRow);
+    CHECK(exercisedPositiveIntervention);
+    CHECK(auditedOriginZeroHorizons == std::set<int>({1, 2, 3, 4}));
+
+    const auto &audit0 = swarm.data.at("state").at(0)
+            .at("bridge").at("nominal").at("gamma_star_feedback")
+            .at("prediction_audit");
+    CHECK(audit0.at("resolved_count") == 0);
+    CHECK(audit0.at("pending_count") == 16);
+
+    const auto &audit1 = swarm.data.at("state").at(1)
+            .at("bridge").at("nominal").at("gamma_star_feedback")
+            .at("prediction_audit");
+    CHECK(audit1.at("resolved_count") == 4);
+    CHECK(audit1.at("invalid_count") == 0);
+    CHECK(audit1.at("pending_count") == 28);
+    REQUIRE(audit1.at("resolved").size() == 4);
+    for (const auto &audit : audit1.at("resolved")) {
+        CHECK(audit.at("valid") == true);
+        CHECK(audit.at("origin_step") == 0);
+        CHECK(audit.at("due_step") == 1);
+        CHECK(audit.at("observed_step") == 1);
+        CHECK(audit.at("horizon_step") == 1);
+        CHECK(audit.at("states").size() == 4);
+        CHECK(audit.at("actual_budget").is_number());
+        CHECK(audit.at("budget_error_actual_minus_predicted").is_number());
+    }
+    const auto &audit4 = swarm.data.at("state").at(4)
+            .at("bridge").at("nominal").at("gamma_star_feedback")
+            .at("prediction_audit");
+    CHECK(audit4.at("resolved_count") == 16);
+    CHECK(audit4.at("invalid_count") == 0);
+    CHECK(audit4.at("pending_count") == 40);
+    CHECK(swarm.data.at("bridge")
+          .at("prediction_audit_unresolved_at_horizon") == 40);
+    CHECK(swarm.data.at("terminal").at("runtime")
+          == doctest::Approx(2.5));
+    CHECK(swarm.data.at("termination").at("status") == "horizon");
+    CHECK(swarm.data.at("termination").at("runtime")
+          == doctest::Approx(2.5));
+    REQUIRE(swarm.data.at("terminal").at("robots").size() == 4);
+    for (const auto &robot : swarm.data.at("terminal").at("robots")) {
+        CHECK(robot.at("state").at("x").is_number());
+        CHECK(robot.at("state").at("y").is_number());
+        CHECK(robot.at("state").at("vx").is_number());
+        CHECK(robot.at("state").at("vy").is_number());
+    }
+}
+
+TEST_CASE("Full-row predictive-soft comparator reports its actual row class") {
+    const auto available = getAvailableOptimisers();
+    if (std::find(available.begin(), available.end(), "Gurobi")
+            == available.end()) {
+        WARN("Gurobi is unavailable; predictive-soft integration was not run");
+        return;
+    }
+
+    const auto uniqueSuffix = std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+    ScopedTestDirectory output(
+            std::filesystem::temp_directory_path()
+            / ("cbf-full-row-soft-swarm-" + uniqueSuffix));
+    auto settings = makeFullRowSingleLadderSwarmConfig(
+            "Gurobi", output.path);
+    auto &feedback = settings["bridge"]["nominal"]["gamma-star-feedback"];
+    feedback["analysis-role"] = "comparator";
+    feedback["constraint-execution"] = "soft";
+    settings["cbfs"]["high-order"]["feasibility-slack"]["enabled"] = true;
+    settings["cbfs"]["objective-function"]["k_delta"] = 1000.0;
+    settings["execute"]["time-total"] = 0.1;
+
+    Swarm swarm(settings);
+    swarm.run();
+
+    const auto &links = swarm.data.at("state").at(0)
+            .at("bridge").at("nominal").at("gamma_star_feedback")
+            .at("links");
+    REQUIRE(links.size() == 4);
+    for (const auto &link : links) {
+        INFO(link.dump(2));
+        CHECK(link.at("pre_score_constraint_ledger_consistent") == true);
+        CHECK(link.at("pre_score_row_identity_consistent") == true);
+        CHECK(link.at("pre_score_row_class_consistent") == true);
+        CHECK(link.at("pre_score_row_execution_class") == "soft");
+        CHECK(link.at("row_execution_class") == "soft");
+        CHECK(link.at("installed_soft_row_identities").size() == 5);
+        CHECK(link.at("row_identity_consistent") == true);
+        CHECK(link.at("selected") == true);
+        if (!link.at("selected").get<bool>()) {
+            continue;
+        }
+        CHECK(link.at("qp_minimum_relaxed_row_margin").get<double>()
+              >= -BRIDGE_FULL_ROW_QP_HARD_MARGIN_TOLERANCE);
+        CHECK(link.at("qp_maximum_slack").get<double>() >= 0.0);
+        CHECK(link.at("qp_minimum_slack").get<double>()
+              >= -BRIDGE_FULL_ROW_QP_HARD_MARGIN_TOLERANCE);
+        CHECK(link.at("qp_slack_lower_bound_violation").get<double>()
+              <= BRIDGE_FULL_ROW_QP_HARD_MARGIN_TOLERANCE);
+        CHECK(link.at("qp_slack_count") == 5);
+        CHECK(link.at("qp_minimum_hard_margin").is_null());
+        CHECK(link.at("execution_consistent") == true);
+    }
+}
+
+TEST_CASE("Predictive-soft audits current-infeasible execution as an explicit fallback") {
+    const auto available = getAvailableOptimisers();
+    if (std::find(available.begin(), available.end(), "Gurobi")
+            == available.end()) {
+        WARN("Gurobi is unavailable; predictive-soft fallback was not run");
+        return;
+    }
+
+    const auto uniqueSuffix = std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+    ScopedTestDirectory output(
+            std::filesystem::temp_directory_path()
+            / ("cbf-full-row-soft-fallback-" + uniqueSuffix));
+    auto settings = makeFullRowSingleLadderSwarmConfig(
+            "Gurobi", output.path);
+    auto &feedback = settings["bridge"]["nominal"]["gamma-star-feedback"];
+    feedback["analysis-role"] = "comparator";
+    feedback["constraint-execution"] = "soft";
+    settings["cbfs"]["high-order"]["feasibility-slack"]["enabled"] = true;
+    settings["cbfs"]["objective-function"]["k_delta"] = 1000.0;
+    settings["bases"] = {{200.0, 1200.0}, {200.0, 2049.9}};
+    settings["initial"]["position"]["positions"] = {
+            {936.0349906763944, 1624.95},
+            {936.0349906763944, 775.05},
+            {1672.0699813527888, 1200.0},
+            {1672.0699813527888, 350.1}
+    };
+    settings["initial"]["velocity"]["values"][3] = {0.0, -5.0};
+    settings["execute"]["time-total"] = 0.1;
+
+    Swarm swarm(settings);
+    swarm.run();
+
+    const auto &step = swarm.data.at("state").at(0);
+    CHECK(step.at("bridge").at("topology").at("certified") == true);
+    const auto &links = step.at("bridge").at("nominal")
+            .at("gamma_star_feedback").at("links");
+    int fallbackCount = 0;
+    for (const auto &link : links) {
+        if (!link.at("soft_current_infeasible_fallback").get<bool>()) {
+            continue;
+        }
+        ++fallbackCount;
+        CHECK(link.at("selected") == false);
+        CHECK(link.at("current_infeasible") == true);
+        CHECK(link.at("certified_negative_current_hard_set") == true);
+        CHECK(link.at("current_gamma_star").get<double>() < 0.0);
+        CHECK(link.at("soft_fallback_task_guard_difference").get<double>()
+              <= BRIDGE_FULL_ROW_GUARD_REPRODUCTION_TOLERANCE);
+        CHECK(link.at("pre_score_constraint_ledger_consistent") == true);
+        CHECK(link.at("row_identity_consistent") == true);
+        CHECK(link.at("row_execution_class") == "soft");
+        CHECK(link.at("solver_optimal") == true);
+        CHECK(link.at("qp_minimum_relaxed_row_margin").get<double>()
+              >= -BRIDGE_FULL_ROW_QP_HARD_MARGIN_TOLERANCE);
+        CHECK(link.at("qp_slack_lower_bound_violation").get<double>()
+              <= BRIDGE_FULL_ROW_QP_HARD_MARGIN_TOLERANCE);
+        CHECK(link.at("execution_consistent") == true);
+    }
+    CHECK(fallbackCount >= 1);
+}
+
+TEST_CASE("Full-row prediction clock advances while fixed topology is in fail-safe") {
+    const auto available = getAvailableOptimisers();
+    if (std::find(available.begin(), available.end(), "Gurobi")
+            == available.end()) {
+        WARN("Gurobi is unavailable; fail-safe prediction clock was not run");
+        return;
+    }
+
+    const auto uniqueSuffix = std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+    ScopedTestDirectory output(
+            std::filesystem::temp_directory_path()
+            / ("cbf-full-row-fail-safe-" + uniqueSuffix));
+    auto settings = makeFullRowSingleLadderSwarmConfig(
+            "Gurobi", output.path);
+    settings["bases"] = {{200.0, 1200.0}, {200.0, 2049.9}};
+    settings["initial"]["position"]["positions"] = {
+            {936.0349906763944, 1624.95},
+            {936.0349906763944, 775.05},
+            {1672.0699813527888, 1200.0},
+            {1672.0699813527888, 350.1}
+    };
+    settings["initial"]["velocity"]["values"][3] = {0.0, -0.8};
+    settings["execute"]["time-total"] = 1.0;
+
+    Swarm swarm(settings);
+    swarm.run();
+
+    REQUIRE(swarm.data.at("state").size() == 2);
+    const auto &certifiedStep = swarm.data.at("state").at(0);
+    CHECK(certifiedStep.at("bridge").at("topology").at("certified") == true);
+    CHECK(certifiedStep.at("bridge").at("nominal").at("fail_safe")
+          .at("active") == false);
+    const auto &certifiedFeedback = certifiedStep.at("bridge").at("nominal")
+            .at("gamma_star_feedback");
+    CHECK(certifiedFeedback.at("links").size() == 4);
+    CHECK(certifiedFeedback.at("prediction_audit").at("step") == 0);
+    CHECK(certifiedFeedback.at("prediction_audit").at("resolved_count") == 0);
+    CHECK(certifiedFeedback.at("prediction_audit").at("pending_count") == 16);
+
+    const auto &failSafeStep = swarm.data.at("state").at(1);
+    CHECK(failSafeStep.at("bridge").at("topology").at("certified") == false);
+    CHECK(failSafeStep.at("bridge").at("nominal").at("fail_safe")
+          .at("active") == true);
+    const auto &failSafeFeedback = failSafeStep.at("bridge").at("nominal")
+            .at("gamma_star_feedback");
+    CHECK(failSafeFeedback.at("control_skipped_due_to_fail_safe") == true);
+    CHECK(failSafeFeedback.at("links").empty());
+    const auto &audit = failSafeFeedback.at("prediction_audit");
+    CHECK(audit.at("step") == 1);
+    CHECK(audit.at("resolved_count") == 4);
+    CHECK(audit.at("invalid_count") == 0);
+    CHECK(audit.at("pending_count") == 12);
+    REQUIRE(audit.at("resolved").size() == 4);
+    for (const auto &resolved : audit.at("resolved")) {
+        CHECK(resolved.at("valid") == true);
+        CHECK(resolved.at("origin_step") == 0);
+        CHECK(resolved.at("due_step") == 1);
+        CHECK(resolved.at("observed_step") == 1);
+        CHECK(resolved.at("origin_time_s") == doctest::Approx(0.0));
+        CHECK(resolved.at("predicted_time_s") == doctest::Approx(0.5));
+        CHECK(resolved.at("observed_time_s") == doctest::Approx(0.5));
+    }
+    const auto &failSafeBudget = failSafeStep.at("bridge").at("nominal")
+            .at("full_row_budget_audit");
+    CHECK(failSafeBudget.at("valid") == true);
+    CHECK(failSafeBudget.at("minimum_gamma_star").get<double>() < 0.0);
+    CHECK(swarm.data.at("bridge")
+          .at("prediction_audit_unresolved_at_horizon") == 12);
 }
 
 TEST_CASE("RobotHocbfGuardReportsEmptyFeasibleSetWithoutChangingYawRate") {
@@ -974,6 +1654,18 @@ TEST_CASE("RobotAppliesStateDependentReserveToSecondOrderCommunicationCbf") {
     CHECK(evaluation.stateDependentReserve == doctest::Approx(1.0));
     CHECK(evaluation.totalReserve == doctest::Approx(2.25));
     CHECK(evaluation.constTerm == doctest::Approx(1.85));
+
+    const auto sharedRow = buildPairwiseSecondOrderRow(
+        {Point(8.0, 5.0), Eigen::Vector2d(0.5, 0.0), Eigen::Vector2d::Zero()},
+        {Point(5.0, 5.0), Eigen::Vector2d::Zero(), Eigen::Vector2d(0.1, 0.0)},
+        {PairwiseSecondOrderBarrierKind::CommunicationUpper,
+         8.0, 0.0, 1.0, 1.0, 1.0, 2.25});
+    CHECK(evaluation.h == doctest::Approx(sharedRow.h).epsilon(1.0e-12));
+    CHECK(evaluation.hdot == doctest::Approx(sharedRow.hdot).epsilon(1.0e-12));
+    CHECK(evaluation.psi1 == doctest::Approx(sharedRow.psi1).epsilon(1.0e-12));
+    CHECK(evaluation.uCoe(0) == doctest::Approx(sharedRow.uCoe(0)).epsilon(1.0e-12));
+    CHECK(evaluation.uCoe(1) == doctest::Approx(sharedRow.uCoe(1)).epsilon(1.0e-12));
+    CHECK(evaluation.constTerm == doctest::Approx(sharedRow.constTerm).epsilon(1.0e-12));
 }
 
 TEST_CASE("SwarmLogOnceEvaluatesCentralizedCbfsFromSingleStateSnapshot") {

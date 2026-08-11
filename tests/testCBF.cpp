@@ -123,3 +123,82 @@ TEST_CASE("PairwiseDistanceKinematicsIncludesRadialVelocityAndCurvature") {
     CHECK(terms.radialVelocity == doctest::Approx(2.2));
     CHECK(terms.curvature == doctest::Approx(0.032));
 }
+
+TEST_CASE("Shared pairwise second-order rows use exact collision and communication signs") {
+    PairwiseSecondOrderState2D self{
+        Point(3.0, 4.0),
+        Eigen::Vector2d(2.0, 1.0),
+        Eigen::Vector2d::Zero()};
+    PairwiseSecondOrderState2D reference{
+        Point(0.0, 0.0),
+        Eigen::Vector2d(-1.0, 0.5),
+        Eigen::Vector2d(0.4, -0.2)};
+
+    constexpr double k = 1.5;
+    constexpr double lambda1 = 1.0;
+    constexpr double lambda2 = 2.0;
+    constexpr double uncertainty = 0.25;
+    constexpr double reserve = 0.75;
+    const auto kinematics = computePairwiseDistanceKinematics(
+        self.position,
+        reference.position,
+        self.velocity,
+        reference.velocity);
+    const double neighbourRadialAcceleration =
+        kinematics.normal.dot(reference.acceleration);
+
+    const auto collision = buildPairwiseSecondOrderRow(
+        self,
+        reference,
+        {PairwiseSecondOrderBarrierKind::CollisionLower,
+         10.0, uncertainty, k, lambda1, lambda2, reserve});
+    CHECK(collision.uCoe(0) == doctest::Approx(k * kinematics.normal(0)));
+    CHECK(collision.uCoe(1) == doctest::Approx(k * kinematics.normal(1)));
+    CHECK(collision.h == doctest::Approx(
+        k * (kinematics.distance - 10.0 - uncertainty)));
+    CHECK(collision.hdot == doctest::Approx(k * kinematics.radialVelocity));
+    CHECK(collision.hddotConst == doctest::Approx(
+        k * (kinematics.curvature - neighbourRadialAcceleration)));
+    CHECK(collision.psi1 == doctest::Approx(
+        collision.hdot + lambda1 * collision.h));
+    CHECK(collision.constTerm == doctest::Approx(
+        collision.hddotConst
+        + (lambda1 + lambda2) * collision.hdot
+        + lambda1 * lambda2 * collision.h
+        - reserve));
+
+    const auto communication = buildPairwiseSecondOrderRow(
+        self,
+        reference,
+        {PairwiseSecondOrderBarrierKind::CommunicationUpper,
+         850.0, uncertainty, k, lambda1, lambda2, reserve});
+    CHECK(communication.uCoe(0) == doctest::Approx(-k * kinematics.normal(0)));
+    CHECK(communication.uCoe(1) == doctest::Approx(-k * kinematics.normal(1)));
+    CHECK(communication.h == doctest::Approx(
+        k * (850.0 - kinematics.distance - uncertainty)));
+    CHECK(communication.hdot == doctest::Approx(-k * kinematics.radialVelocity));
+    CHECK(communication.hddotConst == doctest::Approx(
+        k * (neighbourRadialAcceleration - kinematics.curvature)));
+    CHECK(communication.psi1 == doctest::Approx(
+        communication.hdot + lambda1 * communication.h));
+    CHECK(communication.constTerm == doctest::Approx(
+        communication.hddotConst
+        + (lambda1 + lambda2) * communication.hdot
+        + lambda1 * lambda2 * communication.h
+        - reserve));
+}
+
+TEST_CASE("Shared pairwise second-order rows reject coincident positions") {
+    PairwiseSecondOrderState2D self{
+        Point(1.0, 1.0), Eigen::Vector2d::Zero(), Eigen::Vector2d::Zero()};
+    PairwiseSecondOrderState2D reference{
+        Point(1.0, 1.0), Eigen::Vector2d::Zero(), Eigen::Vector2d::Zero()};
+
+    CHECK_THROWS_AS(
+        buildPairwiseSecondOrderRow(
+            self,
+            reference,
+            {PairwiseSecondOrderBarrierKind::CollisionLower,
+             10.0, 0.0, 1.0, 1.0, 1.0, 0.0}),
+        std::invalid_argument);
+}

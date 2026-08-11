@@ -798,32 +798,50 @@ public:
             commCBF.k1 = lambda1 + lambda2;
             commCBF.k0 = lambda1 * lambda2;
             commCBF.sampledDataReserve = sampledDataReserve;
-            commCBF.h = [this, otherPoint, effectiveMaxRange, k, uncertainty](const VectorXd &x, double) {
-                Point myPosition = model->extractXYFromVector(x);
-                VectorXd myVelocity = extractPlanarVelocityFromState(x);
-                VectorXd otherVelocity = VectorXd::Zero(2);
-                auto terms = computePairwiseDistanceKinematics(myPosition, otherPoint, myVelocity, otherVelocity);
-                return k * (effectiveMaxRange - terms.distance - uncertainty);
+            auto evaluateSharedRow = [
+                this,
+                otherPoint,
+                otherVelocity,
+                otherAcceleration,
+                effectiveMaxRange,
+                k,
+                uncertainty,
+                lambda1,
+                lambda2
+            ](const VectorXd &x) {
+                PairwiseSecondOrderState2D selfState{
+                    model->extractXYFromVector(x),
+                    extractPlanarVelocityFromState(x),
+                    Eigen::Vector2d::Zero()};
+                PairwiseSecondOrderState2D referenceState{
+                    otherPoint,
+                    Eigen::Vector2d(otherVelocity(0), otherVelocity(1)),
+                    Eigen::Vector2d(otherAcceleration(0), otherAcceleration(1))};
+                return buildPairwiseSecondOrderRow(
+                    selfState,
+                    referenceState,
+                    {PairwiseSecondOrderBarrierKind::CommunicationUpper,
+                     effectiveMaxRange,
+                     uncertainty,
+                     k,
+                     lambda1,
+                     lambda2,
+                     0.0});
             };
-            commCBF.hdot = [this, otherPoint, otherVelocity, k](const VectorXd &x, double) {
-                Point myPosition = model->extractXYFromVector(x);
-                VectorXd myVelocity = extractPlanarVelocityFromState(x);
-                auto terms = computePairwiseDistanceKinematics(myPosition, otherPoint, myVelocity, otherVelocity);
-                return -k * terms.radialVelocity;
+            commCBF.h = [evaluateSharedRow](const VectorXd &x, double) {
+                return evaluateSharedRow(x).h;
             };
-            commCBF.hddotConst = [this, otherPoint, otherVelocity, otherAcceleration, k](const VectorXd &x, double) {
-                Point myPosition = model->extractXYFromVector(x);
-                VectorXd myVelocity = extractPlanarVelocityFromState(x);
-                auto terms = computePairwiseDistanceKinematics(myPosition, otherPoint, myVelocity, otherVelocity);
-                return k * (terms.normal.dot(otherAcceleration) - terms.curvature);
+            commCBF.hdot = [evaluateSharedRow](const VectorXd &x, double) {
+                return evaluateSharedRow(x).hdot;
             };
-            commCBF.uCoe = [this, otherPoint, otherVelocity, k](const VectorXd &x, double) {
-                Point myPosition = model->extractXYFromVector(x);
-                VectorXd myVelocity = extractPlanarVelocityFromState(x);
-                auto terms = computePairwiseDistanceKinematics(myPosition, otherPoint, myVelocity, otherVelocity);
+            commCBF.hddotConst = [evaluateSharedRow](const VectorXd &x, double) {
+                return evaluateSharedRow(x).hddotConst;
+            };
+            commCBF.uCoe = [this, evaluateSharedRow](const VectorXd &x, double) {
+                const auto row = evaluateSharedRow(x);
                 VectorXd coe = VectorXd::Zero(model->uSize());
-                coe(0) = -k * terms.normal.x();
-                coe(1) = -k * terms.normal.y();
+                coe(0) = row.uCoe(0);
+                coe(1) = row.uCoe(1);
                 return coe;
             };
             if (useStateDependentReserve) {
@@ -1045,32 +1063,50 @@ public:
             safetyCBF.k1 = lambda1 + lambda2;
             safetyCBF.k0 = lambda1 * lambda2;
             safetyCBF.sampledDataReserve = sampledDataReserve;
-            safetyCBF.h = [this, otherPosition, effectiveSafeDistance, k, uncertainty](const VectorXd &x, double) {
-                Point myPosition = model->extractXYFromVector(x);
-                VectorXd myVelocity = extractPlanarVelocityFromState(x);
-                VectorXd otherVelocity = VectorXd::Zero(2);
-                auto terms = computePairwiseDistanceKinematics(myPosition, otherPosition, myVelocity, otherVelocity);
-                return k * (terms.distance - effectiveSafeDistance - uncertainty);
+            auto evaluateSharedRow = [
+                this,
+                otherPosition,
+                otherVelocity,
+                otherAcceleration,
+                effectiveSafeDistance,
+                k,
+                uncertainty,
+                lambda1,
+                lambda2
+            ](const VectorXd &x) {
+                PairwiseSecondOrderState2D selfState{
+                    model->extractXYFromVector(x),
+                    extractPlanarVelocityFromState(x),
+                    Eigen::Vector2d::Zero()};
+                PairwiseSecondOrderState2D referenceState{
+                    otherPosition,
+                    Eigen::Vector2d(otherVelocity(0), otherVelocity(1)),
+                    Eigen::Vector2d(otherAcceleration(0), otherAcceleration(1))};
+                return buildPairwiseSecondOrderRow(
+                    selfState,
+                    referenceState,
+                    {PairwiseSecondOrderBarrierKind::CollisionLower,
+                     effectiveSafeDistance,
+                     uncertainty,
+                     k,
+                     lambda1,
+                     lambda2,
+                     0.0});
             };
-            safetyCBF.hdot = [this, otherPosition, otherVelocity, k](const VectorXd &x, double) {
-                Point myPosition = model->extractXYFromVector(x);
-                VectorXd myVelocity = extractPlanarVelocityFromState(x);
-                auto terms = computePairwiseDistanceKinematics(myPosition, otherPosition, myVelocity, otherVelocity);
-                return k * terms.radialVelocity;
+            safetyCBF.h = [evaluateSharedRow](const VectorXd &x, double) {
+                return evaluateSharedRow(x).h;
             };
-            safetyCBF.hddotConst = [this, otherPosition, otherVelocity, otherAcceleration, k](const VectorXd &x, double) {
-                Point myPosition = model->extractXYFromVector(x);
-                VectorXd myVelocity = extractPlanarVelocityFromState(x);
-                auto terms = computePairwiseDistanceKinematics(myPosition, otherPosition, myVelocity, otherVelocity);
-                return k * (-terms.normal.dot(otherAcceleration) + terms.curvature);
+            safetyCBF.hdot = [evaluateSharedRow](const VectorXd &x, double) {
+                return evaluateSharedRow(x).hdot;
             };
-            safetyCBF.uCoe = [this, otherPosition, otherVelocity, k](const VectorXd &x, double) {
-                Point myPosition = model->extractXYFromVector(x);
-                VectorXd myVelocity = extractPlanarVelocityFromState(x);
-                auto terms = computePairwiseDistanceKinematics(myPosition, otherPosition, myVelocity, otherVelocity);
+            safetyCBF.hddotConst = [evaluateSharedRow](const VectorXd &x, double) {
+                return evaluateSharedRow(x).hddotConst;
+            };
+            safetyCBF.uCoe = [this, evaluateSharedRow](const VectorXd &x, double) {
+                const auto row = evaluateSharedRow(x);
                 VectorXd coe = VectorXd::Zero(model->uSize());
-                coe(0) = k * terms.normal.x();
-                coe(1) = k * terms.normal.y();
+                coe(0) = row.uCoe(0);
+                coe(1) = row.uCoe(1);
                 return coe;
             };
             if (usePairStateReserve) {
@@ -1418,6 +1454,19 @@ public:
                 if (secondOrderEvaluations.find(name) != secondOrderEvaluations.end()) {
                     item["hocbf"] = secondOrderEvaluations.at(name).value(u);
                 }
+            }
+            for (int i = 0; i < static_cast<int>(opt["hocbfSlack"].size()); ++i) {
+                auto &item = opt["hocbfSlack"][i];
+                const std::string name = item.at("name").get<std::string>();
+                if (secondOrderEvaluations.find(name) == secondOrderEvaluations.end()) {
+                    continue;
+                }
+                const double physicalMargin =
+                        secondOrderEvaluations.at(name).value(u);
+                const double slack = result(uSize + cvtSlackSize + i);
+                item["hocbf"] = physicalMargin;
+                item["slack"] = slack;
+                item["hocbf_with_slack"] = physicalMargin + slack;
             }
 
             try {

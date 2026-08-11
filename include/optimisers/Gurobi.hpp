@@ -20,6 +20,11 @@ class Gurobi : public OptimiserBase{
 public:
     Gurobi(json &settings): OptimiserBase(settings), env(true) {
         env.set(GRB_IntParam_OutputFlag, 0);
+        env.set(GRB_DoubleParam_FeasibilityTol, 1.0e-9);
+        env.set(GRB_DoubleParam_OptimalityTol, 1.0e-9);
+        env.set(GRB_DoubleParam_BarConvTol, 1.0e-12);
+        env.set(GRB_IntParam_NumericFocus, 3);
+        env.set(GRB_IntParam_DualReductions, 0);
         env.start();
     }
 
@@ -111,7 +116,9 @@ public:
                         status["status"] = "other";
                         break;
                 }
-                status["objective_value"] = model->get(GRB_DoubleAttr_ObjVal);
+                status["objective_value"] = grb_status == GRB_OPTIMAL
+                        ? json(model->get(GRB_DoubleAttr_ObjVal))
+                        : json(nullptr);
                 status["vars_count"] = model->get(GRB_IntAttr_NumVars);
                 status["constraints_count"] = model->get(GRB_IntAttr_NumConstrs);
                 status["solve_time_ms"] = last_solve_time_ms;
@@ -137,6 +144,13 @@ public:
             last_solve_time_ms = duration.count() / 1000.0;
 
             Eigen::VectorXd u(vars.size());
+            const int optimizationStatus = model->get(GRB_IntAttr_Status);
+            if (optimizationStatus != GRB_OPTIMAL) {
+                has_error = false;
+                last_error_code = 0;
+                last_error_message = "";
+                return Eigen::VectorXd::Zero(vars.size());
+            }
             for (int i = 0; i < vars.size(); i++) {
                 u[i] = vars[i].get(GRB_DoubleAttr_X);
             }

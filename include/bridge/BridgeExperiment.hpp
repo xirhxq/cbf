@@ -3,11 +3,17 @@
 
 #include "utils.h"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <numeric>
 #include <string>
 #include <vector>
+
+inline constexpr double BRIDGE_FULL_ROW_GUARD_REPRODUCTION_TOLERANCE = 1.0e-10;
+inline constexpr double BRIDGE_FULL_ROW_QP_REPRODUCTION_TOLERANCE = 1.0e-5;
+inline constexpr double BRIDGE_FULL_ROW_QP_HARD_MARGIN_TOLERANCE = 1.0e-8;
+inline constexpr double BRIDGE_FULL_ROW_NUMERICAL_REPAIR_TOLERANCE = 1.0e-10;
 
 struct BridgeTargetConfig {
     double x = 0.0;
@@ -49,14 +55,13 @@ struct BridgeExperimentConfig {
     double goalDiversionLookaheadRadial = 0.0;
     bool goalDiversionMultiPair = false;
     bool gammaStarFeedbackEnabled = false;
-    double gammaStarSafeThreshold = 1.0;
-    double gammaStarAccelHalfBox = 2.0;
-    int gammaStarDirectionCount = 8;
-    int gammaStarMagnitudeCount = 3;
-    double gammaStarCandidateScale = 1.0;
-    int gammaStarLookaheadSteps = 1;
-    double gammaStarPredictiveThreshold = 0.0;
-    int gammaStarLookaheadDistance = 0;
+    std::string gammaStarFeedbackMode = "reserve-task-homotopy";
+    std::string gammaStarFeedbackAnalysisRole = "main";
+    std::string gammaStarFeedbackSelectionRule = "least-intervention";
+    std::string gammaStarFeedbackConstraintExecution = "hard";
+    int gammaStarHomotopyIntervals = 8;
+    int gammaStarLookaheadSteps = 4;
+    double gammaStarPredictiveGate = 0.0;
     BridgeTargetConfig target;
 };
 
@@ -205,42 +210,248 @@ inline BridgeExperimentConfig loadBridgeExperimentConfig(const json &config) {
     if (source.contains("nominal") && source.at("nominal").contains("gamma-star-feedback")) {
         const json &feedback = source.at("nominal").at("gamma-star-feedback");
         bridge.gammaStarFeedbackEnabled = feedback.value("enabled", false);
-        bridge.gammaStarSafeThreshold = feedback.value("safe-threshold", bridge.gammaStarSafeThreshold);
-        bridge.gammaStarAccelHalfBox = feedback.value("accel-half-box", bridge.gammaStarAccelHalfBox);
-        bridge.gammaStarDirectionCount = feedback.value("direction-count", bridge.gammaStarDirectionCount);
-        bridge.gammaStarMagnitudeCount = feedback.value("magnitude-count", bridge.gammaStarMagnitudeCount);
-        bridge.gammaStarCandidateScale = feedback.value("candidate-scale", bridge.gammaStarCandidateScale);
+        bridge.gammaStarFeedbackMode = feedback.value("mode", bridge.gammaStarFeedbackMode);
+        bridge.gammaStarFeedbackAnalysisRole = feedback.value(
+                "analysis-role", bridge.gammaStarFeedbackAnalysisRole);
+        bridge.gammaStarFeedbackSelectionRule = feedback.value(
+                "selection-rule", bridge.gammaStarFeedbackSelectionRule);
+        bridge.gammaStarFeedbackConstraintExecution = feedback.value(
+                "constraint-execution",
+                bridge.gammaStarFeedbackConstraintExecution);
+        bridge.gammaStarHomotopyIntervals = feedback.value(
+                "homotopy-intervals", bridge.gammaStarHomotopyIntervals);
         bridge.gammaStarLookaheadSteps = feedback.value("lookahead-steps", bridge.gammaStarLookaheadSteps);
-        bridge.gammaStarPredictiveThreshold = feedback.value("predictive-threshold", bridge.gammaStarPredictiveThreshold);
-        bridge.gammaStarLookaheadDistance = feedback.value("lookahead-distance", bridge.gammaStarLookaheadDistance);
-        auto assertNonNegFinite = [](double value, const char *field) {
-            if (!std::isfinite(value) || value < 0.0) {
-                throw std::invalid_argument(
-                    std::string("bridge.nominal.gamma-star-feedback.") + field
-                    + " must be non-negative and finite");
+        bridge.gammaStarPredictiveGate = feedback.value(
+                "predictive-gate", bridge.gammaStarPredictiveGate);
+
+        if (bridge.gammaStarFeedbackEnabled) {
+            const std::array<const char *, 7> obsoleteFields = {
+                    "safe-threshold",
+                    "accel-half-box",
+                    "direction-count",
+                    "magnitude-count",
+                    "candidate-scale",
+                    "predictive-threshold",
+                    "lookahead-distance",
+            };
+            for (const char *field : obsoleteFields) {
+                if (feedback.contains(field)) {
+                    throw std::invalid_argument(
+                            std::string("bridge.nominal.gamma-star-feedback.")
+                            + field + " is incompatible with reserve-task-homotopy");
+                }
             }
-        };
-        assertNonNegFinite(bridge.gammaStarSafeThreshold, "safe-threshold");
-        if (bridge.gammaStarAccelHalfBox <= 0.0 || !std::isfinite(bridge.gammaStarAccelHalfBox)) {
-            throw std::invalid_argument(
-                "bridge.nominal.gamma-star-feedback.accel-half-box must be positive and finite");
-        }
-        if (bridge.gammaStarDirectionCount < 2 || !std::isfinite(static_cast<double>(bridge.gammaStarDirectionCount))) {
-            throw std::invalid_argument(
-                "bridge.nominal.gamma-star-feedback.direction-count must be at least 2");
-        }
-        if (bridge.gammaStarMagnitudeCount < 1 || !std::isfinite(static_cast<double>(bridge.gammaStarMagnitudeCount))) {
-            throw std::invalid_argument(
-                "bridge.nominal.gamma-star-feedback.magnitude-count must be at least 1");
-        }
-        if (bridge.gammaStarLookaheadSteps < 1 || !std::isfinite(static_cast<double>(bridge.gammaStarLookaheadSteps))) {
-            throw std::invalid_argument(
-                "bridge.nominal.gamma-star-feedback.lookahead-steps must be at least 1");
-        }
-        assertNonNegFinite(bridge.gammaStarPredictiveThreshold, "predictive-threshold");
-        if (bridge.gammaStarLookaheadDistance < 0 || !std::isfinite(static_cast<double>(bridge.gammaStarLookaheadDistance))) {
-            throw std::invalid_argument(
-                "bridge.nominal.gamma-star-feedback.lookahead-distance must be non-negative and finite");
+            if (bridge.gammaStarFeedbackMode != "reserve-task-homotopy") {
+                throw std::invalid_argument(
+                        "bridge.nominal.gamma-star-feedback.mode must be reserve-task-homotopy");
+            }
+            if (bridge.gammaStarFeedbackAnalysisRole == "main") {
+                if (bridge.gammaStarHomotopyIntervals != 8
+                    || bridge.gammaStarFeedbackSelectionRule
+                            != "least-intervention"
+                    || bridge.gammaStarFeedbackConstraintExecution != "hard") {
+                    throw std::invalid_argument(
+                            "main reserve-task-homotopy requires M=8, least-intervention selection, and hard rows");
+                }
+            } else if (bridge.gammaStarFeedbackAnalysisRole == "sensitivity") {
+                if ((bridge.gammaStarHomotopyIntervals != 4
+                     && bridge.gammaStarHomotopyIntervals != 16)
+                    || bridge.gammaStarFeedbackSelectionRule
+                            != "least-intervention"
+                    || bridge.gammaStarFeedbackConstraintExecution != "hard") {
+                    throw std::invalid_argument(
+                            "sensitivity reserve-task-homotopy permits only M=4/16, least-intervention selection, and hard rows");
+                }
+            } else if (bridge.gammaStarFeedbackAnalysisRole == "comparator") {
+                if (bridge.gammaStarHomotopyIntervals != 8
+                    || bridge.gammaStarFeedbackSelectionRule
+                            != "least-intervention"
+                    || bridge.gammaStarFeedbackConstraintExecution != "soft") {
+                    throw std::invalid_argument(
+                            "the predictive-soft comparator requires M=8, least-intervention selection, and soft rows");
+                }
+            } else if (bridge.gammaStarFeedbackAnalysisRole == "ablation") {
+                if (bridge.gammaStarHomotopyIntervals != 8
+                    || bridge.gammaStarFeedbackSelectionRule
+                            != "maximum-reserve"
+                    || bridge.gammaStarFeedbackConstraintExecution != "hard") {
+                    throw std::invalid_argument(
+                            "the maximum-reserve ablation requires M=8, maximum-reserve selection, and hard rows");
+                }
+            } else {
+                throw std::invalid_argument(
+                        "gamma-star feedback analysis-role must be main, sensitivity, comparator, or ablation");
+            }
+            if (bridge.gammaStarLookaheadSteps != 4) {
+                throw std::invalid_argument(
+                        "reserve-task-homotopy requires H=4");
+            }
+            if (!std::isfinite(bridge.gammaStarPredictiveGate)
+                || bridge.gammaStarPredictiveGate != 0.0) {
+                throw std::invalid_argument(
+                        "reserve-task-homotopy requires tau=0");
+            }
+            if (!bridge.enabled) {
+                throw std::invalid_argument("gamma-star feedback requires bridge.enabled");
+            }
+            if (bridge.topologyPolicy != "fixed") {
+                throw std::invalid_argument(
+                        "reserve-task-homotopy requires fixed bridge topology");
+            }
+            if (bridge.safetyFilter != "second-order-hocbf") {
+                throw std::invalid_argument(
+                        "reserve-task-homotopy requires the second-order HOCBF safety filter");
+            }
+            if (!bridge.nominalGuardEnabled) {
+                throw std::invalid_argument(
+                        "reserve-task-homotopy requires the hard nominal feasibility guard");
+            }
+            if (bridge.nominalGuardTolerance != 1.0e-9) {
+                throw std::invalid_argument(
+                        "reserve-task-homotopy freezes the numerical guard tolerance at 1e-9");
+            }
+            if (config.value("model", "") != "DoubleIntegrate2D") {
+                throw std::invalid_argument(
+                        "reserve-task-homotopy requires DoubleIntegrate2D");
+            }
+            if (config.value("optimiser", "") != "Gurobi") {
+                throw std::invalid_argument(
+                        "reserve-task-homotopy requires the audited high-accuracy Gurobi QP path");
+            }
+            if (config.value("num", 0) != 4) {
+                throw std::invalid_argument(
+                        "reserve-task-homotopy requires exactly four mobile robots");
+            }
+            const json bases = config.value("bases", json::array());
+            if (!bases.is_array() || bases.size() != 2) {
+                throw std::invalid_argument(
+                        "reserve-task-homotopy requires exactly two fixed bases");
+            }
+            for (const auto &base : bases) {
+                if (!base.is_array() || base.size() < 2
+                    || !base.at(0).is_number() || !base.at(1).is_number()
+                    || !std::isfinite(base.at(0).get<double>())
+                    || !std::isfinite(base.at(1).get<double>())) {
+                    throw std::invalid_argument(
+                            "reserve-task-homotopy base coordinates must be finite planar points");
+                }
+            }
+            if (config.value("execute", json::object())
+                    .value("execution-mode", "distributed") != "distributed") {
+                throw std::invalid_argument(
+                        "reserve-task-homotopy requires distributed local QPs");
+            }
+            if (!source.contains("topology")
+                || !source.at("topology").contains("fixed-references")
+                || source.at("topology").at("fixed-references").empty()) {
+                throw std::invalid_argument(
+                        "reserve-task-homotopy requires explicit fixed references");
+            }
+            const json &topology = source.at("topology");
+            if (std::abs(topology.value("max-range", 0.0) - 850.0) > 1.0e-12
+                || std::abs(topology.value("uncertainty-multiplier", 0.0)) > 1.0e-12
+                || std::abs(topology.value("certified-margin", 0.0)) > 1.0e-12
+                || !topology.value("certified-only", false)
+                || !topology.value("fail-safe-hold", false)) {
+                throw std::invalid_argument(
+                        "reserve-task-homotopy requires a raw 850 m fixed-topology certificate with fail-safe hold");
+            }
+
+            const json &cbfs = config.value("cbfs", json::object());
+            const json &highOrder = cbfs.value("high-order", json::object());
+            if (!highOrder.value("enabled", false)) {
+                throw std::invalid_argument(
+                        "reserve-task-homotopy requires high-order CBFs");
+            }
+            const double accelerationBound = highOrder.value("acceleration-bound", 0.0);
+            if (!std::isfinite(accelerationBound) || accelerationBound <= 0.0) {
+                throw std::invalid_argument(
+                        "reserve-task-homotopy requires a positive physical acceleration bound");
+            }
+            const double lambda1 = highOrder.value("lambda1", 1.0);
+            const double lambda2 = highOrder.value("lambda2", 1.0);
+            const double sampledReserve =
+                    highOrder.value("sampled-data-reserve", 0.0);
+            if (!std::isfinite(lambda1) || lambda1 <= 0.0
+                || !std::isfinite(lambda2) || lambda2 <= 0.0
+                || !std::isfinite(sampledReserve) || sampledReserve < 0.0) {
+                throw std::invalid_argument(
+                        "reserve-task-homotopy requires positive HOCBF gains and a nonnegative finite constant reserve");
+            }
+            const bool feasibilitySlackEnabled =
+                    highOrder.value("feasibility-slack", json::object())
+                            .value("enabled", false);
+            if (bridge.gammaStarFeedbackConstraintExecution == "soft") {
+                const double slackPenalty = cbfs.value(
+                        "objective-function", json::object())
+                        .value("k_delta", 0.0);
+                if (!feasibilitySlackEnabled
+                    || !std::isfinite(slackPenalty)
+                    || slackPenalty != 1000.0) {
+                    throw std::invalid_argument(
+                            "the predictive-soft comparator requires feasibility slack with penalty 1000");
+                }
+            } else if (feasibilitySlackEnabled) {
+                throw std::invalid_argument(
+                        "hard reserve-task-homotopy forbids HOCBF feasibility slack");
+            }
+
+            const json &withoutSlack = cbfs.value("without-slack", json::object());
+            if (withoutSlack.value("method", "all") != "all") {
+                throw std::invalid_argument(
+                        "reserve-task-homotopy requires every hard row, not a minimum-row surrogate");
+            }
+            const json &safety = withoutSlack.value("safety", json::object());
+            const json &communication = withoutSlack.value("comm-fixed", json::object());
+            if (!safety.value("on", false)
+                || std::abs(safety.value("safe-distance", 0.0) - 10.0) > 1.0e-12
+                || std::abs(safety.value(
+                        "safe-distance-tightening-margin", 0.0)) > 1.0e-12
+                || safety.value("consider-uncertainty", true)
+                || safety.value("pair-state-reserve", json::object())
+                        .value("enabled", false)) {
+                throw std::invalid_argument(
+                        "reserve-task-homotopy requires raw 10 m safety rows with only the shared constant reserve");
+            }
+            if (!communication.value("on", false)
+                || std::abs(communication.value("max-range", 0.0) - 850.0) > 1.0e-12
+                || std::abs(communication.value(
+                        "range-tightening-margin", 0.0)) > 1.0e-12
+                || communication.value("consider-uncertainty", true)
+                || !communication.value("compensate-velocity", true)
+                || communication.value("state-dependent-reserve", json::object())
+                        .value("enabled", false)) {
+                throw std::invalid_argument(
+                        "reserve-task-homotopy requires raw 850 m communication rows with held-reference dynamics and only the shared constant reserve");
+            }
+            if (withoutSlack.value("comm-auto", json::object())
+                    .value("on", false)) {
+                throw std::invalid_argument(
+                        "reserve-task-homotopy forbids automatic communication rewiring");
+            }
+            for (const auto &[name, entry] : withoutSlack.items()) {
+                if (name == "safety" || name == "comm-fixed"
+                    || name == "comm-auto" || name == "method") {
+                    continue;
+                }
+                if (entry.is_object() && entry.value("on", false)) {
+                    throw std::invalid_argument(
+                            "reserve-task-homotopy forbids hard rows outside the declared full family");
+                }
+            }
+            if (config.value("position_covariance", json::object())
+                    .value("enable", false)) {
+                throw std::invalid_argument(
+                        "reserve-task-homotopy forbids position uncertainty");
+            }
+
+            const json &withSlack = cbfs.value("with-slack", json::object());
+            for (const auto &entry : withSlack) {
+                if (entry.is_object() && entry.value("on", false)) {
+                    throw std::invalid_argument(
+                            "reserve-task-homotopy forbids unrelated soft task CBFs");
+                }
+            }
         }
     }
 
@@ -287,14 +498,14 @@ inline json makeBridgeMetadata(const json &config, const BridgeExperimentConfig 
         {"goal_diversion_lookahead_radial_threshold", bridge.goalDiversionLookaheadRadial},
         {"goal_diversion_multi_pair", bridge.goalDiversionMultiPair},
         {"gamma_star_feedback_enabled", bridge.gammaStarFeedbackEnabled},
-        {"gamma_star_feedback_safe_threshold", bridge.gammaStarSafeThreshold},
-        {"gamma_star_feedback_accel_half_box", bridge.gammaStarAccelHalfBox},
-        {"gamma_star_feedback_direction_count", bridge.gammaStarDirectionCount},
-        {"gamma_star_feedback_magnitude_count", bridge.gammaStarMagnitudeCount},
-        {"gamma_star_feedback_candidate_scale", bridge.gammaStarCandidateScale},
+        {"gamma_star_feedback_mode", bridge.gammaStarFeedbackMode},
+        {"gamma_star_feedback_analysis_role", bridge.gammaStarFeedbackAnalysisRole},
+        {"gamma_star_feedback_selection_rule", bridge.gammaStarFeedbackSelectionRule},
+        {"gamma_star_feedback_constraint_execution",
+                bridge.gammaStarFeedbackConstraintExecution},
+        {"gamma_star_feedback_homotopy_intervals", bridge.gammaStarHomotopyIntervals},
         {"gamma_star_feedback_lookahead_steps", bridge.gammaStarLookaheadSteps},
-        {"gamma_star_feedback_predictive_threshold", bridge.gammaStarPredictiveThreshold},
-        {"gamma_star_feedback_lookahead_distance", bridge.gammaStarLookaheadDistance},
+        {"gamma_star_feedback_predictive_gate", bridge.gammaStarPredictiveGate},
         {"area_width_m", bridgeWorldExtent(config, 0)},
         {"area_height_m", bridgeWorldExtent(config, 1)},
         {"horizon_s", config.at("execute").at("time-total").get<double>()},

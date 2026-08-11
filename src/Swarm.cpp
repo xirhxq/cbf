@@ -3,9 +3,20 @@
 
 #include <fstream>
 #include <ctime>
+#include <iostream>
+#include <string>
+
+#ifndef CBF_BUILD_SOURCE_SHA256
+#error "Swarm must be built with an embedded source fingerprint"
+#endif
 
 
 int main(int argc, char* argv[]) {
+    if (argc == 2 && std::string(argv[1]) == "--build-source-fingerprint") {
+        std::cout << CBF_BUILD_SOURCE_SHA256 << std::endl;
+        return 0;
+    }
+
     clock_t start = clock();
 
     std::string configPath = "../config/config.json";

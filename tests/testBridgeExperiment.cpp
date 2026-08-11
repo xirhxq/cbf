@@ -6,6 +6,212 @@
 #include "bridge/BridgeTopology.hpp"
 #include "bridge/HocbfFeasibilityGuard.hpp"
 
+namespace {
+
+json fixedSingleLadderTopologyConfig() {
+    return {
+        {"bridge", {
+            {"topology", {
+                {"max-range", 850.0},
+                {"uncertainty-multiplier", 0.0},
+                {"certified-margin", 0.0},
+                {"certified-only", true},
+                {"fail-safe-hold", true},
+                {"fixed-references", {
+                    {"1", {{"anchor-ids", json::array()}, {"base-ids", {0, 1}}}},
+                    {"2", {{"anchor-ids", {1}}, {"base-ids", {0}}}},
+                    {"3", {{"anchor-ids", {2, 1}}, {"base-ids", json::array()}}},
+                    {"4", {{"anchor-ids", {3, 2}}, {"base-ids", json::array()}}}
+                }}
+            }}
+        }}
+    };
+}
+
+json validFullRowFeedbackConfig() {
+    json config = fixedSingleLadderTopologyConfig();
+    config["model"] = "DoubleIntegrate2D";
+    config["optimiser"] = "Gurobi";
+    config["num"] = 4;
+    config["bases"] = {{0.0, 0.0}, {0.0, 100.0}};
+    config["position_covariance"] = {{"enable", false}};
+    config["bridge"]["enabled"] = true;
+    config["bridge"]["topology-policy"] = "fixed";
+    config["bridge"]["safety-filter"] = "second-order-hocbf";
+    config["bridge"]["nominal"] = {
+        {"guard", {
+            {"enabled", true},
+            {"mode", "hocbf-feasible-projection"},
+            {"tolerance", 1.0e-9}
+        }},
+        {"gamma-star-feedback", {
+            {"enabled", true},
+            {"mode", "reserve-task-homotopy"},
+            {"homotopy-intervals", 8},
+            {"lookahead-steps", 4},
+            {"predictive-gate", 0.0}
+        }}
+    };
+    config["cbfs"] = {
+        {"high-order", {
+            {"enabled", true},
+            {"acceleration-bound", 2.0},
+            {"feasibility-slack", {{"enabled", false}}}
+        }},
+        {"with-slack", {
+            {"cvt", {{"on", false}}},
+            {"cvt-yaw", {{"on", false}}},
+            {"target-yaw", {{"on", false}}}
+        }},
+        {"without-slack", {
+            {"safety", {
+                {"on", true},
+                {"safe-distance", 10.0},
+                {"safe-distance-tightening-margin", 0.0},
+                {"consider-uncertainty", false}
+            }},
+            {"comm-fixed", {
+                {"on", true},
+                {"max-range", 850.0},
+                {"range-tightening-margin", 0.0},
+                {"consider-uncertainty", false}
+            }},
+            {"comm-auto", {{"on", false}}}
+        }}
+    };
+    return config;
+}
+
+}  // namespace
+
+TEST_CASE("Fixed bridge references preserve the single triangular ladder") {
+    const auto topology = loadBridgeTopologyConfig(fixedSingleLadderTopologyConfig());
+    CHECK_NOTHROW(validateBridgeFixedReferences(topology.fixedReferences, 4, 2));
+    CHECK_NOTHROW(validateBridgeSingleTriangularLadder(topology.fixedReferences));
+
+    const auto first = chooseBridgeTopology(
+        {{1, Point(0.0, 0.0)}, {2, Point(1.0, 0.0)},
+         {3, Point(2.0, 0.0)}, {4, Point(3.0, 0.0)}},
+        topology,
+        "fixed",
+        {{0, Point(-1.0, 0.0)}, {1, Point(-1.0, 1.0)}});
+    const auto moved = chooseBridgeTopology(
+        {{1, Point(9.0, 4.0)}, {2, Point(-2.0, 7.0)},
+         {3, Point(8.0, -3.0)}, {4, Point(0.0, 6.0)}},
+        topology,
+        "fixed",
+        {{0, Point(0.0, 0.0)}, {1, Point(1.0, 1.0)}});
+
+    CHECK(first.references == moved.references);
+    CHECK(first.references.at(1).anchorIds.empty());
+    CHECK(first.references.at(1).baseIds == std::vector<int>({0, 1}));
+    CHECK(first.references.at(2).anchorIds == std::vector<int>({1}));
+    CHECK(first.references.at(2).baseIds == std::vector<int>({0}));
+    CHECK(first.references.at(3).anchorIds == std::vector<int>({2, 1}));
+    CHECK(first.references.at(3).baseIds.empty());
+    CHECK(first.references.at(4).anchorIds == std::vector<int>({3, 2}));
+    CHECK(first.references.at(4).baseIds.empty());
+}
+
+TEST_CASE("Fixed ladder certification evaluates every mobile and base edge") {
+    auto config = loadBridgeTopologyConfig(fixedSingleLadderTopologyConfig());
+    config.maxRange = 850.0;
+    config.uncertaintyMultiplier = 0.0;
+    config.sigma0 = 0.0;
+    config.referenceVariance = 0.0;
+    config.certifiedMargin = 0.0;
+    config.certifiedOnly = true;
+    config.failSafeHold = true;
+
+    const std::map<int, Point> positions = {
+            {1, Point(10.0, 5.0)},
+            {2, Point(20.0, 0.0)},
+            {3, Point(30.0, 0.0)},
+            {4, Point(40.0, 0.0)},
+    };
+    const std::map<int, Point> bases = {
+            {0, Point(0.0, 0.0)},
+            {1, Point(0.0, 10.0)},
+    };
+
+    const auto certified = chooseBridgeTopology(
+            positions, config, "fixed", bases);
+    REQUIRE(certified.accepted);
+    CHECK(certified.certified);
+    CHECK_FALSE(certified.failSafe);
+    CHECK(certified.log.at("geometry").size() == 8);
+    CHECK(certified.log.at("min_robust_margin").get<double>()
+          == doctest::Approx(certified.minRobustMargin));
+    CHECK(certified.log.at("fail_safe_hold") == true);
+
+    auto outOfRange = positions;
+    outOfRange.at(1) = Point(900.0, 0.0);
+    const auto uncertified = chooseBridgeTopology(
+            outOfRange, config, "fixed", bases);
+    REQUIRE(uncertified.accepted);
+    CHECK_FALSE(uncertified.certified);
+    CHECK(uncertified.failSafe);
+    CHECK(uncertified.minRobustMargin < 0.0);
+    CHECK(uncertified.log.at("certified") == false);
+    CHECK(uncertified.log.at("fail_safe") == true);
+
+    const auto missingBase = chooseBridgeTopology(
+            positions, config, "fixed", {{0, Point(0.0, 0.0)}});
+    CHECK_FALSE(missingBase.accepted);
+    CHECK_FALSE(missingBase.certified);
+    CHECK(missingBase.failSafe);
+}
+
+TEST_CASE("Fixed bridge references reject malformed ladders") {
+    auto requireInvalid = [](BridgeFixedReferenceMap references) {
+        CHECK_THROWS_AS(validateBridgeFixedReferences(references, 4, 2), std::invalid_argument);
+    };
+
+    const auto valid = loadBridgeTopologyConfig(fixedSingleLadderTopologyConfig()).fixedReferences;
+
+    SUBCASE("missing robot") {
+        auto references = valid;
+        references.erase(4);
+        requireInvalid(references);
+    }
+    SUBCASE("self reference") {
+        auto references = valid;
+        references.at(3).anchorIds = {3, 1};
+        requireInvalid(references);
+    }
+    SUBCASE("duplicate mobile reference") {
+        auto references = valid;
+        references.at(3).anchorIds = {2, 2};
+        requireInvalid(references);
+    }
+    SUBCASE("forward mobile reference") {
+        auto references = valid;
+        references.at(3).anchorIds = {4, 1};
+        requireInvalid(references);
+    }
+    SUBCASE("invalid base reference") {
+        auto references = valid;
+        references.at(1).baseIds = {0, 2};
+        requireInvalid(references);
+    }
+    SUBCASE("wrong reference count") {
+        auto references = valid;
+        references.at(4).anchorIds = {3};
+        requireInvalid(references);
+    }
+}
+
+TEST_CASE("Structurally valid predecessor graphs cannot replace the declared ladder") {
+    auto references =
+            loadBridgeTopologyConfig(fixedSingleLadderTopologyConfig()).fixedReferences;
+    references.at(4).anchorIds = {3, 1};
+
+    CHECK_NOTHROW(validateBridgeFixedReferences(references, 4, 2));
+    CHECK_THROWS_AS(
+            validateBridgeSingleTriangularLadder(references),
+            std::invalid_argument);
+}
+
 TEST_CASE("BridgeExperimentLoadsDisabledDefault") {
     json config = json::object();
     BridgeExperimentConfig bridge = loadBridgeExperimentConfig(config);
@@ -47,6 +253,246 @@ TEST_CASE("BridgeExperimentLoadsNominalGuardConfig") {
     CHECK(bridge.nominalGuardEnabled);
     CHECK(bridge.nominalGuardMode == "hocbf-feasible-projection");
     CHECK(bridge.nominalGuardTolerance == doctest::Approx(1.0e-8));
+}
+
+TEST_CASE("Full-row feedback accepts only the declared homotopy configuration") {
+    const auto bridge = loadBridgeExperimentConfig(validFullRowFeedbackConfig());
+
+    CHECK(bridge.gammaStarFeedbackEnabled);
+    CHECK(bridge.gammaStarFeedbackMode == "reserve-task-homotopy");
+    CHECK(bridge.gammaStarFeedbackAnalysisRole == "main");
+    CHECK(bridge.gammaStarHomotopyIntervals == 8);
+    CHECK(bridge.gammaStarLookaheadSteps == 4);
+    CHECK(bridge.gammaStarPredictiveGate == doctest::Approx(0.0));
+}
+
+TEST_CASE("Full-row feedback rejects hidden method and boundary changes") {
+    auto requireInvalid = [](json config) {
+        CHECK_THROWS_AS(loadBridgeExperimentConfig(config), std::invalid_argument);
+    };
+
+    SUBCASE("independent acceleration box") {
+        auto config = validFullRowFeedbackConfig();
+        config["bridge"]["nominal"]["gamma-star-feedback"]["accel-half-box"] = 2.0;
+        requireInvalid(config);
+    }
+    SUBCASE("direction lattice") {
+        auto config = validFullRowFeedbackConfig();
+        config["bridge"]["nominal"]["gamma-star-feedback"]["direction-count"] = 8;
+        requireInvalid(config);
+    }
+    SUBCASE("magnitude lattice") {
+        auto config = validFullRowFeedbackConfig();
+        config["bridge"]["nominal"]["gamma-star-feedback"]["magnitude-count"] = 3;
+        requireInvalid(config);
+    }
+    SUBCASE("zero homotopy intervals") {
+        auto config = validFullRowFeedbackConfig();
+        config["bridge"]["nominal"]["gamma-star-feedback"]["homotopy-intervals"] = 0;
+        requireInvalid(config);
+    }
+    SUBCASE("undeclared homotopy intervals") {
+        auto config = validFullRowFeedbackConfig();
+        config["bridge"]["nominal"]["gamma-star-feedback"]["homotopy-intervals"] = 3;
+        requireInvalid(config);
+    }
+    SUBCASE("main role cannot use a sensitivity library") {
+        auto config = validFullRowFeedbackConfig();
+        config["bridge"]["nominal"]["gamma-star-feedback"]["homotopy-intervals"] = 4;
+        requireInvalid(config);
+    }
+    SUBCASE("zero lookahead") {
+        auto config = validFullRowFeedbackConfig();
+        config["bridge"]["nominal"]["gamma-star-feedback"]["lookahead-steps"] = 0;
+        requireInvalid(config);
+    }
+    SUBCASE("non-main lookahead") {
+        auto config = validFullRowFeedbackConfig();
+        config["bridge"]["nominal"]["gamma-star-feedback"]["lookahead-steps"] = 5;
+        requireInvalid(config);
+    }
+    SUBCASE("nonfinite predictive gate") {
+        auto config = validFullRowFeedbackConfig();
+        config["bridge"]["nominal"]["gamma-star-feedback"]["predictive-gate"] =
+                std::numeric_limits<double>::infinity();
+        requireInvalid(config);
+    }
+    SUBCASE("nonzero predictive gate") {
+        auto config = validFullRowFeedbackConfig();
+        config["bridge"]["nominal"]["gamma-star-feedback"]["predictive-gate"] = 1.0e-12;
+        requireInvalid(config);
+    }
+    SUBCASE("wrong mobile count") {
+        auto config = validFullRowFeedbackConfig();
+        config["num"] = 3;
+        requireInvalid(config);
+    }
+    SUBCASE("unaudited QP solver") {
+        auto config = validFullRowFeedbackConfig();
+        config["optimiser"] = "OSQP";
+        requireInvalid(config);
+    }
+    SUBCASE("wrong base count") {
+        auto config = validFullRowFeedbackConfig();
+        config["bases"].erase(config["bases"].begin());
+        requireInvalid(config);
+    }
+    SUBCASE("unfrozen topology range") {
+        auto config = validFullRowFeedbackConfig();
+        config["bridge"]["topology"]["max-range"] = 900.0;
+        requireInvalid(config);
+    }
+    SUBCASE("topology certificate without fail-safe hold") {
+        auto config = validFullRowFeedbackConfig();
+        config["bridge"]["topology"]["fail-safe-hold"] = false;
+        requireInvalid(config);
+    }
+    SUBCASE("adaptive topology") {
+        auto config = validFullRowFeedbackConfig();
+        config["bridge"]["topology-policy"] = "adaptive-relay";
+        requireInvalid(config);
+    }
+    SUBCASE("automatic communication graph") {
+        auto config = validFullRowFeedbackConfig();
+        config["cbfs"]["without-slack"]["comm-auto"]["on"] = true;
+        requireInvalid(config);
+    }
+    SUBCASE("communication tightening") {
+        auto config = validFullRowFeedbackConfig();
+        config["cbfs"]["without-slack"]["comm-fixed"]["range-tightening-margin"] = 1.0;
+        requireInvalid(config);
+    }
+    SUBCASE("safety tightening") {
+        auto config = validFullRowFeedbackConfig();
+        config["cbfs"]["without-slack"]["safety"]["safe-distance-tightening-margin"] = 1.0;
+        requireInvalid(config);
+    }
+    SUBCASE("position covariance") {
+        auto config = validFullRowFeedbackConfig();
+        config["position_covariance"]["enable"] = true;
+        requireInvalid(config);
+    }
+    SUBCASE("communication uncertainty") {
+        auto config = validFullRowFeedbackConfig();
+        config["cbfs"]["without-slack"]["comm-fixed"]["consider-uncertainty"] = true;
+        requireInvalid(config);
+    }
+    SUBCASE("safety uncertainty") {
+        auto config = validFullRowFeedbackConfig();
+        config["cbfs"]["without-slack"]["safety"]["consider-uncertainty"] = true;
+        requireInvalid(config);
+    }
+    SUBCASE("raw communication range") {
+        auto config = validFullRowFeedbackConfig();
+        config["cbfs"]["without-slack"]["comm-fixed"]["max-range"] = 849.0;
+        requireInvalid(config);
+    }
+    SUBCASE("raw safety distance") {
+        auto config = validFullRowFeedbackConfig();
+        config["cbfs"]["without-slack"]["safety"]["safe-distance"] = 11.0;
+        requireInvalid(config);
+    }
+    SUBCASE("unrelated soft task CBF") {
+        auto config = validFullRowFeedbackConfig();
+        config["cbfs"]["with-slack"]["cvt"]["on"] = true;
+        requireInvalid(config);
+    }
+    SUBCASE("unfrozen feasibility-guard tolerance") {
+        auto config = validFullRowFeedbackConfig();
+        config["bridge"]["nominal"]["guard"]["tolerance"] = 1.0e-8;
+        requireInvalid(config);
+    }
+    SUBCASE("hard-row feasibility slack") {
+        auto config = validFullRowFeedbackConfig();
+        config["cbfs"]["high-order"]["feasibility-slack"]["enabled"] = true;
+        requireInvalid(config);
+    }
+}
+
+TEST_CASE("Full-row feedback admits only predeclared sensitivity libraries") {
+    for (int intervals : {4, 16}) {
+        auto config = validFullRowFeedbackConfig();
+        auto &feedback = config["bridge"]["nominal"]["gamma-star-feedback"];
+        feedback["analysis-role"] = "sensitivity";
+        feedback["homotopy-intervals"] = intervals;
+
+        const auto bridge = loadBridgeExperimentConfig(config);
+        CHECK(bridge.gammaStarFeedbackAnalysisRole == "sensitivity");
+        CHECK(bridge.gammaStarHomotopyIntervals == intervals);
+    }
+
+    auto invalid = validFullRowFeedbackConfig();
+    auto &feedback = invalid["bridge"]["nominal"]["gamma-star-feedback"];
+    feedback["analysis-role"] = "sensitivity";
+    feedback["homotopy-intervals"] = 8;
+    CHECK_THROWS_AS(loadBridgeExperimentConfig(invalid), std::invalid_argument);
+}
+
+TEST_CASE("Full-row feedback accepts only the frozen comparator and ablation tuples") {
+    SUBCASE("predictive-soft comparator") {
+        auto config = validFullRowFeedbackConfig();
+        auto &feedback = config["bridge"]["nominal"]["gamma-star-feedback"];
+        feedback["analysis-role"] = "comparator";
+        feedback["constraint-execution"] = "soft";
+        config["cbfs"]["high-order"]["feasibility-slack"]["enabled"] = true;
+        config["cbfs"]["objective-function"]["k_delta"] = 1000.0;
+
+        const auto bridge = loadBridgeExperimentConfig(config);
+        CHECK(bridge.gammaStarFeedbackAnalysisRole == "comparator");
+        CHECK(bridge.gammaStarFeedbackConstraintExecution == "soft");
+        CHECK(bridge.gammaStarFeedbackSelectionRule == "least-intervention");
+    }
+
+    SUBCASE("maximum-reserve hard ablation") {
+        auto config = validFullRowFeedbackConfig();
+        auto &feedback = config["bridge"]["nominal"]["gamma-star-feedback"];
+        feedback["analysis-role"] = "ablation";
+        feedback["selection-rule"] = "maximum-reserve";
+
+        const auto bridge = loadBridgeExperimentConfig(config);
+        CHECK(bridge.gammaStarFeedbackAnalysisRole == "ablation");
+        CHECK(bridge.gammaStarFeedbackConstraintExecution == "hard");
+        CHECK(bridge.gammaStarFeedbackSelectionRule == "maximum-reserve");
+    }
+
+    auto requireInvalid = [](json config) {
+        CHECK_THROWS_AS(loadBridgeExperimentConfig(config), std::invalid_argument);
+    };
+    SUBCASE("main cannot execute soft rows") {
+        auto config = validFullRowFeedbackConfig();
+        config["bridge"]["nominal"]["gamma-star-feedback"]
+                ["constraint-execution"] = "soft";
+        config["cbfs"]["high-order"]["feasibility-slack"]["enabled"] = true;
+        config["cbfs"]["objective-function"]["k_delta"] = 1000.0;
+        requireInvalid(config);
+    }
+    SUBCASE("comparator requires soft rows") {
+        auto config = validFullRowFeedbackConfig();
+        config["bridge"]["nominal"]["gamma-star-feedback"]
+                ["analysis-role"] = "comparator";
+        requireInvalid(config);
+    }
+    SUBCASE("soft comparator requires frozen penalty") {
+        auto config = validFullRowFeedbackConfig();
+        auto &feedback = config["bridge"]["nominal"]["gamma-star-feedback"];
+        feedback["analysis-role"] = "comparator";
+        feedback["constraint-execution"] = "soft";
+        config["cbfs"]["high-order"]["feasibility-slack"]["enabled"] = true;
+        config["cbfs"]["objective-function"]["k_delta"] = 999.0;
+        requireInvalid(config);
+    }
+    SUBCASE("ablation requires maximum reserve") {
+        auto config = validFullRowFeedbackConfig();
+        config["bridge"]["nominal"]["gamma-star-feedback"]
+                ["analysis-role"] = "ablation";
+        requireInvalid(config);
+    }
+    SUBCASE("maximum reserve is not a main result") {
+        auto config = validFullRowFeedbackConfig();
+        config["bridge"]["nominal"]["gamma-star-feedback"]
+                ["selection-rule"] = "maximum-reserve";
+        requireInvalid(config);
+    }
 }
 
 TEST_CASE("BridgeExperimentLoadsRelaySupportGuardConfig") {

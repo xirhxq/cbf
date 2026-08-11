@@ -214,7 +214,7 @@ public:
         return j;
     }
 
-    void stepTimeForward(double dt) {
+    virtual void stepTimeForward(double dt) {
         checkCharge();
 
         X += (f() + g() * u) * dt;

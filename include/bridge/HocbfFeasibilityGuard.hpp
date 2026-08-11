@@ -24,6 +24,17 @@ struct BridgeHocbfProjectionResult {
     int vertex_count = 0;
 };
 
+struct BridgeHocbfCertifiedEndpoint2D {
+    bool valid = false;
+    bool repaired = false;
+    double accelX = 0.0;
+    double accelY = 0.0;
+    double repairMix = 0.0;
+    double repairNorm = 0.0;
+    double marginBefore = std::numeric_limits<double>::quiet_NaN();
+    double marginAfter = std::numeric_limits<double>::quiet_NaN();
+};
+
 inline double bridgeHocbfHalfspaceMargin(
         const BridgeHocbfHalfspace2D &constraint,
         double ax,
@@ -166,6 +177,128 @@ inline BridgeHocbfProjectionResult projectBridgeHocbfNominalAcceleration(
     result.projection_norm = bestDistance;
     result.margin_after = bridgeHocbfMinMargin(constraints, best.x, best.y);
     return result;
+}
+
+inline BridgeHocbfCertifiedEndpoint2D certifyBridgeHocbfEndpointTowardWitness(
+        double candidateX,
+        double candidateY,
+        double witnessX,
+        double witnessY,
+        double accelerationBound,
+        const std::vector<BridgeHocbfHalfspace2D> &constraints,
+        double maximumRepairNorm = 1.0e-10) {
+    BridgeHocbfCertifiedEndpoint2D result;
+    result.accelX = candidateX;
+    result.accelY = candidateY;
+    result.marginBefore = bridgeHocbfMinMargin(
+            constraints, candidateX, candidateY);
+    if (!std::isfinite(candidateX) || !std::isfinite(candidateY)
+        || !std::isfinite(witnessX) || !std::isfinite(witnessY)
+        || !std::isfinite(accelerationBound) || accelerationBound < 0.0
+        || !std::isfinite(maximumRepairNorm) || maximumRepairNorm < 0.0
+        || std::abs(candidateX) > accelerationBound
+        || std::abs(candidateY) > accelerationBound
+        || std::abs(witnessX) > accelerationBound
+        || std::abs(witnessY) > accelerationBound) {
+        return result;
+    }
+
+    const double witnessMargin = bridgeHocbfMinMargin(
+            constraints, witnessX, witnessY);
+    if (witnessMargin < 0.0) {
+        return result;
+    }
+    if (result.marginBefore >= 0.0) {
+        result.valid = true;
+        result.marginAfter = result.marginBefore;
+        return result;
+    }
+
+    double requiredMix = 0.0;
+    for (const auto &constraint : constraints) {
+        const double candidateMargin = bridgeHocbfHalfspaceMargin(
+                constraint, candidateX, candidateY);
+        if (candidateMargin >= 0.0) {
+            continue;
+        }
+        const double endpointMargin = bridgeHocbfHalfspaceMargin(
+                constraint, witnessX, witnessY);
+        const double improvement = endpointMargin - candidateMargin;
+        if (!(improvement > 0.0)) {
+            return result;
+        }
+        requiredMix = std::max(
+                requiredMix, -candidateMargin / improvement);
+    }
+    requiredMix = std::min(1.0, std::max(0.0, requiredMix));
+
+    const double witnessDistance = std::hypot(
+            witnessX - candidateX, witnessY - candidateY);
+    if (!(witnessDistance > 0.0)) {
+        return result;
+    }
+
+    const double maximumRepairMix = std::min(
+            1.0,
+            std::nextafter(
+                    maximumRepairNorm / witnessDistance, 0.0));
+    if (requiredMix > maximumRepairMix) {
+        return result;
+    }
+
+    auto pointAtMix = [&](double mix) {
+        return Point(
+                std::fma(mix, witnessX - candidateX, candidateX),
+                std::fma(mix, witnessY - candidateY, candidateY));
+    };
+    double lowerMix = requiredMix;
+    double upperMix = maximumRepairMix;
+    Point repaired = pointAtMix(lowerMix);
+    double repairedMargin = bridgeHocbfMinMargin(
+            constraints, repaired.x, repaired.y);
+    if (repairedMargin < 0.0) {
+        repaired = pointAtMix(upperMix);
+        repairedMargin = bridgeHocbfMinMargin(
+                constraints, repaired.x, repaired.y);
+        if (repairedMargin < 0.0) {
+            return result;
+        }
+        for (int iteration = 0; iteration < 64; ++iteration) {
+            const double middleMix = lowerMix
+                    + 0.5 * (upperMix - lowerMix);
+            if (middleMix <= lowerMix || middleMix >= upperMix) {
+                break;
+            }
+            const Point middle = pointAtMix(middleMix);
+            if (bridgeHocbfMinMargin(
+                        constraints, middle.x, middle.y) >= 0.0) {
+                upperMix = middleMix;
+                repaired = middle;
+                repairedMargin = bridgeHocbfMinMargin(
+                        constraints, repaired.x, repaired.y);
+            } else {
+                lowerMix = middleMix;
+            }
+        }
+    } else {
+        upperMix = lowerMix;
+    }
+
+    const double repairNorm = std::hypot(
+            repaired.x - candidateX,
+            repaired.y - candidateY);
+    if (repairNorm > maximumRepairNorm) {
+        return result;
+    }
+    result.valid = true;
+    result.repaired = true;
+    result.accelX = repaired.x;
+    result.accelY = repaired.y;
+    result.repairMix = upperMix;
+    result.repairNorm = repairNorm;
+    result.marginAfter = repairedMargin;
+    return result;
+
 }
 
 #endif
