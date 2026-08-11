@@ -228,6 +228,32 @@ TEST_CASE("Exact gamma-star restores defining box faces before feasibility") {
     CHECK(legacy.accelY == 2.0);
 }
 
+TEST_CASE("Exact gamma-star clamps the final minimum-norm witness to its box") {
+    const std::vector<BridgeGammaStarResidual2D> residuals = {
+            bridgeGammaStarResidualFromAffineMargin(
+                    0.560029221099393, -0.8284728550259248,
+                    233.6827340987279),
+            bridgeGammaStarResidualFromAffineMargin(
+                    -0.09323034534428218, 0.995644566452801,
+                    224.21760027303142),
+            bridgeGammaStarResidualFromAffineMargin(
+                    -0.26246996847916976, 0.9649401616921869,
+                    312.4967766543531),
+            bridgeGammaStarResidualFromAffineMargin(
+                    0.09323034534428218, -0.995644566452801,
+                    615.7823997269686),
+            bridgeGammaStarResidualFromAffineMargin(
+                    -0.560029221099393, 0.8284728550259248,
+                    606.3172659012722),
+    };
+
+    const auto solution = solveExactBridgeGammaStar2D(residuals, 4.0);
+    REQUIRE(solution.valid);
+    CHECK(std::abs(solution.accelX) <= 4.0);
+    CHECK(std::abs(solution.accelY) <= 4.0);
+    CHECK(solution.accelY == 4.0);
+}
+
 TEST_CASE("Full-row scoring takes the minimum over every predicted step") {
     std::map<int, BridgePredictionState2D> mobileStates = {
             {1, {Point(100.0, 0.0), Eigen::Vector2d(-5.0, 0.0),

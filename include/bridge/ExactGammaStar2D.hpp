@@ -300,6 +300,10 @@ inline BridgeGammaStarSolution2D solveExactBridgeGammaStar2D(
     // floating-point operations differently by a few ulps.
     bool foundWitness = true;
     const auto considerWitness = [&](double x, double y) {
+        x = std::max(-accelerationHalfBox,
+                     std::min(accelerationHalfBox, x));
+        y = std::max(-accelerationHalfBox,
+                     std::min(accelerationHalfBox, y));
         if (!bridge_gamma_star_detail::feasible2D(
                     optimalFace, x, y)) {
             return;
