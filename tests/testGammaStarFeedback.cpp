@@ -2,6 +2,7 @@
 
 #include "doctest.h"
 #include "bridge/ExactGammaStar2D.hpp"
+#include "bridge/LookaheadCollisionGate.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -62,4 +63,32 @@ TEST_CASE("Exact gamma-star reverses the corner-only candidate ranking") {
           > exactBridgeGammaStar2D(constantCandidate, 2.0));
     CHECK(fourCornerGamma(interiorCandidate, 2.0)
           < fourCornerGamma(constantCandidate, 2.0));
+}
+
+TEST_CASE("Lookahead-distance gate recognizes a closing predicted neighbour") {
+    const std::vector<BridgeLookaheadNeighbourState2D> neighbours = {
+        {100.0, 0.0, -1.0, 0.0},
+    };
+
+    CHECK(bridgeLookaheadDistanceClosingTrigger(
+            0.0, 0.0, 0.0, 0.0, neighbours, 150.0));
+}
+
+TEST_CASE("Lookahead-distance gate rejects an opening predicted neighbour") {
+    const std::vector<BridgeLookaheadNeighbourState2D> neighbours = {
+        {100.0, 0.0, 1.0, 0.0},
+    };
+
+    CHECK_FALSE(bridgeLookaheadDistanceClosingTrigger(
+            0.0, 0.0, 0.0, 0.0, neighbours, 150.0));
+}
+
+TEST_CASE("Lookahead-distance gate scans beyond an opening in-range neighbour") {
+    const std::vector<BridgeLookaheadNeighbourState2D> neighbours = {
+        {50.0, 0.0, 1.0, 0.0},
+        {100.0, 0.0, -1.0, 0.0},
+    };
+
+    CHECK(bridgeLookaheadDistanceClosingTrigger(
+            0.0, 0.0, 0.0, 0.0, neighbours, 150.0));
 }

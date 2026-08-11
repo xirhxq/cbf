@@ -6,6 +6,7 @@
 #include "bridge/BridgeSearchTracker.hpp"
 #include "bridge/BridgeTopology.hpp"
 #include "bridge/ExactGammaStar2D.hpp"
+#include "bridge/LookaheadCollisionGate.hpp"
 
 
 class Swarm {
@@ -578,24 +579,24 @@ private:
                                  && zohGamma < bridgeConfig.gammaStarPredictiveThreshold;
         bool lookaheadDistanceTrigger = false;
         if (bridgeConfig.gammaStarLookaheadDistance > 0) {
+            std::vector<BridgeLookaheadNeighbourState2D> lookaheadNeighbours;
+            lookaheadNeighbours.reserve(positions.size());
             for (const auto &entry : positions) {
                 if (entry.first == robotId) continue;
                 auto zohIt = zohPositions.find(entry.first);
                 if (zohIt == zohPositions.end()) continue;
-                double dist = zohIt->second.distance_to(zohPositions.at(robotId));
-                if (dist < static_cast<double>(bridgeConfig.gammaStarLookaheadDistance)) {
-                    auto velIt = velocities.find(entry.first);
-                    Eigen::VectorXd ov = velIt != velocities.end() ? velIt->second : Eigen::VectorXd::Zero(2);
-                    Eigen::Vector2d rel(vi(0) - ov(0), vi(1) - ov(1));
-                    Eigen::Vector2d nrm(zohIt->second.x - zohPositions.at(robotId).x,
-                                        zohIt->second.y - zohPositions.at(robotId).y);
-                    double nlen = nrm.norm();
-                    if (nlen > 1e-9 && nrm.dot(rel) < 0.0) {
-                        lookaheadDistanceTrigger = true;
-                    }
-                    break;
-                }
+                auto velIt = velocities.find(entry.first);
+                Eigen::VectorXd ov = velIt != velocities.end()
+                                     ? velIt->second
+                                     : Eigen::VectorXd::Zero(2);
+                lookaheadNeighbours.push_back({
+                        zohIt->second.x, zohIt->second.y, ov(0), ov(1)});
             }
+            const Point &zohSelf = zohPositions.at(robotId);
+            lookaheadDistanceTrigger = bridgeLookaheadDistanceClosingTrigger(
+                    zohSelf.x, zohSelf.y, vi(0), vi(1),
+                    lookaheadNeighbours,
+                    static_cast<double>(bridgeConfig.gammaStarLookaheadDistance));
         }
         if (!currentTrigger && !predictiveTrigger && !lookaheadDistanceTrigger) {
             return result;
