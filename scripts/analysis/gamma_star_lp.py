@@ -58,12 +58,9 @@ _BOX_ROWS = (
 def _validate_inputs(
     constraints: Sequence[ResidualConstraint],
     half_box: float,
-    tolerance: float,
 ) -> None:
     if not math.isfinite(half_box) or half_box < 0.0:
         raise ValueError("half_box must be finite and non-negative")
-    if not math.isfinite(tolerance) or tolerance <= 0.0:
-        raise ValueError("tolerance must be finite and positive")
     for constraint in constraints:
         values = (constraint.cx, constraint.cy, constraint.offset)
         if not all(math.isfinite(value) for value in values):
@@ -94,18 +91,54 @@ def _linear_program(
 def _best_vertex(
     matrix: np.ndarray,
     bounds: np.ndarray,
-    tolerance: float,
+    constraints: Sequence[ResidualConstraint],
+    half_box: float,
 ) -> np.ndarray:
     best: np.ndarray | None = None
     for indices in combinations(range(matrix.shape[0]), 3):
         active_matrix = matrix[list(indices)]
-        if np.linalg.matrix_rank(active_matrix, tol=tolerance) < 3:
+        determinant = float(np.linalg.det(active_matrix))
+        singularity_bound = (
+            64.0
+            * np.finfo(float).eps
+            * float(np.prod(np.linalg.norm(active_matrix, axis=1)))
+        )
+        if not math.isfinite(determinant) or abs(determinant) <= singularity_bound:
             continue
         candidate = np.linalg.solve(active_matrix, bounds[list(indices)])
-        if np.max(matrix @ candidate - bounds) > tolerance:
+        terms = matrix * candidate[np.newaxis, :]
+        allowance = 64.0 * np.finfo(float).eps * (
+            np.sum(np.abs(terms), axis=1) + np.abs(bounds)
+        ) + np.finfo(float).smallest_subnormal
+        if np.any(matrix @ candidate - bounds > allowance):
             continue
-        if best is None or candidate[2] > best[2] + tolerance:
-            best = candidate
+        # Linear solves can return a coordinate a few ulps inside a box face
+        # that was one of the defining equalities.  Preserve that exact active
+        # face before recomputing the attained epigraph value; otherwise the
+        # subsequent KKT pass can lose a genuine box multiplier.
+        active = set(indices)
+        box_offset = len(constraints)
+        if box_offset in active:
+            candidate[0] = -half_box
+        elif box_offset + 1 in active:
+            candidate[0] = half_box
+        else:
+            candidate[0] = min(half_box, max(-half_box, candidate[0]))
+        if box_offset + 2 in active:
+            candidate[1] = -half_box
+        elif box_offset + 3 in active:
+            candidate[1] = half_box
+        else:
+            candidate[1] = min(half_box, max(-half_box, candidate[1]))
+        achieved = min(
+            constraint.cx * candidate[0]
+            + constraint.cy * candidate[1]
+            + constraint.offset
+            for constraint in constraints
+        )
+        candidate[2] = achieved
+        if best is None or achieved > best[2]:
+            best = candidate.copy()
     if best is None:
         raise RuntimeError("epigraph LP has no numerically valid vertex")
     return best
@@ -115,21 +148,43 @@ def _dual_certificate(
     matrix: np.ndarray,
     bounds: np.ndarray,
     point: np.ndarray,
-    tolerance: float,
 ) -> np.ndarray:
     objective = np.array([0.0, 0.0, 1.0], dtype=float)
-    active = np.flatnonzero(np.abs(matrix @ point - bounds) <= 10.0 * tolerance)
+    terms = matrix * point[np.newaxis, :]
+    active_allowance = 64.0 * np.finfo(float).eps * (
+        np.sum(np.abs(terms), axis=1) + np.abs(bounds)
+    ) + np.finfo(float).smallest_subnormal
+    active = np.flatnonzero(np.abs(matrix @ point - bounds) <= active_allowance)
     for indices_tuple in combinations(active.tolist(), 3):
         indices = list(indices_tuple)
         active_transpose = matrix[indices].T
-        if np.linalg.matrix_rank(active_transpose, tol=tolerance) < 3:
+        determinant = float(np.linalg.det(active_transpose))
+        singularity_bound = (
+            64.0
+            * np.finfo(float).eps
+            * float(np.prod(np.linalg.norm(active_transpose, axis=0)))
+        )
+        if not math.isfinite(determinant) or abs(determinant) <= singularity_bound:
             continue
         selected = np.linalg.solve(active_transpose, objective)
-        if np.min(selected) < -10.0 * tolerance:
+        multiplier_allowance = 64.0 * np.finfo(float).eps * max(
+            1.0, float(np.max(np.abs(selected)))
+        )
+        if np.min(selected) < -multiplier_allowance:
             continue
         dual = np.zeros(matrix.shape[0], dtype=float)
         dual[indices] = np.maximum(selected, 0.0)
-        if np.max(np.abs(matrix.T @ dual - objective)) <= 10.0 * tolerance:
+        stationarity = matrix.T @ dual - objective
+        # A componentwise relative test is invalid here: a perfectly ordinary
+        # backward-stable solve can form one stationarity component by nearly
+        # cancelling small terms.  Certify the solve with the standard
+        # normwise backward-error scale for A.T @ lambda = objective instead.
+        stationarity_bound = 64.0 * np.finfo(float).eps * (
+            float(np.linalg.norm(active_transpose, ord=np.inf))
+            * float(np.linalg.norm(dual[indices], ord=np.inf))
+            + float(np.linalg.norm(objective, ord=np.inf))
+        ) + np.finfo(float).smallest_subnormal
+        if float(np.linalg.norm(stationarity, ord=np.inf)) <= stationarity_bound:
             return dual
     raise RuntimeError("failed to derive a non-negative dual certificate")
 
@@ -137,16 +192,15 @@ def _dual_certificate(
 def solve_gamma_star(
     constraints: Sequence[ResidualConstraint],
     half_box: float,
-    tolerance: float = 1.0e-9,
 ) -> GammaStarSolution:
-    """Solve the joint reserve-feasibility budget exactly up to tolerance.
+    """Solve the joint reserve-feasibility budget by vertex enumeration.
 
     The dual vector is self-described by ``dual_multiplier_names``. Residual
     multipliers come first, followed by lower/upper rows for x and then y.
     """
 
     constraints = tuple(constraints)
-    _validate_inputs(constraints, half_box, tolerance)
+    _validate_inputs(constraints, half_box)
     if not constraints:
         return GammaStarSolution(
             gamma=math.inf,
@@ -165,12 +219,16 @@ def solve_gamma_star(
         constraints,
         half_box,
     )
-    point = _best_vertex(matrix, bounds, tolerance)
-    dual = _dual_certificate(matrix, bounds, point, tolerance)
+    point = _best_vertex(matrix, bounds, constraints, half_box)
+    dual = _dual_certificate(matrix, bounds, point)
     slacks = matrix @ point - bounds
     objective = np.array([0.0, 0.0, 1.0], dtype=float)
     residual_count = len(residual_names)
-    active_indices = np.flatnonzero(np.abs(slacks) <= 10.0 * tolerance)
+    terms = matrix * point[np.newaxis, :]
+    active_allowance = 64.0 * np.finfo(float).eps * (
+        np.sum(np.abs(terms), axis=1) + np.abs(bounds)
+    ) + np.finfo(float).smallest_subnormal
+    active_indices = np.flatnonzero(np.abs(slacks) <= active_allowance)
     active_residuals = tuple(
         residual_names[index]
         for index in active_indices
