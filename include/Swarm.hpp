@@ -632,7 +632,8 @@ private:
 
     FullRowFeedbackResult fullRowFeedbackNominal(
             int robotId,
-            const std::map<int, BridgePredictionState2D> &states,
+            const std::map<int, BridgePredictionState2D> &currentStates,
+            const std::map<int, BridgePredictionState2D> &forecastStates,
             const std::map<int, Point> &fixedBases,
             const std::vector<BridgeFullRowDescriptor> &descriptors,
             double nominalAccelX,
@@ -642,7 +643,7 @@ private:
         const double accelerationBound = secondOrderAccelerationBound();
         const double dt = config.at("execute").at("time-step").get<double>();
         const auto evaluatedRows = evaluateBridgeFullRows(
-                robotId, states, fixedBases, descriptors);
+                robotId, currentStates, fixedBases, descriptors);
 
         std::vector<BridgeGammaStarResidual2D> residuals;
         std::vector<BridgeHocbfHalfspace2D> constraints;
@@ -844,7 +845,7 @@ private:
             const auto score = scoreFullRowCandidate(
                     robotId,
                     Eigen::Vector2d(candidate.accelX, candidate.accelY),
-                    states,
+                    forecastStates,
                     fixedBases,
                     descriptors,
                     accelerationBound,
@@ -921,8 +922,23 @@ private:
         result.diagnostic["selected_accel_y"] = selection.accelY;
         result.diagnostic["selected_predictive_minimum_budget"] =
                 selection.predictedBudget;
+        result.diagnostic["selected_candidate_index"] =
+                selection.candidateIndex;
+        result.diagnostic["maximum_homotopy_candidate_index"] =
+                selection.maximumCandidateIndex;
+        result.diagnostic["maximum_homotopy_predicted_budget"] =
+                selection.maximumPredictedBudget;
+        result.diagnostic["selected_is_homotopy_argmax"] =
+                selection.selectedMaximumPredictedBudget;
         result.diagnostic["gate_satisfied"] = selection.gateSatisfied;
         result.diagnostic["fallback_used"] = !selection.gateSatisfied;
+        result.diagnostic["fallback_reason"] = selection.gateSatisfied
+                ? json(nullptr)
+                : json("predictive-gate-unattainable");
+        result.diagnostic["fallback_positive_recoverability"] =
+                selection.gateSatisfied
+                ? json(nullptr)
+                : json(selection.predictedBudget > 0.0);
         result.diagnostic["nominal_retained"] = selection.nominalRetained;
         result.diagnostic["task_deviation"] = selection.taskDeviation;
         result.diagnostic["dominant_row"] = scores[selectedIndex].dominantRow;
@@ -933,7 +949,7 @@ private:
         result.selectedForecast = rolloutBridgePredictionStates(
                 robotId,
                 Eigen::Vector2d(selection.accelX, selection.accelY),
-                states,
+                forecastStates,
                 dt,
                 bridgeConfig.gammaStarLookaheadSteps);
         result.selectedStepBudgets = scores[selectedIndex].stepBudgets;
@@ -1084,7 +1100,21 @@ private:
                                 bridgeConfig.gammaStarFeedbackSelectionRule},
                         {"constraint_execution",
                                 bridgeConfig.gammaStarFeedbackConstraintExecution},
+                        {"homotopy_intervals",
+                                bridgeConfig.gammaStarHomotopyIntervals},
+                        {"lookahead_steps",
+                                bridgeConfig.gammaStarLookaheadSteps},
+                        {"predictive_gate",
+                                bridgeConfig.gammaStarPredictiveGate},
+                        {"physical_acceleration_bound",
+                                secondOrderAccelerationBound()},
+                        {"communication_distance_m", 850.0},
+                        {"safety_distance_m", 10.0},
                         {"control_skipped_due_to_fail_safe", true},
+                        {"active_count", 0},
+                        {"evaluated_candidates", 0},
+                        {"min_current_gamma_star", nullptr},
+                        {"min_selected_predictive_budget", nullptr},
                         {"links", json::array()},
                 };
                 attachBridgePredictionAuditLog(resolvedPredictionAudits);
@@ -1381,6 +1411,7 @@ private:
             bridgeCurrentEffectiveReserveMargin = effective;
         }
 
+        std::map<int, Eigen::VectorXd> taskNominals;
         for (auto &robot : robots) {
             Point position = robot->model->xy();
             Point goal = bridgeSearch.chooseGoal(position, bridgeConfig.searchPolicy);
@@ -1601,16 +1632,46 @@ private:
                     nominal(2) = yawRate;
                 }
             }
-            if (bridgeConfig.gammaStarFeedbackEnabled) {
+            taskNominals.emplace(robot->id, nominal);
+        }
+
+        if (bridgeConfig.gammaStarFeedbackEnabled) {
+            std::map<int, Eigen::Vector2d> taskAccelerations;
+            for (const auto &[robotId, nominal] : taskNominals) {
+                if (nominal.size() < 2 || !nominal.allFinite()) {
+                    throw std::runtime_error(
+                        "full-row feedback received an invalid task acceleration");
+                }
+                taskAccelerations.emplace(
+                    robotId,
+                    Eigen::Vector2d(nominal(0), nominal(1)));
+            }
+            const auto forecastStates =
+                bridgePredictionStatesWithAccelerations(
+                    feedbackStates,
+                    taskAccelerations);
+
+            std::map<int, FullRowFeedbackResult> feedbackResults;
+            for (auto &robot : robots) {
+                const Eigen::VectorXd &nominal = taskNominals.at(robot->id);
                 auto fb = fullRowFeedbackNominal(
                         robot->id,
                         feedbackStates,
+                        forecastStates,
                         feedbackBases,
                         feedbackRows,
                         nominal(0),
                         nominal(1));
                 fb.diagnostic["task_reference"] = {
                         {"ax", nominal(0)}, {"ay", nominal(1)}};
+                fb.diagnostic["neighbor_prediction_mode"] =
+                        "synchronous-task-reference";
+                feedbackResults.emplace(robot->id, std::move(fb));
+            }
+
+            for (auto &robot : robots) {
+                Eigen::VectorXd nominal = taskNominals.at(robot->id);
+                auto &fb = feedbackResults.at(robot->id);
                 gammaStarFeedbackEvaluatedCandidates += static_cast<int>(
                         fb.diagnostic.value("candidates", json::array()).size());
                 if (fb.diagnostic.contains("current_gamma_star")
@@ -1650,8 +1711,12 @@ private:
                             entries.end());
                 }
                 gammaStarFeedbackLinks.push_back(fb.diagnostic);
+                robot->setNominalControlOverride(nominal);
             }
-            robot->setNominalControlOverride(nominal);
+        } else {
+            for (auto &robot : robots) {
+                robot->setNominalControlOverride(taskNominals.at(robot->id));
+            }
         }
         stepData["bridge"]["nominal"]["task_goals"] = taskGoalLinks;
         if (bridgeConfig.gammaStarFeedbackEnabled) {

@@ -1,6 +1,6 @@
 {
   "world": {
-    "boundary": [[0.0, 0.0], [2000.0, 0.0], [2000.0, 2000.0], [0.0, 2000.0]],
+    "boundary": [[0.0, 0.0], [1800.0, 0.0], [1800.0, 2000.0], [0.0, 2000.0]],
     "charge": [],
     "spacing": 100.0
   },
@@ -58,7 +58,7 @@
       "enabled": true,
       "lambda1": 1.0,
       "lambda2": 1.0,
-      "acceleration-bound": 2.0,
+      "acceleration-bound": 4.0,
       "sampled-data-reserve": 0.0,
       "feasibility-slack": {
         "enabled": false
@@ -126,8 +126,8 @@
       }
     },
     "nominal": {
-      "max-speed": 8.0,
-      "max-acceleration": 2.0,
+      "max-speed": 12.0,
+      "max-acceleration": 4.0,
       "max-yaw-rate": 0.35,
       "guard": {
         "enabled": true,
@@ -143,8 +143,8 @@
       "coverage-completion-threshold": 1.0
     },
     "target": {
-      "x": 1350.0,
-      "y": 450.0,
+      "x": 1650.0,
+      "y": 1050.0,
       "radius": 50.0
     }
   },

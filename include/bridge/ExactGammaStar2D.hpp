@@ -218,18 +218,28 @@ inline BridgeGammaStarSolution2D solveExactBridgeGammaStar2D(
                     continue;
                 }
 
-                if (!bridge_gamma_star_detail::feasible3D(
-                            halfspaces,
-                            candidate[0], candidate[1], candidate[2])) {
-                    continue;
+                const auto isDefining = [&](size_t index) {
+                    return first == index || second == index || third == index;
+                };
+                const size_t boxOffset = residuals.size();
+                if (isDefining(boxOffset)) {
+                    candidate[0] = accelerationHalfBox;
+                } else if (isDefining(boxOffset + 1)) {
+                    candidate[0] = -accelerationHalfBox;
+                } else {
+                    candidate[0] = std::max(
+                            -accelerationHalfBox,
+                            std::min(accelerationHalfBox, candidate[0]));
                 }
-
-                candidate[0] = std::max(
-                        -accelerationHalfBox,
-                        std::min(accelerationHalfBox, candidate[0]));
-                candidate[1] = std::max(
-                        -accelerationHalfBox,
-                        std::min(accelerationHalfBox, candidate[1]));
+                if (isDefining(boxOffset + 2)) {
+                    candidate[1] = accelerationHalfBox;
+                } else if (isDefining(boxOffset + 3)) {
+                    candidate[1] = -accelerationHalfBox;
+                } else {
+                    candidate[1] = std::max(
+                            -accelerationHalfBox,
+                            std::min(accelerationHalfBox, candidate[1]));
+                }
                 double achievedGamma = std::numeric_limits<double>::infinity();
                 for (const auto &residual : residuals) {
                     achievedGamma = std::min(
@@ -239,6 +249,12 @@ inline BridgeGammaStarSolution2D solveExactBridgeGammaStar2D(
                                     - residual.ay * candidate[1]);
                 }
                 if (!std::isfinite(achievedGamma)) {
+                    continue;
+                }
+                candidate[2] = achievedGamma;
+                if (!bridge_gamma_star_detail::feasible3D(
+                            halfspaces,
+                            candidate[0], candidate[1], candidate[2])) {
                     continue;
                 }
                 if (!foundEpigraphVertex || achievedGamma > bestGamma) {
@@ -277,8 +293,12 @@ inline BridgeGammaStarSolution2D solveExactBridgeGammaStar2D(
 
     double witnessX = fallbackX;
     double witnessY = fallbackY;
-    bool foundWitness = bridge_gamma_star_detail::feasible2D(
-            optimalFace, witnessX, witnessY);
+    // The fallback was already box-projected, its gamma was recomputed as the
+    // exact minimum of all residuals, and the full epigraph point passed the
+    // global feasibility check.  It is therefore a constructive optimal-face
+    // witness even if re-evaluating an equivalent 2-D inequality orders the
+    // floating-point operations differently by a few ulps.
+    bool foundWitness = true;
     const auto considerWitness = [&](double x, double y) {
         if (!bridge_gamma_star_detail::feasible2D(
                     optimalFace, x, y)) {

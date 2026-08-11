@@ -86,6 +86,9 @@ TEST_CASE("Homotopy selection falls back to maximum score then minimum alpha") {
     CHECK(selection.alpha == doctest::Approx(0.25));
     CHECK(selection.accelX == doctest::Approx(0.5));
     CHECK(selection.predictedBudget == doctest::Approx(-0.10));
+    CHECK(selection.selectedMaximumPredictedBudget);
+    CHECK(selection.maximumCandidateIndex == 1);
+    CHECK(selection.maximumPredictedBudget == doctest::Approx(-0.10));
 }
 
 TEST_CASE("Homotopy gate uses the exact budget sign") {
@@ -116,6 +119,10 @@ TEST_CASE("Homotopy fallback preserves every strict budget ordering") {
     CHECK_FALSE(selection.gateSatisfied);
     CHECK(selection.alpha == doctest::Approx(0.25));
     CHECK(selection.predictedBudget == doctest::Approx(-1.0 + 5.0e-10));
+    CHECK(selection.selectedMaximumPredictedBudget);
+    CHECK(selection.maximumCandidateIndex == 1);
+    CHECK(selection.maximumPredictedBudget
+          == doctest::Approx(-1.0 + 5.0e-10));
 }
 
 TEST_CASE("Homotopy selection breaks exact duplicates lexicographically") {
@@ -169,4 +176,7 @@ TEST_CASE("Maximum-reserve ablation selects the gamma-witness endpoint") {
     CHECK(selected.accelX == doctest::Approx(-1.0));
     CHECK(selected.predictedBudget == doctest::Approx(-0.25));
     CHECK(selected.taskDeviation == doctest::Approx(2.0));
+    CHECK_FALSE(selected.selectedMaximumPredictedBudget);
+    CHECK(selected.maximumCandidateIndex == 0);
+    CHECK(selected.maximumPredictedBudget == doctest::Approx(1.0));
 }

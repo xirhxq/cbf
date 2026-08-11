@@ -60,7 +60,7 @@ struct BridgeExperimentConfig {
     std::string gammaStarFeedbackSelectionRule = "least-intervention";
     std::string gammaStarFeedbackConstraintExecution = "hard";
     int gammaStarHomotopyIntervals = 8;
-    int gammaStarLookaheadSteps = 4;
+    int gammaStarLookaheadSteps = 1;
     double gammaStarPredictiveGate = 0.0;
     BridgeTargetConfig target;
 };
@@ -282,14 +282,14 @@ inline BridgeExperimentConfig loadBridgeExperimentConfig(const json &config) {
                 throw std::invalid_argument(
                         "gamma-star feedback analysis-role must be main, sensitivity, comparator, or ablation");
             }
-            if (bridge.gammaStarLookaheadSteps != 4) {
+            if (bridge.gammaStarLookaheadSteps != 1) {
                 throw std::invalid_argument(
-                        "reserve-task-homotopy requires H=4");
+                        "reserve-task-homotopy requires one-step recursive feasibility (H=1)");
             }
             if (!std::isfinite(bridge.gammaStarPredictiveGate)
-                || bridge.gammaStarPredictiveGate != 0.0) {
+                || bridge.gammaStarPredictiveGate < 0.0) {
                 throw std::invalid_argument(
-                        "reserve-task-homotopy requires tau=0");
+                        "reserve-task-homotopy requires a finite nonnegative predictive gate");
             }
             if (!bridge.enabled) {
                 throw std::invalid_argument("gamma-star feedback requires bridge.enabled");

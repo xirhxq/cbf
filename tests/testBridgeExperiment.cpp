@@ -48,7 +48,7 @@ json validFullRowFeedbackConfig() {
             {"enabled", true},
             {"mode", "reserve-task-homotopy"},
             {"homotopy-intervals", 8},
-            {"lookahead-steps", 4},
+            {"lookahead-steps", 1},
             {"predictive-gate", 0.0}
         }}
     };
@@ -262,8 +262,14 @@ TEST_CASE("Full-row feedback accepts only the declared homotopy configuration") 
     CHECK(bridge.gammaStarFeedbackMode == "reserve-task-homotopy");
     CHECK(bridge.gammaStarFeedbackAnalysisRole == "main");
     CHECK(bridge.gammaStarHomotopyIntervals == 8);
-    CHECK(bridge.gammaStarLookaheadSteps == 4);
+    CHECK(bridge.gammaStarLookaheadSteps == 1);
     CHECK(bridge.gammaStarPredictiveGate == doctest::Approx(0.0));
+
+    auto buffered = validFullRowFeedbackConfig();
+    buffered["bridge"]["nominal"]["gamma-star-feedback"]["predictive-gate"] =
+            20.0;
+    const auto bufferedBridge = loadBridgeExperimentConfig(buffered);
+    CHECK(bufferedBridge.gammaStarPredictiveGate == doctest::Approx(20.0));
 }
 
 TEST_CASE("Full-row feedback rejects hidden method and boundary changes") {
@@ -317,9 +323,9 @@ TEST_CASE("Full-row feedback rejects hidden method and boundary changes") {
                 std::numeric_limits<double>::infinity();
         requireInvalid(config);
     }
-    SUBCASE("nonzero predictive gate") {
+    SUBCASE("negative predictive gate") {
         auto config = validFullRowFeedbackConfig();
-        config["bridge"]["nominal"]["gamma-star-feedback"]["predictive-gate"] = 1.0e-12;
+        config["bridge"]["nominal"]["gamma-star-feedback"]["predictive-gate"] = -1.0e-12;
         requireInvalid(config);
     }
     SUBCASE("wrong mobile count") {

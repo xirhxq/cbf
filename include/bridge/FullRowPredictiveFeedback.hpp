@@ -9,6 +9,7 @@
 #include <cmath>
 #include <limits>
 #include <map>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -51,6 +52,26 @@ inline BridgePredictionState2D bridgeFixedBasePredictionState(
         throw std::invalid_argument("fixed-base prediction position must be finite");
     }
     return {position, Eigen::Vector2d::Zero(), Eigen::Vector2d::Zero()};
+}
+
+inline std::map<int, BridgePredictionState2D>
+bridgePredictionStatesWithAccelerations(
+        const std::map<int, BridgePredictionState2D> &observedStates,
+        const std::map<int, Eigen::Vector2d> &accelerations) {
+    if (observedStates.size() != accelerations.size()) {
+        throw std::invalid_argument(
+            "joint prediction requires one acceleration per mobile state");
+    }
+    auto forecastStates = observedStates;
+    for (const auto &[robotId, acceleration] : accelerations) {
+        const auto state = forecastStates.find(robotId);
+        if (state == forecastStates.end() || !acceleration.allFinite()) {
+            throw std::invalid_argument(
+                "joint prediction acceleration ledger is incomplete or non-finite");
+        }
+        state->second.heldAcceleration = acceleration;
+    }
+    return forecastStates;
 }
 
 inline std::vector<std::map<int, BridgePredictionState2D>>

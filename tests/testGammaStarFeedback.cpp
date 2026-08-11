@@ -179,6 +179,55 @@ TEST_CASE("Exact gamma-star handles empty, invalid, and degenerate inputs") {
             flat, tied.accelX, tied.accelY)).epsilon(1.0e-12));
 }
 
+TEST_CASE("Exact gamma-star restores defining box faces before feasibility") {
+    const std::vector<BridgeGammaStarResidual2D> proposedResiduals = {
+            bridgeGammaStarResidualFromAffineMargin(
+                    0.8375422562964534, -0.5463725550554732,
+                    554.2231530316814),
+            bridgeGammaStarResidualFromAffineMargin(
+                    0.9976223081857685, -0.06891828647100462,
+                    368.8650824356202),
+            bridgeGammaStarResidualFromAffineMargin(
+                    0.8488154099432093, 0.5286893226110603,
+                    284.4051706504333),
+            bridgeGammaStarResidualFromAffineMargin(
+                    -0.8375422562964534, 0.5463725550554732,
+                    285.77684696831864),
+            bridgeGammaStarResidualFromAffineMargin(
+                    -0.9976223081857685, 0.06891828647100462,
+                    471.1349175643798),
+    };
+    const std::vector<BridgeGammaStarResidual2D> legacyResiduals = {
+            bridgeGammaStarResidualFromAffineMargin(
+                    0.9117150985126489, -0.41082305089182963,
+                    1359.3991374848165),
+            bridgeGammaStarResidualFromAffineMargin(
+                    0.8912821705424319, -0.4534491068170401,
+                    1230.7858685651815),
+            bridgeGammaStarResidualFromAffineMargin(
+                    0.6746865276750176, -0.73810438921187,
+                    698.5781111821115),
+            bridgeGammaStarResidualFromAffineMargin(
+                    -0.9117150985126489, 0.41082305089182963,
+                    -519.3991374848166),
+            bridgeGammaStarResidualFromAffineMargin(
+                    -0.8912821705424319, 0.4534491068170401,
+                    -390.78586856518154),
+    };
+
+    const auto proposed = solveExactBridgeGammaStar2D(proposedResiduals, 2.0);
+    const auto legacy = solveExactBridgeGammaStar2D(legacyResiduals, 2.0);
+
+    REQUIRE(proposed.valid);
+    CHECK(proposed.gamma == doctest::Approx(286.170773666071).epsilon(1.0e-12));
+    CHECK(proposed.accelX == doctest::Approx(0.8343679463394313).epsilon(1.0e-12));
+    CHECK(proposed.accelY == doctest::Approx(2.0).epsilon(1.0e-12));
+    REQUIRE(legacy.valid);
+    CHECK(legacy.gamma == doctest::Approx(-516.7540611860077).epsilon(1.0e-12));
+    CHECK(legacy.accelX == -2.0);
+    CHECK(legacy.accelY == 2.0);
+}
+
 TEST_CASE("Full-row scoring takes the minimum over every predicted step") {
     std::map<int, BridgePredictionState2D> mobileStates = {
             {1, {Point(100.0, 0.0), Eigen::Vector2d(-5.0, 0.0),
@@ -450,6 +499,36 @@ TEST_CASE("Prediction audit resolves selected forecasts at the matching future s
     CHECK(observed[0].maxAccelerationError == doctest::Approx(0.1));
     CHECK(std::abs(observed[0].budgetError) > 0.0);
     CHECK(pending.empty());
+}
+
+TEST_CASE("Joint task forecast overlays every mobile acceleration synchronously") {
+    const std::map<int, BridgePredictionState2D> observed = {
+        {1, {Point(10.0, 20.0), Eigen::Vector2d(1.0, 2.0),
+             Eigen::Vector2d(0.1, 0.2)}},
+        {2, {Point(30.0, 40.0), Eigen::Vector2d(3.0, 4.0),
+             Eigen::Vector2d(0.3, 0.4)}},
+    };
+    const std::map<int, Eigen::Vector2d> taskAccelerations = {
+        {1, Eigen::Vector2d(-1.0, 1.5)},
+        {2, Eigen::Vector2d(2.0, -0.5)},
+    };
+
+    const auto forecast = bridgePredictionStatesWithAccelerations(
+        observed,
+        taskAccelerations);
+
+    REQUIRE(forecast.size() == observed.size());
+    CHECK(forecast.at(1).position.distance_to(observed.at(1).position) == 0.0);
+    CHECK(forecast.at(2).velocity == observed.at(2).velocity);
+    CHECK(forecast.at(1).heldAcceleration == taskAccelerations.at(1));
+    CHECK(forecast.at(2).heldAcceleration == taskAccelerations.at(2));
+    CHECK(observed.at(1).heldAcceleration != forecast.at(1).heldAcceleration);
+
+    auto missing = taskAccelerations;
+    missing.erase(2);
+    CHECK_THROWS_AS(
+        bridgePredictionStatesWithAccelerations(observed, missing),
+        std::invalid_argument);
 }
 
 TEST_CASE("Prediction audit rejects overdue and time-mismatched forecasts") {

@@ -22,6 +22,10 @@ struct BridgeReserveTaskSelection {
     double predictedBudget = -std::numeric_limits<double>::infinity();
     double taskDeviation = std::numeric_limits<double>::infinity();
     size_t candidateIndex = std::numeric_limits<size_t>::max();
+    bool selectedMaximumPredictedBudget = false;
+    double maximumPredictedBudget =
+            -std::numeric_limits<double>::infinity();
+    size_t maximumCandidateIndex = std::numeric_limits<size_t>::max();
 };
 
 inline std::vector<BridgeReserveTaskCandidate> buildReserveTaskHomotopy(
@@ -165,6 +169,10 @@ inline BridgeReserveTaskSelection selectReserveTaskHomotopy(
     selection.nominalRetained = selection.taskDeviation <= tolerance;
     selection.candidateIndex = bestSafe != nullptr
             ? bestSafeIndex : bestFallbackIndex;
+    selection.selectedMaximumPredictedBudget =
+            selection.candidateIndex == bestFallbackIndex;
+    selection.maximumPredictedBudget = bestFallback->predictedBudget;
+    selection.maximumCandidateIndex = bestFallbackIndex;
     return selection;
 }
 
@@ -182,16 +190,24 @@ inline BridgeReserveTaskSelection selectMaximumReserveHomotopy(
     }
 
     const BridgeReserveTaskCandidate *endpoint = nullptr;
+    const BridgeReserveTaskCandidate *bestFallback = nullptr;
     size_t endpointIndex = std::numeric_limits<size_t>::max();
+    size_t bestFallbackIndex = std::numeric_limits<size_t>::max();
     for (size_t index = 0; index < candidates.size(); ++index) {
         const auto &candidate = candidates[index];
-        if (!bridge_reserve_task_detail::finite(candidate)
-            || candidate.alpha != 1.0) {
+        if (!bridge_reserve_task_detail::finite(candidate)) {
             continue;
         }
-        if (endpoint == nullptr
+        if (bestFallback == nullptr
+            || bridge_reserve_task_detail::betterFallback(
+                    candidate, *bestFallback)) {
+            bestFallback = &candidate;
+            bestFallbackIndex = index;
+        }
+        if (candidate.alpha == 1.0
+            && (endpoint == nullptr
             || bridge_reserve_task_detail::lexicographicallyEarlier(
-                    candidate, *endpoint)) {
+                    candidate, *endpoint))) {
             endpoint = &candidate;
             endpointIndex = index;
         }
@@ -211,6 +227,10 @@ inline BridgeReserveTaskSelection selectMaximumReserveHomotopy(
             endpoint->accelY - legacyAccelY);
     selection.nominalRetained = selection.taskDeviation <= tolerance;
     selection.candidateIndex = endpointIndex;
+    selection.selectedMaximumPredictedBudget =
+            endpointIndex == bestFallbackIndex;
+    selection.maximumPredictedBudget = bestFallback->predictedBudget;
+    selection.maximumCandidateIndex = bestFallbackIndex;
     return selection;
 }
 

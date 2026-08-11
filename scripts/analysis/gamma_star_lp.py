@@ -106,12 +106,6 @@ def _best_vertex(
         if not math.isfinite(determinant) or abs(determinant) <= singularity_bound:
             continue
         candidate = np.linalg.solve(active_matrix, bounds[list(indices)])
-        terms = matrix * candidate[np.newaxis, :]
-        allowance = 64.0 * np.finfo(float).eps * (
-            np.sum(np.abs(terms), axis=1) + np.abs(bounds)
-        ) + np.finfo(float).smallest_subnormal
-        if np.any(matrix @ candidate - bounds > allowance):
-            continue
         # Linear solves can return a coordinate a few ulps inside a box face
         # that was one of the defining equalities.  Preserve that exact active
         # face before recomputing the attained epigraph value; otherwise the
@@ -137,6 +131,12 @@ def _best_vertex(
             for constraint in constraints
         )
         candidate[2] = achieved
+        terms = matrix * candidate[np.newaxis, :]
+        allowance = 64.0 * np.finfo(float).eps * (
+            np.sum(np.abs(terms), axis=1) + np.abs(bounds)
+        ) + np.finfo(float).smallest_subnormal
+        if np.any(matrix @ candidate - bounds > allowance):
+            continue
         if best is None or achieved > best[2]:
             best = candidate.copy()
     if best is None:
