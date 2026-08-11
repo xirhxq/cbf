@@ -5,6 +5,7 @@
 #include "bridge/BridgeExperiment.hpp"
 #include "bridge/BridgeSearchTracker.hpp"
 #include "bridge/BridgeTopology.hpp"
+#include "bridge/ExactGammaStar2D.hpp"
 
 
 class Swarm {
@@ -500,26 +501,12 @@ private:
         if (edges.empty()) {
             return std::numeric_limits<double>::infinity();
         }
-        Eigen::Vector2d vertices[4] = {
-                {-accelHalfBox, -accelHalfBox},
-                {accelHalfBox, -accelHalfBox},
-                {-accelHalfBox, accelHalfBox},
-                {accelHalfBox, accelHalfBox}
-        };
-        double best = -std::numeric_limits<double>::infinity();
-        for (const auto &vertex : vertices) {
-            double worst = std::numeric_limits<double>::infinity();
-            for (const auto &edge : edges) {
-                double residual = edge.constTerm - (edge.ax * vertex.x() + edge.ay * vertex.y());
-                if (residual < worst) {
-                    worst = residual;
-                }
-            }
-            if (worst > best) {
-                best = worst;
-            }
+        std::vector<BridgeGammaStarResidual2D> residuals;
+        residuals.reserve(edges.size());
+        for (const auto &edge : edges) {
+            residuals.push_back({edge.ax, edge.ay, edge.constTerm});
         }
-        return best;
+        return exactBridgeGammaStar2D(residuals, accelHalfBox);
     }
 
     struct GammaStarFeedbackResult {
