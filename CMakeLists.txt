@@ -159,6 +159,8 @@ file(GLOB TEST_SOURCES "tests/*.cpp")
 foreach(TEST_SOURCE ${TEST_SOURCES})
     get_filename_component(TEST_EXECUTABLE ${TEST_SOURCE} NAME_WE)
     add_executable(${TEST_EXECUTABLE} ${TEST_SOURCE})
+    target_compile_definitions(
+        ${TEST_EXECUTABLE} PRIVATE PROJECT_ROOT="${CMAKE_SOURCE_DIR}")
     target_link_libraries(${TEST_EXECUTABLE} PRIVATE cbf_deps)
 endforeach()
 

@@ -699,6 +699,10 @@ TEST_CASE("nearest-feasible-single-ladder policy requires the frozen task contra
     const auto bridge = loadBridgeExperimentConfig(config);
     CHECK(bridge.jointSingleLadderGoalsEnabled);
 
+    config["bases"] = {{260.0, 1010.0}, {260.0, 1520.0}};
+    CHECK(loadBridgeExperimentConfig(config).jointSingleLadderGoalsEnabled);
+    config["bases"] = {{250.0, 1000.0}, {250.0, 1510.0}};
+
     config["bridge"]["search"]["goal-max-range-m"] = 849.1;
     CHECK_THROWS_AS(loadBridgeExperimentConfig(config), std::invalid_argument);
 
@@ -712,6 +716,24 @@ TEST_CASE("nearest-feasible-single-ladder policy requires the frozen task contra
         {"pair-scope", "all"},
     };
     CHECK_THROWS_AS(loadBridgeExperimentConfig(config), std::invalid_argument);
+}
+
+TEST_CASE("canonical r10 template satisfies the C++ joint goal contract") {
+    std::ifstream stream(
+            std::filesystem::path(PROJECT_ROOT)
+            / "config" / "single_ladder_campaign_template_r10.json");
+    REQUIRE(stream.good());
+    json config;
+    stream >> config;
+
+    const auto bridge = loadBridgeExperimentConfig(config);
+    CHECK(bridge.jointSingleLadderGoalsEnabled);
+    CHECK(bridge.jointSingleLadderLeaderId == 4);
+    CHECK(bridge.jointSingleLadderRotationDeg == 60.0);
+    CHECK(bridge.jointSingleLadderGoalMaxRange == 849.0);
+    CHECK(bridge.jointSingleLadderGoalMinSeparation == 10.0);
+    CHECK(bridge.jointSingleLadderInitialRow == 4);
+    CHECK(bridge.jointSingleLadderInitialColumn == 11);
 }
 
 TEST_CASE("BridgeSearchTrackerUpdatesCoverageBeliefEntropyAndDetection") {

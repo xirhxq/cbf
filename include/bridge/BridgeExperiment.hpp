@@ -496,11 +496,19 @@ inline BridgeExperimentConfig loadBridgeExperimentConfig(const json &config) {
             throw std::invalid_argument(
                     "nearest-feasible-single-ladder forbids post-certificate goal modification");
         }
-        const json expectedBases = {
-                {250.0, 1000.0}, {250.0, 1510.0}};
-        if (config.value("bases", json::array()) != expectedBases) {
+        const json bases = config.value("bases", json::array());
+        if (!bases.is_array() || bases.size() != 2) {
             throw std::invalid_argument(
-                    "nearest-feasible-single-ladder requires the frozen two-base geometry");
+                    "nearest-feasible-single-ladder requires exactly two bases");
+        }
+        for (const auto &base : bases) {
+            if (!base.is_array() || base.size() != 2
+                || !base.at(0).is_number() || !base.at(1).is_number()
+                || !std::isfinite(base.at(0).get<double>())
+                || !std::isfinite(base.at(1).get<double>())) {
+                throw std::invalid_argument(
+                        "nearest-feasible-single-ladder base coordinates must be finite planar points");
+            }
         }
         const json expectedBoundary = {
                 {0.0, 0.0}, {1800.0, 0.0},
