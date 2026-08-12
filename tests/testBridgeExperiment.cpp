@@ -272,6 +272,25 @@ TEST_CASE("Full-row feedback accepts only the declared homotopy configuration") 
     CHECK(bufferedBridge.gammaStarPredictiveGate == doctest::Approx(20.0));
 }
 
+TEST_CASE("Bridge search exposes explicit task-completion termination") {
+    auto config = validFullRowFeedbackConfig();
+    config["bridge"]["search"]["stop-on-detection"] = true;
+
+    const auto bridge = loadBridgeExperimentConfig(config);
+
+    CHECK(bridge.stopOnDetection);
+}
+
+TEST_CASE("Full-row feedback accepts fixed physical-row tightening") {
+    auto config = validFullRowFeedbackConfig();
+    config["cbfs"]["without-slack"]["comm-fixed"]
+            ["range-tightening-margin"] = 1.0;
+    config["cbfs"]["without-slack"]["safety"]
+            ["safe-distance-tightening-margin"] = 0.5;
+
+    CHECK_NOTHROW(loadBridgeExperimentConfig(config));
+}
+
 TEST_CASE("Full-row feedback rejects hidden method and boundary changes") {
     auto requireInvalid = [](json config) {
         CHECK_THROWS_AS(loadBridgeExperimentConfig(config), std::invalid_argument);
@@ -363,14 +382,16 @@ TEST_CASE("Full-row feedback rejects hidden method and boundary changes") {
         config["cbfs"]["without-slack"]["comm-auto"]["on"] = true;
         requireInvalid(config);
     }
-    SUBCASE("communication tightening") {
+    SUBCASE("communication tightening consumes the entire range") {
         auto config = validFullRowFeedbackConfig();
-        config["cbfs"]["without-slack"]["comm-fixed"]["range-tightening-margin"] = 1.0;
+        config["cbfs"]["without-slack"]["comm-fixed"]
+                ["range-tightening-margin"] = 850.0;
         requireInvalid(config);
     }
-    SUBCASE("safety tightening") {
+    SUBCASE("negative safety tightening") {
         auto config = validFullRowFeedbackConfig();
-        config["cbfs"]["without-slack"]["safety"]["safe-distance-tightening-margin"] = 1.0;
+        config["cbfs"]["without-slack"]["safety"]
+                ["safe-distance-tightening-margin"] = -1.0;
         requireInvalid(config);
     }
     SUBCASE("position covariance") {

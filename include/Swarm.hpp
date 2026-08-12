@@ -345,6 +345,17 @@ public:
                 }
 
                 logOnce();
+                if (bridgeConfig.enabled
+                    && bridgeConfig.stopOnDetection
+                    && bridgeSearch.detected()) {
+                    data["termination"] = {
+                            {"status", "task-complete"},
+                            {"runtime", robots.empty()
+                                    ? 0.0 : robots.front()->runtime},
+                            {"message", nullptr},
+                    };
+                    break;
+                }
                 for (auto &robot: robots) robot->stepTimeForward(tStep);
             }
             catch (...) {
@@ -475,9 +486,15 @@ private:
         const double lambda1 = secondOrderLambda1();
         const double lambda2 = secondOrderLambda2();
         const double reserve = secondOrderSampledDataReserve();
+        const double effectiveSafeDistance =
+                safety.at("safe-distance").get<double>()
+                + safety.value("safe-distance-tightening-margin", 0.0);
+        const double effectiveCommunicationRange =
+                communication.at("max-range").get<double>()
+                - communication.value("range-tightening-margin", 0.0);
         const PairwiseSecondOrderRowSpec safetySpec{
                 PairwiseSecondOrderBarrierKind::CollisionLower,
-                safety.at("safe-distance").get<double>(),
+                effectiveSafeDistance,
                 0.0,
                 safety.value("k", 1.0),
                 lambda1,
@@ -486,7 +503,7 @@ private:
         };
         const PairwiseSecondOrderRowSpec communicationSpec{
                 PairwiseSecondOrderBarrierKind::CommunicationUpper,
-                communication.at("max-range").get<double>(),
+                effectiveCommunicationRange,
                 0.0,
                 communication.value("k", 1.0),
                 lambda1,

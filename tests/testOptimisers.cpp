@@ -1216,6 +1216,90 @@ TEST_CASE("Predictive-soft audits current-infeasible execution as an explicit fa
     CHECK(fallbackCount >= 1);
 }
 
+TEST_CASE("Full-row budget audit matches installed tightened communication rows") {
+    const auto available = getAvailableOptimisers();
+    if (std::find(available.begin(), available.end(), "Gurobi")
+            == available.end()) {
+        WARN("Gurobi is unavailable; tightened full-row audit was not run");
+        return;
+    }
+
+    const auto uniqueSuffix = std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+    ScopedTestDirectory output(
+            std::filesystem::temp_directory_path()
+            / ("cbf-tightened-full-row-audit-" + uniqueSuffix));
+    auto settings = makeFullRowSingleLadderSwarmConfig(
+            "Gurobi", output.path);
+    settings["bridge"]["nominal"].erase("gamma-star-feedback");
+    settings["cbfs"]["without-slack"]["comm-fixed"]
+            ["range-tightening-margin"] = 1.0;
+    settings["execute"]["time-total"] = 0.5;
+
+    Swarm swarm(settings);
+    swarm.run();
+
+    REQUIRE(swarm.data.at("state").size() == 1);
+    const auto &step = swarm.data.at("state").at(0);
+    const auto &audits = step.at("bridge").at("nominal")
+            .at("full_row_budget_audit").at("robots");
+    REQUIRE(audits.size() == 4);
+    for (const auto &robot : step.at("robots")) {
+        const int robotId = robot.at("id").get<int>();
+        std::vector<BridgeGammaStarResidual2D> residuals;
+        for (const auto &row : robot.at("opt").at("hocbfNoSlack")) {
+            residuals.push_back(bridgeGammaStarResidualFromAffineMargin(
+                    row.at("coe").at("ax").get<double>(),
+                    row.at("coe").at("ay").get<double>(),
+                    row.at("const").get<double>()));
+        }
+        const auto exact = solveExactBridgeGammaStar2D(residuals, 4.0);
+        REQUIRE(exact.valid);
+        const auto audit = std::find_if(
+                audits.begin(), audits.end(), [robotId](const json &candidate) {
+                    return candidate.at("robot").get<int>() == robotId;
+                });
+        REQUIRE(audit != audits.end());
+        CHECK(audit->at("current_gamma_star").get<double>()
+              == doctest::Approx(exact.gamma).epsilon(1.0e-12));
+    }
+}
+
+TEST_CASE("Single-ladder search stops when the target is detected") {
+    const auto available = getAvailableOptimisers();
+    if (std::find(available.begin(), available.end(), "Gurobi")
+            == available.end()) {
+        WARN("Gurobi is unavailable; task-completion termination was not run");
+        return;
+    }
+
+    const auto uniqueSuffix = std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+    ScopedTestDirectory output(
+            std::filesystem::temp_directory_path()
+            / ("cbf-task-complete-" + uniqueSuffix));
+    auto settings = makeFullRowSingleLadderSwarmConfig(
+            "Gurobi", output.path);
+    settings["bridge"]["search"] = {{"stop-on-detection", true}};
+    settings["bridge"]["target"] = {
+            {"x", settings["initial"]["position"]["positions"][0][0]},
+            {"y", settings["initial"]["position"]["positions"][0][1]},
+            {"radius", 1.0},
+    };
+
+    Swarm swarm(settings);
+    swarm.run();
+
+    REQUIRE(swarm.data.at("state").size() == 1);
+    CHECK(swarm.data.at("state").at(0).at("bridge").at("search")
+          .at("detected") == true);
+    CHECK(swarm.data.at("termination").at("status") == "task-complete");
+    CHECK(swarm.data.at("termination").at("runtime").get<double>()
+          == doctest::Approx(0.0));
+    CHECK(swarm.data.at("terminal").at("runtime").get<double>()
+          == doctest::Approx(0.0));
+}
+
 TEST_CASE("Full-row prediction clock advances while fixed topology is in fail-safe") {
     const auto available = getAvailableOptimisers();
     if (std::find(available.begin(), available.end(), "Gurobi")

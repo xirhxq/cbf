@@ -25,6 +25,7 @@ struct BridgeExperimentConfig {
     bool enabled = false;
     std::string row = "debug";
     std::string searchPolicy = "coverage";
+    bool stopOnDetection = false;
     std::string topologyPolicy = "fixed";
     std::string safetyFilter = "first-order-cbf";
     double reportCadence = 1.0;
@@ -89,6 +90,10 @@ inline BridgeExperimentConfig loadBridgeExperimentConfig(const json &config) {
     bridge.topologyPolicy = source.value("topology-policy", bridge.topologyPolicy);
     bridge.safetyFilter = source.value("safety-filter", bridge.safetyFilter);
     bridge.reportCadence = source.value("report-cadence", bridge.reportCadence);
+    if (source.contains("search")) {
+        bridge.stopOnDetection = source.at("search").value(
+                "stop-on-detection", bridge.stopOnDetection);
+    }
 
     if (bridge.reportCadence <= 0.0 || !std::isfinite(bridge.reportCadence)) {
         throw std::invalid_argument("bridge.report-cadence must be positive and finite");
@@ -403,26 +408,34 @@ inline BridgeExperimentConfig loadBridgeExperimentConfig(const json &config) {
             }
             const json &safety = withoutSlack.value("safety", json::object());
             const json &communication = withoutSlack.value("comm-fixed", json::object());
+            const double safetyDistance = safety.value("safe-distance", 0.0);
+            const double safetyTightening = safety.value(
+                    "safe-distance-tightening-margin", 0.0);
+            const double communicationRange = communication.value(
+                    "max-range", 0.0);
+            const double communicationTightening = communication.value(
+                    "range-tightening-margin", 0.0);
             if (!safety.value("on", false)
-                || std::abs(safety.value("safe-distance", 0.0) - 10.0) > 1.0e-12
-                || std::abs(safety.value(
-                        "safe-distance-tightening-margin", 0.0)) > 1.0e-12
+                || std::abs(safetyDistance - 10.0) > 1.0e-12
+                || !std::isfinite(safetyTightening)
+                || safetyTightening < 0.0
                 || safety.value("consider-uncertainty", true)
                 || safety.value("pair-state-reserve", json::object())
                         .value("enabled", false)) {
                 throw std::invalid_argument(
-                        "reserve-task-homotopy requires raw 10 m safety rows with only the shared constant reserve");
+                        "reserve-task-homotopy requires 10 m safety rows with a finite non-negative fixed tightening and only the shared constant reserve");
             }
             if (!communication.value("on", false)
-                || std::abs(communication.value("max-range", 0.0) - 850.0) > 1.0e-12
-                || std::abs(communication.value(
-                        "range-tightening-margin", 0.0)) > 1.0e-12
+                || std::abs(communicationRange - 850.0) > 1.0e-12
+                || !std::isfinite(communicationTightening)
+                || communicationTightening < 0.0
+                || communicationTightening >= communicationRange
                 || communication.value("consider-uncertainty", true)
                 || !communication.value("compensate-velocity", true)
                 || communication.value("state-dependent-reserve", json::object())
                         .value("enabled", false)) {
                 throw std::invalid_argument(
-                        "reserve-task-homotopy requires raw 850 m communication rows with held-reference dynamics and only the shared constant reserve");
+                        "reserve-task-homotopy requires 850 m communication rows with a finite fixed tightening, held-reference dynamics, and only the shared constant reserve");
             }
             if (withoutSlack.value("comm-auto", json::object())
                     .value("on", false)) {
@@ -469,6 +482,7 @@ inline json makeBridgeMetadata(const json &config, const BridgeExperimentConfig 
         {"enabled", bridge.enabled},
         {"row", bridge.row},
         {"search_policy", bridge.searchPolicy},
+        {"stop_on_detection", bridge.stopOnDetection},
         {"topology_policy", bridge.topologyPolicy},
         {"safety_filter", bridge.safetyFilter},
         {"nominal_guard_enabled", bridge.nominalGuardEnabled},
