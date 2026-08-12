@@ -10,15 +10,15 @@
     "parts": 1,
     "bases-id": [[0, 1]]
   },
-  "bases": [[250.0, 1000.0], [250.0, 1552.5]],
+  "bases": [[250.0, 1000.0], [250.0, 1510.0]],
   "initial": {
     "position": {
       "method": "specified",
       "positions": [
-        [728.4790355909023, 1276.25],
-        [728.4790355909023, 723.75],
-        [1206.9580711818046, 1000.0],
-        [1206.9580711818046, 447.5]
+        [691.6729559300637, 1255.0],
+        [691.6729559300637, 745.0],
+        [1133.3459118601275, 1000.0],
+        [1133.3459118601275, 490.0]
       ]
     },
     "velocity": {
@@ -90,7 +90,7 @@
       "comm-fixed": {
         "on": true,
         "max-range": 850.0,
-        "range-tightening-margin": 0.0,
+        "range-tightening-margin": 1.0,
         "k": 1.0,
         "compensate-velocity": true,
         "consider-uncertainty": false,
@@ -136,6 +136,7 @@
       }
     },
     "search": {
+      "stop-on-detection": true,
       "clarity-weight": 1.0,
       "belief-weight": 0.0,
       "travel-weight": 0.0005,
@@ -143,8 +144,8 @@
       "coverage-completion-threshold": 1.0
     },
     "target": {
-      "x": 1650.0,
-      "y": 1050.0,
+      "x": 1450.0,
+      "y": 350.0,
       "radius": 50.0
     }
   },
