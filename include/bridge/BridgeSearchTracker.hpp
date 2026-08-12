@@ -2,6 +2,7 @@
 #define CBF_BRIDGE_SEARCH_TRACKER_HPP
 
 #include "bridge/BridgeExperiment.hpp"
+#include "bridge/SingleLadderGoalSelector.hpp"
 #include "bridge/BridgeTopology.hpp"
 #include "ComputingGeometry/Point.hpp"
 #include <algorithm>
@@ -465,6 +466,149 @@ public:
         return decision;
     }
 
+    BridgeSingleLadderGoalDecision choosePersistentSingleLadderGoals(
+        const Point &leaderPosition,
+        const std::array<Point, 2> &bases,
+        const BridgeFixedReferenceMap &references
+    ) {
+        std::vector<BridgeSingleLadderGridCell> unsearchedCells;
+        for (int row = 0; row < height_; ++row) {
+            for (int column = 0; column < width_; ++column) {
+                if (!searched_[index(column, row)]) {
+                    unsearchedCells.push_back({row, column});
+                }
+            }
+        }
+        auto certify = [&](const BridgeSingleLadderGoalTuple &tuple) {
+            return bridgeCertifySingleLadderGoalTuple(
+                    tuple,
+                    bases.at(0),
+                    bases.at(1),
+                    references,
+                    Point(0.0, 0.0),
+                    Point(static_cast<double>(width_) * spacing_,
+                          static_cast<double>(height_) * spacing_),
+                    BRIDGE_SINGLE_LADDER_GOAL_MAX_RANGE_M,
+                    BRIDGE_SINGLE_LADDER_GOAL_MIN_SEPARATION_M);
+        };
+
+        if (hasPersistentSingleLadderGoal_) {
+            const auto cachedCertificate = certify(
+                    persistentSingleLadderGoal_.tuple);
+            const bool cellStillUnsearched = inside(
+                    persistentSingleLadderGoal_.selectedColumn,
+                    persistentSingleLadderGoal_.selectedRow)
+                    && !searched_[index(
+                            persistentSingleLadderGoal_.selectedColumn,
+                            persistentSingleLadderGoal_.selectedRow)];
+            if (cachedCertificate.valid && cellStillUnsearched) {
+                BridgeSingleLadderGoalDecision held =
+                        persistentSingleLadderGoal_;
+                held.certificate = cachedCertificate;
+                held.reusedPrevious = true;
+                held.candidates.clear();
+                held.unsearchedCells = unsearchedCells;
+                held.evaluatedCandidates = 0;
+                held.noFeasibleGoal = false;
+                return held;
+            }
+        }
+
+        struct OrderedGridCandidate {
+            long double squaredDistance;
+            int row;
+            int column;
+            Point center;
+        };
+        std::vector<OrderedGridCandidate> orderedCandidates;
+        for (int row = 0; row < height_; ++row) {
+            for (int column = 0; column < width_; ++column) {
+                if (searched_[index(column, row)]) {
+                    continue;
+                }
+                Point center((static_cast<double>(column) + 0.5) * spacing_,
+                             (static_cast<double>(row) + 0.5) * spacing_);
+                const long double dx = static_cast<long double>(center.x)
+                                       - static_cast<long double>(leaderPosition.x);
+                const long double dy = static_cast<long double>(center.y)
+                                       - static_cast<long double>(leaderPosition.y);
+                orderedCandidates.push_back({
+                        dx * dx + dy * dy, row, column, center});
+            }
+        }
+        std::sort(
+                orderedCandidates.begin(), orderedCandidates.end(),
+                [](const OrderedGridCandidate &left,
+                   const OrderedGridCandidate &right) {
+                    if (left.squaredDistance != right.squaredDistance) {
+                        return left.squaredDistance < right.squaredDistance;
+                    }
+                    if (left.row != right.row) {
+                        return left.row < right.row;
+                    }
+                    return left.column < right.column;
+                });
+
+        BridgeSingleLadderGoalDecision decision;
+        decision.unsearchedCells = unsearchedCells;
+        for (const auto &candidate : orderedCandidates) {
+            const auto tuple = bridgeBuildSingleLadderGoalTuple(
+                    bases.at(0), bases.at(1), candidate.center);
+            const auto certificate = certify(tuple);
+            decision.candidates.push_back({
+                    candidate.row,
+                    candidate.column,
+                    candidate.center,
+                    candidate.squaredDistance,
+                    certificate.valid,
+                    certificate.rejectionReasons,
+            });
+            ++decision.evaluatedCandidates;
+            if (!certificate.valid) {
+                continue;
+            }
+            decision.tuple = tuple;
+            decision.certificate = certificate;
+            decision.selectedRow = candidate.row;
+            decision.selectedColumn = candidate.column;
+            decision.selectionEpoch = ++singleLadderGoalSelectionEpoch_;
+            persistentSingleLadderGoal_ = decision;
+            hasPersistentSingleLadderGoal_ = true;
+            return decision;
+        }
+
+        if (hasPersistentSingleLadderGoal_) {
+            BridgeSingleLadderGoalDecision held =
+                    persistentSingleLadderGoal_;
+            held.reusedPrevious = true;
+            held.noFeasibleGoal = true;
+            held.candidates = decision.candidates;
+            held.unsearchedCells = unsearchedCells;
+            held.evaluatedCandidates = decision.evaluatedCandidates;
+            return held;
+        }
+
+        const int initialRow = 4;
+        const int initialColumn = 11;
+        const Point initialLeaderGoal(
+                (static_cast<double>(initialColumn) + 0.5) * spacing_,
+                (static_cast<double>(initialRow) + 0.5) * spacing_);
+        decision.tuple = bridgeBuildSingleLadderGoalTuple(
+                bases.at(0), bases.at(1), initialLeaderGoal);
+        decision.certificate = certify(decision.tuple);
+        if (!decision.certificate.valid) {
+            throw std::runtime_error(
+                    "prevalidated single-ladder initialization is invalid");
+        }
+        decision.selectedRow = initialRow;
+        decision.selectedColumn = initialColumn;
+        decision.noFeasibleGoal = true;
+        decision.selectionEpoch = ++singleLadderGoalSelectionEpoch_;
+        persistentSingleLadderGoal_ = decision;
+        hasPersistentSingleLadderGoal_ = true;
+        return decision;
+    }
+
     json finalMapJson() const {
         json rows = json::array();
         for (int y = 0; y < height_; ++y) {
@@ -614,6 +758,9 @@ private:
     double lastRuntime_ = 0.0;
     std::vector<double> belief_;
     std::vector<bool> searched_;
+    bool hasPersistentSingleLadderGoal_ = false;
+    BridgeSingleLadderGoalDecision persistentSingleLadderGoal_;
+    std::uint64_t singleLadderGoalSelectionEpoch_ = 0;
 
     bool inside(int x, int y) const {
         return x >= 0 && x < width_ && y >= 0 && y < height_;

@@ -25,6 +25,13 @@ struct BridgeExperimentConfig {
     bool enabled = false;
     std::string row = "debug";
     std::string searchPolicy = "coverage";
+    bool jointSingleLadderGoalsEnabled = false;
+    int jointSingleLadderLeaderId = 4;
+    double jointSingleLadderRotationDeg = 60.0;
+    double jointSingleLadderGoalMaxRange = 849.0;
+    double jointSingleLadderGoalMinSeparation = 10.0;
+    int jointSingleLadderInitialRow = 4;
+    int jointSingleLadderInitialColumn = 11;
     bool stopOnDetection = false;
     std::string topologyPolicy = "fixed";
     std::string safetyFilter = "first-order-cbf";
@@ -474,6 +481,82 @@ inline BridgeExperimentConfig loadBridgeExperimentConfig(const json &config) {
         bridge.target.y = target.value("y", 0.0);
         bridge.target.radius = target.value("radius", 0.0);
     }
+
+    bridge.jointSingleLadderGoalsEnabled =
+            bridge.searchPolicy == "nearest-feasible-single-ladder";
+    if (bridge.jointSingleLadderGoalsEnabled) {
+        if (!bridge.enabled || bridge.topologyPolicy != "fixed"
+            || config.value("num", 0) != 4) {
+            throw std::invalid_argument(
+                    "nearest-feasible-single-ladder requires an enabled fixed topology with four mobiles");
+        }
+        if (bridge.relaySupportGuardEnabled
+            || bridge.supportChainGuardEnabled
+            || bridge.goalDiversionEnabled) {
+            throw std::invalid_argument(
+                    "nearest-feasible-single-ladder forbids post-certificate goal modification");
+        }
+        const json expectedBases = {
+                {250.0, 1000.0}, {250.0, 1510.0}};
+        if (config.value("bases", json::array()) != expectedBases) {
+            throw std::invalid_argument(
+                    "nearest-feasible-single-ladder requires the frozen two-base geometry");
+        }
+        const json expectedBoundary = {
+                {0.0, 0.0}, {1800.0, 0.0},
+                {1800.0, 2000.0}, {0.0, 2000.0}};
+        const json &world = config.at("world");
+        if (world.value("boundary", json::array()) != expectedBoundary
+            || world.value("spacing", 0.0) != 100.0) {
+            throw std::invalid_argument(
+                    "nearest-feasible-single-ladder requires the frozen world and grid");
+        }
+        const json &search = source.at("search");
+        bridge.jointSingleLadderRotationDeg = search.value(
+                "rotation-deg", std::numeric_limits<double>::quiet_NaN());
+        bridge.jointSingleLadderLeaderId = search.value("leader-id", 0);
+        bridge.jointSingleLadderGoalMaxRange = search.value(
+                "goal-max-range-m", std::numeric_limits<double>::quiet_NaN());
+        bridge.jointSingleLadderGoalMinSeparation = search.value(
+                "goal-min-separation-m", std::numeric_limits<double>::quiet_NaN());
+        const json initialGrid = search.value(
+                "initial-leader-grid", json::array());
+        if (bridge.jointSingleLadderRotationDeg != 60.0
+            || bridge.jointSingleLadderLeaderId != 4
+            || bridge.jointSingleLadderGoalMaxRange != 849.0
+            || bridge.jointSingleLadderGoalMinSeparation != 10.0
+            || initialGrid != json({4, 11})) {
+            throw std::invalid_argument(
+                    "nearest-feasible-single-ladder task geometry must equal the frozen r10 contract");
+        }
+        bridge.jointSingleLadderInitialRow = initialGrid.at(0).get<int>();
+        bridge.jointSingleLadderInitialColumn = initialGrid.at(1).get<int>();
+
+        const json &topology = source.at("topology");
+        const json expectedReferences = {
+                {"1", {{"anchor-ids", json::array()}, {"base-ids", {0, 1}}}},
+                {"2", {{"anchor-ids", {1}}, {"base-ids", {0}}}},
+                {"3", {{"anchor-ids", {2, 1}}, {"base-ids", json::array()}}},
+                {"4", {{"anchor-ids", {3, 2}}, {"base-ids", json::array()}}},
+        };
+        if (topology.value("fixed-references", json::object())
+                    != expectedReferences
+            || topology.value("max-range", 0.0) != 850.0) {
+            throw std::invalid_argument(
+                    "nearest-feasible-single-ladder requires the canonical eight-edge 850 m topology");
+        }
+        const json &withoutSlack = config.at("cbfs").at("without-slack");
+        const json &communication = withoutSlack.at("comm-fixed");
+        const json &safety = withoutSlack.at("safety");
+        if (!communication.value("on", false)
+            || communication.value("max-range", 0.0) != 850.0
+            || communication.value("range-tightening-margin", 0.0) != 1.0
+            || !safety.value("on", false)
+            || safety.value("safe-distance", 0.0) != 10.0) {
+            throw std::invalid_argument(
+                    "nearest-feasible-single-ladder requires 849 m task range and 10 m safety rows");
+        }
+    }
     return bridge;
 }
 
@@ -482,6 +565,8 @@ inline json makeBridgeMetadata(const json &config, const BridgeExperimentConfig 
         {"enabled", bridge.enabled},
         {"row", bridge.row},
         {"search_policy", bridge.searchPolicy},
+        {"joint_single_ladder_goals_enabled",
+                bridge.jointSingleLadderGoalsEnabled},
         {"stop_on_detection", bridge.stopOnDetection},
         {"topology_policy", bridge.topologyPolicy},
         {"safety_filter", bridge.safetyFilter},

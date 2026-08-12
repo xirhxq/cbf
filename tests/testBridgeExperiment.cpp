@@ -3,6 +3,7 @@
 #include "doctest.h"
 #include "bridge/BridgeExperiment.hpp"
 #include "bridge/BridgeSearchTracker.hpp"
+#include "bridge/SingleLadderGoalSelector.hpp"
 #include "bridge/BridgeTopology.hpp"
 #include "bridge/HocbfFeasibilityGuard.hpp"
 
@@ -675,6 +676,44 @@ TEST_CASE("BridgeExperimentMetadataRecordsPaperScaleAndSampleTimes") {
     CHECK(metadata.at("report_cadence_s").get<double>() == doctest::Approx(1.0));
 }
 
+TEST_CASE("nearest-feasible-single-ladder policy requires the frozen task contract") {
+    json config = validFullRowFeedbackConfig();
+    config["world"] = {
+        {"boundary", {{0.0, 0.0}, {1800.0, 0.0},
+                      {1800.0, 2000.0}, {0.0, 2000.0}}},
+        {"spacing", 100.0}
+    };
+    config["bases"] = {{250.0, 1000.0}, {250.0, 1510.0}};
+    config["bridge"]["search-policy"] =
+            "nearest-feasible-single-ladder";
+    config["bridge"]["search"] = {
+        {"rotation-deg", 60.0},
+        {"leader-id", 4},
+        {"goal-max-range-m", 849.0},
+        {"goal-min-separation-m", 10.0},
+        {"initial-leader-grid", {4, 11}},
+    };
+    config["cbfs"]["without-slack"]["comm-fixed"]
+          ["range-tightening-margin"] = 1.0;
+
+    const auto bridge = loadBridgeExperimentConfig(config);
+    CHECK(bridge.jointSingleLadderGoalsEnabled);
+
+    config["bridge"]["search"]["goal-max-range-m"] = 849.1;
+    CHECK_THROWS_AS(loadBridgeExperimentConfig(config), std::invalid_argument);
+
+    config["bridge"]["search"]["goal-max-range-m"] = 849.0;
+    config["bridge"]["nominal"]["goal-diversion"] = {
+        {"enabled", true},
+        {"distance-threshold", 120.0},
+        {"radial-threshold", 4.0},
+        {"separation-scale", 1.0},
+        {"max-offset", 200.0},
+        {"pair-scope", "all"},
+    };
+    CHECK_THROWS_AS(loadBridgeExperimentConfig(config), std::invalid_argument);
+}
+
 TEST_CASE("BridgeSearchTrackerUpdatesCoverageBeliefEntropyAndDetection") {
     json config = {
         {"world", {
@@ -1162,6 +1201,301 @@ TEST_CASE("BridgeSearchTrackerServiceScheduleFallsBackToCoverageWhenBehind") {
     Point scheduledGoal = tracker.chooseGoal(position, "active-predictive-exposure", anchor, topology);
     CHECK(scheduledGoal.x == doctest::Approx(coverageGoal.x));
     CHECK(scheduledGoal.y == doctest::Approx(coverageGoal.y));
+}
+
+TEST_CASE("single-ladder joint goal uses the frozen positive sixty degree rotation") {
+    const auto tuple = bridgeBuildSingleLadderGoalTuple(
+            Point(250.0, 1000.0),
+            Point(250.0, 1510.0),
+            Point(1150.0, 450.0));
+
+    CHECK(tuple.goals.at(0).distance_to(
+                  Point(823.5752250232366, 1443.4614317029973)) < 1.0e-9);
+    CHECK(tuple.goals.at(1).distance_to(
+                  Point(700.0, 852.5)) < 1.0e-9);
+    CHECK(tuple.goals.at(2).distance_to(
+                  Point(1273.5752250232367, 1040.9614317029973)) < 1.0e-9);
+    CHECK(tuple.goals.at(3).distance_to(Point(1150.0, 450.0)) < 1.0e-12);
+}
+
+TEST_CASE("single-ladder joint goal certifies exactly the canonical eight edges") {
+    const Point base0(250.0, 1000.0);
+    const Point base1(250.0, 1510.0);
+    const auto tuple = bridgeBuildSingleLadderGoalTuple(
+            base0, base1, Point(1150.0, 450.0));
+
+    const auto certificate = bridgeCertifySingleLadderGoalTuple(
+            tuple,
+            base0,
+            base1,
+            bridgeSingleTriangularLadderReferences(),
+            Point(0.0, 0.0),
+            Point(1800.0, 2000.0),
+            849.0,
+            10.0);
+
+    REQUIRE(certificate.valid);
+    CHECK(certificate.rejectionReasons.empty());
+    REQUIRE(certificate.edges.size() == 8);
+    CHECK(certificate.edges.at(0).ownerId == 1);
+    CHECK(certificate.edges.at(0).referenceKind == "base");
+    CHECK(certificate.edges.at(0).referenceId == 0);
+    CHECK(certificate.edges.at(7).ownerId == 4);
+    CHECK(certificate.edges.at(7).referenceKind == "mobile");
+    CHECK(certificate.edges.at(7).referenceId == 2);
+    for (const auto &edge : certificate.edges) {
+        CHECK(edge.length <= 849.0);
+    }
+    REQUIRE(certificate.mobileSeparations.size() == 6);
+    for (const double separation : certificate.mobileSeparations) {
+        CHECK(separation >= 10.0);
+    }
+}
+
+TEST_CASE("single-ladder joint goal certificate fails closed on malformed geometry") {
+    const Point base0(250.0, 1000.0);
+    const Point base1(250.0, 1510.0);
+    const Point worldMin(0.0, 0.0);
+    const Point worldMax(1800.0, 2000.0);
+    const auto references = bridgeSingleTriangularLadderReferences();
+
+    SUBCASE("outside world") {
+        const auto tuple = bridgeBuildSingleLadderGoalTuple(
+                base0, base1, Point(1750.0, 50.0));
+        const auto certificate = bridgeCertifySingleLadderGoalTuple(
+                tuple, base0, base1, references,
+                worldMin, worldMax, 849.0, 10.0);
+        CHECK_FALSE(certificate.valid);
+        CHECK(std::find(certificate.rejectionReasons.begin(),
+                        certificate.rejectionReasons.end(),
+                        "goal-outside-world")
+              != certificate.rejectionReasons.end());
+    }
+
+    SUBCASE("assigned edge over range") {
+        const auto tuple = bridgeBuildSingleLadderGoalTuple(
+                base0, base1, Point(1750.0, 1950.0));
+        const auto certificate = bridgeCertifySingleLadderGoalTuple(
+                tuple, base0, base1, references,
+                Point(-2000.0, -2000.0), Point(3000.0, 3000.0),
+                849.0, 10.0);
+        CHECK_FALSE(certificate.valid);
+        CHECK(std::find(certificate.rejectionReasons.begin(),
+                        certificate.rejectionReasons.end(),
+                        "assigned-edge-over-range")
+              != certificate.rejectionReasons.end());
+    }
+
+    SUBCASE("mobile separation below minimum") {
+        const auto tuple = bridgeBuildSingleLadderGoalTuple(
+                base0, base1, Point(250.0, 1255.0));
+        const auto certificate = bridgeCertifySingleLadderGoalTuple(
+                tuple, base0, base1, references,
+                worldMin, worldMax, 849.0, 10.0);
+        CHECK_FALSE(certificate.valid);
+        CHECK(std::find(certificate.rejectionReasons.begin(),
+                        certificate.rejectionReasons.end(),
+                        "mobile-separation-below-minimum")
+              != certificate.rejectionReasons.end());
+    }
+
+    SUBCASE("reference map mismatch") {
+        auto malformedReferences = references;
+        malformedReferences.at(4).anchorIds = {2, 3};
+        const auto tuple = bridgeBuildSingleLadderGoalTuple(
+                base0, base1, Point(1150.0, 450.0));
+        const auto certificate = bridgeCertifySingleLadderGoalTuple(
+                tuple, base0, base1, malformedReferences,
+                worldMin, worldMax, 849.0, 10.0);
+        CHECK_FALSE(certificate.valid);
+        CHECK(std::find(certificate.rejectionReasons.begin(),
+                        certificate.rejectionReasons.end(),
+                        "reference-map-mismatch")
+              != certificate.rejectionReasons.end());
+    }
+
+    SUBCASE("non-finite goal") {
+        auto tuple = bridgeBuildSingleLadderGoalTuple(
+                base0, base1, Point(1150.0, 450.0));
+        tuple.goals.at(2).x = std::numeric_limits<double>::quiet_NaN();
+        const auto certificate = bridgeCertifySingleLadderGoalTuple(
+                tuple, base0, base1, references,
+                worldMin, worldMax, 849.0, 10.0);
+        CHECK_FALSE(certificate.valid);
+        CHECK(std::find(certificate.rejectionReasons.begin(),
+                        certificate.rejectionReasons.end(),
+                        "non-finite-goal")
+              != certificate.rejectionReasons.end());
+    }
+
+    SUBCASE("tuple does not reproduce the frozen section geometry") {
+        auto tuple = bridgeBuildSingleLadderGoalTuple(
+                base0, base1, Point(1150.0, 450.0));
+        tuple.goals.at(1).x += 1.0;
+        const auto certificate = bridgeCertifySingleLadderGoalTuple(
+                tuple, base0, base1, references,
+                worldMin, worldMax, 849.0, 10.0);
+        CHECK_FALSE(certificate.valid);
+        CHECK(std::find(certificate.rejectionReasons.begin(),
+                        certificate.rejectionReasons.end(),
+                        "tuple-geometry-mismatch")
+              != certificate.rejectionReasons.end());
+    }
+}
+
+TEST_CASE("single-ladder joint goal certificate uses exact closed thresholds") {
+    const Point commonBase(0.0, 0.0);
+    const auto references = bridgeSingleTriangularLadderReferences();
+
+    const auto rangeBoundary = bridgeBuildSingleLadderGoalTuple(
+            commonBase, commonBase, Point(1698.0, 0.0));
+    const auto rangeCertificate = bridgeCertifySingleLadderGoalTuple(
+            rangeBoundary, commonBase, commonBase, references,
+            Point(-1000.0, -1000.0), Point(3000.0, 3000.0),
+            849.0, 10.0);
+    CHECK(rangeCertificate.valid);
+    for (const auto &edge : rangeCertificate.edges) {
+        CHECK(edge.length == doctest::Approx(849.0));
+    }
+
+    const auto separationBoundary = bridgeBuildSingleLadderGoalTuple(
+            commonBase, commonBase, Point(20.0, 0.0));
+    const auto separationCertificate = bridgeCertifySingleLadderGoalTuple(
+            separationBoundary, commonBase, commonBase, references,
+            Point(-100.0, -100.0), Point(100.0, 100.0),
+            849.0, 10.0);
+    CHECK(separationCertificate.valid);
+    CHECK(*std::min_element(
+                  separationCertificate.mobileSeparations.begin(),
+                  separationCertificate.mobileSeparations.end())
+          == doctest::Approx(10.0));
+
+    const auto belowSeparation = bridgeBuildSingleLadderGoalTuple(
+            commonBase, commonBase, Point(19.0, 0.0));
+    const auto belowCertificate = bridgeCertifySingleLadderGoalTuple(
+            belowSeparation, commonBase, commonBase, references,
+            Point(-100.0, -100.0), Point(100.0, 100.0),
+            849.0, 10.0);
+    CHECK_FALSE(belowCertificate.valid);
+}
+
+TEST_CASE("BridgeSearchTracker selects and persists the nearest feasible single-ladder joint goal") {
+    const json config = {
+        {"world", {
+            {"boundary", {{0.0, 0.0}, {1800.0, 0.0},
+                          {1800.0, 2000.0}, {0.0, 2000.0}}},
+            {"spacing", 100.0}
+        }},
+        {"bridge", {
+            {"enabled", true},
+            {"target", {{"x", 1450.0}, {"y", 350.0}, {"radius", 50.0}}}
+        }}
+    };
+    const BridgeExperimentConfig bridge = loadBridgeExperimentConfig(config);
+    BridgeSearchTracker tracker(config, bridge);
+    const std::array<Point, 2> bases = {
+            Point(250.0, 1000.0), Point(250.0, 1510.0)};
+
+    const auto first = tracker.choosePersistentSingleLadderGoals(
+            Point(1133.3459118601275, 490.0),
+            bases,
+            bridgeSingleTriangularLadderReferences());
+    CHECK(first.selectedRow == 4);
+    CHECK(first.selectedColumn == 11);
+    CHECK(first.tuple.leaderGoal.distance_to(Point(1150.0, 450.0)) < 1.0e-12);
+    CHECK(first.certificate.valid);
+    CHECK_FALSE(first.reusedPrevious);
+    CHECK(first.selectionEpoch == 1);
+    CHECK(first.unsearchedCells.size() == 360);
+
+    const auto held = tracker.choosePersistentSingleLadderGoals(
+            Point(900.0, 900.0),
+            bases,
+            bridgeSingleTriangularLadderReferences());
+    CHECK(held.reusedPrevious);
+    CHECK(held.selectionEpoch == first.selectionEpoch);
+    CHECK(held.tuple.leaderGoal.distance_to(first.tuple.leaderGoal) < 1.0e-12);
+}
+
+TEST_CASE("BridgeSearchTracker rejects nearer incompatible ladder goals and uses exact grid tie breaks") {
+    const json config = {
+        {"world", {
+            {"boundary", {{0.0, 0.0}, {1800.0, 0.0},
+                          {1800.0, 2000.0}, {0.0, 2000.0}}},
+            {"spacing", 100.0}
+        }},
+        {"bridge", {{"enabled", true},
+                    {"target", {{"x", 1450.0}, {"y", 350.0},
+                                {"radius", 50.0}}}}}
+    };
+    const BridgeExperimentConfig bridge = loadBridgeExperimentConfig(config);
+    const std::array<Point, 2> bases = {
+            Point(250.0, 1000.0), Point(250.0, 1510.0)};
+
+    SUBCASE("nearest incompatible candidate is retained in the rejection ledger") {
+        BridgeSearchTracker tracker(config, bridge);
+        const auto decision = tracker.choosePersistentSingleLadderGoals(
+                Point(1750.0, 50.0), bases,
+                bridgeSingleTriangularLadderReferences());
+        REQUIRE(decision.candidates.size() > 1);
+        CHECK(decision.candidates.front().row == 0);
+        CHECK(decision.candidates.front().column == 17);
+        CHECK_FALSE(decision.candidates.front().accepted);
+        CHECK(decision.certificate.valid);
+        CHECK(decision.selectedRow != 0);
+    }
+
+    SUBCASE("equal squared distance uses row then column") {
+        BridgeSearchTracker tracker(config, bridge);
+        const auto decision = tracker.choosePersistentSingleLadderGoals(
+                Point(1100.0, 500.0), bases,
+                bridgeSingleTriangularLadderReferences());
+        CHECK(decision.selectedRow == 4);
+        CHECK(decision.selectedColumn == 10);
+    }
+}
+
+TEST_CASE("BridgeSearchTracker changes epoch only after the leader cell is searched") {
+    const json config = {
+        {"world", {
+            {"boundary", {{0.0, 0.0}, {1800.0, 0.0},
+                          {1800.0, 2000.0}, {0.0, 2000.0}}},
+            {"spacing", 100.0}
+        }},
+        {"bridge", {{"enabled", true},
+                    {"target", {{"x", 1450.0}, {"y", 350.0},
+                                {"radius", 50.0}}}}}
+    };
+    const BridgeExperimentConfig bridge = loadBridgeExperimentConfig(config);
+    BridgeSearchTracker tracker(config, bridge);
+    const std::array<Point, 2> bases = {
+            Point(250.0, 1000.0), Point(250.0, 1510.0)};
+    const auto references = bridgeSingleTriangularLadderReferences();
+    const auto first = tracker.choosePersistentSingleLadderGoals(
+            Point(1133.3459118601275, 490.0), bases, references);
+
+    tracker.observeCells(json::array({{11, 4}}), 0.5);
+    const auto second = tracker.choosePersistentSingleLadderGoals(
+            Point(1133.3459118601275, 490.0), bases, references);
+    CHECK_FALSE(second.reusedPrevious);
+    CHECK(second.selectionEpoch == first.selectionEpoch + 1);
+    CHECK((second.selectedRow != first.selectedRow
+           || second.selectedColumn != first.selectedColumn));
+
+    json allCells = json::array();
+    for (int row = 0; row < 20; ++row) {
+        for (int column = 0; column < 18; ++column) {
+            allCells.push_back({column, row});
+        }
+    }
+    tracker.observeCells(allCells, 1.0);
+    const auto exhausted = tracker.choosePersistentSingleLadderGoals(
+            Point(1133.3459118601275, 490.0), bases, references);
+    CHECK(exhausted.reusedPrevious);
+    CHECK(exhausted.noFeasibleGoal);
+    CHECK(exhausted.selectionEpoch == second.selectionEpoch);
+    CHECK(exhausted.tuple.leaderGoal.distance_to(second.tuple.leaderGoal)
+          < 1.0e-12);
 }
 
 TEST_CASE("BridgeTopologyRejectsDeniedDirectLinkAndAcceptsRelay") {

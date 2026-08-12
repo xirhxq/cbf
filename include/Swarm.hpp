@@ -1324,6 +1324,35 @@ private:
         double supportChainMinMarginBefore = std::numeric_limits<double>::infinity();
         double supportChainMinMarginAfter = std::numeric_limits<double>::infinity();
         json supportChainLinks = json::array();
+        BridgeSingleLadderGoalDecision jointSingleLadderGoal;
+        std::array<Point, 2> jointSingleLadderBases;
+        Point jointSingleLadderLeaderPosition;
+        if (bridgeConfig.jointSingleLadderGoalsEnabled) {
+            if (robots.size() != 4 || robots.front()->bases.size() != 2) {
+                throw std::runtime_error(
+                        "r10 joint goal runtime requires four mobiles and two bases");
+            }
+            jointSingleLadderBases = {
+                    robots.front()->bases.at(0),
+                    robots.front()->bases.at(1),
+            };
+            jointSingleLadderLeaderPosition = positions.at(
+                    bridgeConfig.jointSingleLadderLeaderId);
+            jointSingleLadderGoal =
+                    bridgeSearch.choosePersistentSingleLadderGoals(
+                            jointSingleLadderLeaderPosition,
+                            jointSingleLadderBases,
+                            bridgeTopologyConfig.fixedReferences);
+            stepData["bridge"]["nominal"]["single_ladder_goal"] =
+                    bridgeSingleLadderGoalDecisionJson(
+                            jointSingleLadderGoal,
+                            jointSingleLadderLeaderPosition,
+                            jointSingleLadderBases,
+                            bridgeTopologyConfig.fixedReferences,
+                            Point(0.0, 0.0),
+                            Point(bridgeWorldExtent(config, 0),
+                                  bridgeWorldExtent(config, 1)));
+        }
         bool predictiveGateEnabled = bridgeConfig.searchPolicy == "active-predictive"
                                      || bridgeConfig.searchPolicy == "active-predictive-exposure";
         bool allActiveSupportEdges = bridgeConfig.supportChainGuardScope == "all-active-edges";
@@ -1353,6 +1382,10 @@ private:
             return position + unit * (maxSpeed * dt);
         };
         auto chooseGoalForPrediction = [&](Robot *candidate, const Point &position) {
+            if (bridgeConfig.jointSingleLadderGoalsEnabled) {
+                return jointSingleLadderGoal.tuple.goals.at(
+                        static_cast<std::size_t>(candidate->id - 1));
+            }
             Point predictionGoal = bridgeSearch.chooseGoal(position, bridgeConfig.searchPolicy);
             if (predictiveGateEnabled) {
                 auto anchorIt = bridgeTopologyDecision.anchorIds.find(candidate->id);
@@ -1431,7 +1464,11 @@ private:
         std::map<int, Eigen::VectorXd> taskNominals;
         for (auto &robot : robots) {
             Point position = robot->model->xy();
-            Point goal = bridgeSearch.chooseGoal(position, bridgeConfig.searchPolicy);
+            Point goal = bridgeConfig.jointSingleLadderGoalsEnabled
+                    ? jointSingleLadderGoal.tuple.goals.at(
+                            static_cast<std::size_t>(robot->id - 1))
+                    : bridgeSearch.chooseGoal(
+                            position, bridgeConfig.searchPolicy);
             const auto previousTaskGoal = bridgePreviousTaskGoals.find(robot->id);
             const bool taskGoalChanged = previousTaskGoal
                             != bridgePreviousTaskGoals.end()

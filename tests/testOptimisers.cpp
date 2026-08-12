@@ -247,6 +247,42 @@ json makeFullRowSingleLadderSwarmConfig(
     };
 }
 
+json makeR10JointGoalSwarmConfig(
+        const std::string &optimiserName,
+        const std::filesystem::path &outputPath) {
+    json config = makeFullRowSingleLadderSwarmConfig(
+            optimiserName, outputPath);
+    config["world"] = {
+        {"boundary", {{0.0, 0.0}, {1800.0, 0.0},
+                      {1800.0, 2000.0}, {0.0, 2000.0}}},
+        {"charge", json::array()},
+        {"spacing", 100.0}
+    };
+    config["bases"] = {{250.0, 1000.0}, {250.0, 1510.0}};
+    config["initial"]["position"]["positions"] = {
+        {691.6729559300637, 1255.0},
+        {691.6729559300637, 745.0},
+        {1133.3459118601275, 1000.0},
+        {1133.3459118601275, 490.0}
+    };
+    config["bridge"]["search-policy"] =
+            "nearest-feasible-single-ladder";
+    config["bridge"]["search"] = {
+        {"rotation-deg", 60.0},
+        {"leader-id", 4},
+        {"goal-max-range-m", 849.0},
+        {"goal-min-separation-m", 10.0},
+        {"initial-leader-grid", {4, 11}},
+    };
+    config["bridge"]["target"] = {
+        {"x", 1450.0}, {"y", 350.0}, {"radius", 50.0}};
+    config["cbfs"]["without-slack"]["comm-fixed"]
+          ["range-tightening-margin"] = 1.0;
+    config["execute"]["time-total"] = 0.5;
+    config["run_suffix"] = "_r10_joint_goal_swarm_test";
+    return config;
+}
+
 struct ScopedTestDirectory {
     explicit ScopedTestDirectory(std::filesystem::path pathIn)
             : path(std::move(pathIn)) {
@@ -1096,6 +1132,58 @@ TEST_CASE("Full-row single-ladder Swarm step preserves rows execution and predic
         CHECK(robot.at("state").at("y").is_number());
         CHECK(robot.at("state").at("vx").is_number());
         CHECK(robot.at("state").at("vy").is_number());
+    }
+}
+
+TEST_CASE("r10 Swarm distributes one certified single-ladder joint goal tuple") {
+    const auto available = getAvailableOptimisers();
+    if (std::find(available.begin(), available.end(), "Gurobi")
+            == available.end()) {
+        WARN("Gurobi is unavailable; r10 joint-goal integration was not run");
+        return;
+    }
+
+    const auto uniqueSuffix = std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+    ScopedTestDirectory output(
+            std::filesystem::temp_directory_path()
+            / ("cbf-r10-joint-goal-" + uniqueSuffix));
+    auto settings = makeR10JointGoalSwarmConfig("Gurobi", output.path);
+    Swarm swarm(settings);
+    swarm.run();
+
+    REQUIRE_FALSE(swarm.data.at("state").empty());
+    for (const auto &step : swarm.data.at("state")) {
+        const auto &nominal = step.at("bridge").at("nominal");
+        const auto &ledger = nominal.at("single_ladder_goal");
+        CHECK(ledger.at("schema") == "single-ladder-goal-ledger-v1");
+        CHECK(ledger.at("certificate_valid") == true);
+        CHECK(ledger.at("leader_id") == 4);
+        CHECK(ledger.at("unsearched_cells").is_array());
+        CHECK_FALSE(ledger.at("unsearched_cells").empty());
+        REQUIRE(ledger.at("goals").size() == 4);
+        REQUIRE(nominal.at("task_goals").size() == 4);
+        for (std::size_t index = 0; index < 4; ++index) {
+            const auto &goal = ledger.at("goals").at(index);
+            const auto &taskGoal = nominal.at("task_goals").at(index);
+            CHECK(taskGoal.at("robot") == static_cast<int>(index + 1));
+            CHECK(taskGoal.at("x") == goal.at("x"));
+            CHECK(taskGoal.at("y") == goal.at("y"));
+        }
+        REQUIRE(ledger.at("edges").size() == 8);
+        REQUIRE(step.at("bridge").at("topology").at("geometry").size()
+                == 8);
+        for (std::size_t index = 0; index < 8; ++index) {
+            const auto &goalEdge = ledger.at("edges").at(index);
+            const auto &runtimeEdge = step.at("bridge").at("topology")
+                    .at("geometry").at(index);
+            CHECK(goalEdge.at("owner_robot")
+                  == runtimeEdge.at("owner_robot"));
+            CHECK(goalEdge.at("reference_kind")
+                  == runtimeEdge.at("reference_kind"));
+            CHECK(goalEdge.at("reference_id")
+                  == runtimeEdge.at("reference_id"));
+        }
     }
 }
 
