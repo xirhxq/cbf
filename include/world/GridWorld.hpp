@@ -170,6 +170,20 @@ public:
         return getPositionInLimit(yIndex, yLim, yNum);
     }
 
+    double getCellCenterPositionInLimit(int index, pd limit, int size) {
+        double ratio = (static_cast<double>(index) + 0.5)
+                       / static_cast<double>(size);
+        return limit.first * (1.0 - ratio) + limit.second * ratio;
+    }
+
+    double getCellCenterX(int xIndex) {
+        return getCellCenterPositionInLimit(xIndex, xLim, xNum);
+    }
+
+    double getCellCenterY(int yIndex) {
+        return getCellCenterPositionInLimit(yIndex, yLim, yNum);
+    }
+
     Point getPointInArea(int xIndex, int yIndex) {
         return {getXPositionInXLimit(xIndex), getYPositionInYLimit(yIndex)};
     }
@@ -179,20 +193,20 @@ public:
     }
 
     double distanceToCellCenter(int xIndex, int yIndex, const Point &center) {
-        double dx = getXPositionInXLimit(xIndex) - center.x;
-        double dy = getYPositionInYLimit(yIndex) - center.y;
+        double dx = getCellCenterX(xIndex) - center.x;
+        double dy = getCellCenterY(yIndex) - center.y;
         return sqrt(dx * dx + dy * dy);
     }
 
     double squaredDistanceToCellCenter(int xIndex, int yIndex, const Point &center) {
-        double dx = getXPositionInXLimit(xIndex) - center.x;
-        double dy = getYPositionInYLimit(yIndex) - center.y;
+        double dx = getCellCenterX(xIndex) - center.x;
+        double dy = getCellCenterY(yIndex) - center.y;
         return dx * dx + dy * dy;
     }
 
     double angleFromCellCenter(int xIndex, int yIndex, const Point &center) {
-        double dx = getXPositionInXLimit(xIndex) - center.x;
-        double dy = getYPositionInYLimit(yIndex) - center.y;
+        double dx = getCellCenterX(xIndex) - center.x;
+        double dy = getCellCenterY(yIndex) - center.y;
         return atan2(dy, dx);
     }
 
@@ -266,7 +280,7 @@ public:
         xIndexes.first = getNumInXLim(xLimit.first, "ceil");
         xIndexes.second = getNumInXLim(xLimit.second, "floor");
         for (int i = xIndexes.first; i <= xIndexes.second; i++) {
-            double x = getXPositionInXLimit(i);
+            double x = getCellCenterX(i);
             if (x > xLimit.second || x < xLimit.first) continue;
             yIndexes.first = getNumInYLim(yLimit.first, "ceil");
             yIndexes.second = getNumInYLim(yLimit.second, "floor");

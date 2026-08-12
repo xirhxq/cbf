@@ -6,6 +6,8 @@
 #include "bridge/SingleLadderGoalSelector.hpp"
 #include "bridge/BridgeTopology.hpp"
 #include "bridge/HocbfFeasibilityGuard.hpp"
+#include "world/World.hpp"
+#include "world/GridWorld.hpp"
 
 namespace {
 
@@ -798,6 +800,54 @@ TEST_CASE("BridgeSearchTrackerDetectsTargetWhenSensorCoversTargetCell") {
     CHECK(tracker.snapshot().at("detected").get<bool>());
 }
 
+TEST_CASE("BridgeSearchTrackerDirectRadiusModeSeparatesMapCoverageFromDetection") {
+    json config = {
+        {"world", {
+            {"boundary", {{0.0, 0.0}, {300.0, 0.0},
+                          {300.0, 300.0}, {0.0, 300.0}}},
+            {"spacing", 100.0}
+        }},
+        {"bridge", {
+            {"enabled", true},
+            {"target", {{"x", 150.0}, {"y", 150.0}, {"radius", 50.0}}},
+            {"search", {
+                {"target-detection-mode", "direct-radius-only"}
+            }}
+        }}
+    };
+    const BridgeExperimentConfig bridge = loadBridgeExperimentConfig(config);
+    BridgeSearchTracker tracker(config, bridge);
+
+    tracker.observeCells(json::array({{1, 1}}), 7.0);
+    CHECK(tracker.coverageRatio() == doctest::Approx(1.0 / 9.0));
+    CHECK_FALSE(tracker.detected());
+    CHECK(tracker.snapshot().at("target_detection_mode").get<std::string>()
+          == "direct-radius-only");
+
+    tracker.observeRobots({Point(200.000001, 150.0)}, 7.5);
+    CHECK_FALSE(tracker.detected());
+    tracker.observeRobots({Point(200.0, 150.0)}, 8.0);
+    CHECK(tracker.detected());
+    CHECK(tracker.detectionTime() == doctest::Approx(8.0));
+}
+
+TEST_CASE("BridgeSearchTrackerRejectsUnknownTargetDetectionMode") {
+    json config = {
+        {"world", {
+            {"boundary", {{0.0, 0.0}, {300.0, 0.0},
+                          {300.0, 300.0}, {0.0, 300.0}}},
+            {"spacing", 100.0}
+        }},
+        {"bridge", {
+            {"enabled", true},
+            {"target", {{"x", 150.0}, {"y", 150.0}, {"radius", 50.0}}},
+            {"search", {{"target-detection-mode", "unknown"}}}
+        }}
+    };
+    const BridgeExperimentConfig bridge = loadBridgeExperimentConfig(config);
+    CHECK_THROWS_AS(BridgeSearchTracker(config, bridge), std::runtime_error);
+}
+
 TEST_CASE("BridgeSearchTrackerSelectsUnsearchedHighBeliefGoal") {
     json config = {
         {"world", {
@@ -1518,6 +1568,55 @@ TEST_CASE("BridgeSearchTracker changes epoch only after the leader cell is searc
     CHECK(exhausted.selectionEpoch == second.selectionEpoch);
     CHECK(exhausted.tuple.leaderGoal.distance_to(second.tuple.leaderGoal)
           < 1.0e-12);
+}
+
+TEST_CASE("Single-ladder waypoint retirement uses the selected search-cell center") {
+    const json config = {
+        {"world", {
+            {"boundary", {{0.0, 0.0}, {1800.0, 0.0},
+                          {1800.0, 2000.0}, {0.0, 2000.0}}},
+            {"spacing", 100.0}
+        }},
+        {"bridge", {{"enabled", true},
+                    {"target", {{"x", 1450.0}, {"y", 350.0},
+                                {"radius", 50.0}}}}}
+    };
+    const BridgeExperimentConfig bridge = loadBridgeExperimentConfig(config);
+    BridgeSearchTracker tracker(config, bridge);
+    const std::array<Point, 2> bases = {
+            Point(250.0, 1000.0), Point(250.0, 1510.0)};
+    const auto references = bridgeSingleTriangularLadderReferences();
+    const auto first = tracker.choosePersistentSingleLadderGoals(
+            Point(1133.3459118601275, 490.0), bases, references);
+    REQUIRE(first.selectedRow == 4);
+    REQUIRE(first.selectedColumn == 11);
+    REQUIRE(first.tuple.leaderGoal.distance_to(Point(1150.0, 450.0)) < 1.0e-12);
+
+    GridWorld observedAtCorner(config.at("world"));
+    const json cornerUpdates = observedAtCorner.setValueInCircle(
+            Point(1100.0, 400.0),
+            json{{"radius", 60.0}},
+            true,
+            true);
+    CHECK(std::find(cornerUpdates.begin(), cornerUpdates.end(),
+                    json::array({11, 4})) == cornerUpdates.end());
+
+    GridWorld observedAtCenter(config.at("world"));
+    const json centerUpdates = observedAtCenter.setValueInCircle(
+            first.tuple.leaderGoal,
+            json{{"radius", 60.0}},
+            true,
+            true);
+    REQUIRE(std::find(centerUpdates.begin(), centerUpdates.end(),
+                      json::array({11, 4}))
+            != centerUpdates.end());
+
+    tracker.observeCells(centerUpdates, 0.5);
+    const auto second = tracker.choosePersistentSingleLadderGoals(
+            Point(1133.3459118601275, 490.0), bases, references);
+    CHECK(second.selectionEpoch == first.selectionEpoch + 1);
+    CHECK((second.selectedRow != first.selectedRow
+           || second.selectedColumn != first.selectedColumn));
 }
 
 TEST_CASE("BridgeTopologyRejectsDeniedDirectLinkAndAcceptsRelay") {

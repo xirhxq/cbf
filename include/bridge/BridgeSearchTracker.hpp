@@ -76,6 +76,13 @@ public:
         searched_.assign(static_cast<size_t>(width_ * height_), false);
         if (config.contains("bridge") && config.at("bridge").contains("search")) {
             const json &search = config.at("bridge").at("search");
+            targetDetectionMode_ = search.value(
+                    "target-detection-mode", targetDetectionMode_);
+            if (targetDetectionMode_ != "cell-or-direct"
+                && targetDetectionMode_ != "direct-radius-only") {
+                throw std::runtime_error(
+                        "unsupported bridge target detection mode");
+            }
             negativeDetectionFactor_ = search.value("negative-detection-factor", negativeDetectionFactor_);
             positiveDetectionFactor_ = search.value("positive-detection-factor", positiveDetectionFactor_);
             clarityWeight_ = search.value("clarity-weight", clarityWeight_);
@@ -202,7 +209,8 @@ public:
             }
             size_t idx = index(x, y);
             searched_[idx] = true;
-            if (cellContainsTargetCenter(x, y)) {
+            if (targetDetectionMode_ == "cell-or-direct"
+                && cellContainsTargetCenter(x, y)) {
                 markDetected(runtime);
             } else {
                 belief_[idx] *= negativeDetectionFactor_;
@@ -236,7 +244,8 @@ public:
             {"belief_at_target", beliefAtTarget()},
             {"detected", detected_},
             {"detection_time_s", detected_ ? detectionTime_ : -1.0},
-            {"last_runtime_s", lastRuntime_}
+            {"last_runtime_s", lastRuntime_},
+            {"target_detection_mode", targetDetectionMode_}
         };
     }
 
@@ -718,6 +727,7 @@ private:
     int width_ = 1;
     int height_ = 1;
     double spacing_ = 100.0;
+    std::string targetDetectionMode_ = "cell-or-direct";
     double negativeDetectionFactor_ = 0.85;
     double positiveDetectionFactor_ = 3.0;
     double clarityWeight_ = 1.0;

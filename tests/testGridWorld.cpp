@@ -7,8 +7,10 @@ TEST_CASE("GridWorldCellGeometryMatchesPointDistanceAndAngle") {
     GridWorld grid({0.0, 10.0}, 10, {0.0, 10.0}, 10);
     Point center(2.0, 3.0);
 
-    CHECK(grid.distanceToCellCenter(5, 7, center) == doctest::Approx(5.0));
-    CHECK(grid.angleFromCellCenter(5, 7, center) == doctest::Approx(std::atan2(4.0, 3.0)));
+    CHECK(grid.distanceToCellCenter(5, 7, center)
+          == doctest::Approx(std::sqrt(3.5 * 3.5 + 4.5 * 4.5)));
+    CHECK(grid.angleFromCellCenter(5, 7, center)
+          == doctest::Approx(std::atan2(4.5, 3.5)));
 }
 
 TEST_CASE("GridWorldSectorAngleHelpersHandleWrappedIntervals") {
