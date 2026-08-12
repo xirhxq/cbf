@@ -9,6 +9,7 @@
 #include "bridge/FullRowPredictiveFeedback.hpp"
 #include "bridge/FullRowPredictionAudit.hpp"
 #include "bridge/LookaheadCollisionGate.hpp"
+#include "bridge/PostDetectionResponse.hpp"
 #include "bridge/ReserveTaskHomotopy.hpp"
 
 
@@ -45,6 +46,8 @@ public:
     std::uint64_t bridgeFeedbackStepIndex = 0;
     std::vector<BridgePredictionAuditEntry> bridgePendingPredictionAudits;
     std::map<int, Point> bridgePreviousTaskGoals;
+    BridgeR13DwellTracker bridgeR13Dwell;
+    BridgeR13StaticGeometry bridgeR13Geometry;
 public:
     Swarm(json &settings)
             : config(settings),
@@ -68,7 +71,15 @@ public:
         initializeCentralizedOptimization();
         bridgeConfig = loadBridgeExperimentConfig(config);
         if (bridgeConfig.enabled) {
-            bridgeSearch = BridgeSearchTracker(config, bridgeConfig);
+            if (!bridgeConfig.postDetectionResponseEnabled) {
+                bridgeSearch = BridgeSearchTracker(config, bridgeConfig);
+            } else {
+                bridgeR13Dwell = BridgeR13DwellTracker(
+                        bridgeConfig.responseTargetRadiusM,
+                        bridgeConfig.responseDwellTimeS);
+                bridgeR13Geometry = bridgeR13StaticGeometry(
+                        bridgeConfig.responseDistanceM);
+            }
             bridgeTopologyConfig = loadBridgeTopologyConfig(config);
             if (!bridgeTopologyConfig.fixedReferences.empty()) {
                 const int baseCount = robots.empty()
@@ -102,7 +113,9 @@ public:
                 {"robots", terminalRobots},
         };
         if (bridgeConfig.enabled) {
-            data["bridge"]["final_search_map"] = bridgeSearch.finalMapJson();
+            if (!bridgeConfig.postDetectionResponseEnabled) {
+                data["bridge"]["final_search_map"] = bridgeSearch.finalMapJson();
+            }
             if (bridgeConfig.gammaStarFeedbackEnabled) {
                 data["bridge"]["prediction_audit_unresolved_at_horizon"] =
                         bridgePendingPredictionAudits.size();
@@ -138,7 +151,9 @@ public:
             stepData["formation"].push_back(robot->myFormation);
             stepData["covariance_formation"].push_back(robot->myCovarianceFormation);
         }
-        stepData["update"] = updatedGridWorldGroundTruth;
+        if (!bridgeConfig.postDetectionResponseEnabled) {
+            stepData["update"] = updatedGridWorldGroundTruth;
+        }
         updateBridgeSearchLog();
         if (bridgeConfig.enabled) {
             stepData["bridge"]["topology"] = bridgeTopologyDecision.log;
@@ -315,9 +330,11 @@ public:
                 checkInformationExchange();
                 for (auto &robot: robots) robot->checkRobotsInsideWorld();
                 printf("\r%.2lf seconds elapsed... %.2lf%%", robots[0]->runtime, gridWorldGroundTruth.getPercentage() * 100);
-                for (auto &robot: robots) robot->updateGridWorld();
-                updateGridWorld();
-                checkUpdatedGridWorld();
+                if (!bridgeConfig.postDetectionResponseEnabled) {
+                    for (auto &robot: robots) robot->updateGridWorld();
+                    updateGridWorld();
+                    checkUpdatedGridWorld();
+                }
                 applyBridgeTopology();
                 for (auto &robot: robots) robot->postsetCBF();
                 applyBridgeNominalControls();
@@ -344,6 +361,39 @@ public:
                     }
                 }
 
+                bool r13CompleteAfterStep = false;
+                if (bridgeConfig.postDetectionResponseEnabled) {
+                    Robot *leader = robots.at(static_cast<std::size_t>(
+                            bridgeConfig.jointSingleLadderLeaderId - 1)).get();
+                    const bool hardGatesValid =
+                            bridgeTopologyDecision.certified
+                            && !bridgeTopologyDecision.failSafe
+                            && bridgeR13Geometry.audit.valid;
+                    const auto dwell = bridgeR13Dwell.observeZohInterval(
+                            leader->model->xy(),
+                            Point(leader->model->getVelocity()),
+                            Point(leader->model->getAcceleration()),
+                            bridgeR13Geometry.target, tStep,
+                            hardGatesValid);
+                    stepData["bridge"]["response"] = {
+                            {"schema", "r13-reach-dwell-step-v1"},
+                            {"static_tuple", true},
+                            {"leader_id", 4},
+                            {"target", {{"x", bridgeR13Geometry.target.x},
+                                        {"y", bridgeR13Geometry.target.y}}},
+                            {"target_radius_m", dwell.targetRadiusM},
+                            {"required_dwell_s", dwell.requiredDwellS},
+                            {"continuous_dwell_s", dwell.continuousDwellS},
+                            {"interval_valid", dwell.intervalValid},
+                            {"max_horizontal_distance_m",
+                                    dwell.maxHorizontalDistanceM},
+                            {"runtime_prerequisites_valid",
+                                    dwell.hardGatesValid},
+                            {"offline_full_certificate_required", true},
+                            {"complete_candidate", dwell.complete},
+                    };
+                    r13CompleteAfterStep = dwell.complete;
+                }
                 logOnce();
                 if (bridgeConfig.enabled
                     && bridgeConfig.stopOnDetection
@@ -357,6 +407,16 @@ public:
                     break;
                 }
                 for (auto &robot: robots) robot->stepTimeForward(tStep);
+                if (r13CompleteAfterStep) {
+                    data["termination"] = {
+                            {"status", "task-complete-candidate"},
+                            {"runtime", robots.empty()
+                                    ? 0.0 : robots.front()->runtime},
+                            {"message", nullptr},
+                            {"requires_offline_certificate", true},
+                    };
+                    break;
+                }
             }
             catch (...) {
                 std::string terminationMessage = "unknown exception";
@@ -374,7 +434,9 @@ public:
                                 ? 0.0 : robots.front()->runtime},
                         {"message", terminationMessage},
                 };
-                for (auto &robot: robots) robot->updateGridWorld();
+                if (!bridgeConfig.postDetectionResponseEnabled) {
+                    for (auto &robot: robots) robot->updateGridWorld();
+                }
                 logOnce();
                 endLog();
                 printf("Data so far has been saved in %s\n", filename.c_str());
@@ -406,6 +468,9 @@ public:
 private:
     void updateBridgeSearchLog() {
         if (!bridgeConfig.enabled) {
+            return;
+        }
+        if (bridgeConfig.postDetectionResponseEnabled) {
             return;
         }
         bridgeSearch.observeCells(updatedGridWorldGroundTruth, robots[0]->runtime);
@@ -956,6 +1021,15 @@ private:
                 selection.gateSatisfied
                 ? json(nullptr)
                 : json(selection.predictedBudget > 0.0);
+        result.diagnostic["regulation_threshold"] =
+                bridgeConfig.gammaStarPredictiveGate;
+        result.diagnostic["hard_feasibility_boundary"] = 0.0;
+        result.diagnostic["candidate_mechanism"] =
+                bridgeR13CandidateMechanism(
+                        selection.maximumPredictedBudget,
+                        bridgeConfig.gammaStarPredictiveGate,
+                        true,
+                        bridgeConfig.gammaStarFeedbackSelectionRule);
         result.diagnostic["nominal_retained"] = selection.nominalRetained;
         result.diagnostic["task_deviation"] = selection.taskDeviation;
         result.diagnostic["dominant_row"] = scores[selectedIndex].dominantRow;
@@ -1338,11 +1412,19 @@ private:
             };
             jointSingleLadderLeaderPosition = positions.at(
                     bridgeConfig.jointSingleLadderLeaderId);
-            jointSingleLadderGoal =
-                    bridgeSearch.choosePersistentSingleLadderGoals(
-                            jointSingleLadderLeaderPosition,
-                            jointSingleLadderBases,
-                            bridgeTopologyConfig.fixedReferences);
+            if (bridgeConfig.postDetectionResponseEnabled) {
+                jointSingleLadderGoal.tuple = bridgeR13Geometry.tuple;
+                jointSingleLadderGoal.certificate =
+                        bridgeR13Geometry.exactEightEdgeCertificate;
+                jointSingleLadderGoal.evaluatedCandidates = 1;
+                jointSingleLadderGoal.reusedPrevious = true;
+            } else {
+                jointSingleLadderGoal =
+                        bridgeSearch.choosePersistentSingleLadderGoals(
+                                jointSingleLadderLeaderPosition,
+                                jointSingleLadderBases,
+                                bridgeTopologyConfig.fixedReferences);
+            }
             stepData["bridge"]["nominal"]["single_ladder_goal"] =
                     bridgeSingleLadderGoalDecisionJson(
                             jointSingleLadderGoal,

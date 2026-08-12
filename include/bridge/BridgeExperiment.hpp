@@ -2,6 +2,7 @@
 #define CBF_BRIDGE_EXPERIMENT_HPP
 
 #include "utils.h"
+#include "bridge/PostDetectionResponse.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -26,6 +27,12 @@ struct BridgeExperimentConfig {
     std::string row = "debug";
     std::string searchPolicy = "coverage";
     bool jointSingleLadderGoalsEnabled = false;
+    bool postDetectionResponseEnabled = false;
+    double responseDistanceM = 0.0;
+    double responseTargetRadiusM = BRIDGE_R13_TARGET_RADIUS_M;
+    double responseDwellTimeS = BRIDGE_R13_DWELL_TIME_S;
+    double responseTerminalCommunicationMarginM =
+            BRIDGE_R13_TERMINAL_COMMUNICATION_MARGIN_M;
     int jointSingleLadderLeaderId = 4;
     double jointSingleLadderRotationDeg = 60.0;
     double jointSingleLadderGoalMaxRange = 849.0;
@@ -482,8 +489,68 @@ inline BridgeExperimentConfig loadBridgeExperimentConfig(const json &config) {
         bridge.target.radius = target.value("radius", 0.0);
     }
 
+    bridge.postDetectionResponseEnabled =
+            bridge.searchPolicy == "post-detection-response";
     bridge.jointSingleLadderGoalsEnabled =
-            bridge.searchPolicy == "nearest-feasible-single-ladder";
+            bridge.searchPolicy == "nearest-feasible-single-ladder"
+            || bridge.postDetectionResponseEnabled;
+    if (bridge.postDetectionResponseEnabled) {
+        if (source.contains("search")) {
+            throw std::invalid_argument(
+                    "post-detection response forbids all search state");
+        }
+        if (!source.contains("response") || !source.at("response").is_object()) {
+            throw std::invalid_argument(
+                    "post-detection response requires one static response tuple");
+        }
+        const json &response = source.at("response");
+        const std::vector<std::string> expectedResponseKeys = {
+                "distance-m", "dwell-time-s", "leader-id", "mode",
+                "target-radius-m", "terminal-communication-margin-m"};
+        std::vector<std::string> responseKeys;
+        for (const auto &[key, value] : response.items()) {
+            (void) value;
+            responseKeys.push_back(key);
+        }
+        std::sort(responseKeys.begin(), responseKeys.end());
+        if (responseKeys != expectedResponseKeys
+            || response.value("mode", "")
+                    != "known-static-target-reach-and-dwell"
+            || response.value("leader-id", 0) != 4
+            || response.value("target-radius-m", 0.0)
+                    != BRIDGE_R13_TARGET_RADIUS_M
+            || response.value("dwell-time-s", 0.0)
+                    != BRIDGE_R13_DWELL_TIME_S
+            || response.value("terminal-communication-margin-m", 0.0)
+                    != BRIDGE_R13_TERMINAL_COMMUNICATION_MARGIN_M) {
+            throw std::invalid_argument(
+                    "post-detection response must equal the frozen R13 task contract");
+        }
+        bridge.responseDistanceM = response.value(
+                "distance-m", std::numeric_limits<double>::quiet_NaN());
+        bridge.responseTargetRadiusM = response.at("target-radius-m").get<double>();
+        bridge.responseDwellTimeS = response.at("dwell-time-s").get<double>();
+        bridge.responseTerminalCommunicationMarginM =
+                response.at("terminal-communication-margin-m").get<double>();
+        const bool frozenDistance =
+                bridge.responseDistanceM == BRIDGE_R13_DISTANCE_LOW_M
+                || bridge.responseDistanceM == BRIDGE_R13_DISTANCE_CRITICAL_M
+                || bridge.responseDistanceM == BRIDGE_R13_DISTANCE_NEGATIVE_M;
+        const auto geometry = bridgeR13StaticGeometry(bridge.responseDistanceM);
+        if (!frozenDistance
+            || bridge.target.x != geometry.target.x
+            || bridge.target.y != geometry.target.y
+            || bridge.target.radius != BRIDGE_R13_TARGET_RADIUS_M) {
+            throw std::invalid_argument(
+                    "post-detection response target must be the exact frozen distance geometry");
+        }
+        if (bridge.gammaStarHomotopyIntervals != 8
+            || bridge.gammaStarLookaheadSteps != 1
+            || bridge.gammaStarPredictiveGate != 14.0) {
+            throw std::invalid_argument(
+                    "post-detection response freezes M=8, H=1, and tau=14");
+        }
+    }
     if (bridge.jointSingleLadderGoalsEnabled) {
         if (!bridge.enabled || bridge.topologyPolicy != "fixed"
             || config.value("num", 0) != 4) {
@@ -519,7 +586,16 @@ inline BridgeExperimentConfig loadBridgeExperimentConfig(const json &config) {
             throw std::invalid_argument(
                     "nearest-feasible-single-ladder requires the frozen world and grid");
         }
-        const json &search = source.at("search");
+        const json &search = bridge.postDetectionResponseEnabled
+                ? json::object() : source.at("search");
+        if (bridge.postDetectionResponseEnabled) {
+            bridge.jointSingleLadderRotationDeg = 60.0;
+            bridge.jointSingleLadderLeaderId = 4;
+            bridge.jointSingleLadderGoalMaxRange = 849.0;
+            bridge.jointSingleLadderGoalMinSeparation = 10.0;
+            bridge.jointSingleLadderInitialRow = -1;
+            bridge.jointSingleLadderInitialColumn = -1;
+        } else {
         bridge.jointSingleLadderRotationDeg = search.value(
                 "rotation-deg", std::numeric_limits<double>::quiet_NaN());
         bridge.jointSingleLadderLeaderId = search.value("leader-id", 0);
@@ -539,6 +615,7 @@ inline BridgeExperimentConfig loadBridgeExperimentConfig(const json &config) {
         }
         bridge.jointSingleLadderInitialRow = initialGrid.at(0).get<int>();
         bridge.jointSingleLadderInitialColumn = initialGrid.at(1).get<int>();
+        }
 
         const json &topology = source.at("topology");
         const json expectedReferences = {
@@ -561,8 +638,8 @@ inline BridgeExperimentConfig loadBridgeExperimentConfig(const json &config) {
             || communication.value("range-tightening-margin", 0.0) != 1.0
             || !safety.value("on", false)
             || safety.value("safe-distance", 0.0) != 10.0) {
-            throw std::invalid_argument(
-                    "nearest-feasible-single-ladder requires 849 m task range and 10 m safety rows");
+                throw std::invalid_argument(
+                    "single-ladder task requires 849 m task range and 10 m safety rows");
         }
     }
     return bridge;
@@ -575,6 +652,13 @@ inline json makeBridgeMetadata(const json &config, const BridgeExperimentConfig 
         {"search_policy", bridge.searchPolicy},
         {"joint_single_ladder_goals_enabled",
                 bridge.jointSingleLadderGoalsEnabled},
+        {"post_detection_response_enabled",
+                bridge.postDetectionResponseEnabled},
+        {"response_distance_m", bridge.responseDistanceM},
+        {"response_target_radius_m", bridge.responseTargetRadiusM},
+        {"response_dwell_time_s", bridge.responseDwellTimeS},
+        {"response_terminal_communication_margin_m",
+                bridge.responseTerminalCommunicationMarginM},
         {"stop_on_detection", bridge.stopOnDetection},
         {"topology_policy", bridge.topologyPolicy},
         {"safety_filter", bridge.safetyFilter},
