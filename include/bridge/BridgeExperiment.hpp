@@ -497,7 +497,7 @@ inline BridgeExperimentConfig loadBridgeExperimentConfig(const json &config) {
             bridge.searchPolicy == "nearest-feasible-single-ladder"
             || bridge.postDetectionResponseEnabled;
     if (bridge.postDetectionResponseEnabled) {
-        if (source.contains("search")) {
+        if (source.contains("search") || source.contains("search-policy")) {
             throw std::invalid_argument(
                     "post-detection response forbids all search state");
         }
@@ -548,9 +548,10 @@ inline BridgeExperimentConfig loadBridgeExperimentConfig(const json &config) {
         }
         if (bridge.gammaStarHomotopyIntervals != 8
             || bridge.gammaStarLookaheadSteps != 1
-            || bridge.gammaStarPredictiveGate != 14.0) {
+            || bridge.gammaStarPredictiveGate != 14.0
+            || config.at("execute").value("time-step", 0.0) != 0.5) {
             throw std::invalid_argument(
-                    "post-detection response freezes M=8, H=1, and tau=14");
+                    "post-detection response freezes M=8, H=1, tau=14, and 0.5 s sampling");
         }
     }
     if (bridge.jointSingleLadderGoalsEnabled) {

@@ -14,6 +14,15 @@ TEST_CASE("R13 frozen response distances have the preregistered static geometry"
     const auto negative = bridgeR13StaticGeometry(BRIDGE_R13_DISTANCE_NEGATIVE_M);
 
     CHECK(low.audit.valid);
+    const std::array<double, 8> lowEdges = {
+            779.8179077130271, 351.5843929861811,
+            548.4877184501877, 604.8667434160126,
+            548.4877184501878, 548.4877184501878,
+            548.4877184501877, 548.4877184501877};
+    for (std::size_t index = 0; index < lowEdges.size(); ++index) {
+        CHECK(low.exactEightEdgeCertificate.edges.at(index).length
+              == doctest::Approx(lowEdges.at(index)).epsilon(1e-12));
+    }
     CHECK(critical.audit.valid);
     CHECK(critical.audit.maxAssignedEdgeM == doctest::Approx(840.0).epsilon(1e-12));
     CHECK(critical.audit.maxAssignedEdgeOwnerId == 1);
@@ -136,5 +145,8 @@ TEST_CASE("R13 response config publishes one static tuple and forbids search sta
 
     config["bridge"]["response"].erase("waypoint-switching");
     config["bases"] = {{251.0, 1000.0}, {250.0, 1510.0}};
+    CHECK_THROWS_AS(loadBridgeExperimentConfig(config), std::invalid_argument);
+    config["bases"] = {{250.0, 1000.0}, {250.0, 1510.0}};
+    config["execute"]["time-step"] = 1.0;
     CHECK_THROWS_AS(loadBridgeExperimentConfig(config), std::invalid_argument);
 }
