@@ -25,6 +25,7 @@ struct BridgeTargetConfig {
 struct BridgeExperimentConfig {
     bool enabled = false;
     std::string row = "debug";
+    std::string taskMode = "search";
     std::string searchPolicy = "coverage";
     bool jointSingleLadderGoalsEnabled = false;
     bool postDetectionResponseEnabled = false;
@@ -100,6 +101,7 @@ inline BridgeExperimentConfig loadBridgeExperimentConfig(const json &config) {
     const json &source = config.at("bridge");
     bridge.enabled = source.value("enabled", false);
     bridge.row = source.value("row", bridge.row);
+    bridge.taskMode = source.value("task-mode", bridge.taskMode);
     bridge.searchPolicy = source.value("search-policy", bridge.searchPolicy);
     bridge.topologyPolicy = source.value("topology-policy", bridge.topologyPolicy);
     bridge.safetyFilter = source.value("safety-filter", bridge.safetyFilter);
@@ -490,7 +492,7 @@ inline BridgeExperimentConfig loadBridgeExperimentConfig(const json &config) {
     }
 
     bridge.postDetectionResponseEnabled =
-            bridge.searchPolicy == "post-detection-response";
+            bridge.taskMode == "post-detection-response";
     bridge.jointSingleLadderGoalsEnabled =
             bridge.searchPolicy == "nearest-feasible-single-ladder"
             || bridge.postDetectionResponseEnabled;
@@ -577,6 +579,12 @@ inline BridgeExperimentConfig loadBridgeExperimentConfig(const json &config) {
                         "nearest-feasible-single-ladder base coordinates must be finite planar points");
             }
         }
+        if (bridge.postDetectionResponseEnabled
+            && bases != json({{BRIDGE_R13_BASE_X_M, BRIDGE_R13_BASE0_Y_M},
+                              {BRIDGE_R13_BASE_X_M, BRIDGE_R13_BASE1_Y_M}})) {
+            throw std::invalid_argument(
+                    "post-detection response requires the frozen ordered bases");
+        }
         const json expectedBoundary = {
                 {0.0, 0.0}, {1800.0, 0.0},
                 {1800.0, 2000.0}, {0.0, 2000.0}};
@@ -649,6 +657,7 @@ inline json makeBridgeMetadata(const json &config, const BridgeExperimentConfig 
     json metadata = {
         {"enabled", bridge.enabled},
         {"row", bridge.row},
+        {"task_mode", bridge.taskMode},
         {"search_policy", bridge.searchPolicy},
         {"joint_single_ladder_goals_enabled",
                 bridge.jointSingleLadderGoalsEnabled},

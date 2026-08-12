@@ -19,6 +19,15 @@ TEST_CASE("R13 frozen response distances have the preregistered static geometry"
     CHECK(critical.audit.maxAssignedEdgeOwnerId == 1);
     CHECK(critical.audit.maxAssignedEdgeReferenceKind == "base");
     CHECK(critical.audit.maxAssignedEdgeReferenceId == 0);
+    const std::array<double, 8> criticalEdges = {
+            840.0, 408.97652228396555, 609.4307982779862,
+            660.6291682099297, 609.4307982779861,
+            609.4307982779861, 609.4307982779862,
+            609.4307982779862};
+    for (std::size_t index = 0; index < criticalEdges.size(); ++index) {
+        CHECK(critical.exactEightEdgeCertificate.edges.at(index).length
+              == doctest::Approx(criticalEdges.at(index)).epsilon(1e-12));
+    }
 
     CHECK_FALSE(negative.audit.valid);
     CHECK(negative.audit.worldValid);
@@ -72,6 +81,12 @@ TEST_CASE("R13 dwell is continuous and resets on any within-step exit or hard-ga
             target, Point(0.0, 0.0), Point(0.0, 0.0), target, 1.0, false);
     CHECK_FALSE(invalidGate.intervalValid);
     CHECK(invalidGate.continuousDwellS == 0.0);
+
+    auto nonfinite = tracker.observeZohInterval(
+            Point(std::numeric_limits<double>::quiet_NaN(), 100.0),
+            Point(0.0, 0.0), Point(0.0, 0.0), target, 1.0, true);
+    CHECK_FALSE(nonfinite.intervalValid);
+    CHECK(nonfinite.continuousDwellS == 0.0);
 }
 
 TEST_CASE("R13 candidate mechanism labels do not confuse fallback with least intervention") {
@@ -93,7 +108,8 @@ TEST_CASE("R13 response config publishes one static tuple and forbids search sta
     json config;
     stream >> config;
     config["bridge"]["row"] = "R13";
-    config["bridge"]["search-policy"] = "post-detection-response";
+    config["bridge"].erase("search-policy");
+    config["bridge"]["task-mode"] = "post-detection-response";
     config["bridge"].erase("search");
     config["bridge"]["response"] = {
             {"mode", "known-static-target-reach-and-dwell"},
@@ -116,5 +132,9 @@ TEST_CASE("R13 response config publishes one static tuple and forbids search sta
     CHECK_THROWS_AS(loadBridgeExperimentConfig(config), std::invalid_argument);
     config["bridge"].erase("search");
     config["bridge"]["response"]["waypoint-switching"] = false;
+    CHECK_THROWS_AS(loadBridgeExperimentConfig(config), std::invalid_argument);
+
+    config["bridge"]["response"].erase("waypoint-switching");
+    config["bases"] = {{251.0, 1000.0}, {250.0, 1510.0}};
     CHECK_THROWS_AS(loadBridgeExperimentConfig(config), std::invalid_argument);
 }

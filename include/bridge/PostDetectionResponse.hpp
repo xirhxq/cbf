@@ -169,7 +169,12 @@ private:
             const Point &velocity,
             const Point &acceleration,
             double durationS) {
-        if (!(durationS >= 0.0) || !std::isfinite(durationS)) {
+        if (!(durationS >= 0.0) || !std::isfinite(durationS)
+            || !std::isfinite(relativePosition.x)
+            || !std::isfinite(relativePosition.y)
+            || !std::isfinite(velocity.x) || !std::isfinite(velocity.y)
+            || !std::isfinite(acceleration.x)
+            || !std::isfinite(acceleration.y)) {
             return std::numeric_limits<double>::infinity();
         }
         auto positionAt = [&](double t) {

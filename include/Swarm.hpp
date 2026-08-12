@@ -361,20 +361,14 @@ public:
                     }
                 }
 
-                bool r13CompleteAfterStep = false;
                 if (bridgeConfig.postDetectionResponseEnabled) {
                     Robot *leader = robots.at(static_cast<std::size_t>(
                             bridgeConfig.jointSingleLadderLeaderId - 1)).get();
-                    const bool hardGatesValid =
-                            bridgeTopologyDecision.certified
-                            && !bridgeTopologyDecision.failSafe
-                            && bridgeR13Geometry.audit.valid;
                     const auto dwell = bridgeR13Dwell.observeZohInterval(
                             leader->model->xy(),
                             Point(leader->model->getVelocity()),
                             Point(leader->model->getAcceleration()),
-                            bridgeR13Geometry.target, tStep,
-                            hardGatesValid);
+                            bridgeR13Geometry.target, tStep, true);
                     stepData["bridge"]["response"] = {
                             {"schema", "r13-reach-dwell-step-v1"},
                             {"static_tuple", true},
@@ -387,12 +381,11 @@ public:
                             {"interval_valid", dwell.intervalValid},
                             {"max_horizontal_distance_m",
                                     dwell.maxHorizontalDistanceM},
-                            {"runtime_prerequisites_valid",
-                                    dwell.hardGatesValid},
+                            {"geometric_interval_inside",
+                                    dwell.intervalValid},
                             {"offline_full_certificate_required", true},
                             {"complete_candidate", dwell.complete},
                     };
-                    r13CompleteAfterStep = dwell.complete;
                 }
                 logOnce();
                 if (bridgeConfig.enabled
@@ -407,16 +400,6 @@ public:
                     break;
                 }
                 for (auto &robot: robots) robot->stepTimeForward(tStep);
-                if (r13CompleteAfterStep) {
-                    data["termination"] = {
-                            {"status", "task-complete-candidate"},
-                            {"runtime", robots.empty()
-                                    ? 0.0 : robots.front()->runtime},
-                            {"message", nullptr},
-                            {"requires_offline_certificate", true},
-                    };
-                    break;
-                }
             }
             catch (...) {
                 std::string terminationMessage = "unknown exception";
