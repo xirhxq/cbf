@@ -126,7 +126,7 @@ TEST_CASE("Forward certification rejects cycle union budget and one-reference su
         const auto result = gf::TransitionCertifier{}.certify(
             proposal, context(), false);
         CHECK_FALSE(result.valid);
-        CHECK(result.successor_state.reason == "indegree");
+        CHECK(result.reason == "invalid_replacement");
     }
 }
 
@@ -175,4 +175,50 @@ TEST_CASE("Guaranteed certification requires the old edge to remain add-eligible
     CHECK(result.forward_valid);
     CHECK_FALSE(result.reverse_valid);
     CHECK(result.reason == "reverse_certificate");
+}
+
+TEST_CASE("A transition is exactly one same-owner replacement") {
+    SUBCASE("the removed edge must belong to the old graph") {
+        auto proposal = successfulProposal();
+        proposal.old_edge = {3, 2};
+        auto permissive = context();
+        permissive.r_max = 3;
+        const auto result = gf::TransitionCertifier{}.certify(
+            proposal, permissive, false);
+        CHECK_FALSE(result.valid);
+        CHECK(result.reason == "invalid_replacement");
+    }
+    SUBCASE("the added edge must be new") {
+        auto proposal = successfulProposal();
+        proposal.new_edge = {1, 2};
+        const auto result = gf::TransitionCertifier{}.certify(
+            proposal, context(), false);
+        CHECK_FALSE(result.valid);
+        CHECK(result.reason == "invalid_replacement");
+    }
+    SUBCASE("add and remove must have the same owner") {
+        auto proposal = successfulProposal();
+        proposal.new_edge = {3, 2};
+        proposal.old_edge = {11, 3};
+        const auto result = gf::TransitionCertifier{}.certify(
+            proposal, context(), false);
+        CHECK_FALSE(result.valid);
+        CHECK(result.reason == "invalid_replacement");
+    }
+}
+
+TEST_CASE("A feasible affine HOCBF row cannot certify outside the extended safe set") {
+    auto unsafe = context();
+    unsafe.hard_row_request.states.at(2).position = Point(105.0, 50.0);
+    unsafe.hard_row_request.states.at(2).velocity << 20.0, 0.0;
+    unsafe.estimate.mean.segment<2>(4) << 105.0, 50.0;
+    unsafe.estimate.mean.segment<2>(6) << 20.0, 0.0;
+    for (auto& [id, gate] : unsafe.edge_gates) {
+        (void)id;
+        gate.robust_distance_m = 1.0;
+    }
+    const auto result = gf::TransitionCertifier{}.certify(
+        successfulProposal(), unsafe, false);
+    CHECK_FALSE(result.valid);
+    CHECK(result.old_state.reason == "collision_initial_set");
 }

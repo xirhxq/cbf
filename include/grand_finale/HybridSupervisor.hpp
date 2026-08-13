@@ -95,7 +95,11 @@ public:
         if (mode_ != SupervisorMode::Reform || !certificate.valid ||
             !certificate.forward_valid || !certificate.reverse_valid ||
             certificate.topology_version != current_topology_version ||
-            certificate.estimator_version != current_estimator_version) {
+            certificate.estimator_version != current_estimator_version ||
+            topology_version_ != current_topology_version ||
+            transition_certifier_detail::canonicalEdges(topology_) !=
+                transition_certifier_detail::canonicalEdges(
+                    certificate.old_edges)) {
             mode_ = SupervisorMode::Hold;
             last_transition_s_ = now_s;
             return false;
@@ -109,17 +113,30 @@ public:
     }
 
     bool finishMakeBeforeBreak(
+        const TransitionCertificate& refreshed_certificate,
         std::uint64_t current_topology_version,
         std::uint64_t current_estimator_version,
         double now_s) {
         if (!pending_.has_value() || mode_ != SupervisorMode::Reform ||
             current_topology_version != topology_version_ ||
-            current_estimator_version != pending_->estimator_version) {
+            !refreshed_certificate.valid ||
+            !refreshed_certificate.forward_valid ||
+            !refreshed_certificate.reverse_valid ||
+            refreshed_certificate.topology_version !=
+                current_topology_version ||
+            refreshed_certificate.estimator_version !=
+                current_estimator_version ||
+            refreshed_certificate.old_edges != pending_->old_edges ||
+            !(refreshed_certificate.new_edge == pending_->new_edge) ||
+            !(refreshed_certificate.old_edge == pending_->old_edge) ||
+            transition_certifier_detail::canonicalEdges(topology_) !=
+                transition_certifier_detail::canonicalEdges(
+                    refreshed_certificate.union_edges)) {
             mode_ = SupervisorMode::Hold;
             last_transition_s_ = now_s;
             return false;
         }
-        topology_ = pending_->successor_edges;
+        topology_ = refreshed_certificate.successor_edges;
         topology_version_ = current_topology_version + 1;
         pending_.reset();
         mode_ = SupervisorMode::Search;

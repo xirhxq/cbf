@@ -33,6 +33,8 @@ struct CanonicalHardRow {
     double constant = 0.0;
     double responsibility = 1.0;
     bool participates_in_gamma = true;
+    double barrier_h = std::numeric_limits<double>::infinity();
+    double barrier_psi1 = std::numeric_limits<double>::infinity();
 
     double margin(const Eigen::Vector2d& control) const {
         return control_coefficient.dot(control) + constant;
@@ -81,10 +83,13 @@ inline CanonicalHardRow physicalRow(
     const Eigen::Vector2d& normal,
     const Eigen::Vector2d& coefficient,
     double central_constant,
-    double responsibility) {
+    double responsibility,
+    double barrier_h,
+    double barrier_psi1) {
     return CanonicalHardRow{
         std::move(id), kind, owner, peer, normal, coefficient,
-        responsibility * central_constant, responsibility, true};
+        responsibility * central_constant, responsibility, true,
+        barrier_h, barrier_psi1};
 }
 
 inline void appendSharedPairRows(
@@ -108,11 +113,11 @@ inline void appendSharedPairRows(
     rows.push_back(physicalRow(
         prefix + ":owner:" + std::to_string(first), kind,
         first, second, kinematics.normal, central.uCoe,
-        central.constTerm, 0.5));
+        central.constTerm, 0.5, central.h, central.psi1));
     rows.push_back(physicalRow(
         prefix + ":owner:" + std::to_string(second), kind,
         second, first, -kinematics.normal, -central.uCoe,
-        central.constTerm, 0.5));
+        central.constTerm, 0.5, central.h, central.psi1));
 }
 
 inline void appendFixedPairRow(
@@ -136,7 +141,7 @@ inline void appendFixedPairRow(
     rows.push_back(physicalRow(
         prefix + ":owner:" + std::to_string(mobile), kind,
         mobile, fixed, kinematics.normal, central.uCoe,
-        central.constTerm, 1.0));
+        central.constTerm, 1.0, central.h, central.psi1));
 }
 
 }  // namespace canonical_hard_row_detail

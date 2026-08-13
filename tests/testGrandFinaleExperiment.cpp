@@ -21,6 +21,32 @@ TEST_CASE("The 4+2 estimator-in-loop chain reconfigures and reaches certified T1
     CHECK(summary.minimum_hard_margin >= 0.0);
     CHECK(summary.topology_version == 3);
     CHECK(summary.hard_gate_violations == 0);
+    CHECK(summary.minimum_estimator_tube_slack_m >= 0.0);
+    CHECK(summary.false_covered_cells == 0);
+}
+
+TEST_CASE("The 4+2 loop covers normally without a topology change") {
+    const auto summary = gf::GrandFinaleExperiment::runCanonical4p2(
+        gf::SolverProfile::OpenSource, false, 2027, 0);
+
+    CHECK(summary.successful_reconfigurations == 0);
+    CHECK_FALSE(summary.visited_union_state);
+    CHECK(summary.reached_certified_t100);
+    CHECK(summary.topology_version == 1);
+    CHECK(summary.hard_gate_violations == 0);
+    CHECK(summary.false_covered_cells == 0);
+}
+
+TEST_CASE("The 4+2 loop completes multiple refreshed edge-by-edge replacements") {
+    const auto summary = gf::GrandFinaleExperiment::runCanonical4p2(
+        gf::SolverProfile::OpenSource, false, 2027, 3);
+
+    CHECK(summary.successful_reconfigurations == 3);
+    CHECK(summary.visited_union_state);
+    CHECK(summary.topology_version == 7);
+    CHECK(summary.minimum_reference_count >= 2);
+    CHECK(summary.hard_gate_violations == 0);
+    CHECK(summary.false_covered_cells == 0);
 }
 
 #ifdef ENABLE_GUROBI

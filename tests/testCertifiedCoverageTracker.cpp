@@ -32,4 +32,16 @@ TEST_CASE("Truth and certified maps remain distinct under estimator displacement
     CHECK(tracker.truthCovered(0, 0));
     CHECK_FALSE(tracker.certifiedCovered(0, 0));
     CHECK(tracker.certifiedCovered(1, 0));
+    CHECK(tracker.falseCertifiedCount() == 1);
+    CHECK_FALSE(tracker.certifiedSubsetOfTruth());
+}
+
+TEST_CASE("A containing uncertainty radius is conservative and prevents false coverage") {
+    gf::CertifiedCoverageTracker tracker({0.0, 4.0}, 2, {0.0, 2.0}, 1);
+    tracker.observe(Point(1.0, 1.0), Point(1.6, 1.0), 0.7, 1.6);
+
+    CHECK(tracker.truthCoveredCount() == 1);
+    CHECK(tracker.certifiedCoveredCount() == 0);
+    CHECK(tracker.falseCertifiedCount() == 0);
+    CHECK(tracker.certifiedSubsetOfTruth());
 }

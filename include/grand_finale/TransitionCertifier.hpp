@@ -58,6 +58,9 @@ struct TransitionCertificate {
     std::string reason;
     std::uint64_t topology_version = 0;
     std::uint64_t estimator_version = 0;
+    std::vector<DirectedEdge> old_edges;
+    std::optional<DirectedEdge> new_edge;
+    std::optional<DirectedEdge> old_edge;
     std::vector<DirectedEdge> union_edges;
     std::vector<DirectedEdge> successor_edges;
     CertifiedTopologyState old_state;
@@ -155,6 +158,20 @@ inline CertifiedTopologyState evaluateState(
     hard_row_request.reference_edges = edges;
     const std::vector<CanonicalHardRow> hard_rows =
         buildCanonicalHardRows(std::move(hard_row_request));
+    for (const CanonicalHardRow& row : hard_rows) {
+        if (row.kind != CanonicalHardRowKind::ReferenceDistance &&
+            row.kind != CanonicalHardRowKind::Collision) {
+            continue;
+        }
+        if (!std::isfinite(row.barrier_h) ||
+            !std::isfinite(row.barrier_psi1) ||
+            row.barrier_h < -1e-12 || row.barrier_psi1 < -1e-12) {
+            result.reason = row.kind == CanonicalHardRowKind::Collision
+                ? "collision_initial_set"
+                : "reference_initial_set";
+            return result;
+        }
+    }
     result.minimum_gamma = std::numeric_limits<double>::infinity();
     for (NodeId owner : context.mobile_ids) {
         const auto gamma = solveCanonicalGammaStar(
@@ -201,6 +218,16 @@ public:
             return certificate;
         }
         const std::vector<DirectedEdge> old_edges = canonicalEdges(proposal.old_edges);
+        if (old_edges.size() != proposal.old_edges.size() ||
+            !contains(old_edges, proposal.old_edge) ||
+            contains(old_edges, proposal.new_edge) ||
+            proposal.new_edge.owner != proposal.old_edge.owner) {
+            certificate.reason = "invalid_replacement";
+            return certificate;
+        }
+        certificate.old_edges = old_edges;
+        certificate.new_edge = proposal.new_edge;
+        certificate.old_edge = proposal.old_edge;
         certificate.union_edges = old_edges;
         certificate.union_edges.push_back(proposal.new_edge);
         certificate.union_edges = canonicalEdges(std::move(certificate.union_edges));

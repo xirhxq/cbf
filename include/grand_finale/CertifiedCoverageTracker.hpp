@@ -73,6 +73,19 @@ public:
         return certified_.validCount > 0 &&
             certifiedCoveredCount() == certified_.validCount;
     }
+    int falseCertifiedCount() const {
+        int count = 0;
+        for (std::size_t index = 0; index < certified_.vis.size(); ++index) {
+            if (certified_.valid[index] && certified_.vis[index] &&
+                !truth_.vis[index]) {
+                ++count;
+            }
+        }
+        return count;
+    }
+    bool certifiedSubsetOfTruth() const {
+        return falseCertifiedCount() == 0;
+    }
     bool truthCovered(int x, int y) { return truth_.getValue(x, y); }
     bool certifiedCovered(int x, int y) {
         return certified_.getValue(x, y);

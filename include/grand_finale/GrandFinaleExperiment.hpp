@@ -14,6 +14,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -32,6 +33,10 @@ struct GrandFinaleSummary {
     double certified_coverage_initial = 0.0;
     double certified_coverage_final = 0.0;
     bool reached_certified_t100 = false;
+    double maximum_estimation_error_m = 0.0;
+    double minimum_estimator_tube_slack_m =
+        std::numeric_limits<double>::infinity();
+    std::size_t false_covered_cells = 0;
     std::size_t minimum_reference_count =
         std::numeric_limits<std::size_t>::max();
     double maximum_robust_reference_distance_m = 0.0;
@@ -235,8 +240,9 @@ public:
     static GrandFinaleSummary runCanonical4p2(
         SolverProfile profile,
         bool inject_uncertifiable_candidate,
-        std::uint32_t seed) {
-        if (seed != 2027)
+        std::uint32_t seed,
+        std::size_t requested_reconfigurations = 1) {
+        if (seed != 2027 || requested_reconfigurations > 4)
             throw std::invalid_argument("canonical smoke uses development seed 2027");
         using namespace grand_finale_experiment_detail;
         const std::vector<NodeId> mobiles = {1, 2, 3, 4};
@@ -251,7 +257,6 @@ public:
         std::vector<DirectedEdge> topology = {
             {10, 1}, {11, 1}, {10, 2}, {1, 2},
             {11, 3}, {1, 3}, {2, 4}, {3, 4}};
-        const DirectedEdge new_edge{11, 2};
         const std::vector<DirectedEdge> candidates = {
             {10, 1}, {11, 1}, {10, 2}, {1, 2}, {11, 2},
             {11, 3}, {1, 3}, {2, 4}, {3, 4}};
@@ -271,7 +276,8 @@ public:
         }
         summary.certified_coverage_initial = coverage.certifiedFraction();
 
-        bool attempted_reconfiguration = false;
+        std::size_t attempted_reconfigurations = 0;
+        std::optional<TransitionProposal> pending_proposal;
         for (int step = 0; step < 90; ++step) {
             const Eigen::Vector2d acceleration(
                 step < 45 ? 0.2 : -0.2, 0.0);
@@ -304,13 +310,69 @@ public:
             for (std::size_t index = 0; index < mobiles.size(); ++index) {
                 const Eigen::Vector2d actual = truth.at(mobiles[index]).head<2>();
                 const Eigen::Vector2d estimated = estimate.mean.segment<2>(4 * index);
+                const double estimation_error = (actual - estimated).norm();
+                summary.maximum_estimation_error_m = std::max(
+                    summary.maximum_estimation_error_m, estimation_error);
+                summary.minimum_estimator_tube_slack_m = std::min(
+                    summary.minimum_estimator_tube_slack_m,
+                    0.05 - estimation_error);
                 coverage.observe(
                     Point(actual.x(), actual.y()),
                     Point(estimated.x(), estimated.y()), 0.05, 1.6);
             }
 
-            if (!attempted_reconfiguration) {
-                attempted_reconfiguration = true;
+            if (pending_proposal.has_value()) {
+                TransitionCertificationContext refreshed_context;
+                refreshed_context.topology_version =
+                    supervisor.topologyVersion();
+                refreshed_context.estimator_version = estimator.version();
+                refreshed_context.mobile_ids = mobiles;
+                refreshed_context.fixed_ids = fixed_ids;
+                refreshed_context.r_max = 2;
+                refreshed_context.max_reference_distance_m = 850.0;
+                refreshed_context.min_fim_eigenvalue = 1e-6;
+                refreshed_context.max_posterior_eigenvalue_m2 = 0.1;
+                refreshed_context.gamma_accept = 0.05;
+                refreshed_context.estimate = estimate;
+                for (const DirectedEdge& edge : candidates) {
+                    const std::string range_id = UndirectedEdge::canonical(
+                        edge.reference, edge.owner).id();
+                    refreshed_context.range_variances_m2[range_id] = 1.0;
+                    const double distance =
+                        (detail::nodePosition(estimate, edge.owner) -
+                         detail::nodePosition(estimate, edge.reference)).norm();
+                    refreshed_context.edge_gates[edge.id()] =
+                        {true, true, distance + 0.02};
+                }
+                refreshed_context.hard_row_request = hardRowRequest(
+                    mobiles, fixed_ids, estimate, topology);
+                TransitionProposal refreshed_proposal = *pending_proposal;
+                refreshed_proposal.expected_topology_version =
+                    supervisor.topologyVersion();
+                refreshed_proposal.expected_estimator_version =
+                    estimator.version();
+                const TransitionCertificate refreshed_certificate =
+                    TransitionCertifier{}.certify(
+                        refreshed_proposal, refreshed_context, true);
+                if (!supervisor.finishMakeBeforeBreak(
+                        refreshed_certificate, supervisor.topologyVersion(),
+                        estimator.version(), 0.1 * (step + 1))) {
+                    ++summary.hard_gate_violations;
+                    break;
+                }
+                topology = refreshed_certificate.successor_edges;
+                pending_proposal.reset();
+                ++summary.successful_reconfigurations;
+            }
+
+            if (!pending_proposal.has_value() &&
+                attempted_reconfigurations < requested_reconfigurations) {
+                ++attempted_reconfigurations;
+                const DirectedEdge new_edge =
+                    transition_certifier_detail::contains(
+                        topology, DirectedEdge{10, 2})
+                    ? DirectedEdge{11, 2}
+                    : DirectedEdge{10, 2};
                 const EligibilityThresholds thresholds{
                     849.0, 850.0, 1.0, 0.1, 0.5, 2.0};
                 std::map<std::string, RangeLinkState> links;
@@ -335,24 +397,27 @@ public:
                 TopologyRequest request{
                     mobiles, fixed_ids, eligible, topology, 2, 2,
                     {{new_edge.id(), 10.0}}, {},
-                    {{"1->2|11->2", 2.0}}};
+                    {{"1->2|" + new_edge.id(), 2.0}}};
                 const TopologySolution target = solver(profile)->solve(
                     TopologyModel(request));
                 if (target.status != TopologySolveStatus::Optimal) {
                     ++summary.hard_gate_violations;
-                    supervisor.requestReformation(0.1, false, true);
+                    supervisor.requestReformation(
+                        0.1 * (step + 1), false, true);
                     break;
                 }
                 const auto additions = edgeDifference(target.edges, topology);
                 const auto removals = edgeDifference(topology, target.edges);
                 if (additions.size() != 1 || removals.size() != 1) {
                     ++summary.hard_gate_violations;
-                    supervisor.requestReformation(0.1, false, true);
+                    supervisor.requestReformation(
+                        0.1 * (step + 1), false, true);
                     break;
                 }
 
                 TransitionCertificationContext certificate_context;
-                certificate_context.topology_version = 1;
+                certificate_context.topology_version =
+                    supervisor.topologyVersion();
                 certificate_context.estimator_version = estimator.version();
                 certificate_context.mobile_ids = mobiles;
                 certificate_context.fixed_ids = fixed_ids;
@@ -379,19 +444,22 @@ public:
                 certificate_context.hard_row_request = hardRowRequest(
                     mobiles, fixed_ids, estimate, topology);
                 const TransitionProposal proposal{
-                    topology, additions.front(), removals.front(), 1,
+                    topology, additions.front(), removals.front(),
+                    supervisor.topologyVersion(),
                     estimator.version()};
                 const TransitionCertificate certificate =
                     TransitionCertifier{}.certify(
                         proposal, certificate_context, true);
                 supervisor.requestReformation(
-                    0.1, certificate.valid, certificate.reverse_valid);
+                    0.1 * (step + 1), certificate.valid,
+                    certificate.reverse_valid);
                 if (!certificate.valid) {
                     summary.final_mode = supervisor.mode();
                     break;
                 }
                 if (!supervisor.beginMakeBeforeBreak(
-                        certificate, 1, estimator.version(), 0.1)) {
+                        certificate, supervisor.topologyVersion(),
+                        estimator.version(), 0.1 * (step + 1))) {
                     ++summary.hard_gate_violations;
                     break;
                 }
@@ -401,17 +469,14 @@ public:
                     hardRowRequest(
                         mobiles, fixed_ids, estimate,
                         certificate.union_edges), acceleration);
-                if (!supervisor.finishMakeBeforeBreak(
-                        2, estimator.version(), 0.1)) {
-                    ++summary.hard_gate_violations;
-                    break;
-                }
-                topology = certificate.successor_edges;
-                ++summary.successful_reconfigurations;
+                topology = certificate.union_edges;
+                pending_proposal = proposal;
             }
         }
         summary.certified_coverage_final = coverage.certifiedFraction();
         summary.reached_certified_t100 = coverage.reachedCertifiedT100();
+        summary.false_covered_cells = static_cast<std::size_t>(
+            coverage.falseCertifiedCount());
         summary.final_mode = supervisor.mode();
         summary.topology_version = supervisor.topologyVersion();
         return summary;

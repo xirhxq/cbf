@@ -17,8 +17,20 @@ gf::TransitionCertificate validCertificate() {
     certificate.reverse_valid = true;
     certificate.topology_version = 7;
     certificate.estimator_version = 13;
-    certificate.union_edges = {{10, 1}, {11, 1}, {10, 2}};
-    certificate.successor_edges = {{10, 1}, {11, 1}};
+    certificate.old_edges = {{10, 1}, {11, 1}, {10, 2}, {1, 2}};
+    certificate.new_edge = gf::DirectedEdge{11, 2};
+    certificate.old_edge = gf::DirectedEdge{10, 2};
+    certificate.union_edges = {
+        {10, 1}, {11, 1}, {10, 2}, {1, 2}, {11, 2}};
+    certificate.successor_edges = {
+        {10, 1}, {11, 1}, {1, 2}, {11, 2}};
+    return certificate;
+}
+
+gf::TransitionCertificate refreshedCertificate() {
+    auto certificate = validCertificate();
+    certificate.topology_version = 8;
+    certificate.estimator_version = 14;
     return certificate;
 }
 
@@ -70,8 +82,23 @@ TEST_CASE("Make rejects version races and never installs the union graph") {
     CHECK(supervisor.topology().empty());
 }
 
+TEST_CASE("Make rejects a certificate for a different current graph") {
+    gf::HybridSupervisor supervisor({0.0, 0.2, 0.5});
+    supervisor.initializeTopology(
+        {{10, 1}, {12, 1}, {10, 2}, {1, 2}}, 7);
+    supervisor.observeGamma(0.0, 0.1, true, true);
+
+    CHECK_FALSE(supervisor.beginMakeBeforeBreak(
+        validCertificate(), 7, 13, 0.1));
+    CHECK(supervisor.mode() == gf::SupervisorMode::Hold);
+    CHECK(supervisor.topology() ==
+          std::vector<gf::DirectedEdge>{
+              {10, 1}, {12, 1}, {10, 2}, {1, 2}});
+}
+
 TEST_CASE("A version-consistent transition installs union before successor") {
     gf::HybridSupervisor supervisor({0.0, 0.2, 0.5});
+    supervisor.initializeTopology(validCertificate().old_edges, 7);
     supervisor.observeGamma(0.0, 0.1, true, true);
     const auto certificate = validCertificate();
 
@@ -80,7 +107,8 @@ TEST_CASE("A version-consistent transition installs union before successor") {
     CHECK(supervisor.topology() == certificate.union_edges);
     CHECK(supervisor.topologyVersion() == 8);
 
-    REQUIRE(supervisor.finishMakeBeforeBreak(8, 13, 0.2));
+    REQUIRE(supervisor.finishMakeBeforeBreak(
+        refreshedCertificate(), 8, 14, 0.2));
     CHECK(supervisor.mode() == gf::SupervisorMode::Search);
     CHECK(supervisor.topology() == certificate.successor_edges);
     CHECK(supervisor.topologyVersion() == 9);
@@ -88,11 +116,27 @@ TEST_CASE("A version-consistent transition installs union before successor") {
 
 TEST_CASE("A race between make and break holds the certified union") {
     gf::HybridSupervisor supervisor({0.0, 0.2, 0.5});
+    supervisor.initializeTopology(validCertificate().old_edges, 7);
     supervisor.observeGamma(0.0, 0.1, true, true);
     const auto certificate = validCertificate();
     REQUIRE(supervisor.beginMakeBeforeBreak(certificate, 7, 13, 0.1));
 
-    CHECK_FALSE(supervisor.finishMakeBeforeBreak(8, 14, 0.2));
+    CHECK_FALSE(supervisor.finishMakeBeforeBreak(
+        validCertificate(), 8, 14, 0.2));
     CHECK(supervisor.mode() == gf::SupervisorMode::Hold);
     CHECK(supervisor.topology() == certificate.union_edges);
+}
+
+TEST_CASE("Break rejects a fresh certificate for a different replacement") {
+    gf::HybridSupervisor supervisor({0.0, 0.2, 0.5});
+    supervisor.initializeTopology(validCertificate().old_edges, 7);
+    supervisor.observeGamma(0.0, 0.1, true, true);
+    REQUIRE(supervisor.beginMakeBeforeBreak(
+        validCertificate(), 7, 13, 0.1));
+
+    auto foreign = refreshedCertificate();
+    foreign.old_edge = gf::DirectedEdge{10, 1};
+    CHECK_FALSE(supervisor.finishMakeBeforeBreak(foreign, 8, 14, 0.2));
+    CHECK(supervisor.mode() == gf::SupervisorMode::Hold);
+    CHECK(supervisor.topology() == validCertificate().union_edges);
 }
