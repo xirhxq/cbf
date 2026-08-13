@@ -24,6 +24,10 @@ struct DirectedEdge {
     std::string id() const {
         return std::to_string(reference) + "->" + std::to_string(owner);
     }
+
+    bool operator==(const DirectedEdge& other) const {
+        return reference == other.reference && owner == other.owner;
+    }
 };
 
 struct UndirectedEdge {
