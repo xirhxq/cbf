@@ -12,7 +12,7 @@ namespace gf {
 
 struct TheoryTerminalNode {
     std::size_t id = 0;
-    bool full_state_certified = false;
+    bool fixture_label_valid = false;
     std::set<int> robust_sensing_cells;
 };
 
@@ -30,15 +30,27 @@ struct FiniteServiceContract {
 
 struct IntervalSafetyPremises {
     bool uncertainty_contained_for_interval = false;
+    bool extended_initial_set_satisfied = false;
     bool hard_control_feasible_for_interval = false;
+    bool reference_qualification_persists = false;
     bool feedback_regular = false;
+};
+
+struct FiniteSetTerminationPremises {
+    bool finite_grid = false;
+    bool current_terminal_in_mutual_class = false;
+    FiniteServiceContract service;
+    bool monotone_coverage_marks = false;
 };
 
 struct HybridJumpAudit {
     double horizon_s = 0.0;
     double minimum_dwell_s = 0.0;
-    std::size_t macro_jumps = 0;
-    std::size_t maximum_atomic_jumps_per_macro = 0;
+    double sampled_period_s = 0.0;
+    std::size_t external_episodes = 0;
+    std::size_t maximum_atomic_jumps_per_episode = 0;
+    std::size_t sampled_cycles = 0;
+    std::size_t maximum_atomic_jumps_per_sample = 0;
     std::size_t observed_atomic_jumps = 0;
 };
 
@@ -59,16 +71,16 @@ inline std::set<std::size_t> reachable(
     const std::map<std::size_t, TheoryTerminalNode>& nodes,
     const std::vector<TheoryReachabilityEdge>& witnesses,
     bool reverse) {
-    if (nodes.count(start) == 0 || !nodes.at(start).full_state_certified)
-        throw std::invalid_argument("initial terminal set must be certified");
+    if (nodes.count(start) == 0 || !nodes.at(start).fixture_label_valid)
+        throw std::invalid_argument("initial terminal fixture label must be valid");
     std::map<std::size_t, std::vector<std::size_t>> adjacency;
     for (const auto& edge : witnesses) {
         if (nodes.count(edge.from) == 0 || nodes.count(edge.to) == 0)
             throw std::invalid_argument("reachability edge has unknown terminal set");
         const std::size_t from = reverse ? edge.to : edge.from;
         const std::size_t to = reverse ? edge.from : edge.to;
-        if (nodes.at(from).full_state_certified &&
-            nodes.at(to).full_state_certified)
+        if (nodes.at(from).fixture_label_valid &&
+            nodes.at(to).fixture_label_valid)
             adjacency[from].push_back(to);
     }
     std::set<std::size_t> visited{start};
@@ -86,7 +98,9 @@ inline std::set<std::size_t> reachable(
 
 }  // namespace theory_closure_oracle_detail
 
-inline std::set<std::size_t> mutualTerminalReachability(
+// Finite-label consistency oracle only. Edges are assumed witness labels; this
+// helper does not verify full-state quantifiers or synthesize a policy.
+inline std::set<std::size_t> finiteTerminalGraphMutualClass(
     std::size_t initial,
     const std::vector<TheoryTerminalNode>& terminals,
     const std::vector<TheoryReachabilityEdge>& witnesses) {
@@ -102,12 +116,12 @@ inline std::set<std::size_t> mutualTerminalReachability(
     return mutual;
 }
 
-inline std::set<int> certifiedCoverageDomain(
+inline std::set<int> finiteGraphCoverageLabels(
     std::size_t initial,
     const std::vector<TheoryTerminalNode>& terminals,
     const std::vector<TheoryReachabilityEdge>& witnesses) {
     const auto nodes = theory_closure_oracle_detail::validatedNodes(terminals);
-    const auto mutual = mutualTerminalReachability(initial, terminals, witnesses);
+    const auto mutual = finiteTerminalGraphMutualClass(initial, terminals, witnesses);
     std::set<int> cells;
     for (std::size_t id : mutual) {
         cells.insert(
@@ -117,7 +131,7 @@ inline std::set<int> certifiedCoverageDomain(
     return cells;
 }
 
-inline bool rankStrictlyDescends(
+inline bool finiteRankStrictlyDescends(
     const std::set<int>& domain,
     const std::set<int>& covered_before,
     const std::set<int>& covered_after,
@@ -146,32 +160,40 @@ inline bool finiteServiceContractHolds(const FiniteServiceContract& contract) {
         contract.no_infinite_reform_retreat_preemption;
 }
 
-inline bool longTermProgressClaimSupported(
-    bool positive_gamma,
-    bool snapshot_progress_compatible,
-    const FiniteServiceContract& contract) {
-    (void)positive_gamma;
-    (void)snapshot_progress_compatible;
-    return finiteServiceContractHolds(contract);
+inline bool finiteSetTerminationPremisesHold(
+    const FiniteSetTerminationPremises& premises) {
+    return premises.finite_grid &&
+        premises.current_terminal_in_mutual_class &&
+        finiteServiceContractHolds(premises.service) &&
+        premises.monotone_coverage_marks;
 }
 
 inline bool intervalSafetyClaimSupported(const IntervalSafetyPremises& premises) {
     return premises.uncertainty_contained_for_interval &&
+        premises.extended_initial_set_satisfied &&
         premises.hard_control_feasible_for_interval &&
+        premises.reference_qualification_persists &&
         premises.feedback_regular;
 }
 
-inline bool boundedHybridJumpCount(const HybridJumpAudit& audit) {
+inline bool finiteJumpCountConsistent(const HybridJumpAudit& audit) {
     if (!std::isfinite(audit.horizon_s) || audit.horizon_s < 0.0 ||
         !std::isfinite(audit.minimum_dwell_s) ||
         audit.minimum_dwell_s <= 0.0 ||
-        audit.maximum_atomic_jumps_per_macro == 0)
+        !std::isfinite(audit.sampled_period_s) ||
+        audit.sampled_period_s <= 0.0 ||
+        audit.maximum_atomic_jumps_per_episode == 0 ||
+        audit.maximum_atomic_jumps_per_sample == 0)
         return false;
-    const auto maximum_macros = static_cast<std::size_t>(
+    const auto maximum_episodes = static_cast<std::size_t>(
         std::floor(audit.horizon_s / audit.minimum_dwell_s + 1.0e-12)) + 1;
-    return audit.macro_jumps <= maximum_macros &&
+    const auto maximum_samples = static_cast<std::size_t>(
+        std::floor(audit.horizon_s / audit.sampled_period_s + 1.0e-12)) + 1;
+    return audit.external_episodes <= maximum_episodes &&
+        audit.sampled_cycles <= maximum_samples &&
         audit.observed_atomic_jumps <=
-            audit.macro_jumps * audit.maximum_atomic_jumps_per_macro;
+            audit.external_episodes * audit.maximum_atomic_jumps_per_episode +
+            audit.sampled_cycles * audit.maximum_atomic_jumps_per_sample;
 }
 
 }  // namespace gf

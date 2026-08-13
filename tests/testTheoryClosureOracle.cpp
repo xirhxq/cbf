@@ -16,19 +16,19 @@ TEST_CASE("Only full-state certified terminal sets in the mutual initial class a
         {0, 3}, {3, 0},
     };
 
-    const auto mutual = gf::mutualTerminalReachability(0, terminals, witnesses);
+    const auto mutual = gf::finiteTerminalGraphMutualClass(0, terminals, witnesses);
 
     CHECK(mutual == std::set<std::size_t>{0, 1});
-    CHECK(gf::certifiedCoverageDomain(0, terminals, witnesses) ==
+    CHECK(gf::finiteGraphCoverageLabels(0, terminals, witnesses) ==
           std::set<int>{0, 1, 2});
 }
 
 TEST_CASE("A completed finite-service epoch strictly decreases finite coverage rank") {
-    CHECK(gf::rankStrictlyDescends(
+    CHECK(gf::finiteRankStrictlyDescends(
         {0, 1, 2}, {0}, {0, 2}, 2));
-    CHECK_FALSE(gf::rankStrictlyDescends(
+    CHECK_FALSE(gf::finiteRankStrictlyDescends(
         {0, 1, 2}, {0}, {0}, 0));
-    CHECK_FALSE(gf::rankStrictlyDescends(
+    CHECK_FALSE(gf::finiteRankStrictlyDescends(
         {0, 1, 2}, {0}, {0, 2}, 1));
 }
 
@@ -38,28 +38,38 @@ TEST_CASE("Finite-service contract rejects starvation retreat and local-only evi
     CHECK_FALSE(gf::finiteServiceContractHolds({true, true, false, true}));
     CHECK_FALSE(gf::finiteServiceContractHolds({true, false, true, true}));
 
-    CHECK(gf::intervalSafetyClaimSupported({true, true, true}));
-    CHECK_FALSE(gf::intervalSafetyClaimSupported({false, true, true}));
-    CHECK_FALSE(gf::intervalSafetyClaimSupported({true, false, true}));
+    CHECK(gf::intervalSafetyClaimSupported({true, true, true, true, true}));
+    CHECK_FALSE(gf::intervalSafetyClaimSupported({true, false, true, true, true}));
+    CHECK_FALSE(gf::intervalSafetyClaimSupported({true, true, true, false, true}));
+    CHECK_FALSE(gf::intervalSafetyClaimSupported({false, true, true, true, true}));
 
     const gf::FiniteServiceContract missing_witness{true, false, false, true};
-    CHECK_FALSE(gf::longTermProgressClaimSupported(
-        true, true, missing_witness));
+    CHECK_FALSE(gf::finiteSetTerminationPremisesHold(
+        {true, true, missing_witness, true}));
+    CHECK_FALSE(gf::finiteSetTerminationPremisesHold(
+        {true, false, {true, true, true, true}, true}));
+    CHECK_FALSE(gf::finiteSetTerminationPremisesHold(
+        {true, true, {true, true, true, true}, false}));
 }
 
 TEST_CASE("Every supervisor and bookkeeping jump fits the uniform dwell bound") {
-    const gf::HybridJumpAudit equality{1.0, 0.1, 11, 4, 44};
-    CHECK(gf::boundedHybridJumpCount(equality));
+    const gf::HybridJumpAudit equality{
+        1.0, 0.1, 0.1, 11, 4, 11, 2, 66};
+    CHECK(gf::finiteJumpCountConsistent(equality));
 
     gf::HybridJumpAudit too_many_macros = equality;
-    too_many_macros.macro_jumps = 12;
-    CHECK_FALSE(gf::boundedHybridJumpCount(too_many_macros));
+    too_many_macros.external_episodes = 12;
+    CHECK_FALSE(gf::finiteJumpCountConsistent(too_many_macros));
 
     gf::HybridJumpAudit unbounded_internal = equality;
-    unbounded_internal.observed_atomic_jumps = 45;
-    CHECK_FALSE(gf::boundedHybridJumpCount(unbounded_internal));
+    unbounded_internal.observed_atomic_jumps = 67;
+    CHECK_FALSE(gf::finiteJumpCountConsistent(unbounded_internal));
 
     gf::HybridJumpAudit zero_dwell = equality;
     zero_dwell.minimum_dwell_s = 0.0;
-    CHECK_FALSE(gf::boundedHybridJumpCount(zero_dwell));
+    CHECK_FALSE(gf::finiteJumpCountConsistent(zero_dwell));
+
+    gf::HybridJumpAudit too_many_samples = equality;
+    too_many_samples.sampled_cycles = 12;
+    CHECK_FALSE(gf::finiteJumpCountConsistent(too_many_samples));
 }
