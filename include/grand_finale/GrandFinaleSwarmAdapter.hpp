@@ -102,6 +102,7 @@ struct GrandFinaleSwarmStep {
     std::size_t updated_truth_cells = 0;
     double truth_coverage = 0.0;
     double certified_coverage = 0.0;
+    std::map<NodeId, Eigen::Vector2d> applied_controls;
 };
 
 struct GrandFinaleProposalResult {
@@ -199,7 +200,9 @@ public:
         swarm_.prepareCertifiedControlStep();
         const JointEstimateSnapshot snapshot = estimator_.reconstructForAudit();
         const std::uint64_t snapshot_version = estimator_.version();
-        const auto nominal = nominalControls(metrics.mode);
+        const auto nominal = nominal_override_.has_value()
+            ? *nominal_override_
+            : nominalControls(metrics.mode);
         const std::vector<CanonicalHardRow> rows = buildCanonicalHardRows(
             hardRowRequest(snapshot, supervisor_.topology()));
         std::map<int, Eigen::Vector2d> applied;
@@ -261,6 +264,8 @@ public:
                 config_.sensor_radius_m);
         }
         metrics.certified_control_count = applied.size();
+        for (const auto& [id, control] : applied)
+            metrics.applied_controls[static_cast<NodeId>(id)] = control;
         metrics.estimator_version_after = estimator_.version();
         metrics.truth_coverage = coverage_.truthFraction();
         metrics.certified_coverage = coverage_.certifiedFraction();
@@ -270,6 +275,37 @@ public:
             ++union_control_cycles_;
         }
         return metrics;
+    }
+
+    GrandFinaleSwarmStep stepWithNominal(
+        const std::map<NodeId, Eigen::Vector2d>& nominal) {
+        GrandFinaleSwarmStep rejected;
+        rejected.mode = supervisor_.mode();
+        rejected.topology_version = supervisor_.topologyVersion();
+        rejected.estimator_version_before = estimator_.version();
+        if (nominal.size() != mobile_ids_.size()) {
+            rejected.reason = "primitive_nominal_incomplete";
+            return rejected;
+        }
+        for (const auto& [id, control] : nominal) {
+            if (std::find(mobile_ids_.begin(), mobile_ids_.end(), id) ==
+                    mobile_ids_.end() ||
+                !control.allFinite() ||
+                control.cwiseAbs().maxCoeff() >
+                    config_.acceleration_half_box + 1.0e-12) {
+                rejected.reason = "primitive_nominal_invalid";
+                return rejected;
+            }
+        }
+        nominal_override_ = nominal;
+        try {
+            GrandFinaleSwarmStep result = step();
+            nominal_override_.reset();
+            return result;
+        } catch (...) {
+            nominal_override_.reset();
+            throw;
+        }
     }
 
     bool beginReplacement(
@@ -771,6 +807,7 @@ private:
     std::map<std::string, double> range_last_observation_s_;
     std::map<std::string, double> range_quality_;
     std::map<std::string, double> range_variance_m2_;
+    std::optional<std::map<NodeId, Eigen::Vector2d>> nominal_override_;
 };
 
 }  // namespace gf

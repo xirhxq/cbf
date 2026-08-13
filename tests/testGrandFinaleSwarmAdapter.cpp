@@ -143,6 +143,33 @@ TEST_CASE("Missing range history rejects switching without advancing topology or
     CHECK(adapter.supervisor().mode() == gf::SupervisorMode::Search);
 }
 
+TEST_CASE("Certified primitive nominal uses the formal QP path and fails closed before physics") {
+    json settings = settings4p2();
+    Swarm swarm(settings);
+    gf::GrandFinaleSwarmAdapter adapter(
+        swarm, {1, 2, 3, 4}, {{10, {4.0, 4.0}}, {11, {4.0, 16.0}}},
+        topology(), adapterConfig(gf::SolverProfile::OpenSource));
+    const std::map<gf::NodeId, Eigen::Vector2d> common{
+        {1, {0.01, 0.0}}, {2, {0.01, 0.0}},
+        {3, {0.01, 0.0}}, {4, {0.01, 0.0}}};
+    const auto step = adapter.stepWithNominal(common);
+    REQUIRE(step.advanced);
+    REQUIRE(step.applied_controls.size() == 4);
+    for (const auto& [id, control] : step.applied_controls) {
+        CHECK((control - common.at(id)).norm() <= 1.0e-5);
+    }
+
+    const double runtime = swarm.robots.front()->runtime;
+    const auto estimator_version = adapter.estimator().version();
+    auto incomplete = common;
+    incomplete.erase(4);
+    const auto rejected = adapter.stepWithNominal(incomplete);
+    CHECK_FALSE(rejected.advanced);
+    CHECK(rejected.reason == "primitive_nominal_incomplete");
+    CHECK(swarm.robots.front()->runtime == doctest::Approx(runtime));
+    CHECK(adapter.estimator().version() == estimator_version);
+}
+
 TEST_CASE("Actual union hard rows use the higher-covariance new endpoint tube") {
     json low_settings = settings4p2();
     json high_settings = settings4p2();
