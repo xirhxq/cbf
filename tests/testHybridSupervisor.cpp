@@ -54,6 +54,12 @@ TEST_CASE("No candidate enters certified retreat or fail-closed hold") {
           == gf::SupervisorMode::Hold);
 }
 
+TEST_CASE("A material topology request can trigger reform independently of gamma warning") {
+    gf::HybridSupervisor supervisor({0.0, 0.2, 0.5});
+    CHECK(supervisor.requestReformation(0.0, true, true)
+          == gf::SupervisorMode::Reform);
+}
+
 TEST_CASE("Make rejects version races and never installs the union graph") {
     gf::HybridSupervisor supervisor({0.0, 0.2, 0.5});
     supervisor.observeGamma(0.0, 0.1, true, true);

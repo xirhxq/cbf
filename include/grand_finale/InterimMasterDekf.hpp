@@ -323,6 +323,8 @@ public:
             mobile_ids_, joint_mean, joint_covariance, fixed_positions_};
     }
 
+    std::uint64_t version() const { return version_; }
+
 private:
     using MeasurementKey = std::tuple<std::int64_t, NodeId, NodeId>;
 

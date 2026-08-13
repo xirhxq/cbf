@@ -59,6 +59,34 @@ public:
         return mode_;
     }
 
+    SupervisorMode requestReformation(
+        double now_s,
+        bool candidate_available,
+        bool reverse_available) {
+        if (!std::isfinite(now_s) || now_s < last_transition_s_) {
+            mode_ = SupervisorMode::Hold;
+            return mode_;
+        }
+        if (now_s - last_transition_s_ < thresholds_.minimum_dwell_s)
+            return mode_;
+        mode_ = candidate_available
+            ? SupervisorMode::Reform
+            : (reverse_available
+                ? SupervisorMode::Retreat
+                : SupervisorMode::Hold);
+        last_transition_s_ = now_s;
+        return mode_;
+    }
+
+    void initializeTopology(
+        std::vector<DirectedEdge> topology,
+        std::uint64_t topology_version) {
+        if (!topology_.empty() || topology_version_ != 0 || pending_.has_value())
+            throw std::logic_error("supervisor topology is already initialized");
+        topology_ = std::move(topology);
+        topology_version_ = topology_version;
+    }
+
     bool beginMakeBeforeBreak(
         const TransitionCertificate& certificate,
         std::uint64_t current_topology_version,
