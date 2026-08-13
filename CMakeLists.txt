@@ -155,7 +155,7 @@ if(TARGET Swarm)
         Swarm PRIVATE CBF_BUILD_SOURCE_SHA256="${CBF_BUILD_SOURCE_SHA256}")
 endif()
 
-file(GLOB TEST_SOURCES "tests/*.cpp")
+file(GLOB TEST_SOURCES CONFIGURE_DEPENDS "tests/*.cpp")
 foreach(TEST_SOURCE ${TEST_SOURCES})
     get_filename_component(TEST_EXECUTABLE ${TEST_SOURCE} NAME_WE)
     add_executable(${TEST_EXECUTABLE} ${TEST_SOURCE})
