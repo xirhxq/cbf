@@ -14,6 +14,10 @@ option(ENABLE_GUROBI "Enable Gurobi Optimizer" ON)
 option(ENABLE_HIGHS "Enable HiGHS Optimizer" ON)
 option(ENABLE_OSQP "Enable OSQP Optimizer" ON)
 option(ENABLE_PROXQP "Enable ProxQP Optimizer" ON)
+set(GRAND_FINALE_SOLVER_PROFILE "" CACHE STRING
+    "Require a GrandFinale solver profile: gurobi or open_source")
+set_property(CACHE GRAND_FINALE_SOLVER_PROFILE PROPERTY STRINGS
+    "" gurobi open_source)
 
 set(CBF_EXTERNAL_INCLUDE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/external
@@ -80,6 +84,21 @@ if(ENABLE_OSQP)
         message(STATUS "OsqpEigen not found - disabled")
         set(ENABLE_OSQP OFF CACHE BOOL "Enable OSQP Optimizer" FORCE)
     endif()
+endif()
+
+if(GRAND_FINALE_SOLVER_PROFILE STREQUAL "gurobi")
+    if(NOT ENABLE_GUROBI)
+        message(FATAL_ERROR
+            "GrandFinale gurobi profile requires Gurobi")
+    endif()
+elseif(GRAND_FINALE_SOLVER_PROFILE STREQUAL "open_source")
+    if(NOT ENABLE_HIGHS OR NOT ENABLE_OSQP)
+        message(FATAL_ERROR
+            "GrandFinale open_source profile requires HiGHS and OSQP")
+    endif()
+elseif(NOT GRAND_FINALE_SOLVER_PROFILE STREQUAL "")
+    message(FATAL_ERROR
+        "GRAND_FINALE_SOLVER_PROFILE must be gurobi or open_source")
 endif()
 
 set_package_properties(proxsuite PROPERTIES
