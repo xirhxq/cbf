@@ -198,6 +198,155 @@ TEST_CASE("Mobile pair responsibility reconstructs the centralized coupled row")
     CHECK(fixed->responsibility == doctest::Approx(1.0));
 }
 
+TEST_CASE("Two local half-row controls imply each centralized physical pair row") {
+    const auto request = requestWith({{1, 2}, {10, 1}});
+    const auto rows = gf::buildCanonicalHardRows(request);
+    const auto verify_pair = [&](const std::string& first_id,
+                                 const std::string& second_id,
+                                 const Eigen::Vector2d& first_control,
+                                 const Eigen::Vector2d& second_control,
+                                 const auto& centralized) {
+        const auto first = std::find_if(rows.begin(), rows.end(), [&](const auto& row) {
+            return row.id == first_id;
+        });
+        const auto second = std::find_if(rows.begin(), rows.end(), [&](const auto& row) {
+            return row.id == second_id;
+        });
+        REQUIRE(first != rows.end());
+        REQUIRE(second != rows.end());
+        const double first_margin = first->margin(first_control);
+        const double second_margin = second->margin(second_control);
+        REQUIRE(first_margin >= 0.0);
+        REQUIRE(second_margin >= 0.0);
+        const double coupled = centralized.uCoe.dot(first_control)
+                             - centralized.uCoe.dot(second_control)
+                             + centralized.constTerm;
+        CHECK(first_margin + second_margin
+              == doctest::Approx(coupled).epsilon(1e-12));
+        CHECK(coupled >= 0.0);
+    };
+
+    auto communication_owner = request.states.at(2);
+    auto communication_reference = request.states.at(1);
+    communication_owner.acceleration.setZero();
+    communication_reference.acceleration.setZero();
+    const auto communication = buildPairwiseSecondOrderRow(
+        communication_owner, communication_reference, request.reference_spec);
+    verify_pair(
+        "reference:1->2:owner:2", "reference:1->2:owner:1",
+        {0.2, 0.1}, {-0.2, -0.1}, communication);
+
+    auto collision_first_state = request.states.at(1);
+    auto collision_second_state = request.states.at(2);
+    collision_first_state.acceleration.setZero();
+    collision_second_state.acceleration.setZero();
+    const auto collision = buildPairwiseSecondOrderRow(
+        collision_first_state, collision_second_state, request.collision_spec);
+    verify_pair(
+        "collision:1--2:owner:1", "collision:1--2:owner:2",
+        {-0.2, -0.1}, {0.2, 0.1}, collision);
+
+    const auto fixed = std::find_if(rows.begin(), rows.end(), [](const auto& row) {
+        return row.id == "reference:10->1:owner:1";
+    });
+    REQUIRE(fixed != rows.end());
+    CHECK(fixed->responsibility == doctest::Approx(1.0));
+    CHECK(fixed->constant != doctest::Approx(0.5 * fixed->constant));
+}
+
+TEST_CASE("Half-row composition covers equality and detects a violated local premise") {
+    auto request = requestWith({{1, 2}, {10, 1}});
+    const auto rows = gf::buildCanonicalHardRows(request);
+    const auto owner = std::find_if(rows.begin(), rows.end(), [](const auto& row) {
+        return row.id == "reference:1->2:owner:2";
+    });
+    const auto peer = std::find_if(rows.begin(), rows.end(), [](const auto& row) {
+        return row.id == "reference:1->2:owner:1";
+    });
+    REQUIRE(owner != rows.end());
+    REQUIRE(peer != rows.end());
+    const Eigen::Vector2d owner_boundary =
+        -owner->constant * owner->control_coefficient /
+        owner->control_coefficient.squaredNorm();
+    const Eigen::Vector2d peer_boundary =
+        -peer->constant * peer->control_coefficient /
+        peer->control_coefficient.squaredNorm();
+    CHECK(owner->margin(owner_boundary) == doctest::Approx(0.0).epsilon(1e-10));
+    CHECK(peer->margin(peer_boundary) == doctest::Approx(0.0).epsilon(1e-10));
+    CHECK(owner->margin(owner_boundary) + peer->margin(peer_boundary)
+          == doctest::Approx(0.0).epsilon(1e-10));
+
+    const Eigen::Vector2d violated = owner_boundary -
+        1e-3 * owner->control_coefficient.normalized();
+    CHECK(owner->margin(violated) < 0.0);
+    const bool both_local_premises_hold =
+        owner->margin(violated) >= 0.0 &&
+        peer->margin(peer_boundary) >= 0.0;
+    CHECK_FALSE(both_local_premises_hold);
+
+    const auto fixed = std::find_if(rows.begin(), rows.end(), [](const auto& row) {
+        return row.id == "reference:10->1:owner:1";
+    });
+    REQUIRE(fixed != rows.end());
+    auto mobile = request.states.at(1);
+    auto anchor = request.states.at(10);
+    mobile.acceleration.setZero();
+    anchor.acceleration.setZero();
+    const auto centralized = buildPairwiseSecondOrderRow(
+        mobile, anchor, request.reference_spec);
+    CHECK((fixed->control_coefficient - centralized.uCoe).norm()
+          == doctest::Approx(0.0).epsilon(1e-12));
+    CHECK(fixed->constant
+          == doctest::Approx(centralized.constTerm).epsilon(1e-12));
+
+    const auto collision_first = std::find_if(rows.begin(), rows.end(), [](const auto& row) {
+        return row.id == "collision:1--2:owner:1";
+    });
+    const auto collision_second = std::find_if(rows.begin(), rows.end(), [](const auto& row) {
+        return row.id == "collision:1--2:owner:2";
+    });
+    REQUIRE(collision_first != rows.end());
+    REQUIRE(collision_second != rows.end());
+    const Eigen::Vector2d collision_boundary_first =
+        -collision_first->constant * collision_first->control_coefficient /
+        collision_first->control_coefficient.squaredNorm();
+    const Eigen::Vector2d collision_boundary_second =
+        -collision_second->constant * collision_second->control_coefficient /
+        collision_second->control_coefficient.squaredNorm();
+    CHECK(collision_first->margin(collision_boundary_first)
+          == doctest::Approx(0.0).epsilon(1e-10));
+    CHECK(collision_second->margin(collision_boundary_second)
+          == doctest::Approx(0.0).epsilon(1e-10));
+    const Eigen::Vector2d collision_violated = collision_boundary_first -
+        1e-3 * collision_first->control_coefficient.normalized();
+    CHECK(collision_first->margin(collision_violated) < 0.0);
+
+    auto fixed_collision_request = requestWith({});
+    fixed_collision_request.collision_pairs.push_back(
+        gf::UndirectedEdge::canonical(1, 10));
+    const auto fixed_collision_rows = gf::buildCanonicalHardRows(
+        fixed_collision_request);
+    const auto fixed_collision = std::find_if(
+        fixed_collision_rows.begin(), fixed_collision_rows.end(), [](const auto& row) {
+            return row.id == "collision:1--10:owner:1";
+        });
+    REQUIRE(fixed_collision != fixed_collision_rows.end());
+    auto mobile_collision = fixed_collision_request.states.at(1);
+    auto anchor_collision = fixed_collision_request.states.at(10);
+    mobile_collision.acceleration.setZero();
+    anchor_collision.acceleration.setZero();
+    const auto centralized_fixed_collision = buildPairwiseSecondOrderRow(
+        mobile_collision, anchor_collision,
+        fixed_collision_request.collision_spec);
+    CHECK(fixed_collision->responsibility == doctest::Approx(1.0));
+    CHECK((fixed_collision->control_coefficient -
+           centralized_fixed_collision.uCoe).norm()
+          == doctest::Approx(0.0).epsilon(1e-12));
+    CHECK(fixed_collision->constant
+          == doctest::Approx(
+              centralized_fixed_collision.constTerm).epsilon(1e-12));
+}
+
 TEST_CASE("Canonical gamma-star matches an independent vertex oracle for all signs") {
     const auto check_sign = [](double constant) {
         std::vector<gf::CanonicalHardRow> rows = {

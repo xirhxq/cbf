@@ -2,6 +2,42 @@
 
 #include "doctest.h"
 #include "grand_finale/ReferenceEligibility.hpp"
+#include "grand_finale/TransitionCertifier.hpp"
+
+TEST_CASE("An edge in the keep-only shell cannot support a reverse certificate") {
+    Eigen::VectorXd mean(4);
+    mean << 849.5, 0.0, 0.0, 0.0;
+    const gf::JointEstimateSnapshot snapshot{
+        {1}, mean, 1e-4 * Eigen::MatrixXd::Identity(4, 4),
+        {{10, Eigen::Vector2d::Zero()}}};
+    const std::map<std::string, gf::RangeLinkState> links{
+        {"1--10", {0.0, 1.0}}};
+    const gf::EligibilityThresholds thresholds{
+        849.0, 850.0, 1.0, 0.1, 0.5, 0.0};
+    const auto keep = gf::buildEligibility(
+        snapshot, links, thresholds, {{10, 1}});
+    const auto add = gf::buildEligibility(snapshot, links, thresholds, {});
+    REQUIRE(keep.candidates.size() == 1);
+    REQUIRE(add.candidates.size() == 1);
+    CHECK(keep.candidates.front().eligible);
+    CHECK_FALSE(add.candidates.front().eligible);
+    CHECK(add.candidates.front().reason == "robust_distance");
+}
+
+TEST_CASE("Non-finite eligibility thresholds cannot bypass a hard gate") {
+    Eigen::VectorXd mean(4);
+    mean.setZero();
+    const gf::JointEstimateSnapshot snapshot{
+        {1}, mean, Eigen::MatrixXd::Identity(4, 4),
+        {{10, Eigen::Vector2d::Ones()}}};
+    const std::map<std::string, gf::RangeLinkState> links{
+        {"1--10", {0.0, 1.0}}};
+    auto thresholds = gf::EligibilityThresholds{1.0, 2.0, 1.0, 2.0, 0.5, 1.0};
+    thresholds.max_aoi_s = std::numeric_limits<double>::quiet_NaN();
+    CHECK_THROWS_AS(
+        gf::buildEligibility(snapshot, links, thresholds, {}),
+        std::invalid_argument);
+}
 
 #include <Eigen/Dense>
 

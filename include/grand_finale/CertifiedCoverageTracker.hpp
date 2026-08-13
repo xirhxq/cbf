@@ -63,6 +63,11 @@ public:
 
     int truthCoveredCount() const { return coveredCount(truth_); }
     int certifiedCoveredCount() const { return coveredCount(certified_); }
+    double truthFraction() const {
+        return truth_.validCount == 0
+            ? 0.0
+            : static_cast<double>(truthCoveredCount()) / truth_.validCount;
+    }
     double certifiedFraction() const {
         return certified_.validCount == 0
             ? 0.0

@@ -164,3 +164,30 @@ TEST_CASE("Topology adapters report infeasible when an owner has fewer than two 
     CHECK(gurobi.solve(model).status == gf::TopologySolveStatus::Infeasible);
 #endif
 }
+
+TEST_CASE("No-good rejection makes both proposers return a different topology") {
+    gf::TopologyRequest request = oracleRequest();
+    gf::HighsTopologySolver highs;
+    const auto first = highs.solve(gf::TopologyModel(request));
+    REQUIRE(first.status == gf::TopologySolveStatus::Optimal);
+    request.forbidden_topologies.push_back(first.edges);
+    const auto second = highs.solve(gf::TopologyModel(request));
+    REQUIRE(second.status == gf::TopologySolveStatus::Optimal);
+    std::set<std::string> first_ids, second_ids;
+    for (const auto& edge : first.edges) first_ids.insert(edge.id());
+    for (const auto& edge : second.edges) second_ids.insert(edge.id());
+    CHECK(second_ids != first_ids);
+#ifdef ENABLE_GUROBI
+    gf::TopologyRequest gurobi_request = oracleRequest();
+    gf::GurobiTopologySolver gurobi;
+    const auto gurobi_first = gurobi.solve(gf::TopologyModel(gurobi_request));
+    REQUIRE(gurobi_first.status == gf::TopologySolveStatus::Optimal);
+    gurobi_request.forbidden_topologies.push_back(gurobi_first.edges);
+    const auto gurobi_second = gurobi.solve(gf::TopologyModel(gurobi_request));
+    REQUIRE(gurobi_second.status == gf::TopologySolveStatus::Optimal);
+    std::set<std::string> gurobi_first_ids, gurobi_second_ids;
+    for (const auto& edge : gurobi_first.edges) gurobi_first_ids.insert(edge.id());
+    for (const auto& edge : gurobi_second.edges) gurobi_second_ids.insert(edge.id());
+    CHECK(gurobi_second_ids != gurobi_first_ids);
+#endif
+}

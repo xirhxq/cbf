@@ -88,6 +88,18 @@ public:
             base_rows.push_back(Row{{{y, 1}, {pairs[index].first, -1},
                                      {pairs[index].second, -1}}, -1, infinity});
         }
+        for (const auto& forbidden : request.forbidden_topologies) {
+            std::set<std::string> forbidden_ids;
+            for (const DirectedEdge& edge : forbidden)
+                forbidden_ids.insert(edge.id());
+            Row row{{}, -infinity,
+                    static_cast<double>(forbidden_ids.size()) - 1.0};
+            for (int index = 0; index < edge_count; ++index) {
+                row.coefficients[index] =
+                    forbidden_ids.count(decisions[index].edge.id()) ? 1.0 : -1.0;
+            }
+            base_rows.push_back(std::move(row));
+        }
 
         const auto coefficient = [](const std::map<std::string, double>& values,
                                     const std::string& id) {

@@ -1193,6 +1193,28 @@ public:
         return explorationPoint;
     }
 
+    Eigen::Vector2d coverageNominalAcceleration(
+            double positionGain,
+            double velocityGain,
+            double accelerationHalfBox) {
+        if (!std::isfinite(positionGain) || positionGain < 0.0 ||
+            !std::isfinite(velocityGain) || velocityGain < 0.0 ||
+            !std::isfinite(accelerationHalfBox) || accelerationHalfBox <= 0.0) {
+            throw std::invalid_argument("invalid coverage nominal gains");
+        }
+        const Point current = model->xy();
+        const Point target = gridWorld.getNearestUnexploredPointInPolygon(
+            world.boundary, current, current);
+        const Eigen::Vector2d velocity = model->getVelocity().head<2>();
+        Eigen::Vector2d nominal =
+            positionGain * (target - current).vec() - velocityGain * velocity;
+        nominal.x() = std::max(-accelerationHalfBox,
+                              std::min(accelerationHalfBox, nominal.x()));
+        nominal.y() = std::max(-accelerationHalfBox,
+                              std::min(accelerationHalfBox, nominal.y()));
+        return nominal;
+    }
+
     void setCVTCBF(const json& config) {
         cvt = CVT(n, world.boundary);
         for (auto &[id, pos2d]: comm->_othersPos) {

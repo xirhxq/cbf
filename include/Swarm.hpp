@@ -12,9 +12,76 @@
 #include "bridge/PostDetectionResponse.hpp"
 #include "bridge/ReserveTaskHomotopy.hpp"
 
+#include <functional>
+#include <optional>
+
 
 class Swarm {
 public:
+    struct CertifiedStepResult {
+        bool advanced = false;
+        std::string reason;
+        std::size_t updated_truth_cells = 0;
+    };
+
+    using CertifiedControlBatch = std::map<int, Eigen::Vector2d>;
+    using CertifiedControlHook = std::function<
+        std::optional<CertifiedControlBatch>(Swarm&)>;
+
+    void prepareCertifiedControlStep() {
+        exchangeData();
+        checkInformationExchange();
+        for (auto &robot : robots) robot->checkRobotsInsideWorld();
+    }
+
+    CertifiedStepResult applyCertifiedControlsAndAdvance(
+            double dt,
+            const std::optional<CertifiedControlBatch>& controls) {
+        CertifiedStepResult result;
+        if (!std::isfinite(dt) || dt <= 0.0) {
+            result.reason = "invalid_step_request";
+            return result;
+        }
+        if (!controls.has_value()) {
+            result.reason = "certified_control_unavailable";
+            return result;
+        }
+        if (controls->size() != robots.size()) {
+            result.reason = "incomplete_certified_control_batch";
+            return result;
+        }
+        for (const auto &robot : robots) {
+            const auto it = controls->find(robot->id);
+            if (it == controls->end() || !it->second.allFinite()) {
+                result.reason = "invalid_certified_control_batch";
+                return result;
+            }
+        }
+        for (auto &robot : robots) {
+            Eigen::VectorXd control = Eigen::VectorXd::Zero(
+                robot->model->uSize());
+            control.head<2>() = controls->at(robot->id);
+            robot->model->setControlInput(control);
+        }
+        advanceDynamics(dt);
+        // GridWorld observations belong to the post-ZOH state.  Refresh the
+        // shared state before each local map observes the swarm so the local
+        // union and centralized truth map use the same positions.
+        exchangeData();
+        checkInformationExchange();
+        for (auto &robot : robots) robot->updateGridWorld();
+        updateGridWorld();
+        checkUpdatedGridWorld();
+        result.advanced = true;
+        result.reason = "advanced";
+        result.updated_truth_cells = updatedGridWorldGroundTruth.size();
+        return result;
+    }
+
+    void advanceDynamics(double dt) {
+        for (auto &robot : robots) robot->stepTimeForward(dt);
+    }
+
     int n;
     std::vector<std::unique_ptr<Robot>> robots;
     std::ofstream ofstream;
@@ -307,6 +374,20 @@ public:
         }
     }
 
+    CertifiedStepResult stepWithCertifiedControls(
+            double dt,
+            const CertifiedControlHook& controller) {
+        CertifiedStepResult result;
+        if (!std::isfinite(dt) || dt <= 0.0 || !controller) {
+            result.reason = "invalid_step_request";
+            return result;
+        }
+
+        prepareCertifiedControlStep();
+        const std::optional<CertifiedControlBatch> controls = controller(*this);
+        return applyCertifiedControlsAndAdvance(dt, controls);
+    }
+
     void run() {
         exchangeData();
         checkInformationExchange();
@@ -399,7 +480,7 @@ public:
                     };
                     break;
                 }
-                for (auto &robot: robots) robot->stepTimeForward(tStep);
+                advanceDynamics(tStep);
             }
             catch (...) {
                 std::string terminationMessage = "unknown exception";

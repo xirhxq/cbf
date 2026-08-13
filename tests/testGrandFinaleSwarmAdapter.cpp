@@ -1,0 +1,233 @@
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+
+#include "doctest.h"
+#include "grand_finale/GrandFinaleSwarmAdapter.hpp"
+
+#include <fstream>
+
+namespace {
+
+json settings4p2() {
+    json settings = json::parse(std::ifstream(
+        std::string(PROJECT_ROOT) + "/config/config_second_order.json"));
+    settings["num"] = 4;
+    settings["formation"]["parts"] = 1;
+    settings["formation"]["bases-id"] = {{0, 1}};
+    settings["bases"] = {{4.0, 4.0}, {4.0, 16.0}};
+    settings["initial"]["position"]["positions"] = {
+        {7.0, 7.0}, {7.0, 13.0}, {12.0, 7.0}, {12.0, 13.0}};
+    settings["initial"]["velocity"]["values"] = {
+        {0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}};
+    settings["world"]["spacing"] = 1.0;
+    settings["searching"]["downward"]["radius"] = 2.0;
+    return settings;
+}
+
+std::vector<gf::DirectedEdge> topology() {
+    return {{10, 1}, {11, 1}, {10, 2}, {1, 2},
+            {11, 3}, {1, 3}, {2, 4}, {3, 4}};
+}
+
+gf::GrandFinaleSwarmAdapterConfig adapterConfig(gf::SolverProfile profile) {
+    gf::GrandFinaleSwarmAdapterConfig config;
+    config.solver_profile = profile;
+    config.dt_s = 0.1;
+    config.acceleration_half_box = 0.4;
+    config.sensor_radius_m = 2.0;
+    return config;
+}
+
+}  // namespace
+
+TEST_CASE("Formal Swarm adapter closes SEARCH HOLD RETREAT REFORM and UNION QP flows") {
+    json settings = settings4p2();
+    Swarm swarm(settings);
+    gf::GrandFinaleSwarmAdapter adapter(
+        swarm, {1, 2, 3, 4}, {{10, {4.0, 4.0}}, {11, {4.0, 16.0}}},
+        topology(), adapterConfig(gf::SolverProfile::OpenSource));
+
+    const auto search = adapter.step();
+    REQUIRE(search.advanced);
+    CHECK(search.mode == gf::SupervisorMode::Search);
+    CHECK(search.certified_control_count == 4);
+    CHECK(search.minimum_hard_residual >= -1e-7);
+    CHECK(search.estimator_version_after > search.estimator_version_before);
+
+    adapter.supervisor().requestReformation(
+        swarm.robots.front()->runtime, true, true);
+    const auto reform = adapter.step();
+    REQUIRE(reform.advanced);
+    CHECK(reform.mode == gf::SupervisorMode::Reform);
+
+    REQUIRE(adapter.beginReplacement({11, 2}, {10, 2}));
+    const auto union_step = adapter.step();
+    REQUIRE(union_step.advanced);
+    CHECK(union_step.mode == gf::SupervisorMode::Union);
+    CHECK(union_step.certified_control_count == 4);
+    CHECK(adapter.unionControlCycles() == 1);
+    REQUIRE(adapter.finishReplacementAfterFreshCycle());
+    CHECK(adapter.supervisor().mode() == gf::SupervisorMode::Search);
+    CHECK(adapter.transitionStackSize() == 1);
+
+    json retreat_settings = settings4p2();
+    Swarm retreat_swarm(retreat_settings);
+    gf::GrandFinaleSwarmAdapter retreat_adapter(
+        retreat_swarm, {1, 2, 3, 4},
+        {{10, {4.0, 4.0}}, {11, {4.0, 16.0}}}, topology(),
+        adapterConfig(gf::SolverProfile::OpenSource));
+    REQUIRE(retreat_adapter.step().advanced);
+    retreat_adapter.supervisor().requestRetreat(
+        retreat_swarm.robots.front()->runtime, true);
+    const auto retreat = retreat_adapter.step();
+    REQUIRE(retreat.advanced);
+    CHECK(retreat.mode == gf::SupervisorMode::Retreat);
+
+    json hold_settings = settings4p2();
+    Swarm hold_swarm(hold_settings);
+    gf::GrandFinaleSwarmAdapter hold_adapter(
+        hold_swarm, {1, 2, 3, 4},
+        {{10, {4.0, 4.0}}, {11, {4.0, 16.0}}}, topology(),
+        adapterConfig(gf::SolverProfile::OpenSource));
+    REQUIRE(hold_adapter.step().advanced);
+    hold_adapter.supervisor().requestRetreat(
+        hold_swarm.robots.front()->runtime, false);
+    const auto hold = hold_adapter.step();
+    REQUIRE(hold.advanced);
+    CHECK(hold.mode == gf::SupervisorMode::Hold);
+}
+
+#ifdef ENABLE_GUROBI
+TEST_CASE("Gurobi profile uses the same formal Swarm adapter control path") {
+    json settings = settings4p2();
+    settings["optimiser"] = "Gurobi";
+    Swarm swarm(settings);
+    gf::GrandFinaleSwarmAdapter adapter(
+        swarm, {1, 2, 3, 4}, {{10, {4.0, 4.0}}, {11, {4.0, 16.0}}},
+        topology(), adapterConfig(gf::SolverProfile::Gurobi));
+    const auto result = adapter.step();
+    REQUIRE(result.advanced);
+    CHECK(result.certified_control_count == 4);
+    CHECK(result.minimum_hard_residual >= -1e-7);
+}
+#endif
+
+TEST_CASE("A heterogeneous-covariance new edge enlarges the union HOCBF tube") {
+    Eigen::VectorXd mean = Eigen::VectorXd::Zero(8);
+    Eigen::MatrixXd covariance = Eigen::MatrixXd::Zero(8, 8);
+    covariance.block<2, 2>(0, 0) =
+        1.0e-4 * Eigen::Matrix2d::Identity();
+    covariance.block<2, 2>(4, 4) =
+        0.04 * Eigen::Matrix2d::Identity();
+    const gf::JointEstimateSnapshot snapshot{
+        {1, 2}, mean, covariance, {{10, Eigen::Vector2d::Zero()}}};
+    const double old_tube = gf::posteriorPairPositionTube(
+        snapshot, {10, 1}, 3.0);
+    const double union_new_edge_tube = gf::posteriorPairPositionTube(
+        snapshot, {2, 1}, 3.0);
+    CHECK(old_tube == doctest::Approx(0.03));
+    CHECK(union_new_edge_tube == doctest::Approx(0.63));
+    CHECK(union_new_edge_tube > old_tube);
+}
+
+TEST_CASE("Missing range history rejects switching without advancing topology or physics") {
+    json settings = settings4p2();
+    Swarm swarm(settings);
+    gf::GrandFinaleSwarmAdapter adapter(
+        swarm, {1, 2, 3, 4}, {{10, {4.0, 4.0}}, {11, {4.0, 16.0}}},
+        topology(), adapterConfig(gf::SolverProfile::OpenSource));
+    const auto version = adapter.supervisor().topologyVersion();
+    const double runtime = swarm.robots.front()->runtime;
+    CHECK_FALSE(adapter.beginReplacement({11, 2}, {10, 2}));
+    CHECK(adapter.supervisor().topologyVersion() == version);
+    CHECK(swarm.robots.front()->runtime == doctest::Approx(runtime));
+    CHECK(adapter.supervisor().mode() == gf::SupervisorMode::Search);
+}
+
+TEST_CASE("Actual union hard rows use the higher-covariance new endpoint tube") {
+    json low_settings = settings4p2();
+    json high_settings = settings4p2();
+    Swarm low_swarm(low_settings);
+    Swarm high_swarm(high_settings);
+    auto low_config = adapterConfig(gf::SolverProfile::OpenSource);
+    auto high_config = low_config;
+    high_config.initial_position_variance_m2 = 0.04;
+    gf::GrandFinaleSwarmAdapter low_adapter(
+        low_swarm, {1, 2, 3, 4}, {{10, {4.0, 4.0}}, {11, {4.0, 16.0}}},
+        topology(), low_config);
+    gf::GrandFinaleSwarmAdapter high_adapter(
+        high_swarm, {1, 2, 3, 4}, {{10, {4.0, 4.0}}, {11, {4.0, 16.0}}},
+        topology(), high_config);
+    auto union_topology = topology();
+    union_topology.push_back({11, 2});
+    const auto low_rows = low_adapter.currentSnapshotHardRows(union_topology);
+    const auto high_rows = high_adapter.currentSnapshotHardRows(union_topology);
+    const auto low_row = std::find_if(low_rows.begin(), low_rows.end(), [](const auto& item) {
+        return item.id == "reference:11->2:owner:2";
+    });
+    const auto high_row = std::find_if(high_rows.begin(), high_rows.end(), [](const auto& item) {
+        return item.id == "reference:11->2:owner:2";
+    });
+    REQUIRE(low_row != low_rows.end());
+    REQUIRE(high_row != high_rows.end());
+    CHECK(high_row->barrier_h < low_row->barrier_h);
+    CHECK(high_row->constant < low_row->constant);
+}
+
+TEST_CASE("Permuted mobile IDs are rejected before any certified control can be applied") {
+    json settings = settings4p2();
+    Swarm swarm(settings);
+    CHECK_THROWS_AS(
+        gf::GrandFinaleSwarmAdapter(
+            swarm, {2, 1, 3, 4},
+            {{10, {4.0, 4.0}}, {11, {4.0, 16.0}}}, topology(),
+            adapterConfig(gf::SolverProfile::OpenSource)),
+        std::invalid_argument);
+}
+
+TEST_CASE("The formal adapter rejects a non-positive supervisor dwell time") {
+    json settings = settings4p2();
+    Swarm swarm(settings);
+    auto config = adapterConfig(gf::SolverProfile::OpenSource);
+    config.minimum_dwell_s = 0.0;
+    CHECK_THROWS_AS(
+        gf::GrandFinaleSwarmAdapter(
+            swarm, {1, 2, 3, 4},
+            {{10, {4.0, 4.0}}, {11, {4.0, 16.0}}}, topology(), config),
+        std::invalid_argument);
+}
+
+TEST_CASE("Effective reference initial-set audit rejects negative and incomplete half rows") {
+    const auto make_row = [](
+        std::string id, gf::NodeId owner, double h, double psi1) {
+        gf::CanonicalHardRow row;
+        row.id = std::move(id);
+        row.kind = gf::CanonicalHardRowKind::ReferenceDistance;
+        row.owner = owner;
+        row.barrier_h = h;
+        row.barrier_psi1 = psi1;
+        return row;
+    };
+    std::vector<gf::CanonicalHardRow> fixed_rows{
+        make_row("reference:10->1:owner:1", 1, 0.0, 0.0)};
+    CHECK(gf::referenceEdgeInitialSetAudited(
+        fixed_rows, {10, 1}, {1, 2}));
+    fixed_rows.front().barrier_h = -1.0e-6;
+    CHECK_FALSE(gf::referenceEdgeInitialSetAudited(
+        fixed_rows, {10, 1}, {1, 2}));
+    fixed_rows.front().barrier_h = 0.0;
+    fixed_rows.front().barrier_psi1 = -1.0e-6;
+    CHECK_FALSE(gf::referenceEdgeInitialSetAudited(
+        fixed_rows, {10, 1}, {1, 2}));
+
+    std::vector<gf::CanonicalHardRow> mobile_rows{
+        make_row("reference:1->2:owner:2", 2, 0.0, 0.0)};
+    CHECK_FALSE(gf::referenceEdgeInitialSetAudited(
+        mobile_rows, {1, 2}, {1, 2}));
+    mobile_rows.push_back(
+        make_row("reference:1->2:owner:1", 1, 0.0, 0.0));
+    CHECK(gf::referenceEdgeInitialSetAudited(
+        mobile_rows, {1, 2}, {1, 2}));
+    mobile_rows.back().barrier_h = -1.0e-6;
+    CHECK_FALSE(gf::referenceEdgeInitialSetAudited(
+        mobile_rows, {1, 2}, {1, 2}));
+}

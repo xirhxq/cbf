@@ -1,0 +1,141 @@
+#pragma once
+
+#include "grand_finale/CanonicalHardRows.hpp"
+#include "grand_finale/HybridSupervisor.hpp"
+#include "grand_finale/ProgressCompatibility.hpp"
+#include "grand_finale/Types.hpp"
+#include "optimisers/optimisers"
+
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace gf {
+
+struct CanonicalQpRequest {
+    SolverProfile profile = SolverProfile::OpenSource;
+    NodeId owner = 0;
+    std::uint64_t estimator_version = 0;
+    std::uint64_t topology_version = 0;
+    SupervisorMode mode = SupervisorMode::Search;
+    Eigen::Vector2d nominal = Eigen::Vector2d::Zero();
+    double acceleration_half_box = 0.0;
+    std::vector<CanonicalHardRow> rows;
+    double residual_tolerance = 1.0e-7;
+};
+
+struct CanonicalQpResult {
+    NodeId owner = 0;
+    std::uint64_t estimator_version = 0;
+    std::uint64_t topology_version = 0;
+    SupervisorMode mode = SupervisorMode::Search;
+    bool hard_polytope_nonempty = false;
+    bool solver_succeeded = false;
+    bool residual_verified = false;
+    bool control_available = false;
+    Eigen::Vector2d control = Eigen::Vector2d::Zero();
+    Eigen::Vector2d exact_projection = Eigen::Vector2d::Zero();
+    double exact_oracle_error = std::numeric_limits<double>::infinity();
+    double minimum_hard_residual =
+        -std::numeric_limits<double>::infinity();
+    std::string solver_status = "not_run";
+    std::string failure_reason;
+};
+
+inline bool controlMayBeApplied(
+    const CanonicalQpResult& result,
+    std::uint64_t estimator_version,
+    std::uint64_t topology_version,
+    SupervisorMode mode) {
+    return result.control_available && result.solver_succeeded &&
+           result.residual_verified &&
+           result.estimator_version == estimator_version &&
+           result.topology_version == topology_version &&
+           result.mode == mode;
+}
+
+class CanonicalHocbfQpController {
+public:
+    CanonicalQpResult solve(const CanonicalQpRequest& request) const {
+        CanonicalQpResult result;
+        result.owner = request.owner;
+        result.estimator_version = request.estimator_version;
+        result.topology_version = request.topology_version;
+        result.mode = request.mode;
+
+        if (!request.nominal.allFinite() ||
+            !std::isfinite(request.acceleration_half_box) ||
+            request.acceleration_half_box <= 0.0 ||
+            !std::isfinite(request.residual_tolerance) ||
+            request.residual_tolerance < 0.0) {
+            result.failure_reason = "invalid_request";
+            return result;
+        }
+
+        const auto exact = evaluateProgressCompatibility(
+            request.rows, request.owner, request.nominal,
+            request.acceleration_half_box,
+            ProgressCompatibilityConfig{
+                std::numeric_limits<double>::max(), 0.0,
+                request.residual_tolerance, true});
+        result.hard_polytope_nonempty = exact.polytope_nonempty;
+        if (!exact.polytope_nonempty) {
+            result.failure_reason = "hard_polytope_empty";
+            return result;
+        }
+        result.exact_projection = exact.projection;
+
+        json settings = {
+            {"k_delta", 1.0},
+            {"absolute-tolerance", 1.0e-8},
+            {"relative-tolerance", 1.0e-8},
+            {"primal-infeasibility-tolerance", 1.0e-8},
+            {"dual-infeasibility-tolerance", 1.0e-8},
+        };
+        try {
+            const std::string optimiser_name =
+                request.profile == SolverProfile::Gurobi ? "Gurobi" : "OSQP";
+            std::unique_ptr<OptimiserBase> optimiser =
+                createOptimiser(optimiser_name, settings);
+            optimiser->start(2, 2);
+            optimiser->setObjective(request.nominal);
+            for (const CanonicalHardRow& row : request.rows) {
+                if (row.owner != request.owner) continue;
+                optimiser->addLinearConstraint(
+                    row.control_coefficient, -row.constant);
+            }
+            const Eigen::VectorXd solution = optimiser->solve();
+            const json status = optimiser->getStatus();
+            result.solver_status = status.value("status", "unknown");
+            result.solver_succeeded =
+                result.solver_status == "optimal" ||
+                result.solver_status == "optimal_inaccurate";
+            if (!result.solver_succeeded || solution.size() < 2 ||
+                !solution.head<2>().allFinite()) {
+                result.failure_reason = "solver_failure";
+                return result;
+            }
+            result.control = solution.head<2>();
+            result.minimum_hard_residual = minimumCanonicalOwnerResidual(
+                request.rows, request.owner, result.control);
+            result.residual_verified =
+                result.minimum_hard_residual >= -request.residual_tolerance;
+            result.exact_oracle_error =
+                (result.control - result.exact_projection).norm();
+            if (!result.residual_verified) {
+                result.failure_reason = "residual_verification_failed";
+                return result;
+            }
+            result.control_available = true;
+            return result;
+        } catch (...) {
+            result.failure_reason = "solver_failure";
+            return result;
+        }
+    }
+};
+
+}  // namespace gf

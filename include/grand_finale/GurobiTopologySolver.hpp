@@ -69,6 +69,19 @@ public:
                 if (mobiles.count(edge.reference)) row -= levels.at(edge.reference);
                 model.addConstr(row >= 1.0 - big_m);
             }
+            for (const auto& forbidden : request.forbidden_topologies) {
+                std::set<std::string> forbidden_ids;
+                for (const DirectedEdge& edge : forbidden)
+                    forbidden_ids.insert(edge.id());
+                GRBLinExpr difference = 0.0;
+                for (std::size_t index = 0; index < decisions.size(); ++index) {
+                    if (forbidden_ids.count(decisions[index].edge.id()))
+                        difference += 1.0 - edge_variables[index];
+                    else
+                        difference += edge_variables[index];
+                }
+                model.addConstr(difference >= 1.0);
+            }
 
             const auto coefficient = [](const std::map<std::string, double>& values,
                                         const std::string& id) {

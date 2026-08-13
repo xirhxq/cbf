@@ -47,6 +47,7 @@ struct TopologyRequest {
     std::map<std::string, double> progress_coefficients;
     std::map<std::string, double> fim_linear_coefficients;
     std::map<std::string, double> fim_pair_coefficients;
+    std::vector<std::vector<DirectedEdge>> forbidden_topologies;
 };
 
 struct EdgeDecision {
@@ -148,6 +149,16 @@ public:
         for (const DirectedEdge& edge : request_.old_edges) {
             old_ids_.insert(edge.id());
         }
+        for (auto& topology : request_.forbidden_topologies) {
+            std::set<std::string> ids;
+            for (const DirectedEdge& edge : topology) {
+                if (eligible_ids_.count(edge.id()) == 0 ||
+                    !ids.insert(edge.id()).second) {
+                    throw std::invalid_argument("invalid forbidden topology");
+                }
+            }
+            forbidden_ids_.push_back(std::move(ids));
+        }
     }
 
     const TopologyRequest& request() const { return request_; }
@@ -185,6 +196,11 @@ public:
                 result.reason = "indegree";
                 return result;
             }
+        }
+        if (std::find(forbidden_ids_.begin(), forbidden_ids_.end(),
+                      selected_ids) != forbidden_ids_.end()) {
+            result.reason = "no_good";
+            return result;
         }
 
         std::priority_queue<NodeId, std::vector<NodeId>, std::greater<NodeId>> ready;
@@ -271,6 +287,7 @@ private:
     std::vector<EdgeDecision> edges_;
     std::set<std::string> eligible_ids_;
     std::set<std::string> old_ids_;
+    std::vector<std::set<std::string>> forbidden_ids_;
 };
 
 }  // namespace gf

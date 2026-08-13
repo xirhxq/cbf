@@ -66,6 +66,14 @@ TEST_CASE("No candidate enters certified retreat or fail-closed hold") {
           == gf::SupervisorMode::Hold);
 }
 
+TEST_CASE("An explicit retreat request respects positive dwell") {
+    gf::HybridSupervisor supervisor({1.0, 0.2, 0.5});
+    CHECK(supervisor.requestRetreat(0.5, true)
+          == gf::SupervisorMode::Search);
+    CHECK(supervisor.requestRetreat(1.0, true)
+          == gf::SupervisorMode::Retreat);
+}
+
 TEST_CASE("A material topology request can trigger reform independently of gamma warning") {
     gf::HybridSupervisor supervisor({0.0, 0.2, 0.5});
     CHECK(supervisor.requestReformation(0.0, true, true)
@@ -103,7 +111,7 @@ TEST_CASE("A version-consistent transition installs union before successor") {
     const auto certificate = validCertificate();
 
     REQUIRE(supervisor.beginMakeBeforeBreak(certificate, 7, 13, 0.1));
-    CHECK(supervisor.mode() == gf::SupervisorMode::Reform);
+    CHECK(supervisor.mode() == gf::SupervisorMode::Union);
     CHECK(supervisor.topology() == certificate.union_edges);
     CHECK(supervisor.topologyVersion() == 8);
 

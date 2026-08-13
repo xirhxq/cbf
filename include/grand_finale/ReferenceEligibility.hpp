@@ -114,10 +114,16 @@ inline EligibilitySnapshot buildEligibility(
     const EligibilityThresholds& thresholds,
     const std::vector<DirectedEdge>& current_edges) {
     if (!(thresholds.add_distance_m > 0.0) ||
+        !std::isfinite(thresholds.add_distance_m) ||
+        !std::isfinite(thresholds.keep_distance_m) ||
         thresholds.keep_distance_m < thresholds.add_distance_m ||
+        !std::isfinite(thresholds.max_aoi_s) ||
         thresholds.max_aoi_s < 0.0 ||
+        !std::isfinite(thresholds.max_reference_position_eigenvalue_m2) ||
         thresholds.max_reference_position_eigenvalue_m2 < 0.0 ||
+        !std::isfinite(thresholds.min_range_quality) ||
         thresholds.min_range_quality < 0.0 ||
+        !std::isfinite(thresholds.uncertainty_sigma) ||
         thresholds.uncertainty_sigma < 0.0) {
         throw std::invalid_argument("invalid eligibility thresholds");
     }

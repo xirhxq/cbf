@@ -2,6 +2,7 @@
 
 #include "grand_finale/CanonicalHardRows.hpp"
 #include "grand_finale/ReferenceGeometry.hpp"
+#include "grand_finale/ProgressCompatibility.hpp"
 #include "grand_finale/TopologyModel.hpp"
 
 #include <algorithm>
@@ -35,6 +36,8 @@ struct TransitionCertificationContext {
     std::map<std::string, double> range_variances_m2;
     std::map<std::string, CertifiedEdgeGate> edge_gates;
     CanonicalHardRowRequest hard_row_request;
+    std::map<NodeId, Eigen::Vector2d> nominal_controls;
+    ProgressCompatibilityConfig progress_compatibility;
 };
 
 struct TransitionProposal {
@@ -158,6 +161,23 @@ inline CertifiedTopologyState evaluateState(
     hard_row_request.reference_edges = edges;
     const std::vector<CanonicalHardRow> hard_rows =
         buildCanonicalHardRows(std::move(hard_row_request));
+    if (!context.nominal_controls.empty()) {
+        for (NodeId owner : context.mobile_ids) {
+            const auto nominal = context.nominal_controls.find(owner);
+            if (nominal == context.nominal_controls.end()) {
+                result.reason = "progress_nominal_missing";
+                return result;
+            }
+            const auto progress = evaluateProgressCompatibility(
+                hard_rows, owner, nominal->second,
+                context.hard_row_request.acceleration_half_box,
+                context.progress_compatibility);
+            if (!progress.compatible) {
+                result.reason = "progress_" + progress.reason;
+                return result;
+            }
+        }
+    }
     for (const CanonicalHardRow& row : hard_rows) {
         if (row.kind != CanonicalHardRowKind::ReferenceDistance &&
             row.kind != CanonicalHardRowKind::Collision) {

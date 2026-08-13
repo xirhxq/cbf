@@ -222,3 +222,22 @@ TEST_CASE("A feasible affine HOCBF row cannot certify outside the extended safe 
     CHECK_FALSE(result.valid);
     CHECK(result.old_state.reason == "collision_initial_set");
 }
+
+TEST_CASE("Progress compatibility is checked exactly for old union and successor") {
+    auto compatible = context();
+    compatible.nominal_controls = {
+        {1, Eigen::Vector2d::Zero()},
+        {2, Eigen::Vector2d::Zero()},
+        {3, Eigen::Vector2d::Zero()}};
+    compatible.progress_compatibility = {0.0, 0.0, 1e-10, true};
+    CHECK(gf::TransitionCertifier{}.certify(
+        successfulProposal(), compatible, true).valid);
+
+    auto blocked = compatible;
+    blocked.nominal_controls.at(2) = {100.0, 0.0};
+    blocked.progress_compatibility = {0.0, 0.0, 1e-10, true};
+    const auto rejected = gf::TransitionCertifier{}.certify(
+        successfulProposal(), blocked, true);
+    CHECK_FALSE(rejected.valid);
+    CHECK(rejected.old_state.reason == "progress_projection_norm");
+}

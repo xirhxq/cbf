@@ -33,10 +33,14 @@ public:
         // Configure OSQP settings for robustness
         solver.settings()->setVerbosity(false);
         solver.settings()->setAlpha(1.6);
-        solver.settings()->setAbsoluteTolerance(1e-3);
-        solver.settings()->setRelativeTolerance(1e-3);
-        solver.settings()->setPrimalInfeasibilityTolerance(1e-3);
-        solver.settings()->setDualInfeasibilityTolerance(1e-3);
+        solver.settings()->setAbsoluteTolerance(
+            settings.value("absolute-tolerance", 1e-3));
+        solver.settings()->setRelativeTolerance(
+            settings.value("relative-tolerance", 1e-3));
+        solver.settings()->setPrimalInfeasibilityTolerance(
+            settings.value("primal-infeasibility-tolerance", 1e-3));
+        solver.settings()->setDualInfeasibilityTolerance(
+            settings.value("dual-infeasibility-tolerance", 1e-3));
         solver.settings()->setMaxIteration(100000);
         solver.settings()->setPolish(true);  // Enable polish for better accuracy
         solver.settings()->setScaling(100);  // More aggressive scaling

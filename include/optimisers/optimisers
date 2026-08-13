@@ -1,3 +1,6 @@
+#ifndef CBF_OPTIMISERS_FACTORY_HPP
+#define CBF_OPTIMISERS_FACTORY_HPP
+
 #include "OptimiserBase.hpp"
 
 #ifdef ENABLE_GUROBI
@@ -39,3 +42,5 @@ inline std::unique_ptr<OptimiserBase> createOptimiser(const std::string& name, j
 #endif
     throw std::invalid_argument("Unknown optimiser: " + name + ". Available: " + joinAvailableOptimisers());
 }
+
+#endif

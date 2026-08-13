@@ -9,7 +9,7 @@
 
 namespace gf {
 
-enum class SupervisorMode { Search, Reform, Retreat, Hold };
+enum class SupervisorMode { Search, Reform, Union, Retreat, Hold };
 
 struct SupervisorThresholds {
     double minimum_dwell_s;
@@ -41,7 +41,8 @@ public:
             mode_ = SupervisorMode::Hold;
             return mode_;
         }
-        if (now_s - last_transition_s_ < thresholds_.minimum_dwell_s)
+        if (now_s - last_transition_s_ + 1.0e-12 <
+            thresholds_.minimum_dwell_s)
             return mode_;
         if (mode_ == SupervisorMode::Search &&
             minimum_gamma <= thresholds_.gamma_trigger) {
@@ -67,13 +68,28 @@ public:
             mode_ = SupervisorMode::Hold;
             return mode_;
         }
-        if (now_s - last_transition_s_ < thresholds_.minimum_dwell_s)
+        if (now_s - last_transition_s_ + 1.0e-12 <
+            thresholds_.minimum_dwell_s)
             return mode_;
         mode_ = candidate_available
             ? SupervisorMode::Reform
             : (reverse_available
                 ? SupervisorMode::Retreat
                 : SupervisorMode::Hold);
+        last_transition_s_ = now_s;
+        return mode_;
+    }
+
+    SupervisorMode requestRetreat(double now_s, bool reverse_available) {
+        if (!std::isfinite(now_s) || now_s < last_transition_s_) {
+            mode_ = SupervisorMode::Hold;
+            return mode_;
+        }
+        if (now_s - last_transition_s_ + 1.0e-12 <
+            thresholds_.minimum_dwell_s)
+            return mode_;
+        mode_ = reverse_available
+            ? SupervisorMode::Retreat : SupervisorMode::Hold;
         last_transition_s_ = now_s;
         return mode_;
     }
@@ -92,7 +108,8 @@ public:
         std::uint64_t current_topology_version,
         std::uint64_t current_estimator_version,
         double now_s) {
-        if (mode_ != SupervisorMode::Reform || !certificate.valid ||
+        if ((mode_ != SupervisorMode::Reform &&
+             mode_ != SupervisorMode::Retreat) || !certificate.valid ||
             !certificate.forward_valid || !certificate.reverse_valid ||
             certificate.topology_version != current_topology_version ||
             certificate.estimator_version != current_estimator_version ||
@@ -107,7 +124,7 @@ public:
         topology_ = certificate.union_edges;
         topology_version_ = current_topology_version + 1;
         pending_ = certificate;
-        mode_ = SupervisorMode::Reform;
+        mode_ = SupervisorMode::Union;
         last_transition_s_ = now_s;
         return true;
     }
@@ -117,7 +134,7 @@ public:
         std::uint64_t current_topology_version,
         std::uint64_t current_estimator_version,
         double now_s) {
-        if (!pending_.has_value() || mode_ != SupervisorMode::Reform ||
+        if (!pending_.has_value() || mode_ != SupervisorMode::Union ||
             current_topology_version != topology_version_ ||
             !refreshed_certificate.valid ||
             !refreshed_certificate.forward_valid ||
@@ -147,6 +164,7 @@ public:
     SupervisorMode mode() const { return mode_; }
     const std::vector<DirectedEdge>& topology() const { return topology_; }
     std::uint64_t topologyVersion() const { return topology_version_; }
+    bool transitionPending() const { return pending_.has_value(); }
 
 private:
     SupervisorThresholds thresholds_;
