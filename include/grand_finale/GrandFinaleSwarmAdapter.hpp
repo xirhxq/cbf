@@ -120,6 +120,36 @@ struct CurrentReferenceAudit {
     double maximum_posterior_eigenvalue = 0.0;
 };
 
+enum class FreshnessRelation {
+    NoPending,
+    PendingCurrent,
+    UnionRequiresFreshBreak
+};
+
+struct RuntimeRangeLinkState {
+    double age_s = 0.0;
+    double quality = 0.0;
+    double variance_m2 = 0.0;
+};
+
+struct GrandFinaleRuntimeSnapshot {
+    double runtime_s = 0.0;
+    JointEstimateSnapshot estimate;
+    DekfInternalAudit dekf;
+    std::vector<DirectedEdge> topology;
+    SupervisorMode mode = SupervisorMode::Search;
+    std::uint64_t estimator_token = 0;
+    std::uint64_t topology_token = 0;
+    FreshnessRelation freshness = FreshnessRelation::NoPending;
+    double timer_since_supervisor_transition_s = 0.0;
+    bool supervisor_transition_pending = false;
+    bool adapter_transition_pending = false;
+    bool pending_is_retreat = false;
+    std::size_t transition_stack_size = 0;
+    std::size_t union_control_cycles = 0;
+    std::map<std::string, RuntimeRangeLinkState> range_links;
+};
+
 class GrandFinaleSwarmAdapter {
 public:
     GrandFinaleSwarmAdapter(
@@ -491,6 +521,40 @@ public:
     InterimMasterDekf& estimator() { return estimator_; }
     const InterimMasterDekf& estimator() const { return estimator_; }
     const CertifiedCoverageTracker& coverage() const { return coverage_; }
+    GrandFinaleRuntimeSnapshot runtimeSnapshot() const {
+        GrandFinaleRuntimeSnapshot snapshot;
+        snapshot.runtime_s = swarm_.robots.front()->runtime;
+        snapshot.estimate = estimator_.reconstructForAudit();
+        snapshot.dekf = estimator_.internalAudit();
+        snapshot.topology = supervisor_.topology();
+        snapshot.mode = supervisor_.mode();
+        snapshot.estimator_token = estimator_.version();
+        snapshot.topology_token = supervisor_.topologyVersion();
+        snapshot.timer_since_supervisor_transition_s = std::max(
+            0.0, snapshot.runtime_s - supervisor_.lastTransitionS());
+        snapshot.supervisor_transition_pending =
+            supervisor_.transitionPending();
+        snapshot.adapter_transition_pending = pending_proposal_.has_value();
+        snapshot.pending_is_retreat = pending_is_retreat_;
+        snapshot.transition_stack_size = transition_stack_.size();
+        snapshot.union_control_cycles = union_control_cycles_;
+        if (pending_proposal_.has_value()) {
+            snapshot.freshness = supervisor_.mode() == SupervisorMode::Union
+                ? FreshnessRelation::UnionRequiresFreshBreak
+                : FreshnessRelation::PendingCurrent;
+        }
+        for (const auto& [id, observed_s] : range_last_observation_s_) {
+            const auto quality = range_quality_.find(id);
+            const auto variance = range_variance_m2_.find(id);
+            if (quality == range_quality_.end() ||
+                variance == range_variance_m2_.end())
+                continue;
+            snapshot.range_links[id] = {
+                std::max(0.0, snapshot.runtime_s - observed_s),
+                quality->second, variance->second};
+        }
+        return snapshot;
+    }
     std::vector<CanonicalHardRow> currentSnapshotHardRows(
         const std::vector<DirectedEdge>& topology) const {
         return buildCanonicalHardRows(hardRowRequest(

@@ -170,6 +170,31 @@ TEST_CASE("Certified primitive nominal uses the formal QP path and fails closed 
     CHECK(adapter.estimator().version() == estimator_version);
 }
 
+TEST_CASE("Runtime snapshot retains estimator factors range state timer and transition bookkeeping") {
+    json settings = settings4p2();
+    Swarm swarm(settings);
+    gf::GrandFinaleSwarmAdapter adapter(
+        swarm, {1, 2, 3, 4}, {{10, {4.0, 4.0}}, {11, {4.0, 16.0}}},
+        topology(), adapterConfig(gf::SolverProfile::OpenSource));
+    REQUIRE(adapter.step().advanced);
+
+    const auto snapshot = adapter.runtimeSnapshot();
+    CHECK(snapshot.runtime_s == doctest::Approx(0.1));
+    CHECK(snapshot.estimate.mobile_ids == std::vector<gf::NodeId>{1, 2, 3, 4});
+    CHECK(snapshot.dekf.propagation_factors.size() == 4);
+    CHECK(snapshot.dekf.correlation_rows.size() == 4);
+    CHECK(snapshot.range_links.size() == 14);
+    CHECK(snapshot.mode == gf::SupervisorMode::Search);
+    CHECK(snapshot.timer_since_supervisor_transition_s == doctest::Approx(0.1));
+    CHECK_FALSE(snapshot.supervisor_transition_pending);
+    CHECK_FALSE(snapshot.adapter_transition_pending);
+    CHECK(snapshot.transition_stack_size == 0);
+    CHECK(snapshot.union_control_cycles == 0);
+    CHECK(snapshot.estimator_token == adapter.estimator().version());
+    CHECK(snapshot.topology_token == adapter.supervisor().topologyVersion());
+    CHECK(snapshot.freshness == gf::FreshnessRelation::NoPending);
+}
+
 TEST_CASE("Actual union hard rows use the higher-covariance new endpoint tube") {
     json low_settings = settings4p2();
     json high_settings = settings4p2();

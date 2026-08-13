@@ -165,6 +165,8 @@ public:
     const std::vector<DirectedEdge>& topology() const { return topology_; }
     std::uint64_t topologyVersion() const { return topology_version_; }
     bool transitionPending() const { return pending_.has_value(); }
+    double lastTransitionS() const { return last_transition_s_; }
+    double minimumDwellS() const { return thresholds_.minimum_dwell_s; }
 
 private:
     SupervisorThresholds thresholds_;

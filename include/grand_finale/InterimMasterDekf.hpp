@@ -34,6 +34,12 @@ struct InterimMasterMessage {
     std::vector<Eigen::Vector4d> gamma_by_mobile;
 };
 
+struct DekfInternalAudit {
+    std::vector<Eigen::Matrix4d> propagation_factors;
+    std::vector<std::vector<Eigen::Matrix4d>> correlation_rows;
+    bool has_last_measurement = false;
+};
+
 class InterimMasterDekf {
 public:
     InterimMasterDekf(
@@ -321,6 +327,11 @@ public:
             0.5 * (joint_covariance + joint_covariance.transpose());
         return JointEstimateSnapshot{
             mobile_ids_, joint_mean, joint_covariance, fixed_positions_};
+    }
+
+    DekfInternalAudit internalAudit() const {
+        return {propagation_factors_, correlation_rows_,
+                last_measurement_.has_value()};
     }
 
     std::uint64_t version() const { return version_; }
