@@ -5,6 +5,12 @@
 
 class GridWorld {
 public:
+    struct CellCenter {
+        int x_index = 0;
+        int y_index = 0;
+        Point center;
+    };
+
     std::pair<double, double> xLim, yLim;
     int xNum{}, yNum{};
     std::vector<bool> vis;
@@ -182,6 +188,20 @@ public:
 
     double getCellCenterY(int yIndex) {
         return getCellCenterPositionInLimit(yIndex, yLim, yNum);
+    }
+
+    std::vector<CellCenter> getUnexploredCellCenters() {
+        std::vector<CellCenter> cells;
+        cells.reserve(static_cast<std::size_t>(validCount));
+        for (int x = 0; x < xNum; ++x) {
+            for (int y = 0; y < yNum; ++y) {
+                const int index = getIndex(x, y);
+                if (!valid[index] || vis[index]) continue;
+                cells.push_back({x, y,
+                    Point(getCellCenterX(x), getCellCenterY(y))});
+            }
+        }
+        return cells;
     }
 
     Point getPointInArea(int xIndex, int yIndex) {

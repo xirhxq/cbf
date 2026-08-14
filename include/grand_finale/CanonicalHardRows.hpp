@@ -20,8 +20,22 @@ namespace gf {
 enum class CanonicalHardRowKind {
     ReferenceDistance,
     Collision,
+    Workspace,
     InputBox,
     Auxiliary
+};
+
+struct WorkspaceFacet2D {
+    std::string id;
+    Eigen::Vector2d outward_normal = Eigen::Vector2d::Zero();
+    double offset_m = 0.0;
+};
+
+struct SingleSnapshotTube2D {
+    double position_radius_m = 0.0;
+    double velocity_radius_mps = 0.0;
+    SnapshotTubeProvenance provenance =
+        SnapshotTubeProvenance::CovarianceSigmaDevelopment;
 };
 
 struct CanonicalHardRow {
@@ -59,6 +73,8 @@ struct CanonicalHardRowRequest {
     bool require_snapshot_robust_rows = false;
     std::map<std::string, PairwiseSnapshotTube> reference_snapshot_tubes;
     std::map<std::string, PairwiseSnapshotTube> collision_snapshot_tubes;
+    std::vector<WorkspaceFacet2D> workspace_facets;
+    std::map<NodeId, SingleSnapshotTube2D> workspace_snapshot_tubes;
 };
 
 inline CanonicalHardRow makeCanonicalGammaRow(
@@ -261,6 +277,48 @@ inline std::vector<CanonicalHardRow> buildCanonicalHardRows(
     }
 
     std::vector<CanonicalHardRow> rows;
+    std::set<std::string> workspace_ids;
+    for (const WorkspaceFacet2D& raw_facet : request.workspace_facets) {
+        if (raw_facet.id.empty() || !raw_facet.outward_normal.allFinite() ||
+            !std::isfinite(raw_facet.offset_m) ||
+            raw_facet.outward_normal.norm() <= 1e-12 ||
+            !workspace_ids.insert(raw_facet.id).second) {
+            throw std::invalid_argument("invalid or duplicate workspace facet");
+        }
+        const double norm = raw_facet.outward_normal.norm();
+        const Eigen::Vector2d normal = raw_facet.outward_normal / norm;
+        const double offset = raw_facet.offset_m / norm;
+        for (NodeId owner : request.mobile_ids) {
+            const auto tube_it = request.workspace_snapshot_tubes.find(owner);
+            if (request.require_snapshot_robust_rows &&
+                tube_it == request.workspace_snapshot_tubes.end()) {
+                throw std::invalid_argument("missing workspace snapshot tube");
+            }
+            const SingleSnapshotTube2D tube =
+                tube_it == request.workspace_snapshot_tubes.end()
+                    ? SingleSnapshotTube2D{} : tube_it->second;
+            if (!std::isfinite(tube.position_radius_m) ||
+                tube.position_radius_m < 0.0 ||
+                !std::isfinite(tube.velocity_radius_mps) ||
+                tube.velocity_radius_mps < 0.0) {
+                throw std::invalid_argument("invalid workspace snapshot tube");
+            }
+            const auto& state = request.states.at(owner);
+            const Eigen::Vector2d position(state.position.x,state.position.y);
+            const double h = offset-normal.dot(position)-
+                tube.position_radius_m;
+            const double hdot = -normal.dot(state.velocity)-
+                tube.velocity_radius_mps;
+            CanonicalHardRow row{
+                "workspace:"+std::to_string(owner)+":"+raw_facet.id,
+                CanonicalHardRowKind::Workspace,owner,std::nullopt,
+                -normal,-normal,h+2.0*hdot,1.0,true,h,h+hdot,hdot};
+            row.tube_provenance = tube.provenance;
+            row.position_uncertainty_reserve_m = tube.position_radius_m;
+            row.velocity_uncertainty_reserve_mps = tube.velocity_radius_mps;
+            rows.push_back(std::move(row));
+        }
+    }
     std::set<std::string> reference_ids;
     for (const DirectedEdge& edge : request.reference_edges) {
         if (mobiles.count(edge.owner) == 0 || known.count(edge.reference) == 0 ||

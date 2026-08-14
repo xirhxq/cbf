@@ -170,6 +170,31 @@ TEST_CASE("Certified primitive nominal uses the formal QP path and fails closed 
     CHECK(adapter.estimator().version() == estimator_version);
 }
 
+TEST_CASE("Formal adapter exposes snapshot robust workspace rows when enabled") {
+    json settings = settings4p2();
+    Swarm swarm(settings);
+    auto config = adapterConfig(gf::SolverProfile::OpenSource);
+    config.enforce_workspace_rows = true;
+    gf::GrandFinaleSwarmAdapter adapter(
+        swarm, {1, 2, 3, 4}, {{10, {4.0, 4.0}}, {11, {4.0, 16.0}}},
+        topology(), config);
+
+    const auto request = adapter.currentSnapshotHardRowRequest(topology());
+    CHECK(request.workspace_facets.size() == 4);
+    CHECK(request.workspace_snapshot_tubes.size() == 4);
+    const auto rows = gf::buildCanonicalHardRows(request);
+    CHECK(std::count_if(rows.begin(),rows.end(),[](const auto& row) {
+        return row.kind == gf::CanonicalHardRowKind::Workspace;
+    }) == 16);
+    for (const auto& row : rows) {
+        if (row.kind != gf::CanonicalHardRowKind::Workspace) continue;
+        CHECK(row.tube_provenance ==
+              gf::SnapshotTubeProvenance::CovarianceSigmaDevelopment);
+        CHECK(row.position_uncertainty_reserve_m > 0.0);
+        CHECK(row.velocity_uncertainty_reserve_mps > 0.0);
+    }
+}
+
 TEST_CASE("Runtime snapshot retains estimator factors range state timer and transition bookkeeping") {
     json settings = settings4p2();
     Swarm swarm(settings);

@@ -34,6 +34,14 @@ public:
         for (auto &robot : robots) robot->checkRobotsInsideWorld();
     }
 
+    void observeGridWorldAtCurrentState() {
+        exchangeData();
+        checkInformationExchange();
+        for (auto &robot : robots) robot->updateGridWorld();
+        updateGridWorld();
+        checkUpdatedGridWorld();
+    }
+
     CertifiedStepResult applyCertifiedControlsAndAdvance(
             double dt,
             const std::optional<CertifiedControlBatch>& controls) {
@@ -67,11 +75,7 @@ public:
         // GridWorld observations belong to the post-ZOH state.  Refresh the
         // shared state before each local map observes the swarm so the local
         // union and centralized truth map use the same positions.
-        exchangeData();
-        checkInformationExchange();
-        for (auto &robot : robots) robot->updateGridWorld();
-        updateGridWorld();
-        checkUpdatedGridWorld();
+        observeGridWorldAtCurrentState();
         result.advanced = true;
         result.reason = "advanced";
         result.updated_truth_cells = updatedGridWorldGroundTruth.size();

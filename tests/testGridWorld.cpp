@@ -37,3 +37,22 @@ TEST_CASE("GridWorldSearchAreaFunctionsAcceptParamsByConstReference") {
     CHECK(tiltedCone != nullptr);
     CHECK(sectorRing != nullptr);
 }
+
+TEST_CASE("GridWorld exposes stable centers for valid unexplored cells only") {
+    GridWorld grid({0.0, 20.0}, 2, {0.0, 20.0}, 2);
+    grid.valid[grid.getIndex(1, 0)] = false;
+    grid.validCount = 3;
+    grid.setValue(0, 1, true);
+
+    const auto cells = grid.getUnexploredCellCenters();
+
+    REQUIRE(cells.size() == 2);
+    CHECK(cells[0].x_index == 0);
+    CHECK(cells[0].y_index == 0);
+    CHECK(cells[0].center.x == doctest::Approx(5.0));
+    CHECK(cells[0].center.y == doctest::Approx(5.0));
+    CHECK(cells[1].x_index == 1);
+    CHECK(cells[1].y_index == 1);
+    CHECK(cells[1].center.x == doctest::Approx(15.0));
+    CHECK(cells[1].center.y == doctest::Approx(15.0));
+}

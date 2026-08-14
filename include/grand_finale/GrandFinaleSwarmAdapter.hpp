@@ -84,6 +84,10 @@ struct GrandFinaleSwarmAdapterConfig {
     double range_noise_std_m = 0.0;
     double range_dropout_probability = 0.0;
     double sensor_radius_m = 1.6;
+    CoverageFootprintKind coverage_footprint_kind =
+        CoverageFootprintKind::Circular;
+    double coverage_inner_radius_m = 0.0;
+    double coverage_half_angle_rad = M_PI;
     double reference_distance_m = 850.0;
     double add_reference_distance_m = 849.0;
     double reference_uncertainty_m = 0.02;
@@ -95,6 +99,7 @@ struct GrandFinaleSwarmAdapterConfig {
     double collision_distance_m = 0.1;
     double residual_tolerance = 1.0e-7;
     double qp_oracle_tolerance = 1.0e-5;
+    bool enforce_workspace_rows = false;
     ProgressCompatibilityConfig progress_compatibility{
         0.8, 0.0, 1.0e-9, true};
 };
@@ -114,6 +119,14 @@ struct GrandFinaleSwarmStep {
     double certified_coverage = 0.0;
     double qp_wall_s = 0.0;
     std::map<NodeId, Eigen::Vector2d> applied_controls;
+};
+
+struct GrandFinaleStageZero {
+    bool initialized = false;
+    std::string reason;
+    std::uint64_t estimator_version = 0;
+    double truth_coverage = 0.0;
+    double certified_coverage = 0.0;
 };
 
 struct GrandFinaleProposalResult {
@@ -225,6 +238,12 @@ public:
             config_.estimator_acceleration_variance < 0.0 ||
             !std::isfinite(config_.sensor_radius_m) ||
             config_.sensor_radius_m <= 0.0 ||
+            !std::isfinite(config_.coverage_inner_radius_m) ||
+            config_.coverage_inner_radius_m < 0.0 ||
+            config_.coverage_inner_radius_m >= config_.sensor_radius_m ||
+            !std::isfinite(config_.coverage_half_angle_rad) ||
+            config_.coverage_half_angle_rad <= 0.0 ||
+            config_.coverage_half_angle_rad > M_PI ||
             !std::isfinite(config_.certified_error_bound_m) ||
             config_.certified_error_bound_m < 0.0 ||
             !std::isfinite(
@@ -251,6 +270,26 @@ public:
             throw std::invalid_argument("invalid GrandFinale safety configuration");
         }
         supervisor_.initializeTopology(std::move(initial_topology), 1);
+    }
+
+    GrandFinaleStageZero initializeStageZero() {
+        GrandFinaleStageZero result;
+        if (stage_zero_initialized_) {
+            result.reason = "stage_zero_already_initialized";
+            return result;
+        }
+        swarm_.prepareCertifiedControlStep();
+        applyDeterministicRangeBatch();
+        const JointEstimateSnapshot snapshot = estimator_.reconstructForAudit();
+        observeCoverageSnapshot(snapshot);
+        swarm_.observeGridWorldAtCurrentState();
+        stage_zero_initialized_ = true;
+        result.initialized = true;
+        result.reason = "initialized";
+        result.estimator_version = estimator_.version();
+        result.truth_coverage = coverage_.truthFraction();
+        result.certified_coverage = coverage_.certifiedFraction();
+        return result;
     }
 
     GrandFinaleSwarmStep step() {
@@ -321,20 +360,7 @@ public:
         }
         applyDeterministicRangeBatch();
         const JointEstimateSnapshot after = estimator_.reconstructForAudit();
-        for (std::size_t index = 0; index < mobile_ids_.size(); ++index) {
-            const Point truth = swarm_.robots.at(index)->model->xy();
-            const Eigen::Vector2d estimate = after.mean.segment<2>(4 * index);
-            coverage_.observe(
-                truth, Point(estimate.x(), estimate.y()),
-                std::max(
-                    config_.certified_shadow_single_position_support_m,
-                    std::max(
-                        config_.certified_error_bound_m,
-                        config_.uncertainty_sigma * std::sqrt(std::max(
-                            0.0, detail::maximumPositionEigenvalue(
-                                after, mobile_ids_[index]))))),
-                config_.sensor_radius_m);
-        }
+        observeCoverageSnapshot(after);
         metrics.certified_control_count = applied.size();
         for (const auto& [id, control] : applied)
             metrics.applied_controls[static_cast<NodeId>(id)] = control;
@@ -611,6 +637,10 @@ public:
         return buildCanonicalHardRows(hardRowRequest(
             estimator_.reconstructForAudit(), topology));
     }
+    CanonicalHardRowRequest currentSnapshotHardRowRequest(
+        const std::vector<DirectedEdge>& topology) const {
+        return hardRowRequest(estimator_.reconstructForAudit(),topology);
+    }
     CurrentReferenceAudit currentReferenceAudit() {
         const JointEstimateSnapshot snapshot = estimator_.reconstructForAudit();
         const auto topology = supervisor_.topology();
@@ -656,6 +686,31 @@ public:
     }
 
 private:
+    void observeCoverageSnapshot(const JointEstimateSnapshot& snapshot) {
+        for (std::size_t index=0; index<mobile_ids_.size(); ++index) {
+            const Point truth = swarm_.robots.at(index)->model->xy();
+            const Eigen::Vector2d estimate = snapshot.mean.segment<2>(4*index);
+            const double coverage_error = std::max(
+                config_.certified_shadow_single_position_support_m,
+                std::max(config_.certified_error_bound_m,
+                    config_.uncertainty_sigma*std::sqrt(std::max(
+                        0.0,detail::maximumPositionEigenvalue(
+                            snapshot,mobile_ids_[index])))));
+            if (config_.coverage_footprint_kind ==
+                CoverageFootprintKind::ForwardSector) {
+                coverage_.observeSector(
+                    truth,Point(estimate.x(),estimate.y()),coverage_error,
+                    config_.coverage_inner_radius_m,config_.sensor_radius_m,
+                    config_.coverage_half_angle_rad,
+                    swarm_.robots.at(index)->model->getStateVariable("yawRad"));
+            } else {
+                coverage_.observe(
+                    truth,Point(estimate.x(),estimate.y()),coverage_error,
+                    config_.sensor_radius_m);
+            }
+        }
+    }
+
     std::vector<MobileEstimate> initialEstimates() const {
         std::vector<MobileEstimate> estimates;
         for (std::size_t index = 0; index < mobile_ids_.size(); ++index) {
@@ -738,6 +793,46 @@ private:
             1.0, 1.0, 1.0, 0.0};
         request.acceleration_half_box = config_.acceleration_half_box;
         request.require_snapshot_robust_rows = true;
+        if (config_.enforce_workspace_rows) {
+            const auto& boundary = swarm_.config.at("world").at("boundary");
+            if (!boundary.is_array() || boundary.size() < 3)
+                throw std::invalid_argument("workspace boundary is not polygonal");
+            std::vector<Eigen::Vector2d> points;
+            Eigen::Vector2d centroid = Eigen::Vector2d::Zero();
+            for (const auto& raw : boundary) {
+                const Eigen::Vector2d point(
+                    raw.at(0).get<double>(),raw.at(1).get<double>());
+                if (!point.allFinite())
+                    throw std::invalid_argument("workspace boundary is not finite");
+                points.push_back(point);
+                centroid += point;
+            }
+            centroid /= static_cast<double>(points.size());
+            for (std::size_t index=0; index<points.size(); ++index) {
+                const Eigen::Vector2d edge =
+                    points[(index+1)%points.size()]-points[index];
+                if (edge.norm() <= 1e-12)
+                    throw std::invalid_argument("workspace boundary has zero edge");
+                Eigen::Vector2d outward(edge.y(),-edge.x());
+                outward.normalize();
+                double offset = outward.dot(points[index]);
+                if (outward.dot(centroid) > offset) {
+                    outward = -outward;
+                    offset = -offset;
+                }
+                request.workspace_facets.push_back({
+                    "facet:"+std::to_string(index),outward,offset});
+            }
+            for (NodeId id : mobile_ids_) {
+                request.workspace_snapshot_tubes[id] = {
+                    config_.uncertainty_sigma*std::sqrt(std::max(
+                        0.0,detail::maximumPositionEigenvalue(snapshot,id)))+
+                        config_.certified_shadow_single_position_support_m,
+                    config_.uncertainty_sigma*std::sqrt(std::max(
+                        0.0,detail::maximumVelocityEigenvalue(snapshot,id))),
+                    SnapshotTubeProvenance::CovarianceSigmaDevelopment};
+            }
+        }
         for (const DirectedEdge& edge : request.reference_edges) {
             request.reference_snapshot_tubes.emplace(
                 edge.id(), snapshotPairTube(snapshot, edge.owner, edge.reference));
@@ -964,6 +1059,7 @@ private:
     std::optional<TransitionProposal> pending_proposal_;
     std::optional<TransitionCertificate> pending_certificate_;
     std::size_t union_control_cycles_ = 0;
+    bool stage_zero_initialized_ = false;
     std::vector<TransitionCertificate> transition_stack_;
     bool pending_is_retreat_ = false;
     std::string last_certification_reason_;

@@ -8,6 +8,8 @@
 
 namespace gf {
 
+enum class CoverageFootprintKind { Circular, ForwardSector };
+
 class CertifiedCoverageTracker {
 public:
     CertifiedCoverageTracker(
@@ -57,6 +59,69 @@ public:
                     <= sensor_radius_m) {
                     certified_.setValue(x, y, true);
                 }
+            }
+        }
+    }
+
+    void observeSector(
+        const Point& truth_position,
+        const Point& estimated_position,
+        double error_bound_m,
+        double inner_radius_m,
+        double outer_radius_m,
+        double half_angle_rad,
+        double heading_rad) {
+        if (!std::isfinite(truth_position.x) ||
+            !std::isfinite(truth_position.y) ||
+            !std::isfinite(estimated_position.x) ||
+            !std::isfinite(estimated_position.y) ||
+            !std::isfinite(error_bound_m) || error_bound_m < 0.0 ||
+            !std::isfinite(inner_radius_m) || inner_radius_m < 0.0 ||
+            !std::isfinite(outer_radius_m) ||
+            outer_radius_m <= inner_radius_m ||
+            !std::isfinite(half_angle_rad) || half_angle_rad <= 0.0 ||
+            half_angle_rad > M_PI || !std::isfinite(heading_rad)) {
+            throw std::invalid_argument("invalid sector coverage observation");
+        }
+        const double reserve = error_bound_m + cell_half_diagonal_;
+        const auto angular_error = [heading_rad](double dy, double dx) {
+            const double bearing = std::atan2(dy,dx);
+            return std::abs(std::atan2(
+                std::sin(bearing-heading_rad),
+                std::cos(bearing-heading_rad)));
+        };
+        for (int x=0; x<truth_.xNum; ++x) {
+            for (int y=0; y<truth_.yNum; ++y) {
+                const Point cell(
+                    truth_.getCellCenterX(x),truth_.getCellCenterY(y));
+                const double truth_dx = cell.x-truth_position.x;
+                const double truth_dy = cell.y-truth_position.y;
+                const double truth_distance = std::hypot(truth_dx,truth_dy);
+                const bool truth_angle = truth_distance <= 1e-12 ||
+                    angular_error(truth_dy,truth_dx) <= half_angle_rad+1e-12;
+                if (truth_distance >= inner_radius_m-1e-12 &&
+                    truth_distance <= outer_radius_m+1e-12 && truth_angle) {
+                    truth_.setValue(x,y,true);
+                }
+
+                const double estimated_dx = cell.x-estimated_position.x;
+                const double estimated_dy = cell.y-estimated_position.y;
+                const double estimated_distance =
+                    std::hypot(estimated_dx,estimated_dy);
+                bool angular_containment = half_angle_rad >= M_PI-1e-12;
+                if (!angular_containment && estimated_distance > reserve) {
+                    const double angular_reserve = std::asin(std::min(
+                        1.0,reserve/estimated_distance));
+                    angular_containment =
+                        angular_error(estimated_dy,estimated_dx)+angular_reserve
+                        <= half_angle_rad+1e-12;
+                }
+                const bool radial_containment =
+                    estimated_distance+reserve <= outer_radius_m+1e-12 &&
+                    (inner_radius_m <= 1e-12 ||
+                     estimated_distance-reserve >= inner_radius_m-1e-12);
+                if (radial_containment && angular_containment)
+                    certified_.setValue(x,y,true);
             }
         }
     }

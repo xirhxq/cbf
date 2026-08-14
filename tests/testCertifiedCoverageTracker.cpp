@@ -45,3 +45,25 @@ TEST_CASE("A containing uncertainty radius is conservative and prevents false co
     CHECK(tracker.falseCertifiedCount() == 0);
     CHECK(tracker.certifiedSubsetOfTruth());
 }
+
+TEST_CASE("Forward-sector coverage uses frozen heading and angular tightening") {
+    gf::CertifiedCoverageTracker east({-4.0,4.0},4,{-1.0,1.0},1);
+    east.observeSector(
+        Point(0.0,0.0),Point(0.0,0.0),0.0,
+        0.0,5.0,M_PI/3.0,0.0);
+    CHECK_FALSE(east.truthCovered(0,0));
+    CHECK_FALSE(east.truthCovered(1,0));
+    CHECK(east.truthCovered(2,0));
+    CHECK(east.truthCovered(3,0));
+    CHECK_FALSE(east.certifiedCovered(2,0));
+    CHECK(east.certifiedCovered(3,0));
+
+    gf::CertifiedCoverageTracker west({-4.0,4.0},4,{-1.0,1.0},1);
+    west.observeSector(
+        Point(0.0,0.0),Point(0.0,0.0),0.0,
+        0.0,5.0,M_PI/3.0,M_PI);
+    CHECK(west.truthCovered(0,0));
+    CHECK(west.truthCovered(1,0));
+    CHECK_FALSE(west.truthCovered(2,0));
+    CHECK_FALSE(west.truthCovered(3,0));
+}
