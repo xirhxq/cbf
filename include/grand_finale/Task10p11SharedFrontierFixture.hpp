@@ -123,22 +123,48 @@ struct Task10p11Fixture {
     Task10p11SharedFrontierController controller;
 
     Task10p11Fixture(const Task10p10Scenario& scenario,SolverProfile profile)
+        : Task10p11Fixture(
+              scenario,profile,GammaFeedbackSelectionMode::DiagnosticsOnly,
+              std::nullopt) {}
+
+    Task10p11Fixture(
+        const Task10p10Scenario& scenario,SolverProfile profile,
+        GammaFeedbackSelectionMode feedback_selection,
+        std::optional<double> predictive_tau_mps2)
         : settings(task10p10SwarmSettings(scenario,profile)),swarm(settings),
           adapter(swarm,scenario.mobile_ids,scenario.fixed_positions,
                   scenario.initial_topology,[&]() {
                       auto config=task10p10AdapterConfig(profile);
                       config.enforce_workspace_rows=true;
+                      config.gamma_feedback_selection=feedback_selection;
+                      config.predictive_gamma_tau_mps2=predictive_tau_mps2;
                       return config;
                   }()),
           controller(swarm,adapter,scenario.fixed_positions) {}
 };
 
 inline std::unique_ptr<Task10p11Fixture> makeTask10p11Fixture(
-    const Task10p10Scenario& scenario,SolverProfile profile) {
-    return std::make_unique<Task10p11Fixture>(scenario,profile);
+    const Task10p10Scenario& scenario,SolverProfile profile,
+    GammaFeedbackSelectionMode feedback_selection=
+        GammaFeedbackSelectionMode::DiagnosticsOnly,
+    std::optional<double> predictive_tau_mps2=std::nullopt) {
+    return std::make_unique<Task10p11Fixture>(
+        scenario,profile,feedback_selection,predictive_tau_mps2);
 }
 
 struct Task10p11SmokeResult {
+    struct GammaCycleTrace {
+        double runtime_s=0.0;
+        double minimum_current_gamma=std::numeric_limits<double>::infinity();
+        double minimum_nominal_predicted_gamma=
+            std::numeric_limits<double>::infinity();
+        double minimum_maximum_candidate_predicted_gamma=
+            std::numeric_limits<double>::infinity();
+        double minimum_selected_predicted_gamma=
+            std::numeric_limits<double>::infinity();
+        bool intervened=false;
+        std::string dominant_row;
+    };
     bool completed_horizon=false;
     std::string reason;
     double runtime_s=0.0;
@@ -159,11 +185,25 @@ struct Task10p11SmokeResult {
     std::string first_negative_source;
     double minimum_braking_slack_m=
         std::numeric_limits<double>::infinity();
+    double minimum_current_gamma=std::numeric_limits<double>::infinity();
+    double maximum_current_gamma=-std::numeric_limits<double>::infinity();
+    double maximum_predicted_gamma_uplift=0.0;
+    std::size_t feedback_interventions=0;
+    double first_feedback_intervention_s=
+        std::numeric_limits<double>::infinity();
+    std::string first_feedback_dominant_row;
+    double first_negative_braking_prediction_s=
+        std::numeric_limits<double>::infinity();
+    std::vector<GammaCycleTrace> gamma_trace;
 };
 
 inline Task10p11SmokeResult runTask10p11SharedSmoke(
-    const Task10p10Scenario& scenario,SolverProfile profile,double horizon_s) {
-    auto fixture=makeTask10p11Fixture(scenario,profile);
+    const Task10p10Scenario& scenario,SolverProfile profile,double horizon_s,
+    GammaFeedbackSelectionMode feedback_selection=
+        GammaFeedbackSelectionMode::DiagnosticsOnly,
+    std::optional<double> predictive_tau_mps2=std::nullopt) {
+    auto fixture=makeTask10p11Fixture(
+        scenario,profile,feedback_selection,predictive_tau_mps2);
     Task10p11SmokeResult result;
     const auto initialized=fixture->adapter.initializeStageZero();
     if (!initialized.initialized) {
@@ -196,6 +236,10 @@ inline Task10p11SmokeResult runTask10p11SharedSmoke(
                         !trace.snapshot.first_negative_source.empty()) {
                         result.first_negative_source=
                             trace.snapshot.first_negative_source;
+                        result.first_negative_braking_prediction_s=
+                            result.runtime_s +
+                            static_cast<double>(trace.cycle)*
+                                fixture->adapter.config().dt_s;
                     }
                 }
             }
@@ -221,6 +265,43 @@ inline Task10p11SmokeResult runTask10p11SharedSmoke(
         }
         result.minimum_robust_residual=std::min(
             result.minimum_robust_residual,step.step.minimum_hard_residual);
+        Task10p11SmokeResult::GammaCycleTrace gamma_cycle;
+        gamma_cycle.runtime_s=fixture->swarm.robots.front()->runtime;
+        for (const auto& [owner, diagnostic] : step.step.gamma_feedback) {
+            (void)owner;
+            result.minimum_current_gamma=std::min(
+                result.minimum_current_gamma,diagnostic.current_gamma);
+            result.maximum_current_gamma=std::max(
+                result.maximum_current_gamma,diagnostic.current_gamma);
+            result.maximum_predicted_gamma_uplift=std::max(
+                result.maximum_predicted_gamma_uplift,
+                diagnostic.controllable_predicted_gamma_range);
+            gamma_cycle.minimum_current_gamma=std::min(
+                gamma_cycle.minimum_current_gamma,diagnostic.current_gamma);
+            gamma_cycle.minimum_nominal_predicted_gamma=std::min(
+                gamma_cycle.minimum_nominal_predicted_gamma,
+                diagnostic.nominal_predicted_gamma);
+            gamma_cycle.minimum_maximum_candidate_predicted_gamma=std::min(
+                gamma_cycle.minimum_maximum_candidate_predicted_gamma,
+                diagnostic.maximum_margin_candidate_predicted_gamma);
+            if (diagnostic.selected_predicted_gamma<
+                gamma_cycle.minimum_selected_predicted_gamma) {
+                gamma_cycle.minimum_selected_predicted_gamma=
+                    diagnostic.selected_predicted_gamma;
+                gamma_cycle.dominant_row=diagnostic.dominant_row;
+            }
+            gamma_cycle.intervened=
+                gamma_cycle.intervened || diagnostic.intervened;
+            if (diagnostic.intervened) {
+                ++result.feedback_interventions;
+                if (!std::isfinite(result.first_feedback_intervention_s)) {
+                    result.first_feedback_intervention_s=
+                        fixture->swarm.robots.front()->runtime;
+                    result.first_feedback_dominant_row=diagnostic.dominant_row;
+                }
+            }
+        }
+        result.gamma_trace.push_back(std::move(gamma_cycle));
         if (cycle%task10p11AllocatorConfig().epoch_cycles==0) {
             ++result.allocation_epochs;
             result.fast_rejections+=step.allocation.fast_rejections;

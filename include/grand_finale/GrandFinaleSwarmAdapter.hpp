@@ -2,6 +2,7 @@
 
 #include "Swarm.hpp"
 #include "grand_finale/CanonicalHocbfQpController.hpp"
+#include "grand_finale/CanonicalGammaStarFeedback.hpp"
 #include "grand_finale/CertifiedCoverageTracker.hpp"
 #include "grand_finale/InterimMasterDekf.hpp"
 #include "grand_finale/GurobiTopologySolver.hpp"
@@ -100,8 +101,30 @@ struct GrandFinaleSwarmAdapterConfig {
     double residual_tolerance = 1.0e-7;
     double qp_oracle_tolerance = 1.0e-5;
     bool enforce_workspace_rows = false;
+    GammaFeedbackSelectionMode gamma_feedback_selection =
+        GammaFeedbackSelectionMode::DiagnosticsOnly;
+    std::optional<double> predictive_gamma_tau_mps2;
+    std::size_t gamma_feedback_homotopy_segments = 8;
+    double gamma_feedback_tolerance = 1.0e-10;
     ProgressCompatibilityConfig progress_compatibility{
         0.8, 0.0, 1.0e-9, true};
+};
+
+struct GrandFinaleGammaFeedbackDiagnostic {
+    double current_gamma = -std::numeric_limits<double>::infinity();
+    double nominal_predicted_gamma =
+        -std::numeric_limits<double>::infinity();
+    double maximum_margin_candidate_predicted_gamma =
+        -std::numeric_limits<double>::infinity();
+    double selected_predicted_gamma =
+        -std::numeric_limits<double>::infinity();
+    double controllable_predicted_gamma_range = 0.0;
+    Eigen::Vector2d current_hard_projection = Eigen::Vector2d::Zero();
+    Eigen::Vector2d maximum_margin_control = Eigen::Vector2d::Zero();
+    Eigen::Vector2d selected_nominal = Eigen::Vector2d::Zero();
+    bool intervened = false;
+    std::string dominant_row;
+    std::string fallback_reason;
 };
 
 struct GrandFinaleSwarmStep {
@@ -119,6 +142,7 @@ struct GrandFinaleSwarmStep {
     double certified_coverage = 0.0;
     double qp_wall_s = 0.0;
     std::map<NodeId, Eigen::Vector2d> applied_controls;
+    std::map<NodeId, GrandFinaleGammaFeedbackDiagnostic> gamma_feedback;
 };
 
 struct GrandFinaleStageZero {
@@ -266,7 +290,16 @@ public:
             !std::isfinite(config_.position_gain) ||
             config_.position_gain < 0.0 ||
             !std::isfinite(config_.velocity_gain) ||
-            config_.velocity_gain < 0.0) {
+            config_.velocity_gain < 0.0 ||
+            config_.gamma_feedback_homotopy_segments == 0 ||
+            !std::isfinite(config_.gamma_feedback_tolerance) ||
+            config_.gamma_feedback_tolerance < 0.0 ||
+            (config_.predictive_gamma_tau_mps2.has_value() &&
+             (!std::isfinite(*config_.predictive_gamma_tau_mps2) ||
+              *config_.predictive_gamma_tau_mps2 < 0.0)) ||
+            (config_.gamma_feedback_selection ==
+                 GammaFeedbackSelectionMode::LeastIntervention &&
+             !config_.predictive_gamma_tau_mps2.has_value())) {
             throw std::invalid_argument("invalid GrandFinale safety configuration");
         }
         supervisor_.initializeTopology(std::move(initial_topology), 1);
@@ -300,9 +333,9 @@ public:
         swarm_.prepareCertifiedControlStep();
         const JointEstimateSnapshot snapshot = estimator_.reconstructForAudit();
         const std::uint64_t snapshot_version = estimator_.version();
-        const auto nominal = nominal_override_.has_value()
+        const auto task_nominal = nominal_override_.has_value()
             ? *nominal_override_
-            : nominalControls(metrics.mode);
+            : nominalControls(metrics.mode, snapshot);
         std::vector<CanonicalHardRow> rows;
         try {
             rows = buildCanonicalHardRows(
@@ -310,6 +343,76 @@ public:
         } catch (const std::exception&) {
             metrics.reason = "snapshot_robust_hard_row_invalid";
             return metrics;
+        }
+        const CanonicalGammaFeedbackConfig feedback_config{
+            config_.acceleration_half_box,
+            config_.gamma_feedback_homotopy_segments,
+            config_.gamma_feedback_selection,
+            config_.predictive_gamma_tau_mps2,
+            config_.gamma_feedback_tolerance};
+        std::map<NodeId, CanonicalGammaFeedbackStage> feedback_stages;
+        std::map<NodeId, Eigen::Vector2d> projected_controls;
+        for (NodeId owner : mobile_ids_) {
+            const auto stage = buildCanonicalGammaFeedbackStage(
+                rows, owner, task_nominal.at(owner), feedback_config);
+            if (!stage.valid) {
+                metrics.reason = stage.reason;
+                return metrics;
+            }
+            feedback_stages.emplace(owner, stage);
+            projected_controls.emplace(owner, stage.task_projection);
+        }
+        std::map<NodeId, Eigen::Vector2d> selected_nominal;
+        for (NodeId owner : mobile_ids_) {
+            const auto& stage = feedback_stages.at(owner);
+            const auto selected = selectCanonicalGammaFeedback(
+                stage, feedback_config, [&](const Eigen::Vector2d& candidate) {
+                    try {
+                        auto surrogate_controls = projected_controls;
+                        surrogate_controls.at(owner) = candidate;
+                        const auto predicted_snapshot =
+                            predictNoMeasurementSnapshot(
+                                snapshot, surrogate_controls, config_.dt_s,
+                                config_.estimator_acceleration_variance);
+                        const auto predicted_rows = buildCanonicalHardRows(
+                            hardRowRequest(
+                                predicted_snapshot, supervisor_.topology()));
+                        const auto predicted_gamma = solveCanonicalGammaStar(
+                            predicted_rows, owner,
+                            config_.acceleration_half_box);
+                        if (!predicted_gamma.valid ||
+                            !std::isfinite(predicted_gamma.gamma)) {
+                            return CanonicalPredictedGammaScore{};
+                        }
+                        const Eigen::Vector2d witness(
+                            predicted_gamma.accelX,
+                            predicted_gamma.accelY);
+                        return CanonicalPredictedGammaScore{
+                            true, predicted_gamma.gamma,
+                            dominantCanonicalOwnerRow(
+                                predicted_rows, owner, witness)};
+                    } catch (...) {
+                        return CanonicalPredictedGammaScore{};
+                    }
+                });
+            if (!selected.valid) {
+                metrics.reason = selected.reason;
+                return metrics;
+            }
+            selected_nominal.emplace(owner, selected.selected_control);
+            metrics.gamma_feedback.emplace(owner,
+                GrandFinaleGammaFeedbackDiagnostic{
+                    stage.current_gamma,
+                    selected.nominal_predicted_gamma,
+                    selected.maximum_margin_candidate_predicted_gamma,
+                    selected.selected_predicted_gamma,
+                    selected.controllable_predicted_gamma_range,
+                    stage.task_projection,
+                    stage.maximum_margin_control,
+                    selected.selected_control,
+                    selected.intervened,
+                    selected.dominant_row,
+                    selected.fallback_reason});
         }
         std::map<int, Eigen::Vector2d> applied;
 
@@ -321,7 +424,7 @@ public:
                         CanonicalQpRequest{
                             config_.solver_profile, owner,
                             snapshot_version, supervisor_.topologyVersion(),
-                            supervisor_.mode(), nominal.at(owner),
+                            supervisor_.mode(), selected_nominal.at(owner),
                             config_.acceleration_half_box, rows,
                             config_.residual_tolerance});
                     metrics.qp_wall_s += std::chrono::duration<double>(
@@ -593,7 +696,8 @@ public:
     const CertifiedCoverageTracker& coverage() const { return coverage_; }
     const GrandFinaleSwarmAdapterConfig& config() const { return config_; }
     std::map<NodeId, Eigen::Vector2d> currentNominalControls() {
-        return nominalControls(supervisor_.mode());
+        return nominalControls(
+            supervisor_.mode(), estimator_.reconstructForAudit());
     }
     const std::string& lastCertificationReason() const {
         return last_certification_reason_;
@@ -731,23 +835,27 @@ private:
     }
 
     std::map<NodeId, Eigen::Vector2d> nominalControls(
-        SupervisorMode mode) {
+        SupervisorMode mode,const JointEstimateSnapshot& snapshot) {
         std::map<NodeId, Eigen::Vector2d> result;
         for (std::size_t index = 0; index < mobile_ids_.size(); ++index) {
             const auto& robot = swarm_.robots.at(index);
+            const Eigen::Vector4d estimated =
+                snapshot.mean.segment<4>(4*index);
             if (mode == SupervisorMode::Hold ||
                 mode == SupervisorMode::Retreat) {
                 Eigen::Vector2d braking =
-                    -config_.velocity_gain * robot->model->getVelocity().head<2>();
+                    -config_.velocity_gain * estimated.tail<2>();
                 braking.x() = std::max(-config_.acceleration_half_box,
                     std::min(config_.acceleration_half_box, braking.x()));
                 braking.y() = std::max(-config_.acceleration_half_box,
                     std::min(config_.acceleration_half_box, braking.y()));
                 result[mobile_ids_[index]] = braking;
             } else {
-                result[mobile_ids_[index]] = robot->coverageNominalAcceleration(
-                    config_.position_gain, config_.velocity_gain,
-                    config_.acceleration_half_box);
+                const Point estimate(estimated.x(),estimated.y());
+                result[mobile_ids_[index]] =
+                    robot->coverageNominalAcceleration(
+                        estimate,estimated.tail<2>(),config_.position_gain,
+                        config_.velocity_gain,config_.acceleration_half_box);
             }
         }
         return result;
@@ -908,7 +1016,7 @@ private:
                 context.range_variances_m2[range_id] = variance->second;
         }
         context.hard_row_request = hardRowRequest(snapshot, edges);
-        context.nominal_controls = nominalControls(supervisor_.mode());
+        context.nominal_controls = nominalControls(supervisor_.mode(), snapshot);
         context.progress_compatibility = config_.progress_compatibility;
         return context;
     }

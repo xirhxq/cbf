@@ -52,6 +52,18 @@ TEST_CASE("Formal Swarm adapter closes SEARCH HOLD RETREAT REFORM and UNION QP f
     CHECK(search.certified_control_count == 4);
     CHECK(search.minimum_hard_residual >= -1e-7);
     CHECK(search.estimator_version_after > search.estimator_version_before);
+    REQUIRE(search.gamma_feedback.size() == 4);
+    for (const auto& [owner, diagnostic] : search.gamma_feedback) {
+        (void)owner;
+        CHECK(std::isfinite(diagnostic.current_gamma));
+        CHECK(std::isfinite(diagnostic.nominal_predicted_gamma));
+        CHECK(std::isfinite(
+            diagnostic.maximum_margin_candidate_predicted_gamma));
+        CHECK(std::isfinite(diagnostic.selected_predicted_gamma));
+        CHECK_FALSE(diagnostic.intervened);
+        CHECK(search.applied_controls.at(owner).isApprox(
+            diagnostic.selected_nominal, 1e-5));
+    }
 
     adapter.supervisor().requestReformation(
         swarm.robots.front()->runtime, true, true);
@@ -94,6 +106,68 @@ TEST_CASE("Formal Swarm adapter closes SEARCH HOLD RETREAT REFORM and UNION QP f
     const auto hold = hold_adapter.step();
     REQUIRE(hold.advanced);
     CHECK(hold.mode == gf::SupervisorMode::Hold);
+}
+
+TEST_CASE("Formal coverage nominal depends on estimator state rather than simulator truth") {
+    json settings = settings4p2();
+    Swarm swarm(settings);
+    gf::GrandFinaleSwarmAdapter adapter(
+        swarm, {1, 2, 3, 4}, {{10, {4.0, 4.0}}, {11, {4.0, 16.0}}},
+        topology(), adapterConfig(gf::SolverProfile::OpenSource));
+    const auto before = adapter.currentNominalControls();
+    for (const auto& robot : swarm.robots) {
+        robot->model->setStateVariable(
+            "x", robot->model->getStateVariable("x") + 100.0);
+        robot->model->setStateVariable(
+            "y", robot->model->getStateVariable("y") - 50.0);
+        robot->model->setStateVariable("vx", 9.0);
+        robot->model->setStateVariable("vy", -7.0);
+    }
+    const auto after = adapter.currentNominalControls();
+    REQUIRE(before.size() == after.size());
+    for (const auto& [owner, nominal] : before)
+        CHECK(after.at(owner).isApprox(nominal, 1e-12));
+}
+
+TEST_CASE("Explicit predictive mode remains separate from current canonical gamma") {
+    json settings = settings4p2();
+    Swarm swarm(settings);
+    auto config = adapterConfig(gf::SolverProfile::OpenSource);
+    config.gamma_feedback_selection =
+        gf::GammaFeedbackSelectionMode::MaximumPredictedMargin;
+    gf::GrandFinaleSwarmAdapter adapter(
+        swarm, {1, 2, 3, 4}, {{10, {4.0, 4.0}}, {11, {4.0, 16.0}}},
+        topology(), config);
+    const auto result = adapter.step();
+    REQUIRE(result.advanced);
+    REQUIRE(result.gamma_feedback.size() == 4);
+    for (const auto& [owner, diagnostic] : result.gamma_feedback) {
+        (void)owner;
+        CHECK(std::isfinite(diagnostic.current_gamma));
+        CHECK(std::isfinite(diagnostic.selected_predicted_gamma));
+        CHECK(diagnostic.controllable_predicted_gamma_range >= -1e-12);
+        CHECK(diagnostic.current_gamma != doctest::Approx(0.05));
+        CHECK(diagnostic.current_gamma != doctest::Approx(0.1));
+        CHECK(result.applied_controls.at(owner).isApprox(
+            diagnostic.selected_nominal, 1e-5));
+    }
+}
+
+TEST_CASE("Negative current canonical gamma fails closed before physical advancement") {
+    json settings = settings4p2();
+    Swarm swarm(settings);
+    auto config = adapterConfig(gf::SolverProfile::OpenSource);
+    config.collision_distance_m = 100.0;
+    gf::GrandFinaleSwarmAdapter adapter(
+        swarm, {1, 2, 3, 4}, {{10, {4.0, 4.0}}, {11, {4.0, 16.0}}},
+        topology(), config);
+    const double runtime = swarm.robots.front()->runtime;
+    const auto estimator_version = adapter.estimator().version();
+    const auto result = adapter.step();
+    CHECK_FALSE(result.advanced);
+    CHECK(result.reason == "current_gamma_negative");
+    CHECK(swarm.robots.front()->runtime == doctest::Approx(runtime));
+    CHECK(adapter.estimator().version() == estimator_version);
 }
 
 #ifdef ENABLE_GUROBI
