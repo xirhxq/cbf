@@ -20,7 +20,14 @@ public:
             GRBEnv environment(true);
             environment.set(GRB_IntParam_OutputFlag, 0);
             environment.set(GRB_IntParam_Seed, 2027);
-            environment.set(GRB_DoubleParam_FeasibilityTol, 1e-9);
+            environment.set(GRB_DoubleParam_FeasibilityTol,
+                            kTopologyFeasibilityTolerance);
+            environment.set(GRB_DoubleParam_IntFeasTol,
+                            kTopologyFeasibilityTolerance);
+            environment.set(GRB_DoubleParam_OptimalityTol,
+                            kTopologyFeasibilityTolerance);
+            environment.set(GRB_DoubleParam_MIPGap, 0.0);
+            environment.set(GRB_DoubleParam_MIPGapAbs, 0.0);
             environment.start();
             GRBModel model(environment);
 
@@ -108,8 +115,16 @@ public:
                              edge_variables.at(edge_index.at(key.substr(delimiter + 1)));
             }
 
-            const std::array<GRBQuadExpr, 4> objectives =
+            std::vector<GRBQuadExpr> objectives =
                 {progress, fim, switches, edge_count};
+            // Fifth and later levels are a frozen deterministic tie rule:
+            // among equal four-layer optima, prefer the lexicographically
+            // smallest sorted selected-edge sequence.
+            for (const GRBVar& edge : edge_variables) {
+                GRBQuadExpr tie = 0.0;
+                tie += edge;
+                objectives.push_back(tie);
+            }
             for (std::size_t pass = 0; pass < objectives.size(); ++pass) {
                 model.setObjective(objectives[pass], GRB_MAXIMIZE);
                 model.optimize();
@@ -124,7 +139,9 @@ public:
                 }
                 if (pass + 1 < objectives.size()) {
                     const double optimum = model.get(GRB_DoubleAttr_ObjVal);
-                    model.addQConstr(objectives[pass] >= optimum - 1e-8);
+                    model.addQConstr(objectives[pass] >=
+                                     optimum -
+                                     kTopologyLexicographicFreezeTolerance);
                 }
             }
 

@@ -13,8 +13,13 @@
 #include <tuple>
 #include <utility>
 #include <vector>
+#include <sstream>
 
 namespace gf {
+
+inline bool highsStatusAllowsExecution(HighsStatus status) {
+    return status != HighsStatus::kError;
+}
 
 class HighsTopologySolver : public TopologySolver {
 private:
@@ -119,13 +124,28 @@ public:
         }
         for (int index = 0; index < static_cast<int>(pairs.size()); ++index)
             objectives[1][pair_offset + index] = pairs[index].coefficient;
+        for (int edge = 0; edge < edge_count; ++edge) {
+            std::vector<double> tie(variable_count, 0.0);
+            tie[edge] = 1.0;
+            objectives.push_back(std::move(tie));
+        }
 
         std::vector<Row> freeze_rows;
         std::vector<double> solution;
-        for (int pass = 0; pass < 4; ++pass) {
+        std::vector<double> pass_optima;
+        std::ostringstream raw_status;
+        for (int pass = 0; pass < static_cast<int>(objectives.size()); ++pass) {
             Highs highs;
             highs.setOptionValue("output_flag", false);
             highs.setOptionValue("random_seed", 2027);
+            highs.setOptionValue("primal_feasibility_tolerance",
+                                 kTopologyFeasibilityTolerance);
+            highs.setOptionValue("dual_feasibility_tolerance",
+                                 kTopologyFeasibilityTolerance);
+            highs.setOptionValue("mip_feasibility_tolerance",
+                                 kTopologyFeasibilityTolerance);
+            highs.setOptionValue("mip_rel_gap", 0.0);
+            highs.setOptionValue("mip_abs_gap", 0.0);
             HighsModel model;
             model.lp_.sense_ = ObjSense::kMaximize;
             model.lp_.num_col_ = variable_count;
@@ -156,11 +176,22 @@ public:
                 model.lp_.a_matrix_.start_.push_back(
                     static_cast<HighsInt>(model.lp_.a_matrix_.index_.size()));
             }
-            if (highs.passModel(model) != HighsStatus::kOk ||
-                highs.run() != HighsStatus::kOk) {
-                return TopologySolution{TopologySolveStatus::Error, {}, {}, {}, "HiGHS execution failed"};
+            const HighsStatus pass_status = highs.passModel(model);
+            const HighsStatus run_status = highsStatusAllowsExecution(pass_status)
+                ? highs.run() : HighsStatus::kError;
+            const HighsModelStatus raw_model_status = highs.getModelStatus();
+            if (pass > 0) raw_status << ';';
+            raw_status << "pass" << pass
+                       << ":passModel=" << highsStatusToString(pass_status)
+                       << ",run=" << highsStatusToString(run_status)
+                       << ",model=" << highs.modelStatusToString(
+                              raw_model_status);
+            if (!highsStatusAllowsExecution(pass_status) ||
+                !highsStatusAllowsExecution(run_status)) {
+                return TopologySolution{TopologySolveStatus::Error, {}, {}, {},
+                    "HiGHS execution failed:" + raw_status.str()};
             }
-            const HighsModelStatus status = highs.getModelStatus();
+            const HighsModelStatus status = raw_model_status;
             if (status == HighsModelStatus::kInfeasible)
                 return TopologySolution{
                     TopologySolveStatus::Infeasible, {}, {}, {},
@@ -172,8 +203,11 @@ public:
             double optimum = 0.0;
             for (int index = 0; index < variable_count; ++index)
                 optimum += objectives[pass][index] * solution[index];
-            if (pass < 3) {
-                Row freeze{{}, optimum - 1e-8, infinity};
+            pass_optima.push_back(optimum);
+            if (pass + 1 < static_cast<int>(objectives.size())) {
+                Row freeze{{},
+                    optimum - kTopologyLexicographicFreezeTolerance,
+                    infinity};
                 for (int index = 0; index < variable_count; ++index)
                     if (objectives[pass][index] != 0.0)
                         freeze.coefficients[index] = objectives[pass][index];
@@ -187,9 +221,27 @@ public:
         const TopologyEvaluation evaluation = topology.evaluate(selected);
         if (!evaluation.valid)
             return TopologySolution{TopologySolveStatus::Error, {}, {}, {}, "HiGHS returned a hard-invalid topology"};
+        std::vector<double> recomputed{
+            evaluation.objective.progress,
+            evaluation.objective.fim_geometry,
+            static_cast<double>(evaluation.objective.negative_switch_count) +
+                static_cast<double>(old_ids.size()),
+            static_cast<double>(evaluation.objective.negative_edge_count)};
+        for (int edge = 0; edge < edge_count; ++edge)
+            recomputed.push_back(solution[edge] > 0.5 ? 1.0 : 0.0);
+        if (recomputed.size() != pass_optima.size())
+            return TopologySolution{TopologySolveStatus::Error, {}, {}, {},
+                "HiGHS lexicographic audit size mismatch"};
+        for (std::size_t pass = 0; pass < recomputed.size(); ++pass)
+            if (std::abs(recomputed[pass] - pass_optima[pass]) >
+                kTopologyLexicographicFreezeTolerance) {
+                return TopologySolution{TopologySolveStatus::Error, {}, {}, {},
+                    "HiGHS lexicographic audit failed at pass " +
+                    std::to_string(pass)};
+            }
         return TopologySolution{
             TopologySolveStatus::Optimal, selected, evaluation.levels,
-            evaluation.objective, "optimal"};
+            evaluation.objective, raw_status.str()};
     }
 };
 

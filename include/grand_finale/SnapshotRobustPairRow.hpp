@@ -30,6 +30,8 @@ struct SnapshotRobustPairRow {
     double barrier_psi1_lower = 0.0;
     double central_constant_lower = 0.0;
     double coefficient_reserve = 0.0;
+    double position_uncertainty_reserve_m = 0.0;
+    double velocity_uncertainty_reserve_mps = 0.0;
     SnapshotTubeProvenance provenance =
         SnapshotTubeProvenance::CovarianceSigmaDevelopment;
 
@@ -86,6 +88,8 @@ inline SnapshotRobustPairRow buildSnapshotRobustPairRow(
     }
 
     SnapshotRobustPairRow row;
+    row.position_uncertainty_reserve_m = position_radius;
+    row.velocity_uncertainty_reserve_mps = tube.velocity_radius_mps;
     row.nominal_normal = relative_position / nominal_distance;
     row.distance_lower = nominal_distance - position_radius;
     row.distance_upper = nominal_distance + position_radius;

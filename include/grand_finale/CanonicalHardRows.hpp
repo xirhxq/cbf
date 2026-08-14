@@ -39,6 +39,8 @@ struct CanonicalHardRow {
     double barrier_hdot = std::numeric_limits<double>::infinity();
     double coefficient_uncertainty_reserve = 0.0;
     std::optional<SnapshotTubeProvenance> tube_provenance;
+    double position_uncertainty_reserve_m = 0.0;
+    double velocity_uncertainty_reserve_mps = 0.0;
 
     double margin(const Eigen::Vector2d& control) const {
         return control_coefficient.dot(control) + constant;
@@ -168,6 +170,10 @@ inline CanonicalHardRow robustPhysicalRow(
     row.barrier_hdot = robust.barrier_hdot_lower;
     row.coefficient_uncertainty_reserve = robust.coefficient_reserve;
     row.tube_provenance = robust.provenance;
+    row.position_uncertainty_reserve_m =
+        robust.position_uncertainty_reserve_m;
+    row.velocity_uncertainty_reserve_mps =
+        robust.velocity_uncertainty_reserve_mps;
     return row;
 }
 

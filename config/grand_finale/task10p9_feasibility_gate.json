@@ -1,0 +1,16 @@
+{
+  "protocol": "Task10p9-feasibility-construct-validity-v1",
+  "claim_boundary": "diagnostic mechanism evidence only; never D1 efficiency evidence",
+  "control_period_s": 0.1,
+  "acceleration_half_box_mps2": 0.4,
+  "reference_keep_m": 850.0,
+  "reference_add_m": 849.0,
+  "collision_distance_m": 0.1,
+  "grid_spacing_m": 2.0,
+  "sensor_radius_m": 3.0,
+  "easy_map_m": [20.0, 20.0],
+  "inactive_map_m": [80.0, 40.0],
+  "active_map_m": [1700.0, 400.0],
+  "active_fixed_x_m": [0.0, 800.0, 1600.0],
+  "active_overlap_slack_m": 99.0
+}

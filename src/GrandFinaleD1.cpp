@@ -1,6 +1,7 @@
 #include "Swarm.hpp"
 #include "grand_finale/D1DevelopmentExperiment.hpp"
 #include "grand_finale/GrandFinaleSwarmAdapter.hpp"
+#include "grand_finale/InformationGateDiagnostic.hpp"
 #include "grand_finale/ReferenceGeometry.hpp"
 
 #include <Eigen/Eigenvalues>
@@ -105,6 +106,7 @@ struct RunMetrics : gf::D1Metrics {
     std::string failure_reason;
     std::string last_topology_failure_reason;
     std::string last_fresh_break_reason;
+    std::string information_certificate;
     std::size_t steps = 0;
     double minimum_reference_h = std::numeric_limits<double>::infinity();
     double minimum_reference_psi1 = std::numeric_limits<double>::infinity();
@@ -126,6 +128,94 @@ struct RunMetrics : gf::D1Metrics {
     double qp_wall_s = 0.0, miqp_wall_s = 0.0;
     double topology_strategy_wall_s = 0.0, total_wall_s = 0.0;
 };
+
+gf::InformationGateCertificate currentInformationCertificate(
+    gf::GrandFinaleSwarmAdapter& adapter,
+    gf::NodeId owner) {
+    const auto runtime = adapter.runtimeSnapshot();
+    const auto topology = adapter.supervisor().topology();
+    std::map<std::string,gf::RangeLinkState> links;
+    std::map<std::string,double> variances;
+    for (const auto& [id,link] : runtime.range_links) {
+        links[id] = {link.age_s,link.quality};
+        variances[id] = link.variance_m2;
+    }
+    const auto keep = gf::buildEligibility(runtime.estimate, links,
+        {adapter.config().add_reference_distance_m,
+         adapter.config().reference_distance_m,
+         adapter.config().maximum_range_aoi_s,
+         adapter.config().maximum_reference_position_eigenvalue_m2,
+         adapter.config().minimum_range_quality,
+         adapter.config().uncertainty_sigma}, topology);
+    const auto add = gf::buildEligibility(runtime.estimate, links,
+        {adapter.config().add_reference_distance_m,
+         adapter.config().reference_distance_m,
+         adapter.config().maximum_range_aoi_s,
+         adapter.config().maximum_reference_position_eigenvalue_m2,
+         adapter.config().minimum_range_quality,
+         adapter.config().uncertainty_sigma}, {});
+    const auto hard_rows = adapter.currentSnapshotHardRows(topology);
+    gf::InformationGateOwnerInput input;
+    input.owner = owner;
+    input.initialized = runtime.estimator_token > 0 && !runtime.range_links.empty();
+    input.posterior_margin_m2 = adapter.config().maximum_posterior_eigenvalue_m2 -
+        gf::detail::maximumPositionEigenvalue(runtime.estimate, owner);
+    input.minimum_fim_eigenvalue = 1e-6;
+    std::vector<gf::DirectedEdge> effective;
+    for (const auto& edge : topology) {
+        if (edge.owner != owner) continue;
+        const auto find_gate = [&](const gf::EligibilitySnapshot& snapshot) {
+            return std::find_if(snapshot.candidates.begin(), snapshot.candidates.end(),
+                [&](const auto& candidate) { return candidate.edge.id() == edge.id(); });
+        };
+        const auto keep_gate = find_gate(keep);
+        const auto add_gate = find_gate(add);
+        const std::string range_id = gf::UndirectedEdge::canonical(
+            edge.reference,edge.owner).id();
+        const auto link = runtime.range_links.find(range_id);
+        const bool hocbf = gf::referenceEdgeInitialSetAudited(
+            hard_rows, edge, runtime.estimate.mobile_ids);
+        input.edges.push_back({edge,
+            keep_gate != keep.candidates.end() && keep_gate->eligible,
+            add_gate != add.candidates.end() && add_gate->eligible,
+            link != runtime.range_links.end(),
+            link == runtime.range_links.end()
+                ? -std::numeric_limits<double>::infinity()
+                : adapter.config().maximum_range_aoi_s-link->second.age_s,
+            link == runtime.range_links.end()
+                ? -std::numeric_limits<double>::infinity()
+                : link->second.quality-adapter.config().minimum_range_quality,
+            hocbf});
+        if (keep_gate != keep.candidates.end() && keep_gate->eligible && hocbf)
+            effective.push_back(edge);
+    }
+    if (effective.size() >= 2) {
+        Eigen::Matrix2d nominal = Eigen::Matrix2d::Zero();
+        const Eigen::Vector2d p = gf::detail::nodePosition(runtime.estimate,owner);
+        for (const auto& edge : effective) {
+            const Eigen::Vector2d d = p-gf::detail::nodePosition(
+                runtime.estimate,edge.reference);
+            const Eigen::Vector2d q = d.normalized();
+            nominal += q*q.transpose()/variances.at(
+                gf::UndirectedEdge::canonical(owner,edge.reference).id());
+        }
+        input.nominal_fim_eigenvalue =
+            Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d>(nominal)
+                .eigenvalues().minCoeff();
+        input.posterior_fim_proxy_eigenvalue =
+            Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d>(gf::referenceFim(
+                owner,effective,runtime.estimate,variances))
+                .eigenvalues().minCoeff();
+        input.robust_cone_fim_lower_bound =
+            gf::robustReferenceFimConeLowerBound(owner,effective,
+                runtime.estimate,variances,adapter.config().uncertainty_sigma);
+    } else {
+        input.nominal_fim_eigenvalue = input.posterior_fim_proxy_eigenvalue =
+            input.robust_cone_fim_lower_bound =
+                -std::numeric_limits<double>::infinity();
+    }
+    return gf::diagnoseInformationGate(input);
+}
 
 std::map<gf::NodeId, Eigen::Vector2d> estimatePositions(
     const gf::JointEstimateSnapshot& snapshot) {
@@ -415,6 +505,37 @@ RunMetrics runCase(
             metrics.minimum_posterior_margin < -1.0e-12) {
             metrics.outcome = gf::D1Outcome::InformationFailure;
             metrics.failure_reason = "reference_information_aoi_gate";
+            for (gf::NodeId owner : mobileIds()) {
+                const auto certificate = currentInformationCertificate(
+                    adapter, owner);
+                if (!certificate.accepted) {
+                    std::ostringstream detail;
+                    detail << std::scientific << std::setprecision(9)
+                           << "owner=" << owner << ':'
+                           << certificate.first_failed_gate
+                           << ":posterior_margin="
+                           << certificate.posterior_margin_m2
+                           << ":nominal_fim="
+                           << certificate.nominal_fim_eigenvalue
+                           << ":posterior_fim_proxy="
+                           << certificate.posterior_fim_proxy_eigenvalue
+                           << ":robust_cone_fim="
+                           << certificate.robust_cone_fim_lower_bound
+                           << ":effective_refs="
+                           << certificate.effective_reference_count;
+                    for (const auto& edge : certificate.edges) {
+                        detail << ":edge=" << edge.edge.id()
+                               << ",keep=" << edge.keep_distance_valid
+                               << ",add=" << edge.add_distance_valid
+                               << ",range=" << edge.range_present
+                               << ",aoi_margin=" << edge.aoi_margin_s
+                               << ",quality_margin=" << edge.quality_margin
+                               << ",hocbf=" << edge.hocbf_initial_set_valid;
+                    }
+                    metrics.information_certificate = detail.str();
+                    break;
+                }
+            }
             break;
         }
         if (step.minimum_hard_residual < -adapter.config().residual_tolerance ||
@@ -473,6 +594,7 @@ json metricJson(const gf::D1Case& run, const RunMetrics& m) {
         {"failure_reason", m.failure_reason}, {"steps", m.steps},
         {"last_topology_failure_reason", m.last_topology_failure_reason},
         {"last_fresh_break_reason", m.last_fresh_break_reason},
+        {"information_certificate", m.information_certificate},
         {"t95_true_s", optional(m.t95_true_s)},
         {"t95_proxy_s", optional(m.t95_proxy_s)},
         {"final_true_coverage", m.final_true_coverage},
@@ -515,6 +637,10 @@ json metricJson(const gf::D1Case& run, const RunMetrics& m) {
 int main(int argc, char** argv) {
     const bool smoke = argc > 1 && std::string(argv[1]) == "--smoke";
     const bool probe = argc > 1 && std::string(argv[1]) == "--probe";
+    const bool information_probe = argc > 1 &&
+        std::string(argv[1]) == "--task10p9-information-probe";
+    const bool greedy_information_probe = argc > 1 &&
+        std::string(argv[1]) == "--task10p9-greedy-information-probe";
     const json raw = json::parse(std::ifstream(
         std::string(PROJECT_ROOT) +
         "/config/grand_finale/d1_development_efficiency.json"));
@@ -528,9 +654,19 @@ int main(int argc, char** argv) {
             run.map.id != "compact_square" || run.seed != 2027 ||
             run.strategy != gf::D1TopologyStrategy::ProposedCertified))
             continue;
+        if (information_probe && (run.solver != "gurobi" ||
+            run.map.id != "compact_square" || run.seed != 2029 ||
+            run.strategy != gf::D1TopologyStrategy::ProposedCertified))
+            continue;
+        if (greedy_information_probe && (run.solver != "gurobi" ||
+            run.map.id != "compact_square" || run.seed != 2029 ||
+            run.strategy != gf::D1TopologyStrategy::GreedyCertified))
+            continue;
         RunMetrics metrics;
         try {
-            metrics = runCase(protocol, run, raw, smoke ? 1 : (probe ? 200 : -1));
+            metrics = runCase(protocol, run, raw,
+                smoke ? 1 : ((probe || information_probe ||
+                    greedy_information_probe) ? 300 : -1));
         } catch (const std::exception& error) {
             metrics.outcome = gf::D1Outcome::Exception;
             metrics.failure_reason = error.what();
@@ -542,6 +678,9 @@ int main(int argc, char** argv) {
         ++emitted;
     }
     if ((smoke && emitted != 3) || (probe && emitted != 1) ||
-        (!smoke && !probe && emitted != 36)) return 2;
+        (information_probe && emitted != 1) ||
+        (greedy_information_probe && emitted != 1) ||
+        (!smoke && !probe && !information_probe &&
+         !greedy_information_probe && emitted != 36)) return 2;
     return 0;
 }

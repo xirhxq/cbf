@@ -8,6 +8,9 @@
 
 namespace gf {
 
+inline constexpr double kTopologyFeasibilityTolerance = 1.0e-9;
+inline constexpr double kTopologyLexicographicFreezeTolerance = 1.0e-8;
+
 enum class TopologySolveStatus { Optimal, Feasible, Infeasible, Error };
 
 struct TopologySolution {
