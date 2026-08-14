@@ -11,6 +11,15 @@
 
 namespace gf {
 
+inline std::size_t completeRangeSlotCount(
+    std::size_t mobile_count,
+    std::size_t fixed_count) {
+    if (mobile_count == 0)
+        throw std::invalid_argument("mobile count must be positive");
+    return mobile_count * (mobile_count - 1) / 2 +
+           mobile_count * fixed_count;
+}
+
 struct ShadowStateBox {
     Eigen::VectorXd lower;
     Eigen::VectorXd upper;
