@@ -83,6 +83,13 @@ void applyMeasurement(
     centralized.update({measurement});
 }
 
+double minimumEigenvalue(const Eigen::MatrixXd& matrix) {
+    const Eigen::MatrixXd symmetric = 0.5 * (matrix + matrix.transpose());
+    return Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd>(symmetric)
+        .eigenvalues()
+        .minCoeff();
+}
+
 }  // namespace
 
 TEST_CASE("Local second-order propagation equals the centralized oracle") {
@@ -150,6 +157,43 @@ TEST_CASE("Multiple propagation and measurement batches retain oracle equivalenc
     applyMeasurement(distributed, centralized, 3, range(30, 3, 11, 3.04));
 
     checkEquivalent(distributed, centralized);
+}
+
+TEST_CASE("Every scalar update preserves PSD and is Loewner-below propagation-only covariance") {
+    gf::InterimMasterDekf distributed(initialMobiles(), fixedAnchors());
+    gf::CentralizedEkfOracle centralized(initialMobiles(), fixedAnchors());
+    gf::CentralizedEkfOracle propagation_only(initialMobiles(), fixedAnchors());
+    const std::vector<Eigen::Vector2d> accelerations = {
+        {0.2, -0.1}, {-0.1, 0.3}, {0.0, -0.2}, {0.4, 0.1}};
+    for (std::size_t index = 0; index < accelerations.size(); ++index) {
+        distributed.propagateLocal(
+            static_cast<gf::NodeId>(index + 1),
+            accelerations[index], 0.2, 0.04);
+    }
+    centralized.propagate(accelerations, 0.2, 0.04);
+    propagation_only.propagate(accelerations, 0.2, 0.04);
+
+    const std::vector<gf::RangeMeasurement> batch =
+        gf::canonicalizeRangeBatch({
+            range(10, 2, 3, 3.05),
+            range(10, 1, 2, 4.05),
+            range(10, 1, 10, 3.01),
+            range(10, 3, 11, 3.03)});
+    Eigen::MatrixXd previous = distributed.reconstructForAudit().covariance;
+    for (const auto& measurement : batch) {
+        const gf::NodeId master = measurement.edge.first <= 4
+            ? measurement.edge.first
+            : measurement.edge.second;
+        applyMeasurement(distributed, centralized, master, measurement);
+        const Eigen::MatrixXd current =
+            distributed.reconstructForAudit().covariance;
+        CHECK(minimumEigenvalue(current) >= -1.0e-10);
+        CHECK(minimumEigenvalue(previous - current) >= -1.0e-10);
+        CHECK(minimumEigenvalue(
+            propagation_only.snapshot().covariance - current) >= -1.0e-10);
+        previous = current;
+        checkEquivalent(distributed, centralized);
+    }
 }
 
 TEST_CASE("Interim-master messages reject invalid ownership order and version") {

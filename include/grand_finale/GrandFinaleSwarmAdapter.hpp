@@ -73,6 +73,9 @@ struct GrandFinaleSwarmAdapterConfig {
     double estimator_acceleration_variance = 0.0;
     double initial_position_variance_m2 = 1.0e-4;
     double certified_error_bound_m = 0.05;
+    double certified_shadow_single_position_support_m = 0.0;
+    double certified_shadow_relative_position_support_m = 0.0;
+    double maximum_accepted_range_innovation_m = 1.0;
     double sensor_radius_m = 1.6;
     double reference_distance_m = 850.0;
     double add_reference_distance_m = 849.0;
@@ -213,6 +216,15 @@ public:
             config_.sensor_radius_m <= 0.0 ||
             !std::isfinite(config_.certified_error_bound_m) ||
             config_.certified_error_bound_m < 0.0 ||
+            !std::isfinite(
+                config_.certified_shadow_single_position_support_m) ||
+            config_.certified_shadow_single_position_support_m < 0.0 ||
+            !std::isfinite(
+                config_.certified_shadow_relative_position_support_m) ||
+            config_.certified_shadow_relative_position_support_m < 0.0 ||
+            !std::isfinite(
+                config_.maximum_accepted_range_innovation_m) ||
+            config_.maximum_accepted_range_innovation_m <= 0.0 ||
             !std::isfinite(config_.position_gain) ||
             config_.position_gain < 0.0 ||
             !std::isfinite(config_.velocity_gain) ||
@@ -287,10 +299,12 @@ public:
             coverage_.observe(
                 truth, Point(estimate.x(), estimate.y()),
                 std::max(
-                    config_.certified_error_bound_m,
-                    config_.uncertainty_sigma * std::sqrt(std::max(
-                        0.0, detail::maximumPositionEigenvalue(
-                            after, mobile_ids_[index])))),
+                    config_.certified_shadow_single_position_support_m,
+                    std::max(
+                        config_.certified_error_bound_m,
+                        config_.uncertainty_sigma * std::sqrt(std::max(
+                            0.0, detail::maximumPositionEigenvalue(
+                                after, mobile_ids_[index]))))),
                 config_.sensor_radius_m);
         }
         metrics.certified_control_count = applied.size();
@@ -678,12 +692,14 @@ private:
             PairwiseSecondOrderBarrierKind::CommunicationUpper,
             config_.reference_distance_m,
             config_.reference_uncertainty_m +
-                maximumPairPositionTube(snapshot, topology),
+                maximumPairPositionTube(snapshot, topology) +
+                config_.certified_shadow_relative_position_support_m,
             1.0, 1.0, 1.0, 0.0};
         request.collision_spec = {
             PairwiseSecondOrderBarrierKind::CollisionLower,
             config_.collision_distance_m,
-            maximumCollisionPositionTube(snapshot),
+            maximumCollisionPositionTube(snapshot) +
+                config_.certified_shadow_relative_position_support_m,
             1.0, 1.0, 1.0, 0.0};
         request.acceleration_half_box = config_.acceleration_half_box;
         return request;
@@ -842,15 +858,21 @@ private:
         for (const RangeMeasurement& measurement :
              canonicalizeRangeBatch(std::move(measurements))) {
             const std::string range_id = measurement.edge.id();
-            range_last_observation_s_[range_id] =
-                swarm_.robots.front()->runtime;
-            range_quality_[range_id] = 1.0;
-            range_variance_m2_[range_id] = measurement.variance_m2;
             const NodeId master = std::find(
                 mobile_ids_.begin(), mobile_ids_.end(),
                 measurement.edge.first) != mobile_ids_.end()
                 ? measurement.edge.first : measurement.edge.second;
-            estimator_.applyUpdate(estimator_.makeUpdate(master, measurement));
+            const InterimMasterMessage update =
+                estimator_.makeUpdate(master, measurement);
+            if (std::abs(update.innovation) >
+                config_.maximum_accepted_range_innovation_m) {
+                continue;
+            }
+            range_last_observation_s_[range_id] =
+                swarm_.robots.front()->runtime;
+            range_quality_[range_id] = 1.0;
+            range_variance_m2_[range_id] = measurement.variance_m2;
+            estimator_.applyUpdate(update);
         }
     }
 

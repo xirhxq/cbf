@@ -225,6 +225,51 @@ TEST_CASE("Actual union hard rows use the higher-covariance new endpoint tube") 
     CHECK(high_row->constant < low_row->constant);
 }
 
+TEST_CASE("Finite-tour shadow supports tighten the actual formal hard rows") {
+    json baseline_settings = settings4p2();
+    json shadow_settings = settings4p2();
+    Swarm baseline_swarm(baseline_settings);
+    Swarm shadow_swarm(shadow_settings);
+    auto baseline_config = adapterConfig(gf::SolverProfile::OpenSource);
+    auto shadow_config = baseline_config;
+    baseline_config.uncertainty_sigma = 0.0;
+    shadow_config.uncertainty_sigma = 0.0;
+    shadow_config.certified_shadow_single_position_support_m = 0.2;
+    shadow_config.certified_shadow_relative_position_support_m = 0.4;
+    shadow_config.maximum_accepted_range_innovation_m = 0.1;
+    gf::GrandFinaleSwarmAdapter baseline(
+        baseline_swarm, {1, 2, 3, 4},
+        {{10, {4.0, 4.0}}, {11, {4.0, 16.0}}}, topology(),
+        baseline_config);
+    gf::GrandFinaleSwarmAdapter shadow(
+        shadow_swarm, {1, 2, 3, 4},
+        {{10, {4.0, 4.0}}, {11, {4.0, 16.0}}}, topology(),
+        shadow_config);
+    const auto baseline_rows = baseline.currentSnapshotHardRows(topology());
+    const auto shadow_rows = shadow.currentSnapshotHardRows(topology());
+    const auto find_row = [](const auto& rows, const std::string& id) {
+        return std::find_if(rows.begin(), rows.end(), [&](const auto& row) {
+            return row.id == id;
+        });
+    };
+    const auto baseline_reference = find_row(
+        baseline_rows, "reference:10->1:owner:1");
+    const auto shadow_reference = find_row(
+        shadow_rows, "reference:10->1:owner:1");
+    const auto baseline_collision = find_row(
+        baseline_rows, "collision:1--2:owner:1");
+    const auto shadow_collision = find_row(
+        shadow_rows, "collision:1--2:owner:1");
+    REQUIRE(baseline_reference != baseline_rows.end());
+    REQUIRE(shadow_reference != shadow_rows.end());
+    REQUIRE(baseline_collision != baseline_rows.end());
+    REQUIRE(shadow_collision != shadow_rows.end());
+    CHECK(shadow_reference->barrier_h < baseline_reference->barrier_h);
+    CHECK(shadow_reference->constant < baseline_reference->constant);
+    CHECK(shadow_collision->barrier_h < baseline_collision->barrier_h);
+    CHECK(shadow_collision->constant < baseline_collision->constant);
+}
+
 TEST_CASE("Permuted mobile IDs are rejected before any certified control can be applied") {
     json settings = settings4p2();
     Swarm swarm(settings);
