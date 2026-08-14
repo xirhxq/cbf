@@ -106,6 +106,31 @@ inline double maximumPositionEigenvalue(
         .maxCoeff();
 }
 
+inline Eigen::Matrix2d velocityCovariance(
+    const JointEstimateSnapshot& estimate,
+    NodeId id) {
+    const auto mobile = std::lower_bound(
+        estimate.mobile_ids.begin(), estimate.mobile_ids.end(), id);
+    if (mobile != estimate.mobile_ids.end() && *mobile == id) {
+        const Eigen::Index offset = static_cast<Eigen::Index>(
+            4 * std::distance(estimate.mobile_ids.begin(), mobile) + 2);
+        return estimate.covariance.block<2, 2>(offset, offset);
+    }
+    if (estimate.fixed_positions.count(id) != 0) {
+        return Eigen::Matrix2d::Zero();
+    }
+    throw std::invalid_argument("unknown reference node");
+}
+
+inline double maximumVelocityEigenvalue(
+    const JointEstimateSnapshot& estimate,
+    NodeId id) {
+    return Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d>(
+               velocityCovariance(estimate, id))
+        .eigenvalues()
+        .maxCoeff();
+}
+
 }  // namespace detail
 
 inline EligibilitySnapshot buildEligibility(

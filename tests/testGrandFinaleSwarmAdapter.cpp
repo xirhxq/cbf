@@ -225,6 +225,57 @@ TEST_CASE("Actual union hard rows use the higher-covariance new endpoint tube") 
     CHECK(high_row->constant < low_row->constant);
 }
 
+TEST_CASE("Formal hard rows include velocity covariance in hdot and constant") {
+    json low_settings = settings4p2();
+    json high_settings = settings4p2();
+    Swarm low_swarm(low_settings);
+    Swarm high_swarm(high_settings);
+    auto low_config = adapterConfig(gf::SolverProfile::OpenSource);
+    auto high_config = low_config;
+    high_config.initial_velocity_variance_m2 = 0.04;
+    gf::GrandFinaleSwarmAdapter low_adapter(
+        low_swarm, {1, 2, 3, 4}, {{10, {4.0, 4.0}}, {11, {4.0, 16.0}}},
+        topology(), low_config);
+    gf::GrandFinaleSwarmAdapter high_adapter(
+        high_swarm, {1, 2, 3, 4}, {{10, {4.0, 4.0}}, {11, {4.0, 16.0}}},
+        topology(), high_config);
+    const auto low_rows = low_adapter.currentSnapshotHardRows(topology());
+    const auto high_rows = high_adapter.currentSnapshotHardRows(topology());
+    const auto find_row = [](const auto& rows, const std::string& id) {
+        return std::find_if(rows.begin(), rows.end(), [&](const auto& row) {
+            return row.id == id;
+        });
+    };
+    const auto low = find_row(low_rows, "reference:10->1:owner:1");
+    const auto high = find_row(high_rows, "reference:10->1:owner:1");
+    REQUIRE(low != low_rows.end());
+    REQUIRE(high != high_rows.end());
+    REQUIRE(low->tube_provenance.has_value());
+    CHECK(*low->tube_provenance ==
+          gf::SnapshotTubeProvenance::CovarianceSigmaDevelopment);
+    CHECK(high->barrier_h == doctest::Approx(low->barrier_h));
+    CHECK(high->barrier_hdot < low->barrier_hdot);
+    CHECK(high->barrier_psi1 < low->barrier_psi1);
+    CHECK(high->constant < low->constant);
+}
+
+TEST_CASE("Invalid snapshot robust tube fails before physics without zero control") {
+    json settings = settings4p2();
+    settings["initial"]["position"]["positions"][1] = {7.0, 7.0};
+    Swarm swarm(settings);
+    gf::GrandFinaleSwarmAdapter adapter(
+        swarm, {1, 2, 3, 4}, {{10, {4.0, 4.0}}, {11, {4.0, 16.0}}},
+        topology(), adapterConfig(gf::SolverProfile::OpenSource));
+    const double runtime_before = swarm.robots.front()->runtime;
+    CHECK_NOTHROW([&] {
+        const auto result = adapter.step();
+        CHECK_FALSE(result.advanced);
+        CHECK(result.reason == "snapshot_robust_hard_row_invalid");
+        CHECK(result.applied_controls.empty());
+    }());
+    CHECK(swarm.robots.front()->runtime == doctest::Approx(runtime_before));
+}
+
 TEST_CASE("Finite-tour shadow supports tighten the actual formal hard rows") {
     json baseline_settings = settings4p2();
     json shadow_settings = settings4p2();

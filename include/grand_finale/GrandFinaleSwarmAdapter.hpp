@@ -72,9 +72,11 @@ struct GrandFinaleSwarmAdapterConfig {
     double velocity_gain = 0.8;
     double estimator_acceleration_variance = 0.0;
     double initial_position_variance_m2 = 1.0e-4;
+    double initial_velocity_variance_m2 = 1.0e-4;
     double certified_error_bound_m = 0.05;
     double certified_shadow_single_position_support_m = 0.0;
     double certified_shadow_relative_position_support_m = 0.0;
+    double certified_shadow_relative_velocity_support_mps = 0.0;
     double maximum_accepted_range_innovation_m = 1.0;
     double sensor_radius_m = 1.6;
     double reference_distance_m = 850.0;
@@ -201,6 +203,8 @@ public:
             config_.reference_distance_m < config_.add_reference_distance_m ||
             !std::isfinite(config_.initial_position_variance_m2) ||
             config_.initial_position_variance_m2 < 0.0 ||
+            !std::isfinite(config_.initial_velocity_variance_m2) ||
+            config_.initial_velocity_variance_m2 < 0.0 ||
             !std::isfinite(config_.maximum_range_aoi_s) ||
             config_.maximum_range_aoi_s < 0.0 ||
             !std::isfinite(
@@ -222,6 +226,9 @@ public:
             !std::isfinite(
                 config_.certified_shadow_relative_position_support_m) ||
             config_.certified_shadow_relative_position_support_m < 0.0 ||
+            !std::isfinite(
+                config_.certified_shadow_relative_velocity_support_mps) ||
+            config_.certified_shadow_relative_velocity_support_mps < 0.0 ||
             !std::isfinite(
                 config_.maximum_accepted_range_innovation_m) ||
             config_.maximum_accepted_range_innovation_m <= 0.0 ||
@@ -245,8 +252,14 @@ public:
         const auto nominal = nominal_override_.has_value()
             ? *nominal_override_
             : nominalControls(metrics.mode);
-        const std::vector<CanonicalHardRow> rows = buildCanonicalHardRows(
-            hardRowRequest(snapshot, supervisor_.topology()));
+        std::vector<CanonicalHardRow> rows;
+        try {
+            rows = buildCanonicalHardRows(
+                hardRowRequest(snapshot, supervisor_.topology()));
+        } catch (const std::exception&) {
+            metrics.reason = "snapshot_robust_hard_row_invalid";
+            return metrics;
+        }
         std::map<int, Eigen::Vector2d> applied;
 
         const auto build_controls = [&]()
@@ -632,7 +645,8 @@ private:
                 (Eigen::Vector4d(
                     config_.initial_position_variance_m2,
                     config_.initial_position_variance_m2,
-                    1.0e-4, 1.0e-4)).asDiagonal()});
+                    config_.initial_velocity_variance_m2,
+                    config_.initial_velocity_variance_m2)).asDiagonal()});
         }
         return estimates;
     }
@@ -691,17 +705,23 @@ private:
         request.reference_spec = {
             PairwiseSecondOrderBarrierKind::CommunicationUpper,
             config_.reference_distance_m,
-            config_.reference_uncertainty_m +
-                maximumPairPositionTube(snapshot, topology) +
-                config_.certified_shadow_relative_position_support_m,
+            config_.reference_uncertainty_m,
             1.0, 1.0, 1.0, 0.0};
         request.collision_spec = {
             PairwiseSecondOrderBarrierKind::CollisionLower,
             config_.collision_distance_m,
-            maximumCollisionPositionTube(snapshot) +
-                config_.certified_shadow_relative_position_support_m,
+            0.0,
             1.0, 1.0, 1.0, 0.0};
         request.acceleration_half_box = config_.acceleration_half_box;
+        request.require_snapshot_robust_rows = true;
+        for (const DirectedEdge& edge : request.reference_edges) {
+            request.reference_snapshot_tubes.emplace(
+                edge.id(), snapshotPairTube(snapshot, edge.owner, edge.reference));
+        }
+        for (const UndirectedEdge& edge : request.collision_pairs) {
+            request.collision_snapshot_tubes.emplace(
+                edge.id(), snapshotPairTube(snapshot, edge.first, edge.second));
+        }
         return request;
     }
 
@@ -795,6 +815,26 @@ private:
                     snapshot, edge, config_.uncertainty_sigma));
         }
         return maximum;
+    }
+
+    PairwiseSnapshotTube snapshotPairTube(
+        const JointEstimateSnapshot& snapshot,
+        NodeId first,
+        NodeId second) const {
+        const double first_position = std::sqrt(std::max(
+            0.0, detail::maximumPositionEigenvalue(snapshot, first)));
+        const double second_position = std::sqrt(std::max(
+            0.0, detail::maximumPositionEigenvalue(snapshot, second)));
+        const double first_velocity = std::sqrt(std::max(
+            0.0, detail::maximumVelocityEigenvalue(snapshot, first)));
+        const double second_velocity = std::sqrt(std::max(
+            0.0, detail::maximumVelocityEigenvalue(snapshot, second)));
+        return PairwiseSnapshotTube{
+            config_.uncertainty_sigma * (first_position + second_position) +
+                config_.certified_shadow_relative_position_support_m,
+            config_.uncertainty_sigma * (first_velocity + second_velocity) +
+                config_.certified_shadow_relative_velocity_support_mps,
+            SnapshotTubeProvenance::CovarianceSigmaDevelopment};
     }
 
     double maximumCollisionPositionTube(

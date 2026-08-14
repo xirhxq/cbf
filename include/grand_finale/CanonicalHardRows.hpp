@@ -2,6 +2,7 @@
 
 #include "bridge/ExactGammaStar2D.hpp"
 #include "cbf/PairwiseSecondOrderCBF.hpp"
+#include "grand_finale/SnapshotRobustPairRow.hpp"
 #include "grand_finale/Types.hpp"
 
 #include <algorithm>
@@ -35,6 +36,9 @@ struct CanonicalHardRow {
     bool participates_in_gamma = true;
     double barrier_h = std::numeric_limits<double>::infinity();
     double barrier_psi1 = std::numeric_limits<double>::infinity();
+    double barrier_hdot = std::numeric_limits<double>::infinity();
+    double coefficient_uncertainty_reserve = 0.0;
+    std::optional<SnapshotTubeProvenance> tube_provenance;
 
     double margin(const Eigen::Vector2d& control) const {
         return control_coefficient.dot(control) + constant;
@@ -50,6 +54,9 @@ struct CanonicalHardRowRequest {
     PairwiseSecondOrderRowSpec reference_spec;
     PairwiseSecondOrderRowSpec collision_spec;
     double acceleration_half_box = 0.0;
+    bool require_snapshot_robust_rows = false;
+    std::map<std::string, PairwiseSnapshotTube> reference_snapshot_tubes;
+    std::map<std::string, PairwiseSnapshotTube> collision_snapshot_tubes;
 };
 
 inline CanonicalHardRow makeCanonicalGammaRow(
@@ -144,6 +151,74 @@ inline void appendFixedPairRow(
         central.constTerm, 1.0, central.h, central.psi1));
 }
 
+inline CanonicalHardRow robustPhysicalRow(
+    std::string id,
+    CanonicalHardRowKind kind,
+    NodeId owner,
+    NodeId peer,
+    const Eigen::Vector2d& normal,
+    const Eigen::Vector2d& coefficient,
+    double constant,
+    double responsibility,
+    const SnapshotRobustPairRow& robust) {
+    CanonicalHardRow row{
+        std::move(id), kind, owner, peer, normal, coefficient,
+        constant, responsibility, true,
+        robust.barrier_h_lower, robust.barrier_psi1_lower};
+    row.barrier_hdot = robust.barrier_hdot_lower;
+    row.coefficient_uncertainty_reserve = robust.coefficient_reserve;
+    row.tube_provenance = robust.provenance;
+    return row;
+}
+
+inline void appendRobustSharedPairRows(
+    std::vector<CanonicalHardRow>& rows,
+    const std::string& prefix,
+    CanonicalHardRowKind kind,
+    NodeId first,
+    NodeId second,
+    const PairwiseSecondOrderState2D& first_state,
+    const PairwiseSecondOrderState2D& second_state,
+    const PairwiseSecondOrderRowSpec& spec,
+    const PairwiseSnapshotTube& tube,
+    double acceleration_half_box) {
+    const auto robust = buildSnapshotRobustPairRow(
+        first_state, second_state, spec, tube, acceleration_half_box);
+    rows.push_back(robustPhysicalRow(
+        prefix + ":owner:" + std::to_string(first), kind,
+        first, second, robust.nominal_normal,
+        robust.nominal_control_coefficient,
+        0.5 * robust.central_constant_lower - robust.coefficient_reserve,
+        0.5, robust));
+    rows.push_back(robustPhysicalRow(
+        prefix + ":owner:" + std::to_string(second), kind,
+        second, first, -robust.nominal_normal,
+        -robust.nominal_control_coefficient,
+        0.5 * robust.central_constant_lower - robust.coefficient_reserve,
+        0.5, robust));
+}
+
+inline void appendRobustFixedPairRow(
+    std::vector<CanonicalHardRow>& rows,
+    const std::string& prefix,
+    CanonicalHardRowKind kind,
+    NodeId mobile,
+    NodeId fixed,
+    const PairwiseSecondOrderState2D& mobile_state,
+    const PairwiseSecondOrderState2D& fixed_state,
+    const PairwiseSecondOrderRowSpec& spec,
+    const PairwiseSnapshotTube& tube,
+    double acceleration_half_box) {
+    const auto robust = buildSnapshotRobustPairRow(
+        mobile_state, fixed_state, spec, tube, acceleration_half_box);
+    rows.push_back(robustPhysicalRow(
+        prefix + ":owner:" + std::to_string(mobile), kind,
+        mobile, fixed, robust.nominal_normal,
+        robust.nominal_control_coefficient,
+        robust.central_constant_lower - robust.coefficient_reserve,
+        1.0, robust));
+}
+
 }  // namespace canonical_hard_row_detail
 
 inline std::vector<CanonicalHardRow> buildCanonicalHardRows(
@@ -187,16 +262,37 @@ inline std::vector<CanonicalHardRow> buildCanonicalHardRows(
             throw std::invalid_argument("invalid or duplicate reference edge");
         }
         const std::string prefix = "reference:" + edge.id();
+        const auto tube = request.reference_snapshot_tubes.find(edge.id());
+        if (request.require_snapshot_robust_rows &&
+            tube == request.reference_snapshot_tubes.end()) {
+            throw std::invalid_argument("missing reference snapshot tube");
+        }
         if (mobiles.count(edge.reference) != 0) {
-            appendSharedPairRows(
-                rows, prefix, CanonicalHardRowKind::ReferenceDistance,
-                edge.owner, edge.reference, request.states.at(edge.owner),
-                request.states.at(edge.reference), request.reference_spec);
+            if (request.require_snapshot_robust_rows) {
+                appendRobustSharedPairRows(
+                    rows, prefix, CanonicalHardRowKind::ReferenceDistance,
+                    edge.owner, edge.reference, request.states.at(edge.owner),
+                    request.states.at(edge.reference), request.reference_spec,
+                    tube->second, request.acceleration_half_box);
+            } else {
+                appendSharedPairRows(
+                    rows, prefix, CanonicalHardRowKind::ReferenceDistance,
+                    edge.owner, edge.reference, request.states.at(edge.owner),
+                    request.states.at(edge.reference), request.reference_spec);
+            }
         } else {
-            appendFixedPairRow(
-                rows, prefix, CanonicalHardRowKind::ReferenceDistance,
-                edge.owner, edge.reference, request.states.at(edge.owner),
-                request.states.at(edge.reference), request.reference_spec);
+            if (request.require_snapshot_robust_rows) {
+                appendRobustFixedPairRow(
+                    rows, prefix, CanonicalHardRowKind::ReferenceDistance,
+                    edge.owner, edge.reference, request.states.at(edge.owner),
+                    request.states.at(edge.reference), request.reference_spec,
+                    tube->second, request.acceleration_half_box);
+            } else {
+                appendFixedPairRow(
+                    rows, prefix, CanonicalHardRowKind::ReferenceDistance,
+                    edge.owner, edge.reference, request.states.at(edge.owner),
+                    request.states.at(edge.reference), request.reference_spec);
+            }
         }
     }
 
@@ -210,18 +306,39 @@ inline std::vector<CanonicalHardRow> buildCanonicalHardRows(
             throw std::invalid_argument("invalid or duplicate collision pair");
         }
         const std::string prefix = "collision:" + edge.id();
+        const auto tube = request.collision_snapshot_tubes.find(edge.id());
+        if (request.require_snapshot_robust_rows &&
+            tube == request.collision_snapshot_tubes.end()) {
+            throw std::invalid_argument("missing collision snapshot tube");
+        }
         if (mobiles.count(edge.first) != 0 && mobiles.count(edge.second) != 0) {
-            appendSharedPairRows(
-                rows, prefix, CanonicalHardRowKind::Collision,
-                edge.first, edge.second, request.states.at(edge.first),
-                request.states.at(edge.second), request.collision_spec);
+            if (request.require_snapshot_robust_rows) {
+                appendRobustSharedPairRows(
+                    rows, prefix, CanonicalHardRowKind::Collision,
+                    edge.first, edge.second, request.states.at(edge.first),
+                    request.states.at(edge.second), request.collision_spec,
+                    tube->second, request.acceleration_half_box);
+            } else {
+                appendSharedPairRows(
+                    rows, prefix, CanonicalHardRowKind::Collision,
+                    edge.first, edge.second, request.states.at(edge.first),
+                    request.states.at(edge.second), request.collision_spec);
+            }
         } else {
             const NodeId mobile = mobiles.count(edge.first) ? edge.first : edge.second;
             const NodeId anchor = mobile == edge.first ? edge.second : edge.first;
-            appendFixedPairRow(
-                rows, prefix, CanonicalHardRowKind::Collision,
-                mobile, anchor, request.states.at(mobile),
-                request.states.at(anchor), request.collision_spec);
+            if (request.require_snapshot_robust_rows) {
+                appendRobustFixedPairRow(
+                    rows, prefix, CanonicalHardRowKind::Collision,
+                    mobile, anchor, request.states.at(mobile),
+                    request.states.at(anchor), request.collision_spec,
+                    tube->second, request.acceleration_half_box);
+            } else {
+                appendFixedPairRow(
+                    rows, prefix, CanonicalHardRowKind::Collision,
+                    mobile, anchor, request.states.at(mobile),
+                    request.states.at(anchor), request.collision_spec);
+            }
         }
     }
 

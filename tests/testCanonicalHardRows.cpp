@@ -139,6 +139,79 @@ TEST_CASE("Canonical rows preserve collision and input gates across graph states
     CHECK(ids(successor_rows).count("reference:10->2:owner:2") == 0);
 }
 
+TEST_CASE("Canonical physical rows require and expose complete snapshot tubes") {
+    auto request = requestWith({{10, 1}, {1, 2}});
+    request.require_snapshot_robust_rows = true;
+    request.reference_snapshot_tubes = {
+        {"10->1", {0.30, 0.20,
+                   gf::SnapshotTubeProvenance::CovarianceSigmaDevelopment}},
+        {"1->2", {0.50, 0.35,
+                  gf::SnapshotTubeProvenance::ExternallyCertified}}};
+    request.collision_snapshot_tubes = {
+        {"1--2", {0.50, 0.35,
+                  gf::SnapshotTubeProvenance::ExternallyCertified}}};
+    const auto rows = gf::buildCanonicalHardRows(request);
+    const auto fixed = std::find_if(rows.begin(), rows.end(), [](const auto& row) {
+        return row.id == "reference:10->1:owner:1";
+    });
+    const auto mobile_first = std::find_if(
+        rows.begin(), rows.end(), [](const auto& row) {
+            return row.id == "reference:1->2:owner:1";
+        });
+    const auto mobile_second = std::find_if(
+        rows.begin(), rows.end(), [](const auto& row) {
+            return row.id == "reference:1->2:owner:2";
+        });
+    REQUIRE(fixed != rows.end());
+    REQUIRE(mobile_first != rows.end());
+    REQUIRE(mobile_second != rows.end());
+    REQUIRE(fixed->tube_provenance.has_value());
+    CHECK(*fixed->tube_provenance ==
+          gf::SnapshotTubeProvenance::CovarianceSigmaDevelopment);
+    CHECK(std::isfinite(fixed->barrier_hdot));
+    CHECK(fixed->coefficient_uncertainty_reserve > 0.0);
+    CHECK(mobile_first->responsibility == doctest::Approx(0.5));
+    CHECK(mobile_second->responsibility == doctest::Approx(0.5));
+    CHECK(mobile_first->coefficient_uncertainty_reserve > 0.0);
+    CHECK(mobile_second->coefficient_uncertainty_reserve > 0.0);
+
+    auto missing = request;
+    missing.reference_snapshot_tubes.erase("1->2");
+    CHECK_THROWS_WITH_AS(
+        gf::buildCanonicalHardRows(missing),
+        "missing reference snapshot tube", std::invalid_argument);
+}
+
+TEST_CASE("Robust canonical half rows retain full local coefficient reserves") {
+    auto request = requestWith({{1, 2}});
+    request.require_snapshot_robust_rows = true;
+    request.reference_snapshot_tubes = {
+        {"1->2", {0.7, 0.4,
+                  gf::SnapshotTubeProvenance::ExternallyCertified}}};
+    request.collision_snapshot_tubes = {
+        {"1--2", {0.7, 0.4,
+                  gf::SnapshotTubeProvenance::ExternallyCertified}}};
+    const auto rows = gf::buildCanonicalHardRows(request);
+    const auto first = std::find_if(rows.begin(), rows.end(), [](const auto& row) {
+        return row.id == "reference:1->2:owner:1";
+    });
+    const auto second = std::find_if(rows.begin(), rows.end(), [](const auto& row) {
+        return row.id == "reference:1->2:owner:2";
+    });
+    REQUIRE(first != rows.end());
+    REQUIRE(second != rows.end());
+    CHECK(first->coefficient_uncertainty_reserve == doctest::Approx(
+        second->coefficient_uncertainty_reserve));
+    CHECK(first->coefficient_uncertainty_reserve > 0.0);
+
+    const auto robust = gf::buildSnapshotRobustPairRow(
+        request.states.at(1), request.states.at(2), request.reference_spec,
+        request.reference_snapshot_tubes.at("1->2"),
+        request.acceleration_half_box);
+    CHECK(first->constant + second->constant == doctest::Approx(
+        robust.central_constant_lower - 2.0 * robust.coefficient_reserve));
+}
+
 TEST_CASE("Mobile pair responsibility reconstructs the centralized coupled row") {
     const auto rows = gf::buildCanonicalHardRows(
         requestWith({{10, 1}, {11, 1}, {1, 2}, {10, 2}}));
