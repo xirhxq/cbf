@@ -150,10 +150,13 @@ endforeach()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     ${CBF_BUILD_FINGERPRINT_ABSOLUTE_FILES})
 string(SHA256 CBF_BUILD_SOURCE_SHA256 "${CBF_BUILD_FINGERPRINT_INPUT}")
-if(TARGET Swarm)
-    target_compile_definitions(
-        Swarm PRIVATE CBF_BUILD_SOURCE_SHA256="${CBF_BUILD_SOURCE_SHA256}")
-endif()
+foreach(FINGERPRINT_TARGET Swarm ControlledJointMarginBenchmark)
+    if(TARGET ${FINGERPRINT_TARGET})
+        target_compile_definitions(
+            ${FINGERPRINT_TARGET}
+            PRIVATE CBF_BUILD_SOURCE_SHA256="${CBF_BUILD_SOURCE_SHA256}")
+    endif()
+endforeach()
 
 file(GLOB TEST_SOURCES "tests/*.cpp")
 foreach(TEST_SOURCE ${TEST_SOURCES})
