@@ -1,0 +1,21 @@
+{
+  "protocol": "D1-development-efficiency-v1",
+  "claim_boundary": "paired development simulation only; no deterministic T100, recursive feasibility, or sampled-data invariance",
+  "mobile_uavs": 14,
+  "fixed_buavs": 3,
+  "control_period_s": 0.1,
+  "timeout_s": 60.0,
+  "topology_heartbeat_cycles": 25,
+  "grid_spacing_m": 2.0,
+  "sensor_radius_m": 3.0,
+  "range_noise_std_m": 0.02,
+  "range_dropout_probability": 0.02,
+  "truth_t95_fraction": 0.95,
+  "strategies": ["fixed_dag", "proposed_certified", "greedy_certified"],
+  "solver_profiles": ["gurobi", "open_source"],
+  "development_seeds": [2027, 2029, 2039],
+  "maps": [
+    {"id": "compact_square", "width_m": 40.0, "height_m": 40.0},
+    {"id": "elongated_2to1", "width_m": 80.0, "height_m": 40.0}
+  ]
+}

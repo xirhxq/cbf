@@ -8,10 +8,12 @@
 #include "grand_finale/HighsTopologySolver.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <map>
 #include <memory>
 #include <optional>
+#include <random>
 #include <set>
 #include <stdexcept>
 #include <vector>
@@ -78,6 +80,9 @@ struct GrandFinaleSwarmAdapterConfig {
     double certified_shadow_relative_position_support_m = 0.0;
     double certified_shadow_relative_velocity_support_mps = 0.0;
     double maximum_accepted_range_innovation_m = 1.0;
+    unsigned int range_random_seed = 2027;
+    double range_noise_std_m = 0.0;
+    double range_dropout_probability = 0.0;
     double sensor_radius_m = 1.6;
     double reference_distance_m = 850.0;
     double add_reference_distance_m = 849.0;
@@ -107,6 +112,7 @@ struct GrandFinaleSwarmStep {
     std::size_t updated_truth_cells = 0;
     double truth_coverage = 0.0;
     double certified_coverage = 0.0;
+    double qp_wall_s = 0.0;
     std::map<NodeId, Eigen::Vector2d> applied_controls;
 };
 
@@ -173,7 +179,8 @@ public:
               swarm.gridWorldGroundTruth.xNum,
               swarm.gridWorldGroundTruth.yLim,
               swarm.gridWorldGroundTruth.yNum),
-          supervisor_({config_.minimum_dwell_s, 0.05, 0.1}) {
+          supervisor_({config_.minimum_dwell_s, 0.05, 0.1}),
+          range_rng_(config_.range_random_seed) {
         if (mobile_ids_.size() != swarm_.robots.size())
             throw std::invalid_argument("mobile ids must match Swarm robots");
         for (std::size_t index = 0; index < mobile_ids_.size(); ++index) {
@@ -232,6 +239,11 @@ public:
             !std::isfinite(
                 config_.maximum_accepted_range_innovation_m) ||
             config_.maximum_accepted_range_innovation_m <= 0.0 ||
+            !std::isfinite(config_.range_noise_std_m) ||
+            config_.range_noise_std_m < 0.0 ||
+            !std::isfinite(config_.range_dropout_probability) ||
+            config_.range_dropout_probability < 0.0 ||
+            config_.range_dropout_probability > 1.0 ||
             !std::isfinite(config_.position_gain) ||
             config_.position_gain < 0.0 ||
             !std::isfinite(config_.velocity_gain) ||
@@ -265,6 +277,7 @@ public:
         const auto build_controls = [&]()
             -> std::optional<Swarm::CertifiedControlBatch> {
                 for (NodeId owner : mobile_ids_) {
+                    const auto qp_start = std::chrono::steady_clock::now();
                     const CanonicalQpResult result = controller_.solve(
                         CanonicalQpRequest{
                             config_.solver_profile, owner,
@@ -272,6 +285,8 @@ public:
                             supervisor_.mode(), nominal.at(owner),
                             config_.acceleration_half_box, rows,
                             config_.residual_tolerance});
+                    metrics.qp_wall_s += std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - qp_start).count();
                     if (!controlMayBeApplied(
                             result, snapshot_version,
                             supervisor_.topologyVersion(), supervisor_.mode())) {
@@ -439,7 +454,8 @@ public:
             if (proposal.status != TopologySolveStatus::Optimal) {
                 if (result.no_good_rejections == 0) {
                     result.reason = proposal.status == TopologySolveStatus::Infeasible
-                        ? "candidate_exhausted" : "topology_solver_failure";
+                        ? "candidate_exhausted:" + proposal.detail
+                        : "topology_solver_failure:" + proposal.detail;
                 }
                 supervisor_.requestReformation(
                     swarm_.robots.front()->runtime, false,
@@ -488,6 +504,7 @@ public:
         const TransitionCertificate certificate = TransitionCertifier{}.certify(
             refreshed, certificationContext(snapshot, {refreshed.new_edge}),
             true);
+        last_certification_reason_ = certificate.reason;
         if (!supervisor_.finishMakeBeforeBreak(
                 certificate, supervisor_.topologyVersion(),
                 estimator_.version(), swarm_.robots.front()->runtime)) {
@@ -548,6 +565,13 @@ public:
     InterimMasterDekf& estimator() { return estimator_; }
     const InterimMasterDekf& estimator() const { return estimator_; }
     const CertifiedCoverageTracker& coverage() const { return coverage_; }
+    const GrandFinaleSwarmAdapterConfig& config() const { return config_; }
+    std::map<NodeId, Eigen::Vector2d> currentNominalControls() {
+        return nominalControls(supervisor_.mode());
+    }
+    const std::string& lastCertificationReason() const {
+        return last_certification_reason_;
+    }
     GrandFinaleRuntimeSnapshot runtimeSnapshot() const {
         GrandFinaleRuntimeSnapshot snapshot;
         snapshot.runtime_s = swarm_.robots.front()->runtime;
@@ -897,13 +921,25 @@ private:
         }
         for (const RangeMeasurement& measurement :
              canonicalizeRangeBatch(std::move(measurements))) {
+            if (range_batch_count_ > 0 && range_uniform_(range_rng_) <
+                config_.range_dropout_probability) {
+                continue;
+            }
+            RangeMeasurement accepted = measurement;
+            if (config_.range_noise_std_m > 0.0) {
+                accepted.range_m += config_.range_noise_std_m *
+                    range_normal_(range_rng_);
+                accepted.variance_m2 = std::max(
+                    accepted.variance_m2,
+                    config_.range_noise_std_m * config_.range_noise_std_m);
+            }
             const std::string range_id = measurement.edge.id();
             const NodeId master = std::find(
                 mobile_ids_.begin(), mobile_ids_.end(),
                 measurement.edge.first) != mobile_ids_.end()
                 ? measurement.edge.first : measurement.edge.second;
             const InterimMasterMessage update =
-                estimator_.makeUpdate(master, measurement);
+                estimator_.makeUpdate(master, accepted);
             if (std::abs(update.innovation) >
                 config_.maximum_accepted_range_innovation_m) {
                 continue;
@@ -911,9 +947,10 @@ private:
             range_last_observation_s_[range_id] =
                 swarm_.robots.front()->runtime;
             range_quality_[range_id] = 1.0;
-            range_variance_m2_[range_id] = measurement.variance_m2;
+            range_variance_m2_[range_id] = accepted.variance_m2;
             estimator_.applyUpdate(update);
         }
+        ++range_batch_count_;
     }
 
     Swarm& swarm_;
@@ -934,6 +971,10 @@ private:
     std::map<std::string, double> range_quality_;
     std::map<std::string, double> range_variance_m2_;
     std::optional<std::map<NodeId, Eigen::Vector2d>> nominal_override_;
+    std::mt19937 range_rng_;
+    std::uniform_real_distribution<double> range_uniform_{0.0, 1.0};
+    std::normal_distribution<double> range_normal_{0.0, 1.0};
+    std::size_t range_batch_count_ = 0;
 };
 
 }  // namespace gf
