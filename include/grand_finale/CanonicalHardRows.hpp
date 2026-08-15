@@ -21,6 +21,7 @@ enum class CanonicalHardRowKind {
     ReferenceDistance,
     Collision,
     Workspace,
+    SpeedLimit,
     InputBox,
     Auxiliary
 };
@@ -70,11 +71,16 @@ struct CanonicalHardRowRequest {
     PairwiseSecondOrderRowSpec reference_spec;
     PairwiseSecondOrderRowSpec collision_spec;
     double acceleration_half_box = 0.0;
+    // A non-positive value disables the speed row for legacy fixtures.  The
+    // Task 10.11g frozen model enables it explicitly at 30 m/s.
+    double speed_limit_mps = 0.0;
+    double speed_cbf_gain = 1.0;
     bool require_snapshot_robust_rows = false;
     std::map<std::string, PairwiseSnapshotTube> reference_snapshot_tubes;
     std::map<std::string, PairwiseSnapshotTube> collision_snapshot_tubes;
     std::vector<WorkspaceFacet2D> workspace_facets;
     std::map<NodeId, SingleSnapshotTube2D> workspace_snapshot_tubes;
+    std::map<NodeId, SingleSnapshotTube2D> speed_snapshot_tubes;
 };
 
 inline CanonicalHardRow makeCanonicalGammaRow(
@@ -253,6 +259,11 @@ inline std::vector<CanonicalHardRow> buildCanonicalHardRows(
         request.acceleration_half_box <= 0.0) {
         throw std::invalid_argument("acceleration half box must be positive");
     }
+    if (!std::isfinite(request.speed_limit_mps) ||
+        !std::isfinite(request.speed_cbf_gain) ||
+        request.speed_cbf_gain <= 0.0) {
+        throw std::invalid_argument("speed CBF parameters must be finite");
+    }
     const std::set<NodeId> mobiles(
         request.mobile_ids.begin(), request.mobile_ids.end());
     if (owner_filter.has_value() && mobiles.count(*owner_filter)==0)
@@ -421,6 +432,38 @@ inline std::vector<CanonicalHardRow> buildCanonicalHardRows(
 
     for (NodeId owner : request.mobile_ids) {
         if (owner_filter.has_value() && owner!=*owner_filter) continue;
+        if (request.speed_limit_mps > 0.0) {
+            const auto tube_it = request.speed_snapshot_tubes.find(owner);
+            if (tube_it == request.speed_snapshot_tubes.end()) {
+                throw std::invalid_argument("missing speed snapshot tube");
+            }
+            const SingleSnapshotTube2D& tube = tube_it->second;
+            if (!std::isfinite(tube.velocity_radius_mps) ||
+                tube.velocity_radius_mps < 0.0) {
+                throw std::invalid_argument("invalid speed snapshot tube");
+            }
+            const Eigen::Vector2d velocity = request.states.at(owner).velocity;
+            const double robust_speed = velocity.norm()+tube.velocity_radius_mps;
+            const double robust_h =
+                request.speed_limit_mps*request.speed_limit_mps-
+                robust_speed*robust_speed;
+            const Eigen::Vector2d coefficient = -2.0*velocity;
+            const double coefficient_reserve =
+                2.0*tube.velocity_radius_mps*
+                request.acceleration_half_box*std::sqrt(2.0);
+            CanonicalHardRow speed_row{
+                "speed:"+std::to_string(owner),
+                CanonicalHardRowKind::SpeedLimit, owner, std::nullopt,
+                coefficient, coefficient,
+                request.speed_cbf_gain*robust_h-coefficient_reserve,
+                1.0, true, robust_h, robust_h,
+                std::numeric_limits<double>::infinity(),
+                coefficient_reserve};
+            speed_row.tube_provenance = tube.provenance;
+            speed_row.velocity_uncertainty_reserve_mps =
+                tube.velocity_radius_mps;
+            rows.push_back(std::move(speed_row));
+        }
         const double bound = request.acceleration_half_box;
         rows.push_back(CanonicalHardRow{
             "input:" + std::to_string(owner) + ":ax:lower",

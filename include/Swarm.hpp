@@ -25,6 +25,7 @@ public:
     };
 
     using CertifiedControlBatch = std::map<int, Eigen::Vector2d>;
+    using CertifiedYawRateBatch = std::map<int, double>;
     using CertifiedControlHook = std::function<
         std::optional<CertifiedControlBatch>(Swarm&)>;
 
@@ -45,6 +46,13 @@ public:
     CertifiedStepResult applyCertifiedControlsAndAdvance(
             double dt,
             const std::optional<CertifiedControlBatch>& controls) {
+        return applyCertifiedControlsAndAdvance(dt,controls,std::nullopt);
+    }
+
+    CertifiedStepResult applyCertifiedControlsAndAdvance(
+            double dt,
+            const std::optional<CertifiedControlBatch>& controls,
+            const std::optional<CertifiedYawRateBatch>& yaw_rates) {
         CertifiedStepResult result;
         if (!std::isfinite(dt) || dt <= 0.0) {
             result.reason = "invalid_step_request";
@@ -58,17 +66,30 @@ public:
             result.reason = "incomplete_certified_control_batch";
             return result;
         }
+        if (yaw_rates.has_value() && yaw_rates->size()!=robots.size()) {
+            result.reason = "incomplete_certified_yaw_rate_batch";
+            return result;
+        }
         for (const auto &robot : robots) {
             const auto it = controls->find(robot->id);
             if (it == controls->end() || !it->second.allFinite()) {
                 result.reason = "invalid_certified_control_batch";
                 return result;
             }
+            if (yaw_rates.has_value()) {
+                const auto yaw=yaw_rates->find(robot->id);
+                if (yaw==yaw_rates->end() || !std::isfinite(yaw->second)) {
+                    result.reason = "invalid_certified_yaw_rate_batch";
+                    return result;
+                }
+            }
         }
         for (auto &robot : robots) {
             Eigen::VectorXd control = Eigen::VectorXd::Zero(
                 robot->model->uSize());
             control.head<2>() = controls->at(robot->id);
+            if (yaw_rates.has_value() && control.size()>2)
+                control(2)=yaw_rates->at(robot->id);
             robot->model->setControlInput(control);
         }
         advanceDynamics(dt);

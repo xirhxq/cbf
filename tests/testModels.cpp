@@ -71,6 +71,19 @@ TEST_CASE("DoubleIntegratorAdvancesWithExactZeroOrderHold") {
     CHECK(model.getStateVariable("yawRad") == doctest::Approx(0.4));
 }
 
+TEST_CASE("DoubleIntegrator yaw uses exact ZOH and canonical angle wrap") {
+    json settings = {{"model-params",{{"discharge-rate",0.1}}}};
+    DoubleIntegrate2D model(settings);
+    model.setStateVariable("battery",4100.0);
+    model.setStateVariable("yawRad",M_PI-0.02);
+    VectorXd control(3);
+    control << 0.0,0.0,1.0;
+    model.setControlInput(control);
+    model.stepTimeForward(0.1);
+    CHECK(model.getStateVariable("yawRad")==
+          doctest::Approx(-M_PI+0.08));
+}
+
 TEST_CASE("Pure double-integrator ZOH propagation composes over multiple steps") {
     const Eigen::Vector2d position(1.0, -2.0);
     const Eigen::Vector2d velocity(3.0, -4.0);

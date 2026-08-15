@@ -83,6 +83,15 @@ public:
             result.failure_reason = "invalid_request";
             return result;
         }
+        for (const auto& row : request.rows) {
+            if (row.owner==request.owner &&
+                row.kind==CanonicalHardRowKind::SpeedLimit &&
+                (!std::isfinite(row.barrier_h) ||
+                 row.barrier_h < -request.residual_tolerance)) {
+                result.failure_reason="speed_initial_set_violated";
+                return result;
+            }
+        }
 
         const auto exact_started=std::chrono::steady_clock::now();
         const auto exact = evaluateProgressCompatibility(

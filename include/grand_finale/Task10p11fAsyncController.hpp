@@ -3,6 +3,7 @@
 #include "grand_finale/AsyncFrontierFreshCommit.hpp"
 #include "grand_finale/AsyncFrontierProposalKernel.hpp"
 #include "grand_finale/Task10p11SharedFrontierFixture.hpp"
+#include "grand_finale/Task10p11gFrozenModel.hpp"
 
 #include <sstream>
 #include <iomanip>
@@ -76,7 +77,11 @@ public:
             result.reason=result.fresh.reason;
             return result;
         }
-        result.step=adapter_.stepWithNominal(result.fresh.provisional_nominal);
+        result.step=adapter_.config().maximum_yaw_rate_radps>0.0
+            ? adapter_.stepWithNominalAndYawRates(
+                result.fresh.provisional_nominal,
+                yawRates(request.targets,adapter_.runtimeSnapshot()))
+            : adapter_.stepWithNominal(result.fresh.provisional_nominal);
         if (!result.step.advanced) {
             result.reason="fresh_commit_rejected:online_apply:"+
                 result.step.reason;
@@ -93,27 +98,27 @@ public:
         const auto runtime=adapter_.runtimeSnapshot();
         if (runtime.mode!=SupervisorMode::Search) return adapter_.step();
         std::map<NodeId,Eigen::Vector2d> nominal;
+        std::map<NodeId,double> yaw_rates;
+        auto model=task10p11gFrozenModel();
+        model.acceleration_half_box_mps2=adapter_.config().acceleration_half_box;
+        model.maximum_acceleration_norm_mps2=
+            model.acceleration_half_box_mps2*std::sqrt(2.0);
+        model.position_gain=adapter_.config().position_gain;
+        model.velocity_gain=adapter_.config().velocity_gain;
         for (std::size_t index=0;index<runtime.estimate.mobile_ids.size();++index) {
             const NodeId owner=runtime.estimate.mobile_ids[index];
             const Eigen::Vector4d state=runtime.estimate.mean.segment<4>(4*index);
-            Eigen::Vector2d control;
             const auto target=committed_targets_.find(owner);
-            if (target==committed_targets_.end()) {
-                control=-adapter_.config().velocity_gain*state.tail<2>();
-            } else {
-                control=adapter_.config().position_gain*
-                    (target->second.center-state.head<2>())-
-                    adapter_.config().velocity_gain*state.tail<2>();
-            }
-            control.x()=std::clamp(control.x(),
-                -adapter_.config().acceleration_half_box,
-                adapter_.config().acceleration_half_box);
-            control.y()=std::clamp(control.y(),
-                -adapter_.config().acceleration_half_box,
-                adapter_.config().acceleration_half_box);
-            nominal[owner]=control;
+            const auto soft=task10p11gSoftTask({
+                state.head<2>(),state.tail<2>(),currentYaw(owner),
+                target==committed_targets_.end()
+                    ? std::optional<Eigen::Vector2d>{}
+                    : std::optional<Eigen::Vector2d>{target->second.center},
+                runtime.mode},model);
+            nominal[owner]=soft.acceleration;
+            yaw_rates[owner]=soft.yaw_rate_radps;
         }
-        return adapter_.stepWithNominal(nominal);
+        return adapter_.stepWithNominalAndYawRates(nominal,yaw_rates);
     }
 
     std::uint64_t targetEpoch() const { return target_epoch_; }
@@ -126,6 +131,31 @@ public:
     }
 
 private:
+    double currentYaw(NodeId owner) const {
+        for (const auto& robot : swarm_.robots)
+            if (robot->id==owner)
+                return robot->model->getStateVariable("yawRad");
+        throw std::invalid_argument("missing mobile yaw state");
+    }
+
+    std::map<NodeId,double> yawRates(
+        const std::map<NodeId,FrontierCell>& targets,
+        const GrandFinaleRuntimeSnapshot& runtime) const {
+        std::map<NodeId,double> result;
+        const auto model=task10p11gFrozenModel();
+        for (std::size_t index=0;index<runtime.estimate.mobile_ids.size();++index) {
+            const NodeId owner=runtime.estimate.mobile_ids[index];
+            const Eigen::Vector4d state=runtime.estimate.mean.segment<4>(4*index);
+            const auto found=targets.find(owner);
+            if (found==targets.end())
+                throw std::invalid_argument("fresh commit target batch incomplete");
+            result[owner]=task10p11gSoftTask({
+                state.head<2>(),state.tail<2>(),currentYaw(owner),
+                found->second.center,runtime.mode},model).yaw_rate_radps;
+        }
+        return result;
+    }
+
     static std::uint64_t hashText(const std::string& text) {
         std::uint64_t hash=1469598103934665603ULL;
         for (const unsigned char value : text) {
@@ -159,6 +189,7 @@ private:
         std::ostringstream tube;
         tube<<std::setprecision(17)<<adapter_.config().uncertainty_sigma<<'|'
             <<adapter_.config().certified_shadow_single_position_support_m<<'|'
+            <<adapter_.config().certified_shadow_single_velocity_support_mps<<'|'
             <<adapter_.config().certified_shadow_relative_position_support_m<<'|'
             <<adapter_.config().certified_shadow_relative_velocity_support_mps<<'|'
             <<adapter_.config().estimator_acceleration_variance;
@@ -166,6 +197,9 @@ private:
         std::ostringstream config;
         config<<std::setprecision(17)<<adapter_.config().dt_s<<'|'
             <<adapter_.config().acceleration_half_box<<'|'
+            <<adapter_.config().speed_limit_mps<<'|'
+            <<adapter_.config().speed_cbf_gain<<'|'
+            <<adapter_.config().maximum_yaw_rate_radps<<'|'
             <<adapter_.config().reference_distance_m<<'|'
             <<adapter_.config().add_reference_distance_m<<'|'
             <<adapter_.config().collision_distance_m<<'|'

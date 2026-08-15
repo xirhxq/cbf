@@ -3,6 +3,7 @@
 #include "grand_finale/SharedFrontierAllocationPipeline.hpp"
 #include "grand_finale/Task10p10CompletionFixture.hpp"
 #include "grand_finale/ExactHardPolytopeDiagnostic.hpp"
+#include "grand_finale/Task10p11gFrozenModel.hpp"
 
 #include <array>
 
@@ -24,9 +25,10 @@ class Task10p11SharedFrontierController {
 public:
     Task10p11SharedFrontierController(
         Swarm& swarm,GrandFinaleSwarmAdapter& adapter,
-        std::map<NodeId,Eigen::Vector2d> fixed_positions)
+        std::map<NodeId,Eigen::Vector2d> fixed_positions,
+        SharedFrontierAllocatorConfig config=task10p11AllocatorConfig())
         : swarm_(swarm),adapter_(adapter),fixed_positions_(std::move(fixed_positions)),
-          pipeline_(task10p11AllocatorConfig()) {}
+          config_(config),pipeline_(config_) {}
 
     SharedFrontierPipelineRequest currentPipelineRequest() {
         const auto runtime=adapter_.runtimeSnapshot();
@@ -98,25 +100,45 @@ public:
                 return result;
             }
             targets_=last_allocation_.allocation.targets;
-            remaining_epoch_cycles_=task10p11AllocatorConfig().epoch_cycles;
+            remaining_epoch_cycles_=config_.epoch_cycles;
         }
         const auto runtime=adapter_.runtimeSnapshot();
         std::map<NodeId,Eigen::Vector2d> nominal;
+        std::map<NodeId,double> yaw_rates;
         for (std::size_t index=0;index<runtime.estimate.mobile_ids.size();++index) {
             const NodeId id=runtime.estimate.mobile_ids[index];
-            Eigen::Vector2d control=adapter_.config().position_gain*
-                (targets_.at(id).center-runtime.estimate.mean.segment<2>(4*index))-
-                adapter_.config().velocity_gain*
-                    runtime.estimate.mean.segment<2>(4*index+2);
-            control.x()=std::clamp(control.x(),
-                -adapter_.config().acceleration_half_box,
-                adapter_.config().acceleration_half_box);
-            control.y()=std::clamp(control.y(),
-                -adapter_.config().acceleration_half_box,
-                adapter_.config().acceleration_half_box);
-            nominal[id]=control;
+            const Eigen::Vector4d state=runtime.estimate.mean.segment<4>(4*index);
+            if (adapter_.config().speed_limit_mps>0.0) {
+                auto model=task10p11gFrozenModel();
+                model.acceleration_half_box_mps2=
+                    adapter_.config().acceleration_half_box;
+                model.position_gain=adapter_.config().position_gain;
+                model.velocity_gain=adapter_.config().velocity_gain;
+                double yaw=0.0;
+                for (const auto& robot : swarm_.robots)
+                    if (robot->id==id)
+                        yaw=robot->model->getStateVariable("yawRad");
+                const auto soft=task10p11gSoftTask({
+                    state.head<2>(),state.tail<2>(),yaw,
+                    targets_.at(id).center,runtime.mode},model);
+                nominal[id]=soft.acceleration;
+                yaw_rates[id]=soft.yaw_rate_radps;
+            } else {
+                Eigen::Vector2d control=adapter_.config().position_gain*
+                    (targets_.at(id).center-state.head<2>())-
+                    adapter_.config().velocity_gain*state.tail<2>();
+                control.x()=std::clamp(control.x(),
+                    -adapter_.config().acceleration_half_box,
+                    adapter_.config().acceleration_half_box);
+                control.y()=std::clamp(control.y(),
+                    -adapter_.config().acceleration_half_box,
+                    adapter_.config().acceleration_half_box);
+                nominal[id]=control;
+            }
         }
-        result.step=adapter_.stepWithNominal(nominal);
+        result.step=yaw_rates.empty()
+            ? adapter_.stepWithNominal(nominal)
+            : adapter_.stepWithNominalAndYawRates(nominal,yaw_rates);
         result.advanced=result.step.advanced;
         result.reason=result.step.reason;
         result.allocation=last_allocation_;
@@ -128,6 +150,7 @@ private:
     Swarm& swarm_;
     GrandFinaleSwarmAdapter& adapter_;
     std::map<NodeId,Eigen::Vector2d> fixed_positions_;
+    SharedFrontierAllocatorConfig config_;
     SharedFrontierAllocationPipeline pipeline_;
     SharedFrontierPipelineResult last_allocation_;
     std::map<NodeId,FrontierCell> targets_;

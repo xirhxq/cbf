@@ -180,7 +180,8 @@ inline CertifiedTopologyState evaluateState(
     }
     for (const CanonicalHardRow& row : hard_rows) {
         if (row.kind != CanonicalHardRowKind::ReferenceDistance &&
-            row.kind != CanonicalHardRowKind::Collision) {
+            row.kind != CanonicalHardRowKind::Collision &&
+            row.kind != CanonicalHardRowKind::SpeedLimit) {
             continue;
         }
         if (!std::isfinite(row.barrier_h) ||
@@ -188,7 +189,8 @@ inline CertifiedTopologyState evaluateState(
             row.barrier_h < -1e-12 || row.barrier_psi1 < -1e-12) {
             result.reason = row.kind == CanonicalHardRowKind::Collision
                 ? "collision_initial_set"
-                : "reference_initial_set";
+                : row.kind == CanonicalHardRowKind::SpeedLimit
+                    ? "speed_initial_set" : "reference_initial_set";
             return result;
         }
     }

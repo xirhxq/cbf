@@ -25,6 +25,14 @@ inline DoubleIntegratorPlanarState propagateDoubleIntegratorPlanarZoh(
     };
 }
 
+inline double wrapDoubleIntegratorYawRad(double angle) {
+    if (!std::isfinite(angle))
+        throw std::invalid_argument("yaw angle must be finite");
+    double wrapped=std::fmod(angle+M_PI,2.0*M_PI);
+    if (wrapped<0.0) wrapped+=2.0*M_PI;
+    return wrapped-M_PI;
+}
+
 class DoubleIntegrate2D : public BaseModel {
 public:
     DoubleIntegrate2D(json &settings) : BaseModel(settings) {
@@ -62,7 +70,8 @@ public:
         X[xMap["vx"]] = next.velocity(0);
         X[xMap["vy"]] = next.velocity(1);
         X[xMap["battery"]] += F[xMap["battery"]] * dt;
-        X[xMap["yawRad"]] += u[uMap["yawRateRad"]] * dt;
+        X[xMap["yawRad"]] = wrapDoubleIntegratorYawRad(
+            X[xMap["yawRad"]] + u[uMap["yawRateRad"]] * dt);
     }
 
     void output() const override {

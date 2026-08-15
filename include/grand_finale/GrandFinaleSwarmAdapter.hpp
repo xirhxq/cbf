@@ -72,6 +72,11 @@ struct GrandFinaleSwarmAdapterConfig {
     double dt_s = 0.1;
     double minimum_dwell_s = 0.1;
     double acceleration_half_box = 0.4;
+    // A non-positive value disables the speed row for historical fixtures.
+    // Task 10.11g enables the frozen V1 model explicitly at 30 m/s.
+    double speed_limit_mps = 0.0;
+    double speed_cbf_gain = 1.0;
+    double maximum_yaw_rate_radps = 0.0;
     double position_gain = 0.4;
     double velocity_gain = 0.8;
     double estimator_acceleration_variance = 0.0;
@@ -79,6 +84,7 @@ struct GrandFinaleSwarmAdapterConfig {
     double initial_velocity_variance_m2 = 1.0e-4;
     double certified_error_bound_m = 0.05;
     double certified_shadow_single_position_support_m = 0.0;
+    double certified_shadow_single_velocity_support_mps = 0.0;
     double certified_shadow_relative_position_support_m = 0.0;
     double certified_shadow_relative_velocity_support_mps = 0.0;
     double maximum_accepted_range_innovation_m = 1.0;
@@ -144,6 +150,7 @@ struct GrandFinaleSwarmStep {
     double qp_wall_s = 0.0;
     CanonicalGammaFeedbackWork gamma_policy_work;
     std::map<NodeId, Eigen::Vector2d> applied_controls;
+    std::map<NodeId, double> applied_yaw_rates_radps;
     std::map<NodeId, GrandFinaleGammaFeedbackDiagnostic> gamma_feedback;
 };
 
@@ -241,6 +248,12 @@ public:
         }
         if (!std::isfinite(config_.acceleration_half_box) ||
             config_.acceleration_half_box <= 0.0 ||
+            !std::isfinite(config_.speed_limit_mps) ||
+            config_.speed_limit_mps < 0.0 ||
+            !std::isfinite(config_.speed_cbf_gain) ||
+            config_.speed_cbf_gain <= 0.0 ||
+            !std::isfinite(config_.maximum_yaw_rate_radps) ||
+            config_.maximum_yaw_rate_radps < 0.0 ||
             !std::isfinite(config_.residual_tolerance) ||
             config_.residual_tolerance < 0.0 ||
             !std::isfinite(config_.qp_oracle_tolerance) ||
@@ -279,6 +292,9 @@ public:
             !std::isfinite(
                 config_.certified_shadow_single_position_support_m) ||
             config_.certified_shadow_single_position_support_m < 0.0 ||
+            !std::isfinite(
+                config_.certified_shadow_single_velocity_support_mps) ||
+            config_.certified_shadow_single_velocity_support_mps < 0.0 ||
             !std::isfinite(
                 config_.certified_shadow_relative_position_support_m) ||
             config_.certified_shadow_relative_position_support_m < 0.0 ||
@@ -416,7 +432,7 @@ public:
                 return applied;
             };
         const auto physical = swarm_.applyCertifiedControlsAndAdvance(
-            config_.dt_s, build_controls());
+            config_.dt_s, build_controls(), yaw_rate_override_);
         metrics.advanced = physical.advanced;
         metrics.updated_truth_cells = physical.updated_truth_cells;
         if (!physical.advanced) {
@@ -435,6 +451,10 @@ public:
         metrics.certified_control_count = applied.size();
         for (const auto& [id, control] : applied)
             metrics.applied_controls[static_cast<NodeId>(id)] = control;
+        if (yaw_rate_override_.has_value()) {
+            for (const auto& [id,rate] : *yaw_rate_override_)
+                metrics.applied_yaw_rates_radps[static_cast<NodeId>(id)]=rate;
+        }
         metrics.estimator_version_after = estimator_.version();
         metrics.truth_coverage = coverage_.truthFraction();
         metrics.certified_coverage = coverage_.certifiedFraction();
@@ -473,6 +493,38 @@ public:
             return result;
         } catch (...) {
             nominal_override_.reset();
+            throw;
+        }
+    }
+
+    GrandFinaleSwarmStep stepWithNominalAndYawRates(
+        const std::map<NodeId, Eigen::Vector2d>& nominal,
+        const std::map<NodeId, double>& yaw_rates) {
+        GrandFinaleSwarmStep rejected;
+        rejected.mode = supervisor_.mode();
+        rejected.topology_version = supervisor_.topologyVersion();
+        rejected.estimator_version_before = estimator_.version();
+        if (yaw_rates.size()!=mobile_ids_.size()) {
+            rejected.reason="yaw_rate_batch_incomplete";
+            return rejected;
+        }
+        for (const auto& [id,rate] : yaw_rates) {
+            if (std::find(mobile_ids_.begin(),mobile_ids_.end(),id)==
+                    mobile_ids_.end() || !std::isfinite(rate) ||
+                std::abs(rate)>config_.maximum_yaw_rate_radps+1.0e-12) {
+                rejected.reason="yaw_rate_batch_invalid";
+                return rejected;
+            }
+        }
+        yaw_rate_override_=std::map<int,double>{};
+        for (const auto& [id,rate] : yaw_rates)
+            (*yaw_rate_override_)[static_cast<int>(id)]=rate;
+        try {
+            GrandFinaleSwarmStep result=stepWithNominal(nominal);
+            yaw_rate_override_.reset();
+            return result;
+        } catch (...) {
+            yaw_rate_override_.reset();
             throw;
         }
     }
@@ -895,7 +947,19 @@ private:
             0.0,
             1.0, 1.0, 1.0, 0.0};
         request.acceleration_half_box = config_.acceleration_half_box;
+        request.speed_limit_mps = config_.speed_limit_mps;
+        request.speed_cbf_gain = config_.speed_cbf_gain;
         request.require_snapshot_robust_rows = true;
+        if (config_.speed_limit_mps > 0.0) {
+            for (NodeId id : mobile_ids_) {
+                request.speed_snapshot_tubes[id] = {
+                    0.0,
+                    config_.uncertainty_sigma*std::sqrt(std::max(
+                        0.0,detail::maximumVelocityEigenvalue(snapshot,id)))+
+                        config_.certified_shadow_single_velocity_support_mps,
+                    SnapshotTubeProvenance::CovarianceSigmaDevelopment};
+            }
+        }
         if (config_.enforce_workspace_rows) {
             const auto& boundary = swarm_.config.at("world").at("boundary");
             if (!boundary.is_array() || boundary.size() < 3)
@@ -1170,6 +1234,7 @@ private:
     std::map<std::string, double> range_quality_;
     std::map<std::string, double> range_variance_m2_;
     std::optional<std::map<NodeId, Eigen::Vector2d>> nominal_override_;
+    std::optional<Swarm::CertifiedYawRateBatch> yaw_rate_override_;
     std::mt19937 range_rng_;
     std::uniform_real_distribution<double> range_uniform_{0.0, 1.0};
     std::normal_distribution<double> range_normal_{0.0, 1.0};
