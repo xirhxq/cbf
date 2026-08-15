@@ -7,8 +7,10 @@
 #include "optimisers/optimisers"
 
 #include <cmath>
+#include <chrono>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -43,6 +45,13 @@ struct CanonicalQpResult {
         -std::numeric_limits<double>::infinity();
     std::string solver_status = "not_run";
     std::string failure_reason;
+    bool solver_cold_start = false;
+    bool solver_instance_reused = false;
+    double exact_projection_wall_s = 0.0;
+    double solver_initialization_wall_s = 0.0;
+    double solver_model_update_wall_s = 0.0;
+    double solver_solve_wall_s = 0.0;
+    double residual_token_audit_wall_s = 0.0;
 };
 
 inline bool controlMayBeApplied(
@@ -75,12 +84,15 @@ public:
             return result;
         }
 
+        const auto exact_started=std::chrono::steady_clock::now();
         const auto exact = evaluateProgressCompatibility(
             request.rows, request.owner, request.nominal,
             request.acceleration_half_box,
             ProgressCompatibilityConfig{
                 std::numeric_limits<double>::max(), 0.0,
                 request.residual_tolerance, true});
+        result.exact_projection_wall_s=std::chrono::duration<double>(
+            std::chrono::steady_clock::now()-exact_started).count();
         result.hard_polytope_nonempty = exact.polytope_nonempty;
         if (!exact.polytope_nonempty) {
             result.failure_reason = "hard_polytope_empty";
@@ -98,17 +110,36 @@ public:
         try {
             const std::string optimiser_name =
                 request.profile == SolverProfile::Gurobi ? "Gurobi" : "OSQP";
-            std::unique_ptr<OptimiserBase> optimiser =
-                createOptimiser(optimiser_name, settings);
-            optimiser->start(2, 2);
-            optimiser->setObjective(request.nominal);
+            auto found=optimisers_.find(request.profile);
+            if (found==optimisers_.end()) {
+                const auto initialization_started=
+                    std::chrono::steady_clock::now();
+                found=optimisers_.emplace(
+                    request.profile,createOptimiser(optimiser_name,settings)).first;
+                result.solver_initialization_wall_s=
+                    std::chrono::duration<double>(
+                        std::chrono::steady_clock::now()-initialization_started).count();
+                result.solver_cold_start=true;
+            } else {
+                result.solver_instance_reused=true;
+                found->second->clear();
+            }
+            OptimiserBase& optimiser=*found->second;
+            const auto update_started=std::chrono::steady_clock::now();
+            optimiser.start(2, 2);
+            optimiser.setObjective(request.nominal);
             for (const CanonicalHardRow& row : request.rows) {
                 if (row.owner != request.owner) continue;
-                optimiser->addLinearConstraint(
+                optimiser.addLinearConstraint(
                     row.control_coefficient, -row.constant);
             }
-            const Eigen::VectorXd solution = optimiser->solve();
-            const json status = optimiser->getStatus();
+            result.solver_model_update_wall_s=std::chrono::duration<double>(
+                std::chrono::steady_clock::now()-update_started).count();
+            const auto solve_started=std::chrono::steady_clock::now();
+            const Eigen::VectorXd solution = optimiser.solve();
+            result.solver_solve_wall_s=std::chrono::duration<double>(
+                std::chrono::steady_clock::now()-solve_started).count();
+            const json status = optimiser.getStatus();
             result.solver_status = status.value("status", "unknown");
             result.solver_succeeded =
                 result.solver_status == "optimal" ||
@@ -118,6 +149,7 @@ public:
                 result.failure_reason = "solver_failure";
                 return result;
             }
+            const auto audit_started=std::chrono::steady_clock::now();
             result.control = solution.head<2>();
             result.minimum_hard_residual = minimumCanonicalOwnerResidual(
                 request.rows, request.owner, result.control);
@@ -125,6 +157,8 @@ public:
                 result.minimum_hard_residual >= -request.residual_tolerance;
             result.exact_oracle_error =
                 (result.control - result.exact_projection).norm();
+            result.residual_token_audit_wall_s=std::chrono::duration<double>(
+                std::chrono::steady_clock::now()-audit_started).count();
             if (!result.residual_verified) {
                 result.failure_reason = "residual_verification_failed";
                 return result;
@@ -136,6 +170,9 @@ public:
             return result;
         }
     }
+
+private:
+    mutable std::map<SolverProfile,std::unique_ptr<OptimiserBase>> optimisers_;
 };
 
 }  // namespace gf

@@ -76,6 +76,49 @@ struct FrontierAllocationRequest {
     double velocity_reserve_mps = 0.0;
     double position_gain = 0.0;
     double velocity_gain = 0.0;
+    bool use_external_fairness = false;
+    std::size_t priority_epoch = 0;
+    std::map<std::string,std::size_t> fairness_ages;
+};
+
+struct AllocatorFairnessSnapshot {
+    std::size_t priority_epoch = 0;
+    std::map<std::string,std::size_t> ages;
+};
+
+class AllocatorFairnessLedger {
+public:
+    AllocatorFairnessSnapshot snapshot(
+        const std::vector<FrontierCell>& cells) const {
+        AllocatorFairnessSnapshot result{priority_epoch_,{}};
+        for (const auto& cell : cells) {
+            const auto found=ages_.find(cell.id());
+            result.ages[cell.id()]=found==ages_.end()?0:found->second;
+        }
+        return result;
+    }
+
+    void recordCommit(
+        const std::vector<FrontierCell>& cells,
+        const std::map<NodeId,FrontierCell>& targets) {
+        advance(cells);
+        for (const auto& [owner,cell] : targets) {
+            (void)owner;
+            ages_[cell.id()]=0;
+        }
+    }
+
+    void recordBoundedFailure(const std::vector<FrontierCell>& cells) {
+        advance(cells);
+    }
+
+private:
+    void advance(const std::vector<FrontierCell>& cells) {
+        ++priority_epoch_;
+        for (const auto& cell : cells) ++ages_[cell.id()];
+    }
+    std::size_t priority_epoch_=0;
+    std::map<std::string,std::size_t> ages_;
 };
 
 enum class AllocatorExhaustion {
@@ -120,8 +163,16 @@ public:
     FrontierAllocationResult allocate(const FrontierAllocationRequest& request) {
         validate(request);
         FrontierAllocationResult result;
-        result.priority_epoch = priority_epoch_++;
-        for (const auto& cell : request.cells) ++ages_[cell.id()];
+        result.priority_epoch = request.use_external_fairness
+            ? request.priority_epoch : priority_epoch_++;
+        if (!request.use_external_fairness)
+            for (const auto& cell : request.cells) ++ages_[cell.id()];
+        const auto age_for=[&](const std::string& id) {
+            const auto& source=request.use_external_fairness
+                ? request.fairness_ages:ages_;
+            const auto found=source.find(id);
+            return found==source.end()?std::size_t{0}:found->second;
+        };
         if (request.cells.empty()) {
             result.reason = "allocator_search_exhausted";
             result.exhaustion = AllocatorExhaustion::CandidateUniverseEmpty;
@@ -144,10 +195,10 @@ public:
             }
             const auto order = [&](const auto& lhs,const auto& rhs) {
                 const auto lhs_key = std::make_tuple(
-                    -static_cast<long long>(ages_[lhs.id()]),
+                    -static_cast<long long>(age_for(lhs.id())),
                     (lhs.center-agent.position).squaredNorm(),lhs.id());
                 const auto rhs_key = std::make_tuple(
-                    -static_cast<long long>(ages_[rhs.id()]),
+                    -static_cast<long long>(age_for(rhs.id())),
                     (rhs.center-agent.position).squaredNorm(),rhs.id());
                 return lhs_key < rhs_key;
             };

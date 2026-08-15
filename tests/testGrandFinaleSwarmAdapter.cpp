@@ -52,6 +52,9 @@ TEST_CASE("Formal Swarm adapter closes SEARCH HOLD RETREAT REFORM and UNION QP f
     CHECK(search.certified_control_count == 4);
     CHECK(search.minimum_hard_residual >= -1e-7);
     CHECK(search.estimator_version_after > search.estimator_version_before);
+    CHECK(search.gamma_policy_work.policy_evaluations == 1);
+    CHECK(search.gamma_policy_work.canonical_row_rebuilds == 37);
+    CHECK(search.gamma_policy_work.exact_gamma_solves == 40);
     REQUIRE(search.gamma_feedback.size() == 4);
     for (const auto& [owner, diagnostic] : search.gamma_feedback) {
         (void)owner;

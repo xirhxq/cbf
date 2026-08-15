@@ -4,6 +4,8 @@
 #include "grand_finale/Task10p10CompletionFixture.hpp"
 #include "grand_finale/ExactHardPolytopeDiagnostic.hpp"
 
+#include <array>
+
 namespace gf {
 
 inline SharedFrontierAllocatorConfig task10p11AllocatorConfig() {
@@ -12,6 +14,7 @@ inline SharedFrontierAllocatorConfig task10p11AllocatorConfig() {
 
 struct Task10p11AdvanceResult {
     bool advanced = false;
+    bool allocation_evaluated = false;
     std::string reason;
     GrandFinaleSwarmStep step;
     SharedFrontierPipelineResult allocation;
@@ -31,8 +34,22 @@ public:
         request.profile=adapter_.config().solver_profile;
         request.dt_s=adapter_.config().dt_s;
         request.fixed_positions=fixed_positions_;
+        request.estimator_snapshot=runtime.estimate;
+        request.estimator_acceleration_variance=
+            adapter_.config().estimator_acceleration_variance;
+        request.gamma_feedback_config={
+            adapter_.config().acceleration_half_box,
+            adapter_.config().gamma_feedback_homotopy_segments,
+            adapter_.config().gamma_feedback_selection,
+            adapter_.config().predictive_gamma_tau_mps2,
+            adapter_.config().gamma_feedback_tolerance};
+        const auto topology=adapter_.supervisor().topology();
+        request.canonical_request_builder=[this,topology](
+            const JointEstimateSnapshot& snapshot) {
+            return adapter_.snapshotHardRowRequest(snapshot,topology);
+        };
         request.hard_row_request=adapter_.currentSnapshotHardRowRequest(
-            adapter_.supervisor().topology());
+            topology);
         request.allocation.snapshot_token=runtime.estimator_token;
         request.allocation.topology_token=runtime.topology_token;
         const GridWorld& grid=swarm_.robots.front()->gridWorld;
@@ -73,6 +90,7 @@ public:
     Task10p11AdvanceResult advance() {
         Task10p11AdvanceResult result;
         if (remaining_epoch_cycles_==0) {
+            result.allocation_evaluated=true;
             last_allocation_=pipeline_.choose(currentPipelineRequest());
             if (!last_allocation_.accepted) {
                 result.reason="allocator_search_exhausted";
@@ -195,7 +213,62 @@ struct Task10p11SmokeResult {
     double first_negative_braking_prediction_s=
         std::numeric_limits<double>::infinity();
     std::vector<GammaCycleTrace> gamma_trace;
+    std::size_t candidate_bundles=0;
+    std::size_t policy_rollout_cycles=0;
+    CanonicalGammaFeedbackWork rollout_gamma_work;
+    std::size_t rollout_qp_solves=0;
+    std::vector<double> allocation_epoch_policy_wall_s;
+    double policy_wall_median_s=0.0;
+    double policy_wall_p95_s=0.0;
+    double policy_wall_maximum_s=0.0;
+    std::vector<double> allocation_epoch_total_wall_s;
+    double epoch_wall_median_s=0.0;
+    double epoch_wall_p95_s=0.0;
+    double epoch_wall_maximum_s=0.0;
+    Task10p11ComputeProfile compute_profile;
 };
+
+inline std::array<double,3> task10p11WallSummary(
+    std::vector<double> ordered) {
+    if (ordered.empty()) return {0.0,0.0,0.0};
+    std::sort(ordered.begin(),ordered.end());
+    const std::size_t middle=ordered.size()/2;
+    const double median=ordered.size()%2==0
+        ? 0.5*(ordered[middle-1]+ordered[middle])
+        : ordered[middle];
+    const std::size_t p95=std::min(
+        ordered.size()-1,static_cast<std::size_t>(
+            std::ceil(0.95*static_cast<double>(ordered.size())))-1);
+    return {median,ordered[p95],ordered.back()};
+}
+
+inline void recordTask10p11AllocationBudget(
+    Task10p11SmokeResult& result,
+    const SharedFrontierPipelineResult& allocation) {
+    result.candidate_bundles+=allocation.candidate_bundles;
+    result.policy_rollout_cycles+=allocation.rollout_cycles;
+    result.rollout_gamma_work.policy_evaluations+=
+        allocation.gamma_policy_work.policy_evaluations;
+    result.rollout_gamma_work.canonical_row_rebuilds+=
+        allocation.gamma_policy_work.canonical_row_rebuilds;
+    result.rollout_gamma_work.exact_gamma_solves+=
+        allocation.gamma_policy_work.exact_gamma_solves;
+    result.rollout_qp_solves+=allocation.qp_solves;
+    result.allocation_epoch_policy_wall_s.push_back(
+        allocation.policy_wall_s);
+    result.allocation_epoch_total_wall_s.push_back(allocation.total_wall_s);
+    result.compute_profile.merge(allocation.compute_profile);
+    const auto policy=task10p11WallSummary(
+        result.allocation_epoch_policy_wall_s);
+    result.policy_wall_median_s=policy[0];
+    result.policy_wall_p95_s=policy[1];
+    result.policy_wall_maximum_s=policy[2];
+    const auto epoch=task10p11WallSummary(
+        result.allocation_epoch_total_wall_s);
+    result.epoch_wall_median_s=epoch[0];
+    result.epoch_wall_p95_s=epoch[1];
+    result.epoch_wall_maximum_s=epoch[2];
+}
 
 inline Task10p11SmokeResult runTask10p11SharedSmoke(
     const Task10p10Scenario& scenario,SolverProfile profile,double horizon_s,
@@ -216,6 +289,8 @@ inline Task10p11SmokeResult runTask10p11SharedSmoke(
     for (std::size_t cycle=0;cycle<cycles;++cycle) {
         const auto step=fixture->controller.advance();
         if (!step.advanced) {
+            if (step.allocation_evaluated)
+                recordTask10p11AllocationBudget(result,step.allocation);
             result.reason=step.reason;
             result.runtime_s=fixture->swarm.robots.front()->runtime;
             result.final_coverage=fixture->adapter.coverage().truthFraction();
@@ -302,8 +377,9 @@ inline Task10p11SmokeResult runTask10p11SharedSmoke(
             }
         }
         result.gamma_trace.push_back(std::move(gamma_cycle));
-        if (cycle%task10p11AllocatorConfig().epoch_cycles==0) {
+        if (step.allocation_evaluated) {
             ++result.allocation_epochs;
+            recordTask10p11AllocationBudget(result,step.allocation);
             result.fast_rejections+=step.allocation.fast_rejections;
             result.exact_rejections+=step.allocation.exact_rejections;
             result.rollout_rejections+=step.allocation.rollout_rejections;

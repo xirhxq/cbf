@@ -5,6 +5,18 @@
 
 namespace {
 
+void bindCanonicalBuilder(gf::SharedFrontierPipelineRequest& request) {
+    const auto hard_template=request.hard_row_request;
+    request.canonical_request_builder=[hard_template](
+        const gf::JointEstimateSnapshot& snapshot) {
+        auto value=hard_template;
+        const Eigen::Vector4d state=snapshot.mean.segment<4>(0);
+        value.states[1]={{state.x(),state.y()},state.tail<2>(),
+                         Eigen::Vector2d::Zero()};
+        return value;
+    };
+}
+
 gf::SharedFrontierPipelineRequest request() {
     gf::SharedFrontierPipelineRequest request;
     request.allocation.snapshot_token=1;
@@ -40,6 +52,14 @@ gf::SharedFrontierPipelineRequest request() {
         0.02,0.01,gf::SnapshotTubeProvenance::CovarianceSigmaDevelopment};
     request.profile=gf::SolverProfile::OpenSource;
     request.dt_s=0.1;
+    request.estimator_snapshot.mobile_ids={1};
+    request.estimator_snapshot.mean=Eigen::VectorXd::Zero(4);
+    request.estimator_snapshot.covariance=Eigen::MatrixXd::Zero(4,4);
+    request.gamma_feedback_config.acceleration_half_box=0.4;
+    request.gamma_feedback_config.homotopy_segments=2;
+    request.gamma_feedback_config.selection_mode=
+        gf::GammaFeedbackSelectionMode::DiagnosticsOnly;
+    bindCanonicalBuilder(request);
     return request;
 }
 
@@ -57,6 +77,12 @@ TEST_CASE("Task 10.11 pipeline rejects fast-gate path before exact and rollout")
     CHECK(result.rollout_rejections == 0);
     CHECK(result.rollout_attempts == 1);
     CHECK(result.rollout.completed_cycles == 5);
+    CHECK(result.rollout_cycles == 5);
+    CHECK(result.gamma_policy_work.policy_evaluations == 5);
+    CHECK(result.gamma_policy_work.canonical_row_rebuilds == 20);
+    CHECK(result.gamma_policy_work.exact_gamma_solves == 20);
+    CHECK(result.qp_solves == 5);
+    CHECK(result.policy_wall_s > 0.0);
 }
 
 TEST_CASE("Task 10.11 pipeline reports bounded search exhaustion without deadlock claim") {
@@ -86,6 +112,8 @@ TEST_CASE("Task 10.11b pipeline preserves bounded exhaustion and candidate braki
     input.hard_row_request.workspace_snapshot_tubes[1]={0.0,0.0};
     input.hard_row_request.states[1].position={6.0,0.0};
     input.hard_row_request.states[1].velocity={2.0,0.0};
+    input.estimator_snapshot.mean<<6.0,0.0,2.0,0.0;
+    bindCanonicalBuilder(input);
     const auto result=pipeline.choose(input);
 
     CHECK_FALSE(result.accepted);

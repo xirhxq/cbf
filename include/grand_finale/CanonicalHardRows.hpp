@@ -244,7 +244,8 @@ inline void appendRobustFixedPairRow(
 }  // namespace canonical_hard_row_detail
 
 inline std::vector<CanonicalHardRow> buildCanonicalHardRows(
-    CanonicalHardRowRequest request) {
+    CanonicalHardRowRequest request,
+    std::optional<NodeId> owner_filter = std::nullopt) {
     using namespace canonical_hard_row_detail;
     canonicalizeNodes(request.mobile_ids, "mobile");
     canonicalizeNodes(request.fixed_ids, "fixed");
@@ -254,6 +255,8 @@ inline std::vector<CanonicalHardRow> buildCanonicalHardRows(
     }
     const std::set<NodeId> mobiles(
         request.mobile_ids.begin(), request.mobile_ids.end());
+    if (owner_filter.has_value() && mobiles.count(*owner_filter)==0)
+        throw std::invalid_argument("canonical owner filter is not mobile");
     const std::set<NodeId> fixed(request.fixed_ids.begin(), request.fixed_ids.end());
     std::set<NodeId> known = mobiles;
     for (NodeId id : fixed) {
@@ -289,6 +292,7 @@ inline std::vector<CanonicalHardRow> buildCanonicalHardRows(
         const Eigen::Vector2d normal = raw_facet.outward_normal / norm;
         const double offset = raw_facet.offset_m / norm;
         for (NodeId owner : request.mobile_ids) {
+            if (owner_filter.has_value() && owner!=*owner_filter) continue;
             const auto tube_it = request.workspace_snapshot_tubes.find(owner);
             if (request.require_snapshot_robust_rows &&
                 tube_it == request.workspace_snapshot_tubes.end()) {
@@ -326,6 +330,11 @@ inline std::vector<CanonicalHardRow> buildCanonicalHardRows(
             throw std::invalid_argument("invalid or duplicate reference edge");
         }
         const std::string prefix = "reference:" + edge.id();
+        if (owner_filter.has_value() && edge.owner!=*owner_filter &&
+            (mobiles.count(edge.reference)==0 ||
+             edge.reference!=*owner_filter)) {
+            continue;
+        }
         const auto tube = request.reference_snapshot_tubes.find(edge.id());
         if (request.require_snapshot_robust_rows &&
             tube == request.reference_snapshot_tubes.end()) {
@@ -370,6 +379,10 @@ inline std::vector<CanonicalHardRow> buildCanonicalHardRows(
             throw std::invalid_argument("invalid or duplicate collision pair");
         }
         const std::string prefix = "collision:" + edge.id();
+        if (owner_filter.has_value() && edge.first!=*owner_filter &&
+            edge.second!=*owner_filter) {
+            continue;
+        }
         const auto tube = request.collision_snapshot_tubes.find(edge.id());
         if (request.require_snapshot_robust_rows &&
             tube == request.collision_snapshot_tubes.end()) {
@@ -407,6 +420,7 @@ inline std::vector<CanonicalHardRow> buildCanonicalHardRows(
     }
 
     for (NodeId owner : request.mobile_ids) {
+        if (owner_filter.has_value() && owner!=*owner_filter) continue;
         const double bound = request.acceleration_half_box;
         rows.push_back(CanonicalHardRow{
             "input:" + std::to_string(owner) + ":ax:lower",
@@ -432,12 +446,22 @@ inline std::vector<CanonicalHardRow> buildCanonicalHardRows(
     std::sort(rows.begin(), rows.end(), [](const auto& lhs, const auto& rhs) {
         return lhs.id < rhs.id;
     });
+    if (owner_filter.has_value()) {
+        rows.erase(std::remove_if(rows.begin(),rows.end(),[&](const auto& row) {
+            return row.owner!=*owner_filter;
+        }),rows.end());
+    }
     if (std::adjacent_find(rows.begin(), rows.end(), [](const auto& lhs, const auto& rhs) {
             return lhs.id == rhs.id;
         }) != rows.end()) {
         throw std::invalid_argument("duplicate canonical hard-row id");
     }
     return rows;
+}
+
+inline std::vector<CanonicalHardRow> buildCanonicalOwnerHardRows(
+    CanonicalHardRowRequest request,NodeId owner) {
+    return buildCanonicalHardRows(std::move(request),owner);
 }
 
 inline BridgeGammaStarSolution2D solveCanonicalGammaStar(

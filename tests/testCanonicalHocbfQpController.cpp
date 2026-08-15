@@ -74,6 +74,23 @@ TEST_CASE("OSQP HOCBF-QP matches exact projection and independently audits resid
     CHECK(gf::controlMayBeApplied(result, 7, 11, gf::SupervisorMode::Search));
     CHECK_FALSE(gf::controlMayBeApplied(result, 8, 11, gf::SupervisorMode::Search));
 }
+
+TEST_CASE("OSQP controller reuses solver initialization without changing the QP result") {
+    gf::CanonicalHocbfQpController controller;
+    const auto cold=controller.solve(request(gf::SolverProfile::OpenSource));
+    const auto steady=controller.solve(request(gf::SolverProfile::OpenSource));
+    REQUIRE(cold.control_available);
+    REQUIRE(steady.control_available);
+    CHECK(cold.solver_cold_start);
+    CHECK_FALSE(cold.solver_instance_reused);
+    CHECK_FALSE(steady.solver_cold_start);
+    CHECK(steady.solver_instance_reused);
+    CHECK((cold.control-steady.control).norm()<=1e-10);
+    CHECK(steady.exact_projection_wall_s>=0.0);
+    CHECK(steady.solver_model_update_wall_s>=0.0);
+    CHECK(steady.solver_solve_wall_s>=0.0);
+    CHECK(steady.residual_token_audit_wall_s>=0.0);
+}
 #endif
 
 #ifdef ENABLE_GUROBI

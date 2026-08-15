@@ -11,6 +11,108 @@ gf::CanonicalHardRow row(
             coefficient,coefficient,constant,1.0,true};
 }
 
+gf::JointEstimateSnapshot batchSnapshot() {
+    gf::JointEstimateSnapshot snapshot;
+    snapshot.mobile_ids={1,2};
+    snapshot.mean=Eigen::VectorXd::Zero(8);
+    snapshot.mean.segment<4>(0)<<2.0,2.0,0.1,0.0;
+    snapshot.mean.segment<4>(4)<<8.0,2.0,-0.1,0.0;
+    snapshot.covariance=1e-4*Eigen::MatrixXd::Identity(8,8);
+    return snapshot;
+}
+
+gf::CanonicalHardRowRequest batchRequest(
+    const gf::JointEstimateSnapshot& snapshot) {
+    gf::CanonicalHardRowRequest request;
+    request.mobile_ids=snapshot.mobile_ids;
+    for (std::size_t index=0;index<snapshot.mobile_ids.size();++index) {
+        const auto state=snapshot.mean.segment<4>(4*index);
+        request.states[snapshot.mobile_ids[index]]={
+            {state.x(),state.y()},state.tail<2>(),Eigen::Vector2d::Zero()};
+        request.workspace_snapshot_tubes[snapshot.mobile_ids[index]]={0.1,0.1};
+    }
+    request.workspace_facets={
+        {"x-upper",{1.0,0.0},20.0},
+        {"x-lower",{-1.0,0.0},0.0},
+        {"y-upper",{0.0,1.0},20.0},
+        {"y-lower",{0.0,-1.0},0.0}};
+    request.reference_spec.kind=
+        PairwiseSecondOrderBarrierKind::CommunicationUpper;
+    request.collision_spec.kind=
+        PairwiseSecondOrderBarrierKind::CollisionLower;
+    request.acceleration_half_box=0.4;
+    request.require_snapshot_robust_rows=true;
+    return request;
+}
+
+}
+
+TEST_CASE("Shared batch policy projects every owner before one-step scoring") {
+    const auto snapshot=batchSnapshot();
+    const std::map<gf::NodeId,Eigen::Vector2d> task_nominal{
+        {1,{0.4,0.1}},{2,{-0.4,-0.1}}};
+    gf::CanonicalGammaFeedbackConfig config;
+    config.acceleration_half_box=0.4;
+    config.homotopy_segments=2;
+    config.selection_mode=
+        gf::GammaFeedbackSelectionMode::MaximumPredictedMargin;
+    gf::CanonicalGammaFeedbackEvaluationContext context;
+
+    const auto batch=gf::evaluateCanonicalGammaFeedbackBatch(
+        snapshot,task_nominal,config,0.1,0.0,
+        [](const auto& value) { return batchRequest(value); },context);
+
+    CAPTURE(batch.reason);
+    REQUIRE(batch.valid);
+    CHECK(batch.reason=="selected");
+    CHECK(batch.selected_controls.size()==2);
+    CHECK(batch.stages.size()==2);
+    CHECK(batch.selections.size()==2);
+    CHECK(batch.work.policy_evaluations==1);
+    CHECK(batch.work.canonical_row_rebuilds==7);
+    CHECK(batch.work.exact_gamma_solves==8);
+    CHECK(context.entries==1);
+    CHECK_FALSE(context.active);
+    for (gf::NodeId owner : snapshot.mobile_ids) {
+        CHECK(batch.stages.at(owner).valid);
+        CHECK(batch.selections.at(owner).valid);
+        CHECK(gf::minimumCanonicalOwnerResidual(
+            batch.current_rows,owner,batch.selected_controls.at(owner))>=-1e-10);
+    }
+}
+
+TEST_CASE("Shared batch policy rejects nested evaluation before rebuilding rows") {
+    const auto snapshot=batchSnapshot();
+    const std::map<gf::NodeId,Eigen::Vector2d> nominal{
+        {1,Eigen::Vector2d::Zero()},{2,Eigen::Vector2d::Zero()}};
+    gf::CanonicalGammaFeedbackConfig config;
+    config.acceleration_half_box=0.4;
+    config.homotopy_segments=1;
+    gf::CanonicalGammaFeedbackEvaluationContext context;
+    bool attempted=false;
+    bool rejected=false;
+    std::function<gf::CanonicalHardRowRequest(
+        const gf::JointEstimateSnapshot&)> builder;
+    builder=[&](const auto& value) {
+        if (!attempted) {
+            attempted=true;
+            const auto nested=gf::evaluateCanonicalGammaFeedbackBatch(
+                value,nominal,config,0.1,0.0,builder,context);
+            rejected=!nested.valid &&
+                nested.reason=="recursive_policy_evaluation";
+        }
+        return batchRequest(value);
+    };
+
+    const auto outer=gf::evaluateCanonicalGammaFeedbackBatch(
+        snapshot,nominal,config,0.1,0.0,builder,context);
+
+    CAPTURE(outer.reason);
+    REQUIRE(outer.valid);
+    CHECK(attempted);
+    CHECK(rejected);
+    CHECK(context.entries==1);
+    CHECK_FALSE(context.active);
 }
 
 TEST_CASE("Canonical gamma feedback exact projection witness and homotopy share the current ledger") {

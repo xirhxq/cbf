@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <limits>
 #include <vector>
 
@@ -18,6 +19,12 @@ struct BridgeGammaStarSolution2D {
     double gamma = std::numeric_limits<double>::quiet_NaN();
     double accelX = 0.0;
     double accelY = 0.0;
+};
+
+struct BridgeGammaStarWork2D {
+    std::size_t intersection_vertices = 0;
+    std::size_t residual_evaluations = 0;
+    std::size_t pruned_vertices = 0;
 };
 
 inline BridgeGammaStarResidual2D bridgeGammaStarResidualFromAffineMargin(
@@ -174,9 +181,11 @@ inline bool betterMinimumNormWitness(
 
 }  // namespace bridge_gamma_star_detail
 
-inline BridgeGammaStarSolution2D solveExactBridgeGammaStar2D(
+inline BridgeGammaStarSolution2D solveExactBridgeGammaStar2DImpl(
         const std::vector<BridgeGammaStarResidual2D> &residuals,
-        double accelerationHalfBox) {
+        double accelerationHalfBox,
+        BridgeGammaStarWork2D *work,
+        bool enableEarlyPruning) {
     if (residuals.empty()) {
         return {
                 true,
@@ -217,6 +226,7 @@ inline BridgeGammaStarSolution2D solveExactBridgeGammaStar2D(
                             &candidate)) {
                     continue;
                 }
+                if (work != nullptr) ++work->intersection_vertices;
 
                 const auto isDefining = [&](size_t index) {
                     return first == index || second == index || third == index;
@@ -241,13 +251,22 @@ inline BridgeGammaStarSolution2D solveExactBridgeGammaStar2D(
                             std::min(accelerationHalfBox, candidate[1]));
                 }
                 double achievedGamma = std::numeric_limits<double>::infinity();
+                bool pruned = false;
                 for (const auto &residual : residuals) {
+                    if (work != nullptr) ++work->residual_evaluations;
                     achievedGamma = std::min(
                             achievedGamma,
                             residual.constant
                                     - residual.ax * candidate[0]
                                     - residual.ay * candidate[1]);
+                    if (enableEarlyPruning && foundEpigraphVertex &&
+                        achievedGamma < bestGamma) {
+                        pruned = true;
+                        if (work != nullptr) ++work->pruned_vertices;
+                        break;
+                    }
                 }
+                if (pruned) continue;
                 if (!std::isfinite(achievedGamma)) {
                     continue;
                 }
@@ -360,6 +379,21 @@ inline BridgeGammaStarSolution2D solveExactBridgeGammaStar2D(
                         - residual.ay * witnessY);
     }
     return {true, achievedGamma, witnessX, witnessY};
+}
+
+inline BridgeGammaStarSolution2D solveExactBridgeGammaStar2D(
+        const std::vector<BridgeGammaStarResidual2D> &residuals,
+        double accelerationHalfBox,
+        BridgeGammaStarWork2D *work = nullptr) {
+    return solveExactBridgeGammaStar2DImpl(
+            residuals, accelerationHalfBox, work, true);
+}
+
+inline BridgeGammaStarSolution2D solveExactBridgeGammaStar2DReference(
+        const std::vector<BridgeGammaStarResidual2D> &residuals,
+        double accelerationHalfBox) {
+    return solveExactBridgeGammaStar2DImpl(
+            residuals, accelerationHalfBox, nullptr, false);
 }
 
 inline double exactBridgeGammaStar2D(

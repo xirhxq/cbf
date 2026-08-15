@@ -106,6 +106,26 @@ TEST_CASE("Exact gamma-star returns a deterministic interior witness") {
     }
 }
 
+TEST_CASE("Exact gamma-star pruning is result-equivalent and skips losing vertices") {
+    const std::vector<BridgeGammaStarResidual2D> residuals = {
+        {1.0,0.0,0.2},{-1.0,0.0,0.3},{0.0,1.0,0.4},
+        {0.0,-1.0,0.5},{0.7,0.7,-0.1},{-0.6,0.8,0.2},
+        {0.3,-0.9,0.1},{-0.8,-0.4,0.0}};
+    BridgeGammaStarWork2D work;
+    const auto optimized=solveExactBridgeGammaStar2D(
+        residuals,0.4,&work);
+    const auto reference=solveExactBridgeGammaStar2DReference(residuals,0.4);
+
+    REQUIRE(optimized.valid);
+    REQUIRE(reference.valid);
+    CHECK(optimized.gamma==reference.gamma);
+    CHECK(optimized.accelX==reference.accelX);
+    CHECK(optimized.accelY==reference.accelY);
+    CHECK(work.pruned_vertices>0);
+    CHECK(work.residual_evaluations<
+          work.intersection_vertices*residuals.size());
+}
+
 TEST_CASE("Exact gamma-star returns a box-corner witness") {
     const std::vector<BridgeGammaStarResidual2D> residuals = {
             {1.0, 2.0, 0.0},

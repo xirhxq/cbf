@@ -28,6 +28,8 @@ public:
         env.start();
     }
 
+    ~Gurobi() override { delete model; }
+
     void clear() override {
         vars.clear();
         delete model;

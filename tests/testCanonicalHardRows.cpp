@@ -451,3 +451,53 @@ TEST_CASE("Degenerate rows remain exact and coincident physical geometry fails c
     request.states.at(2).position = request.states.at(1).position;
     CHECK_THROWS_AS(gf::buildCanonicalHardRows(request), std::invalid_argument);
 }
+TEST_CASE("Owner-focused canonical rows exactly equal filtering the full ledger") {
+    gf::CanonicalHardRowRequest request;
+    request.mobile_ids={1,2};
+    request.fixed_ids={100};
+    request.states[1]={{0.0,0.0},{0.1,0.0},Eigen::Vector2d::Zero()};
+    request.states[2]={{10.0,0.0},{-0.1,0.0},Eigen::Vector2d::Zero()};
+    request.states[100]={{5.0,5.0},Eigen::Vector2d::Zero(),Eigen::Vector2d::Zero()};
+    request.workspace_facets={{"x-upper",{1.0,0.0},20.0}};
+    request.workspace_snapshot_tubes[1]={0.1,0.2};
+    request.workspace_snapshot_tubes[2]={0.2,0.1};
+    request.reference_edges={{1,2},{100,2}};
+    request.reference_spec={PairwiseSecondOrderBarrierKind::CommunicationUpper,
+        850.0,0.0,1.0,1.0,1.0,0.0};
+    request.reference_snapshot_tubes["1->2"]={0.1,0.1};
+    request.reference_snapshot_tubes["100->2"]={0.2,0.2};
+    request.collision_pairs={gf::UndirectedEdge::canonical(1,2),
+        gf::UndirectedEdge::canonical(1,100)};
+    request.collision_spec={PairwiseSecondOrderBarrierKind::CollisionLower,
+        0.5,0.0,1.0,1.0,1.0,0.0};
+    request.collision_snapshot_tubes["1--2"]={0.1,0.1};
+    request.collision_snapshot_tubes["1--100"]={0.2,0.2};
+    request.acceleration_half_box=0.4;
+    request.require_snapshot_robust_rows=true;
+
+    const auto full=gf::buildCanonicalHardRows(request);
+    for (gf::NodeId owner : request.mobile_ids) {
+        std::vector<gf::CanonicalHardRow> filtered;
+        std::copy_if(full.begin(),full.end(),std::back_inserter(filtered),
+            [owner](const auto& row) { return row.owner==owner; });
+        const auto focused=gf::buildCanonicalOwnerHardRows(request,owner);
+        REQUIRE(focused.size()==filtered.size());
+        for (std::size_t index=0;index<focused.size();++index) {
+            CHECK(focused[index].id==filtered[index].id);
+            CHECK(focused[index].kind==filtered[index].kind);
+            CHECK(focused[index].owner==filtered[index].owner);
+            CHECK(focused[index].peer==filtered[index].peer);
+            CHECK((focused[index].normal-filtered[index].normal).norm()<=1e-12);
+            CHECK((focused[index].control_coefficient-
+                   filtered[index].control_coefficient).norm()<=1e-12);
+            CHECK(focused[index].constant==doctest::Approx(
+                filtered[index].constant).epsilon(1e-12));
+            CHECK(focused[index].position_uncertainty_reserve_m==
+                doctest::Approx(filtered[index].position_uncertainty_reserve_m));
+            CHECK(focused[index].velocity_uncertainty_reserve_mps==
+                doctest::Approx(filtered[index].velocity_uncertainty_reserve_mps));
+            CHECK(focused[index].coefficient_uncertainty_reserve==
+                doctest::Approx(filtered[index].coefficient_uncertainty_reserve));
+        }
+    }
+}

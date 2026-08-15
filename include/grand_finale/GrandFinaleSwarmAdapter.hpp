@@ -7,6 +7,7 @@
 #include "grand_finale/InterimMasterDekf.hpp"
 #include "grand_finale/GurobiTopologySolver.hpp"
 #include "grand_finale/HighsTopologySolver.hpp"
+#include "grand_finale/InformationGateDiagnostic.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -141,6 +142,7 @@ struct GrandFinaleSwarmStep {
     double truth_coverage = 0.0;
     double certified_coverage = 0.0;
     double qp_wall_s = 0.0;
+    CanonicalGammaFeedbackWork gamma_policy_work;
     std::map<NodeId, Eigen::Vector2d> applied_controls;
     std::map<NodeId, GrandFinaleGammaFeedbackDiagnostic> gamma_feedback;
 };
@@ -166,6 +168,10 @@ struct CurrentReferenceAudit {
     double minimum_fim_eigenvalue =
         std::numeric_limits<double>::infinity();
     double maximum_posterior_eigenvalue = 0.0;
+    double minimum_robust_fim_cone_lower_bound =
+        std::numeric_limits<double>::infinity();
+    double minimum_range_aoi_margin_s =
+        std::numeric_limits<double>::infinity();
 };
 
 enum class FreshnessRelation {
@@ -336,70 +342,32 @@ public:
         const auto task_nominal = nominal_override_.has_value()
             ? *nominal_override_
             : nominalControls(metrics.mode, snapshot);
-        std::vector<CanonicalHardRow> rows;
-        try {
-            rows = buildCanonicalHardRows(
-                hardRowRequest(snapshot, supervisor_.topology()));
-        } catch (const std::exception&) {
-            metrics.reason = "snapshot_robust_hard_row_invalid";
-            return metrics;
-        }
         const CanonicalGammaFeedbackConfig feedback_config{
             config_.acceleration_half_box,
             config_.gamma_feedback_homotopy_segments,
             config_.gamma_feedback_selection,
             config_.predictive_gamma_tau_mps2,
             config_.gamma_feedback_tolerance};
-        std::map<NodeId, CanonicalGammaFeedbackStage> feedback_stages;
-        std::map<NodeId, Eigen::Vector2d> projected_controls;
-        for (NodeId owner : mobile_ids_) {
-            const auto stage = buildCanonicalGammaFeedbackStage(
-                rows, owner, task_nominal.at(owner), feedback_config);
-            if (!stage.valid) {
-                metrics.reason = stage.reason;
-                return metrics;
-            }
-            feedback_stages.emplace(owner, stage);
-            projected_controls.emplace(owner, stage.task_projection);
+        CanonicalGammaFeedbackEvaluationContext feedback_context;
+        const auto feedback_batch=evaluateCanonicalGammaFeedbackBatch(
+            snapshot,task_nominal,feedback_config,config_.dt_s,
+            config_.estimator_acceleration_variance,
+            [&](const JointEstimateSnapshot& value) {
+                return hardRowRequest(value,supervisor_.topology());
+            },feedback_context);
+        metrics.gamma_policy_work=feedback_batch.work;
+        if (!feedback_batch.valid) {
+            metrics.reason=feedback_batch.reason==
+                    "current_canonical_row_rebuild_failed"
+                ? "snapshot_robust_hard_row_invalid"
+                : feedback_batch.reason;
+            return metrics;
         }
-        std::map<NodeId, Eigen::Vector2d> selected_nominal;
+        const auto& rows=feedback_batch.current_rows;
+        const auto& selected_nominal=feedback_batch.selected_controls;
         for (NodeId owner : mobile_ids_) {
-            const auto& stage = feedback_stages.at(owner);
-            const auto selected = selectCanonicalGammaFeedback(
-                stage, feedback_config, [&](const Eigen::Vector2d& candidate) {
-                    try {
-                        auto surrogate_controls = projected_controls;
-                        surrogate_controls.at(owner) = candidate;
-                        const auto predicted_snapshot =
-                            predictNoMeasurementSnapshot(
-                                snapshot, surrogate_controls, config_.dt_s,
-                                config_.estimator_acceleration_variance);
-                        const auto predicted_rows = buildCanonicalHardRows(
-                            hardRowRequest(
-                                predicted_snapshot, supervisor_.topology()));
-                        const auto predicted_gamma = solveCanonicalGammaStar(
-                            predicted_rows, owner,
-                            config_.acceleration_half_box);
-                        if (!predicted_gamma.valid ||
-                            !std::isfinite(predicted_gamma.gamma)) {
-                            return CanonicalPredictedGammaScore{};
-                        }
-                        const Eigen::Vector2d witness(
-                            predicted_gamma.accelX,
-                            predicted_gamma.accelY);
-                        return CanonicalPredictedGammaScore{
-                            true, predicted_gamma.gamma,
-                            dominantCanonicalOwnerRow(
-                                predicted_rows, owner, witness)};
-                    } catch (...) {
-                        return CanonicalPredictedGammaScore{};
-                    }
-                });
-            if (!selected.valid) {
-                metrics.reason = selected.reason;
-                return metrics;
-            }
-            selected_nominal.emplace(owner, selected.selected_control);
+            const auto& stage=feedback_batch.stages.at(owner);
+            const auto& selected=feedback_batch.selections.at(owner);
             metrics.gamma_feedback.emplace(owner,
                 GrandFinaleGammaFeedbackDiagnostic{
                     stage.current_gamma,
@@ -745,6 +713,11 @@ public:
         const std::vector<DirectedEdge>& topology) const {
         return hardRowRequest(estimator_.reconstructForAudit(),topology);
     }
+    CanonicalHardRowRequest snapshotHardRowRequest(
+        const JointEstimateSnapshot& snapshot,
+        const std::vector<DirectedEdge>& topology) const {
+        return hardRowRequest(snapshot,topology);
+    }
     CurrentReferenceAudit currentReferenceAudit() {
         const JointEstimateSnapshot snapshot = estimator_.reconstructForAudit();
         const auto topology = supervisor_.topology();
@@ -779,6 +752,28 @@ public:
                     .eigenvalues().minCoeff();
             audit.minimum_fim_eigenvalue = std::min(
                 audit.minimum_fim_eigenvalue, fim);
+            const double robust_fim = effective_edges.size() < 2
+                ? -std::numeric_limits<double>::infinity()
+                : robustReferenceFimConeLowerBound(
+                    owner,effective_edges,snapshot,
+                    context.range_variances_m2,config_.uncertainty_sigma);
+            audit.minimum_robust_fim_cone_lower_bound=std::min(
+                audit.minimum_robust_fim_cone_lower_bound,robust_fim);
+            const double now_s=swarm_.robots.front()->runtime;
+            for (const auto& edge : effective_edges) {
+                const std::string id=UndirectedEdge::canonical(
+                    edge.owner,edge.reference).id();
+                const auto observed=range_last_observation_s_.find(id);
+                if (observed==range_last_observation_s_.end()) {
+                    audit.minimum_range_aoi_margin_s=
+                        -std::numeric_limits<double>::infinity();
+                    continue;
+                }
+                audit.minimum_range_aoi_margin_s=std::min(
+                    audit.minimum_range_aoi_margin_s,
+                    config_.maximum_range_aoi_s-
+                        std::max(0.0,now_s-observed->second));
+            }
             const double posterior =
                 Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d>(
                     marginalPositionCovariance(snapshot, owner))
