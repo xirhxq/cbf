@@ -2,8 +2,10 @@
 #include "grand_finale/Task10p11rFixedBaseline.hpp"
 #include "grand_finale/Task10p11rFailureWindow.hpp"
 #include "grand_finale/Task10p11rStopAttribution.hpp"
+#include "grand_finale/Task10p11sSnapshotCapture.hpp"
 
 #include <chrono>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 
@@ -485,7 +487,8 @@ json runFixed(std::size_t cycles,const std::string& label) {
         {"dynamic_topology_components_enabled",false}};
 }
 
-json runFailureWindow() {
+json runFailureWindow(
+    const std::optional<std::filesystem::path>& snapshot_output=std::nullopt) {
     constexpr double window_start_s=131.0;
     constexpr std::size_t maximum_cycles=1330;
     auto fixture=gf::makeTask10p11rFixedBaselineFixture();
@@ -571,6 +574,14 @@ json runFailureWindow() {
                     serialization_started).count(),true);
         }
         if (!control.step.advanced) {
+            if (snapshot_output.has_value()) {
+                const auto request=fixture->adapter.snapshotHardRowRequest(
+                    before.estimate,before.topology);
+                gf::writeTask10p11sSnapshot(*snapshot_output,
+                    gf::makeTask10p11sSnapshot(before,request,
+                        fixture->controller.lastNominalControls(),
+                        fixture->adapter.config()));
+            }
             failure=control.reason.empty()?control.step.reason:control.reason;
             failure_time=time_s;
             const auto audit=gf::auditTask10p11rFailureSnapshot(
@@ -598,13 +609,15 @@ json runFailureWindow() {
 }
 
 int main(int argc,char** argv) {
-    if (argc!=2 && argc!=3) {
+    if (argc<2 || argc>4 ||
+        (argc==4 && std::string(argv[1])!="failure-window")) {
         std::cerr<<"usage: GrandFinaleTask10p11r "
-                 <<"attribute-maximum|attribute-li14|stage-zero|prefix|completion|failure-window\n";
+                 <<"attribute-maximum|attribute-li14|stage-zero|prefix|completion|failure-window "
+                 <<"[OUTPUT_JSON] [SNAPSHOT_JSON]\n";
         return 2;
     }
     std::optional<std::ofstream> output_stream;
-    if (argc==3) {
+    if (argc>=3) {
         output_stream.emplace(argv[2]);
         if (!*output_stream) {
             std::cerr<<"output_preflight_failed:"<<argv[2]<<'\n';
@@ -622,7 +635,8 @@ int main(int argc,char** argv) {
     else if (mode=="stage-zero") output=runFixed(1,"fixed_stage_zero");
     else if (mode=="prefix") output=runFixed(600,"fixed_prefix_60s");
     else if (mode=="completion") output=runFixed(5000,"fixed_completion_500s");
-    else if (mode=="failure-window") output=runFailureWindow();
+    else if (mode=="failure-window") output=runFailureWindow(
+        argc==4?std::optional<std::filesystem::path>{argv[3]}:std::nullopt);
     else return 2;
     if (output_stream.has_value()) {
         *output_stream<<output.dump(2)<<'\n';
