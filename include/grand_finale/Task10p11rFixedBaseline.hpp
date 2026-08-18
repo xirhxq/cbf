@@ -34,9 +34,12 @@ inline Task10p10Scenario task10p11rFixedBaselineScenario() {
     return scenario;
 }
 
-inline GrandFinaleSwarmAdapterConfig task10p11rFixedAdapterConfig() {
+inline GrandFinaleSwarmAdapterConfig task10p11rFixedAdapterConfig(
+    GammaFeedbackSelectionMode selection=
+        GammaFeedbackSelectionMode::LeastIntervention,
+    std::optional<double> predictive_tau_mps2=14.0) {
     return task10p11pAdapterConfig(SolverProfile::Gurobi,30.0,
-        GammaFeedbackSelectionMode::LeastIntervention,14.0);
+        selection,predictive_tau_mps2);
 }
 
 struct Task10p11rFixedMetricSnapshot {
@@ -101,12 +104,16 @@ struct Task10p11rFixedBaselineFixture {
     const std::vector<DirectedEdge> frozen_topology;
     const TopologyVersion initial_topology_version;
 
-    Task10p11rFixedBaselineFixture()
+    explicit Task10p11rFixedBaselineFixture(
+        GammaFeedbackSelectionMode selection=
+            GammaFeedbackSelectionMode::LeastIntervention,
+        std::optional<double> predictive_tau_mps2=14.0)
         : scenario(task10p11rFixedBaselineScenario()),
           settings(task10p11pSwarmSettings(scenario,SolverProfile::Gurobi)),
           swarm(settings),
           adapter(swarm,scenario.mobile_ids,scenario.fixed_positions,
-              scenario.initial_topology,task10p11rFixedAdapterConfig()),
+              scenario.initial_topology,task10p11rFixedAdapterConfig(
+                  selection,predictive_tau_mps2)),
           controller(swarm,adapter,{}, {},task10p11rAuthorityContract().branches),
           frozen_topology(scenario.initial_topology),
           initial_topology_version(adapter.supervisor().topologyVersion()) {}
@@ -124,6 +131,14 @@ struct Task10p11rFixedBaselineFixture {
 inline std::unique_ptr<Task10p11rFixedBaselineFixture>
 makeTask10p11rFixedBaselineFixture() {
     return std::make_unique<Task10p11rFixedBaselineFixture>();
+}
+
+inline std::unique_ptr<Task10p11rFixedBaselineFixture>
+makeTask10p11rFixedBaselineFixture(
+    GammaFeedbackSelectionMode selection,
+    std::optional<double> predictive_tau_mps2) {
+    return std::make_unique<Task10p11rFixedBaselineFixture>(
+        selection,predictive_tau_mps2);
 }
 
 }  // namespace gf

@@ -246,6 +246,7 @@ struct TruthMargins {
     double mm=std::numeric_limits<double>::infinity();
     double mf=std::numeric_limits<double>::infinity();
     double speed_margin=std::numeric_limits<double>::infinity();
+    double maximum_reference_distance=0.0;
 };
 
 TruthMargins truthMargins(const gf::Task10p11rFixedBaselineFixture& fixture) {
@@ -269,6 +270,14 @@ TruthMargins truthMargins(const gf::Task10p11rFixedBaselineFixture& fixture) {
             result.mf=std::min(result.mf,(positions.at(a)-p).norm());
         }
     }
+    for (const auto& edge:fixture.frozen_topology) {
+        const Eigen::Vector2d reference=edge.reference>=100
+            ?fixture.scenario.fixed_positions.at(edge.reference)
+            :positions.at(edge.reference);
+        result.maximum_reference_distance=std::max(
+            result.maximum_reference_distance,
+            (positions.at(edge.owner)-reference).norm());
+    }
     return result;
 }
 
@@ -282,8 +291,12 @@ double minimumGamma(const gf::GrandFinaleSwarmStep& step,
     return value;
 }
 
-json runFixed(std::size_t cycles,const std::string& label) {
-    auto fixture=gf::makeTask10p11rFixedBaselineFixture();
+json runFixed(std::size_t cycles,const std::string& label,
+    gf::GammaFeedbackSelectionMode selection=
+        gf::GammaFeedbackSelectionMode::LeastIntervention,
+    std::optional<double> predictive_tau_mps2=14.0) {
+    auto fixture=gf::makeTask10p11rFixedBaselineFixture(
+        selection,predictive_tau_mps2);
     const auto initialized=fixture->adapter.initializeStageZero();
     if (!initialized.initialized)
         return {{"protocol","task10p11r_fixed_v1"},{"case",label},
@@ -322,12 +335,16 @@ json runFixed(std::size_t cycles,const std::string& label) {
     double min_mm=std::numeric_limits<double>::infinity();
     double min_mf=std::numeric_limits<double>::infinity();
     double min_speed_margin=std::numeric_limits<double>::infinity();
+    double maximum_reference_distance=0.0;
+    std::optional<double> first_tau14_unattained;
+    std::optional<double> first_maximum_predicted_negative;
     std::size_t tau_samples=0,tau_attained=0,fallbacks=0;
     std::size_t stagnant=0;
     int previous_covered=fixture->adapter.coverage().truthCoveredCount();
     const auto wall_start=std::chrono::steady_clock::now();
     for (std::size_t cycle=0;cycle<cycles;++cycle) {
         if (!fixture->topologyFrozen()) { failure="fixed_topology_mutated"; break; }
+        const double decision_time=fixture->swarm.robots.front()->runtime;
         const auto step=fixture->controller.advance();
         if (!step.step.advanced) {
             failure=step.reason.empty()?step.step.reason:step.reason;
@@ -346,6 +363,11 @@ json runFixed(std::size_t cycles,const std::string& label) {
             (void)owner;
             ++tau_samples;
             if (gamma.selected_predicted_gamma+1e-10>=14.0) ++tau_attained;
+            else if (!first_tau14_unattained.has_value())
+                first_tau14_unattained=decision_time;
+            if (gamma.maximum_margin_candidate_predicted_gamma<0.0 &&
+                !first_maximum_predicted_negative.has_value())
+                first_maximum_predicted_negative=decision_time;
             if (!gamma.fallback_reason.empty()) ++fallbacks;
         }
         min_hard=std::min(min_hard,step.step.minimum_hard_residual);
@@ -405,6 +427,8 @@ json runFixed(std::size_t cycles,const std::string& label) {
         min_mm=std::min(min_mm,truth.mm);
         min_mf=std::min(min_mf,truth.mf);
         min_speed_margin=std::min(min_speed_margin,truth.speed_margin);
+        maximum_reference_distance=std::max(
+            maximum_reference_distance,truth.maximum_reference_distance);
         if (truth.mm<10.0-1e-9 || truth.mf<10.0-1e-9)
             failure="truth_collision";
         if (truth.speed_margin<-1e-9) failure="plant_speed_violation";
@@ -423,6 +447,12 @@ json runFixed(std::size_t cycles,const std::string& label) {
     }
     const double wall=std::chrono::duration<double>(
         std::chrono::steady_clock::now()-wall_start).count();
+    const auto final_truth=truthMargins(*fixture);
+    min_mm=std::min(min_mm,final_truth.mm);
+    min_mf=std::min(min_mf,final_truth.mf);
+    min_speed_margin=std::min(min_speed_margin,final_truth.speed_margin);
+    maximum_reference_distance=std::max(
+        maximum_reference_distance,final_truth.maximum_reference_distance);
     json topology_json=json::array();
     for (const auto& edge:topology) topology_json.push_back(edgeJson(edge));
     std::map<gf::NodeId,Eigen::Vector2d> targets;
@@ -433,6 +463,13 @@ json runFixed(std::size_t cycles,const std::string& label) {
         fixture->adapter.config().uncertainty_sigma);
     return {{"protocol","task10p11r_fixed_v1"},{"case",label},
         {"authority_commit",gf::task10p11rAuthorityContract().source_commit},
+        {"selection_mode",selection==
+            gf::GammaFeedbackSelectionMode::MaximumPredictedMargin
+                ?"maximum_predicted_margin":"least_intervention"},
+        {"predictive_tau_mps2",predictive_tau_mps2.has_value()
+            ?json(*predictive_tau_mps2):json(nullptr)},
+        {"frozen_model_config_digest",gf::task10p11qConfigDigest(
+            fixture->adapter.config())},
         {"outcome",t100.has_value()?"t100":failure.empty()?"bounded_pass":"failed"},
         {"reason",failure},{"simulated_time_s",fixture->swarm.robots.front()->runtime},
         {"wall_time_s",wall},{"truth_coverage",fixture->adapter.coverage().truthFraction()},
@@ -445,6 +482,11 @@ json runFixed(std::size_t cycles,const std::string& label) {
         {"minimum_selected_predicted_gamma_mps2",min_selected},
         {"tau14_attainment_fraction",tau_samples==0?json(nullptr):
             json(static_cast<double>(tau_attained)/tau_samples)},
+        {"first_tau14_unattained_s",first_tau14_unattained.has_value()
+            ?json(*first_tau14_unattained):json(nullptr)},
+        {"first_maximum_predicted_gamma_negative_s",
+            first_maximum_predicted_negative.has_value()
+                ?json(*first_maximum_predicted_negative):json(nullptr)},
         {"fallback_owner_samples",fallbacks},
         {"minimum_accepted_information_nominal_fim_eigenvalue",
             min_information_nominal_fim},
@@ -472,6 +514,7 @@ json runFixed(std::size_t cycles,const std::string& label) {
         {"minimum_collision_psi1_mps",min_collision_psi1},
         {"minimum_collision_residual_mps2",min_collision_residual},
         {"minimum_reference_h_m",min_reference_h},
+        {"maximum_robust_reference_distance_m",850.0-min_reference_h},
         {"minimum_reference_psi1_mps",min_reference_psi1},
         {"minimum_reference_residual_mps2",min_reference_residual},
         {"minimum_robust_hard_residual_mps2",min_hard},
@@ -479,6 +522,8 @@ json runFixed(std::size_t cycles,const std::string& label) {
         {"minimum_truth_mobile_mobile_distance_m",min_mm},
         {"minimum_truth_mobile_fixed_distance_m",min_mf},
         {"minimum_truth_speed_margin_mps",min_speed_margin},
+        {"maximum_truth_reference_distance_m",maximum_reference_distance},
+        {"minimum_truth_reference_margin_m",850.0-maximum_reference_distance},
         {"fixed_topology",topology_json},
         {"topology_canonical",topology_canonical},
         {"topology_frozen",fixture->topologyFrozen()},
@@ -612,7 +657,7 @@ int main(int argc,char** argv) {
     if (argc<2 || argc>4 ||
         (argc==4 && std::string(argv[1])!="failure-window")) {
         std::cerr<<"usage: GrandFinaleTask10p11r "
-                 <<"attribute-maximum|attribute-li14|stage-zero|prefix|completion|failure-window "
+                 <<"attribute-maximum|attribute-li14|stage-zero|prefix|completion|completion-maximum|failure-window "
                  <<"[OUTPUT_JSON] [SNAPSHOT_JSON]\n";
         return 2;
     }
@@ -635,6 +680,9 @@ int main(int argc,char** argv) {
     else if (mode=="stage-zero") output=runFixed(1,"fixed_stage_zero");
     else if (mode=="prefix") output=runFixed(600,"fixed_prefix_60s");
     else if (mode=="completion") output=runFixed(5000,"fixed_completion_500s");
+    else if (mode=="completion-maximum") output=runFixed(5000,
+        "fixed_completion_500s_maximum_predicted_margin",
+        gf::GammaFeedbackSelectionMode::MaximumPredictedMargin,std::nullopt);
     else if (mode=="failure-window") output=runFailureWindow(
         argc==4?std::optional<std::filesystem::path>{argv[3]}:std::nullopt);
     else return 2;

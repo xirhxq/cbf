@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 
 #include "doctest.h"
+#include "grand_finale/Task10p11qStandardSafetyOn.hpp"
 #include "grand_finale/Task10p11rFixedBaseline.hpp"
 
 TEST_CASE("Fixed baseline authority contract matches CBF2026 commit literals") {
@@ -90,6 +91,29 @@ TEST_CASE("Fixed fixture has no dynamic topology coordinator and preserves graph
         gf::Task10p11ComputePhase::OnlineEstimator).calls==1);
     CHECK(step.compute_profile.summary(
         gf::Task10p11ComputePhase::PlantPreflightZoh).calls==1);
+}
+
+TEST_CASE("Maximum-margin fixed fixture changes only the feedback selection") {
+    const auto least=gf::task10p11rFixedAdapterConfig();
+    const auto maximum=gf::task10p11rFixedAdapterConfig(
+        gf::GammaFeedbackSelectionMode::MaximumPredictedMargin,std::nullopt);
+    CHECK(least.gamma_feedback_selection==
+          gf::GammaFeedbackSelectionMode::LeastIntervention);
+    REQUIRE(least.predictive_gamma_tau_mps2.has_value());
+    CHECK(*least.predictive_gamma_tau_mps2==doctest::Approx(14.0));
+    CHECK(maximum.gamma_feedback_selection==
+          gf::GammaFeedbackSelectionMode::MaximumPredictedMargin);
+    CHECK_FALSE(maximum.predictive_gamma_tau_mps2.has_value());
+    CHECK(gf::task10p11qConfigDigest(least)==
+          gf::task10p11qConfigDigest(maximum));
+
+    auto fixture=gf::makeTask10p11rFixedBaselineFixture(
+        gf::GammaFeedbackSelectionMode::MaximumPredictedMargin,std::nullopt);
+    CHECK(fixture->topologyFrozen());
+    CHECK(fixture->adapter.config().gamma_feedback_selection==
+          gf::GammaFeedbackSelectionMode::MaximumPredictedMargin);
+    CHECK_FALSE(fixture->adapter.config()
+        .predictive_gamma_tau_mps2.has_value());
 }
 
 TEST_CASE("Fixed baseline metric snapshot separates information and reference graph semantics") {
