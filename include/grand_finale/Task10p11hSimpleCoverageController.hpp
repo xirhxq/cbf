@@ -192,6 +192,7 @@ public:
             nominal[owner]=soft.acceleration;
             yaw_rates[owner]=soft.yaw_rate_radps;
         }
+        last_nominal_controls_=nominal;
         result.compute_profile.record(
             Task10p11ComputePhase::GridWorldTarget,
             std::chrono::duration<double>(
@@ -314,6 +315,9 @@ public:
         return settling_dwell_cycles_>=settling_.dwell_cycles;
     }
     std::size_t settlingDwellCycles() const { return settling_dwell_cycles_; }
+    const std::map<NodeId,Eigen::Vector2d>& lastNominalControls() const {
+        return last_nominal_controls_;
+    }
 
 private:
     bool observeT100Boundary() {
@@ -438,6 +442,7 @@ private:
     SimpleCoveragePhase phase_=SimpleCoveragePhase::CoverageSearch;
     std::optional<double> t100_coverage_s_;
     std::size_t settling_dwell_cycles_=0;
+    std::map<NodeId,Eigen::Vector2d> last_nominal_controls_;
     BoundaryExcursionAudit boundary_excursion_;
 };
 
