@@ -217,7 +217,7 @@ TEST_CASE("Nominal coefficient without input-box reserve can overstate safety") 
           robust.central_constant_lower);
 }
 
-TEST_CASE("Snapshot robust rows reject singular or non-unit-gain contracts") {
+TEST_CASE("Snapshot robust rows reject singular or invalid positive-gain contracts") {
     const auto anchor = state(0.0, 0.0, 0.0, 0.0);
     auto row_spec = spec(
         PairwiseSecondOrderBarrierKind::CommunicationUpper, 20.0);
@@ -226,10 +226,31 @@ TEST_CASE("Snapshot robust rows reject singular or non-unit-gain contracts") {
             state(1.0, 0.0, 0.0, 0.0), anchor, row_spec,
             {1.0, 0.0, gf::SnapshotTubeProvenance::ExternallyCertified}, 2.0),
         std::invalid_argument);
-    row_spec.lambda2 = 2.0;
+    row_spec.lambda2 = 0.0;
     CHECK_THROWS_AS(
         gf::buildSnapshotRobustPairRow(
             state(10.0, 0.0, 0.0, 0.0), anchor, row_spec,
             {0.1, 0.1, gf::SnapshotTubeProvenance::ExternallyCertified}, 2.0),
         std::invalid_argument);
+    row_spec.lambda2 = 1.0;
+    row_spec.lambda1 = -0.5;
+    CHECK_THROWS_AS(
+        gf::buildSnapshotRobustPairRow(
+            state(10.0, 0.0, 0.0, 0.0), anchor, row_spec,
+            {0.1, 0.1, gf::SnapshotTubeProvenance::ExternallyCertified}, 2.0),
+        std::invalid_argument);
+}
+
+TEST_CASE("Formal ten metre collision reserve is outside the position tube") {
+    const auto self=state(15.0,0.0,0.0,0.0);
+    const auto anchor=state(0.0,0.0,0.0,0.0);
+    const auto row_spec=spec(
+        PairwiseSecondOrderBarrierKind::CollisionLower,10.0);
+    const auto robust=gf::buildSnapshotRobustPairRow(
+        self,anchor,row_spec,
+        {1.0,0.25,gf::SnapshotTubeProvenance::ExternallyCertified},4.0);
+    CHECK(robust.barrier_h_lower==doctest::Approx(4.0));
+    CHECK(robust.position_uncertainty_reserve_m==doctest::Approx(1.0));
+    CHECK(robust.velocity_uncertainty_reserve_mps==doctest::Approx(0.25));
+    CHECK(robust.barrier_h_lower<5.0);
 }

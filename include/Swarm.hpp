@@ -11,6 +11,7 @@
 #include "bridge/LookaheadCollisionGate.hpp"
 #include "bridge/PostDetectionResponse.hpp"
 #include "bridge/ReserveTaskHomotopy.hpp"
+#include "grand_finale/PlantSpeedAppliedControl.hpp"
 
 #include <functional>
 #include <optional>
@@ -53,6 +54,15 @@ public:
             double dt,
             const std::optional<CertifiedControlBatch>& controls,
             const std::optional<CertifiedYawRateBatch>& yaw_rates) {
+        return applyCertifiedControlsAndAdvance(
+            dt,controls,yaw_rates,std::nullopt);
+    }
+
+    CertifiedStepResult applyCertifiedControlsAndAdvance(
+            double dt,
+            const std::optional<CertifiedControlBatch>& controls,
+            const std::optional<CertifiedYawRateBatch>& yaw_rates,
+            const std::optional<double>& plant_speed_limit_mps) {
         CertifiedStepResult result;
         if (!std::isfinite(dt) || dt <= 0.0) {
             result.reason = "invalid_step_request";
@@ -70,6 +80,12 @@ public:
             result.reason = "incomplete_certified_yaw_rate_batch";
             return result;
         }
+        if (plant_speed_limit_mps.has_value() &&
+            (!std::isfinite(*plant_speed_limit_mps) ||
+             *plant_speed_limit_mps<=0.0)) {
+            result.reason="invalid_plant_speed_contract";
+            return result;
+        }
         for (const auto &robot : robots) {
             const auto it = controls->find(robot->id);
             if (it == controls->end() || !it->second.allFinite()) {
@@ -80,6 +96,25 @@ public:
                 const auto yaw=yaw_rates->find(robot->id);
                 if (yaw==yaw_rates->end() || !std::isfinite(yaw->second)) {
                     result.reason = "invalid_certified_yaw_rate_batch";
+                    return result;
+                }
+            }
+        }
+        // Preflight the complete batch before the first model mutation.  This
+        // is an independent plant-state invariant audit; it never modifies
+        // the certified control and never feeds truth into the controller.
+        if (plant_speed_limit_mps.has_value()) {
+            for (const auto& robot:robots) {
+                const Eigen::VectorXd velocity=robot->model->getVelocity();
+                if (velocity.size()!=2 || !velocity.allFinite()) {
+                    result.reason="plant_speed_preflight_invalid_state";
+                    return result;
+                }
+                const auto audit=gf::auditPlantSpeedExactZoh(
+                    velocity.head<2>(),controls->at(robot->id),dt,
+                    *plant_speed_limit_mps,1.0e-9);
+                if (!audit.valid) {
+                    result.reason="plant_speed_preflight_rejected";
                     return result;
                 }
             }

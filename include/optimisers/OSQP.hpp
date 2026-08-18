@@ -7,6 +7,7 @@
 #include <Eigen/Sparse>
 #include <stdexcept>
 #include "OptimiserBase.hpp"
+#include "ConstraintRowScaling.hpp"
 
 class OSQP : public OptimiserBase {
     mutable OsqpEigen::Solver solver;
@@ -27,12 +28,15 @@ class OSQP : public OptimiserBase {
     mutable bool has_error = false;
     mutable std::string last_error_message;
     mutable int last_error_code = 0;
+    bool explicit_row_scaling = false;
+    bool last_solve_succeeded = false;
 
 public:
     OSQP(json &settings): OptimiserBase(settings) {
+        explicit_row_scaling=settings.value("explicit-row-scaling",false);
         // Configure OSQP settings for robustness
         solver.settings()->setVerbosity(false);
-        solver.settings()->setAlpha(1.6);
+        solver.settings()->setAlpha(settings.value("alpha", 1.6));
         solver.settings()->setAbsoluteTolerance(
             settings.value("absolute-tolerance", 1e-3));
         solver.settings()->setRelativeTolerance(
@@ -41,14 +45,22 @@ public:
             settings.value("primal-infeasibility-tolerance", 1e-3));
         solver.settings()->setDualInfeasibilityTolerance(
             settings.value("dual-infeasibility-tolerance", 1e-3));
-        solver.settings()->setMaxIteration(100000);
-        solver.settings()->setPolish(true);  // Enable polish for better accuracy
-        solver.settings()->setScaling(100);  // More aggressive scaling
-        solver.settings()->setAdaptiveRho(true);
-        solver.settings()->setAdaptiveRhoInterval(100);  // Update rho more frequently
-        solver.settings()->setAdaptiveRhoTolerance(5);  // More aggressive rho adaptation
-        solver.settings()->setRho(10.0);  // Larger rho for constraint-heavy problems
-        solver.settings()->setSigma(1e-6);
+        solver.settings()->setMaxIteration(
+            settings.value("maximum-iterations", 100000));
+        solver.settings()->setPolish(settings.value("polishing", true));
+        solver.settings()->setScaling(settings.value("scaling-iterations", 100));
+        solver.settings()->setAdaptiveRho(settings.value("adaptive-rho", true));
+        solver.settings()->setAdaptiveRhoInterval(
+            settings.value("adaptive-rho-interval", 100));
+        solver.settings()->setAdaptiveRhoTolerance(
+            settings.value("adaptive-rho-tolerance", 5.0));
+        solver.settings()->setRho(settings.value("rho", 10.0));
+        solver.settings()->setSigma(settings.value("sigma", 1e-6));
+        solver.settings()->setCheckTermination(
+            settings.value("termination-check-interval", 25));
+        solver.settings()->setWarmStart(settings.value("warm-start", true));
+        solver.settings()->setScaledTerimination(
+            settings.value("scaled-termination", false));
     }
 
     void clear() override {
@@ -66,6 +78,7 @@ public:
         has_error = false;
         last_error_message = "";
         last_error_code = 0;
+        last_solve_succeeded = false;
         solver.clearSolver();
         // Clear the data to allow re-setting the hessian and constraints
         solver.data()->clearHessianMatrix();
@@ -118,12 +131,14 @@ public:
             lowerBound.conservativeResize(user_constraint_count + 1);
             upperBound.conservativeResize(user_constraint_count + 1);
         }
+        const double row_scale=explicit_row_scaling
+            ?exactEquivalentConstraintRowScale(coe,rhs_value):1.0;
         for (int i = 0; i < coe.size(); i++) {
-            A.insert(user_constraint_count, i) = coe[i];
+            A.insert(user_constraint_count, i) = row_scale*coe[i];
         }
         // OSQP uses l <= Ax <= u form
         // Our constraint is: coe'x >= rhs  =>  rhs <= coe'x <= +infty
-        lowerBound[user_constraint_count] = rhs_value;
+        lowerBound[user_constraint_count] = row_scale*rhs_value;
         upperBound[user_constraint_count] = OsqpEigen::INFTY;
         user_constraint_count++;
     }
@@ -191,6 +206,18 @@ public:
                 if (!valid_solution) {
                     status["status"] = "invalid_solution";
                 }
+                const OSQPInfo* info=nullptr;
+#ifdef OSQP_EIGEN_OSQP_IS_V1
+                if (solver.solver()) info=solver.solver()->info;
+#else
+                if (solver.workspace()) info=solver.workspace()->info;
+#endif
+                if (info!=nullptr) {
+                    status["iteration_count"] = info->iter;
+                    status["primal_residual"] = info->prim_res;
+                    status["dual_residual"] = info->dual_res;
+                }
+                status["explicit_row_scaling"] = explicit_row_scaling;
             } catch (...) {
                 status["status"] = "error";
                 status["error"] = "Failed to get solution status";
@@ -203,6 +230,7 @@ public:
     }
 
     Eigen::VectorXd solve() override {
+        last_solve_succeeded = false;
         try {
             // Total constraints = user constraints + slack variable bounds
             int num_slack_vars = var_count - u_size;
@@ -285,46 +313,18 @@ public:
 
             // Check if solution is valid
             OsqpEigen::Status status = solver.getStatus();
-            if (status != OsqpEigen::Status::Solved && status != OsqpEigen::Status::SolvedInaccurate) {
-                std::string status_str;
-                switch (status) {
-                    case OsqpEigen::Status::MaxIterReached:
-                        {
-                            bool has_nan_or_inf = false;
-                            for (int i = 0; i < solution.size(); i++) {
-                                if (std::isnan(solution[i]) || std::isinf(solution[i])) {
-                                    has_nan_or_inf = true;
-                                    break;
-                                }
-                            }
-                            if (!has_nan_or_inf && solution.size() > 0) {
-                                std::cerr << "[OSQP] MaxIterReached but solution is valid, accepting approximate solution" << std::endl;
-                                status = OsqpEigen::Status::SolvedInaccurate;
-                            } else {
-                                status_str = "max_iter_reached (invalid solution)";
-                            }
-                        }
-                        break;
-                    case OsqpEigen::Status::PrimalInfeasible:
-                    case OsqpEigen::Status::PrimalInfeasibleInaccurate:
-                        status_str = "primal_infeasible";
-                        break;
-                    case OsqpEigen::Status::DualInfeasible:
-                    case OsqpEigen::Status::DualInfeasibleInaccurate:
-                        status_str = "dual_infeasible";
-                        break;
-                    default:
-                        status_str = "unknown status: " + std::to_string(static_cast<int>(status));
-                        break;
-                }
-                if (status != OsqpEigen::Status::SolvedInaccurate) {
-                    throw std::runtime_error("OSQP solver did not find optimal solution: " + status_str);
-                }
+            if (status != OsqpEigen::Status::Solved &&
+                status != OsqpEigen::Status::SolvedInaccurate) {
+                has_error = false;
+                last_error_code = 0;
+                last_error_message = "";
+                return Eigen::VectorXd{};
             }
 
             has_error = false;
             last_error_code = 0;
             last_error_message = "";
+            last_solve_succeeded = true;
 
             return solution;
 
@@ -341,6 +341,28 @@ public:
             // Debug mode: re-throw to stop program
             throw;
         }
+    }
+
+    Eigen::VectorXd resolveWarmStarted() {
+        if (!solver.isInitialized() || !last_solve_succeeded ||
+            solution.size()==0) {
+            throw std::logic_error("OSQP warm resolve requires a solved initialized model");
+        }
+        last_solve_succeeded = false;
+        const OsqpEigen::ErrorExitFlag error=solver.solveProblem();
+        if (error!=OsqpEigen::ErrorExitFlag::NoError) {
+            throw std::runtime_error("OSQP warm resolve failed with error code "+
+                std::to_string(static_cast<int>(error)));
+        }
+        const Eigen::VectorXd& osqp_solution=solver.getSolution();
+        solution=osqp_solution.cast<double>();
+        const OsqpEigen::Status status=solver.getStatus();
+        if (status!=OsqpEigen::Status::Solved &&
+            status!=OsqpEigen::Status::SolvedInaccurate) {
+            return Eigen::VectorXd{};
+        }
+        last_solve_succeeded = true;
+        return solution;
     }
 };
 

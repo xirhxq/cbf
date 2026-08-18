@@ -401,6 +401,10 @@ CanonicalGammaFeedbackBatchResult evaluateCanonicalGammaFeedbackBatchOptimized(
         const auto row_started=std::chrono::steady_clock::now();
         result.current_rows=buildCanonicalHardRows(build_request(snapshot));
         result.compute_profile.record(
+            Task10p11ComputePhase::CurrentCanonicalRowRebuild,
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now()-row_started).count(),true);
+        result.compute_profile.record(
             Task10p11ComputePhase::CanonicalRowRebuild,
             std::chrono::duration<double>(
                 std::chrono::steady_clock::now()-row_started).count(),true);
@@ -465,6 +469,10 @@ CanonicalGammaFeedbackBatchResult evaluateCanonicalGammaFeedbackBatchOptimized(
                     const auto row_started=std::chrono::steady_clock::now();
                     const auto predicted_rows=buildCanonicalOwnerHardRows(
                         build_request(predicted),owner);
+                    result.compute_profile.record(
+                        Task10p11ComputePhase::PredictedCanonicalRowRebuild,
+                        std::chrono::duration<double>(
+                            std::chrono::steady_clock::now()-row_started).count(),true);
                     result.compute_profile.record(
                         Task10p11ComputePhase::CanonicalRowRebuild,
                         std::chrono::duration<double>(

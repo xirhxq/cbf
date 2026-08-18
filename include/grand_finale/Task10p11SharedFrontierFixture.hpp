@@ -176,7 +176,9 @@ struct Task10p11Fixture {
           adapter(swarm,scenario.mobile_ids,scenario.fixed_positions,
                   scenario.initial_topology,[&]() {
                       auto config=task10p10AdapterConfig(profile);
-                      config.enforce_workspace_rows=true;
+                      config.boundary.policy=BoundaryPolicy::HardFlightBoundary;
+                      config.boundary.flight_polygon_source=
+                          FlightPolygonSource::SearchPolygon;
                       config.gamma_feedback_selection=feedback_selection;
                       config.predictive_gamma_tau_mps2=predictive_tau_mps2;
                       return config;

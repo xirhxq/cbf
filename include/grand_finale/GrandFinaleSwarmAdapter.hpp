@@ -3,6 +3,8 @@
 #include "Swarm.hpp"
 #include "grand_finale/CanonicalHocbfQpController.hpp"
 #include "grand_finale/CanonicalGammaStarFeedback.hpp"
+#include "grand_finale/BoundaryPolicy.hpp"
+#include "grand_finale/BoundarySoftNominalSelector.hpp"
 #include "grand_finale/CertifiedCoverageTracker.hpp"
 #include "grand_finale/InterimMasterDekf.hpp"
 #include "grand_finale/GurobiTopologySolver.hpp"
@@ -72,10 +74,12 @@ struct GrandFinaleSwarmAdapterConfig {
     double dt_s = 0.1;
     double minimum_dwell_s = 0.1;
     double acceleration_half_box = 0.4;
-    // A non-positive value disables the speed row for historical fixtures.
-    // Task 10.11g enables the frozen V1 model explicitly at 30 m/s.
+    // A non-positive value disables the plant-speed domain. Formal V1 uses
+    // the 64-facet exact-ZOH applied-control path; speed_cbf_gain remains only
+    // for explicitly constructed historical SpeedLimit fixtures.
     double speed_limit_mps = 0.0;
     double speed_cbf_gain = 1.0;
+    std::size_t plant_speed_facet_count = 64;
     double maximum_yaw_rate_radps = 0.0;
     double position_gain = 0.4;
     double velocity_gain = 0.8;
@@ -104,10 +108,15 @@ struct GrandFinaleSwarmAdapterConfig {
     double maximum_posterior_eigenvalue_m2 = 0.1;
     double maximum_range_aoi_s = 1.0;
     double minimum_range_quality = 0.5;
-    double collision_distance_m = 0.1;
+    // Formal callers must state the operational reference-point separation.
+    // Historical toy fixtures may still opt in to their explicit old value.
+    double collision_distance_m =
+        std::numeric_limits<double>::quiet_NaN();
+    double collision_lambda1 = 1.0;
+    double collision_lambda2 = 1.0;
     double residual_tolerance = 1.0e-7;
     double qp_oracle_tolerance = 1.0e-5;
-    bool enforce_workspace_rows = false;
+    BoundaryPolicyConfig boundary;
     GammaFeedbackSelectionMode gamma_feedback_selection =
         GammaFeedbackSelectionMode::DiagnosticsOnly;
     std::optional<double> predictive_gamma_tau_mps2;
@@ -143,15 +152,28 @@ struct GrandFinaleSwarmStep {
     std::uint64_t topology_version = 0;
     double minimum_hard_residual =
         std::numeric_limits<double>::infinity();
+    double minimum_plant_speed_applied_control_residual =
+        std::numeric_limits<double>::infinity();
+    double minimum_collision_h=std::numeric_limits<double>::infinity();
+    double minimum_collision_psi1=std::numeric_limits<double>::infinity();
+    double minimum_collision_residual=
+        std::numeric_limits<double>::infinity();
+    double minimum_reference_h=std::numeric_limits<double>::infinity();
+    double minimum_reference_psi1=std::numeric_limits<double>::infinity();
+    double minimum_reference_residual=
+        std::numeric_limits<double>::infinity();
     std::size_t certified_control_count = 0;
     std::size_t updated_truth_cells = 0;
+    std::size_t outside_observer_new_truth_cells = 0;
     double truth_coverage = 0.0;
     double certified_coverage = 0.0;
     double qp_wall_s = 0.0;
     CanonicalGammaFeedbackWork gamma_policy_work;
     std::map<NodeId, Eigen::Vector2d> applied_controls;
+    std::map<NodeId,BoundarySoftQpResult> boundary_soft_nominal;
     std::map<NodeId, double> applied_yaw_rates_radps;
     std::map<NodeId, GrandFinaleGammaFeedbackDiagnostic> gamma_feedback;
+    Task10p11ComputeProfile compute_profile;
 };
 
 struct GrandFinaleStageZero {
@@ -160,6 +182,30 @@ struct GrandFinaleStageZero {
     std::uint64_t estimator_version = 0;
     double truth_coverage = 0.0;
     double certified_coverage = 0.0;
+};
+
+// Unsafe-by-design causal diagnostic.  Only input and plant-speed applied-
+// control rows
+// authorize the applied acceleration; collision/reference/workspace rows are
+// rebuilt and audited but intentionally do not constrain the control.  This
+// type cannot be substituted for GrandFinaleSwarmStep in the formal path.
+struct GrandFinaleNominalOnlyDiagnosticStep {
+    bool advanced=false;
+    bool safety_authorized=false;
+    std::string reason;
+    std::size_t restricted_row_count=0;
+    std::size_t full_hard_row_count=0;
+    double minimum_restricted_residual=
+        std::numeric_limits<double>::infinity();
+    double minimum_plant_speed_applied_control_residual=
+        std::numeric_limits<double>::infinity();
+    double minimum_full_hard_residual=
+        std::numeric_limits<double>::infinity();
+    double truth_coverage=0.0;
+    double certified_coverage=0.0;
+    std::map<NodeId,Eigen::Vector2d> applied_controls;
+    std::map<NodeId,double> current_gamma;
+    std::map<NodeId,double> local_maximum_predicted_gamma;
 };
 
 struct GrandFinaleProposalResult {
@@ -172,13 +218,31 @@ struct GrandFinaleProposalResult {
 
 struct CurrentReferenceAudit {
     std::size_t minimum_effective_reference_count = 0;
+    NodeId minimum_effective_reference_owner = 0;
+    // FIM fields below use the qualified accepted ranging-information graph,
+    // not the directed reference-control DAG.  The reference-only values are
+    // retained explicitly as diagnostics so the two graph semantics cannot be
+    // silently conflated again.
+    std::size_t minimum_information_edge_count = 0;
+    NodeId minimum_information_edge_owner = 0;
     double minimum_fim_eigenvalue =
         std::numeric_limits<double>::infinity();
+    NodeId minimum_fim_owner = 0;
     double maximum_posterior_eigenvalue = 0.0;
+    NodeId maximum_posterior_owner = 0;
     double minimum_robust_fim_cone_lower_bound =
         std::numeric_limits<double>::infinity();
+    NodeId minimum_robust_fim_owner = 0;
+    double minimum_reference_only_fim_eigenvalue =
+        std::numeric_limits<double>::infinity();
+    NodeId minimum_reference_only_fim_owner = 0;
+    double minimum_reference_only_robust_fim_cone_lower_bound =
+        std::numeric_limits<double>::infinity();
+    NodeId minimum_reference_only_robust_fim_owner = 0;
     double minimum_range_aoi_margin_s =
         std::numeric_limits<double>::infinity();
+    NodeId minimum_range_aoi_owner = 0;
+    std::string minimum_range_aoi_edge;
 };
 
 enum class FreshnessRelation {
@@ -209,6 +273,13 @@ struct GrandFinaleRuntimeSnapshot {
     std::size_t transition_stack_size = 0;
     std::size_t union_control_cycles = 0;
     std::map<std::string, RuntimeRangeLinkState> range_links;
+};
+
+struct AcceptedRangeUpdateAudit {
+    RangeMeasurement measurement;
+    NodeId master=0;
+    double innovation=0.0;
+    double innovation_variance=0.0;
 };
 
 class GrandFinaleSwarmAdapter {
@@ -252,8 +323,16 @@ public:
             config_.speed_limit_mps < 0.0 ||
             !std::isfinite(config_.speed_cbf_gain) ||
             config_.speed_cbf_gain <= 0.0 ||
+            (config_.speed_limit_mps>0.0 &&
+             config_.plant_speed_facet_count!=64) ||
             !std::isfinite(config_.maximum_yaw_rate_radps) ||
             config_.maximum_yaw_rate_radps < 0.0 ||
+            !std::isfinite(config_.collision_distance_m) ||
+            config_.collision_distance_m <= 0.0 ||
+            !std::isfinite(config_.collision_lambda1) ||
+            config_.collision_lambda1 <= 0.0 ||
+            !std::isfinite(config_.collision_lambda2) ||
+            config_.collision_lambda2 <= 0.0 ||
             !std::isfinite(config_.residual_tolerance) ||
             config_.residual_tolerance < 0.0 ||
             !std::isfinite(config_.qp_oracle_tolerance) ||
@@ -355,9 +434,22 @@ public:
         swarm_.prepareCertifiedControlStep();
         const JointEstimateSnapshot snapshot = estimator_.reconstructForAudit();
         const std::uint64_t snapshot_version = estimator_.version();
-        const auto task_nominal = nominal_override_.has_value()
+        auto task_nominal = nominal_override_.has_value()
             ? *nominal_override_
             : nominalControls(metrics.mode, snapshot);
+        if (config_.boundary.policy==BoundaryPolicy::SoftSearchRetention) {
+            const auto soft_rows=boundarySoftRows(snapshot);
+            for (NodeId owner : mobile_ids_) {
+                const auto selected=boundary_soft_selector_.solve({
+                    config_.solver_profile,owner,task_nominal.at(owner),
+                    config_.acceleration_half_box,
+                    config_.boundary.soft_slack_weight,soft_rows,
+                    config_.residual_tolerance});
+                metrics.boundary_soft_nominal.emplace(owner,selected);
+                if (selected.nominal_available)
+                    task_nominal[owner]=selected.selected_nominal;
+            }
+        }
         const CanonicalGammaFeedbackConfig feedback_config{
             config_.acceleration_half_box,
             config_.gamma_feedback_homotopy_segments,
@@ -372,6 +464,7 @@ public:
                 return hardRowRequest(value,supervisor_.topology());
             },feedback_context);
         metrics.gamma_policy_work=feedback_batch.work;
+        metrics.compute_profile.merge(feedback_batch.compute_profile);
         if (!feedback_batch.valid) {
             metrics.reason=feedback_batch.reason==
                     "current_canonical_row_rebuild_failed"
@@ -413,6 +506,27 @@ public:
                             config_.residual_tolerance});
                     metrics.qp_wall_s += std::chrono::duration<double>(
                         std::chrono::steady_clock::now() - qp_start).count();
+                    const bool steady=result.solver_instance_reused;
+                    metrics.compute_profile.record(
+                        Task10p11ComputePhase::FinalQp,
+                        std::chrono::duration<double>(
+                            std::chrono::steady_clock::now()-qp_start).count(),
+                        steady);
+                    metrics.compute_profile.record(
+                        Task10p11ComputePhase::ExactHardProjection,
+                        result.exact_projection_wall_s,steady);
+                    metrics.compute_profile.record(
+                        Task10p11ComputePhase::SolverInitialization,
+                        result.solver_initialization_wall_s,steady);
+                    metrics.compute_profile.record(
+                        Task10p11ComputePhase::SolverModelUpdate,
+                        result.solver_model_update_wall_s,steady);
+                    metrics.compute_profile.record(
+                        Task10p11ComputePhase::RobustQpSolve,
+                        result.solver_solve_wall_s,steady);
+                    metrics.compute_profile.record(
+                        Task10p11ComputePhase::ResidualTokenAudit,
+                        result.residual_token_audit_wall_s,steady);
                     if (!controlMayBeApplied(
                             result, snapshot_version,
                             supervisor_.topologyVersion(), supervisor_.mode())) {
@@ -428,11 +542,47 @@ public:
                     metrics.minimum_hard_residual = std::min(
                         metrics.minimum_hard_residual,
                         result.minimum_hard_residual);
+                    for (const auto& row:rows) {
+                        if (row.owner!=owner) continue;
+                        if (row.kind==CanonicalHardRowKind::
+                                PlantSpeedAppliedControl) {
+                            metrics.minimum_plant_speed_applied_control_residual=
+                                std::min(
+                                    metrics.minimum_plant_speed_applied_control_residual,
+                                    row.margin(result.control));
+                        } else if (row.kind==CanonicalHardRowKind::Collision) {
+                            metrics.minimum_collision_h=std::min(
+                                metrics.minimum_collision_h,row.barrier_h);
+                            metrics.minimum_collision_psi1=std::min(
+                                metrics.minimum_collision_psi1,row.barrier_psi1);
+                            metrics.minimum_collision_residual=std::min(
+                                metrics.minimum_collision_residual,
+                                row.margin(result.control));
+                        } else if (row.kind==
+                                CanonicalHardRowKind::ReferenceDistance) {
+                            metrics.minimum_reference_h=std::min(
+                                metrics.minimum_reference_h,row.barrier_h);
+                            metrics.minimum_reference_psi1=std::min(
+                                metrics.minimum_reference_psi1,row.barrier_psi1);
+                            metrics.minimum_reference_residual=std::min(
+                                metrics.minimum_reference_residual,
+                                row.margin(result.control));
+                        }
+                    }
                 }
                 return applied;
             };
+        const auto certified_controls=build_controls();
+        const auto physical_started=std::chrono::steady_clock::now();
         const auto physical = swarm_.applyCertifiedControlsAndAdvance(
-            config_.dt_s, build_controls(), yaw_rate_override_);
+            config_.dt_s, certified_controls, yaw_rate_override_,
+            config_.speed_limit_mps>0.0
+                ?std::optional<double>(config_.speed_limit_mps)
+                :std::nullopt);
+        metrics.compute_profile.record(
+            Task10p11ComputePhase::PlantPreflightZoh,
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now()-physical_started).count(),true);
         metrics.advanced = physical.advanced;
         metrics.updated_truth_cells = physical.updated_truth_cells;
         if (!physical.advanced) {
@@ -440,14 +590,19 @@ public:
             return metrics;
         }
 
+        const auto estimator_started=std::chrono::steady_clock::now();
         for (NodeId owner : mobile_ids_) {
             estimator_.propagateLocal(
                 owner, applied.at(static_cast<int>(owner)), config_.dt_s,
                 config_.estimator_acceleration_variance);
         }
         applyDeterministicRangeBatch();
+        metrics.compute_profile.record(
+            Task10p11ComputePhase::OnlineEstimator,
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now()-estimator_started).count(),true);
         const JointEstimateSnapshot after = estimator_.reconstructForAudit();
-        observeCoverageSnapshot(after);
+        metrics.outside_observer_new_truth_cells=observeCoverageSnapshot(after);
         metrics.certified_control_count = applied.size();
         for (const auto& [id, control] : applied)
             metrics.applied_controls[static_cast<NodeId>(id)] = control;
@@ -497,6 +652,131 @@ public:
         }
     }
 
+    GrandFinaleNominalOnlyDiagnosticStep stepNominalOnlyCausalDiagnostic(
+        const std::map<NodeId,Eigen::Vector2d>& nominal,
+        const std::map<NodeId,double>& yaw_rates) {
+        GrandFinaleNominalOnlyDiagnosticStep result;
+        if (!stage_zero_initialized_) {
+            result.reason="stage_zero_not_initialized";
+            return result;
+        }
+        if (nominal.size()!=mobile_ids_.size() ||
+            yaw_rates.size()!=mobile_ids_.size()) {
+            result.reason="nominal_only_incomplete";
+            return result;
+        }
+        for (NodeId owner:mobile_ids_) {
+            const auto control=nominal.find(owner);
+            const auto yaw=yaw_rates.find(owner);
+            if (control==nominal.end() || yaw==yaw_rates.end() ||
+                !control->second.allFinite() || !std::isfinite(yaw->second) ||
+                std::abs(yaw->second)>config_.maximum_yaw_rate_radps+1e-12) {
+                result.reason="nominal_only_invalid";
+                return result;
+            }
+        }
+
+        swarm_.prepareCertifiedControlStep();
+        const JointEstimateSnapshot snapshot=estimator_.reconstructForAudit();
+        const std::uint64_t snapshot_version=estimator_.version();
+        std::vector<CanonicalHardRow> full_rows;
+        try {
+            full_rows=buildCanonicalHardRows(
+                hardRowRequest(snapshot,supervisor_.topology()));
+        } catch (...) {
+            result.reason="snapshot_robust_hard_row_invalid";
+            return result;
+        }
+        result.full_hard_row_count=full_rows.size();
+        std::vector<CanonicalHardRow> restricted_rows;
+        for (const auto& row:full_rows)
+            if (row.kind==CanonicalHardRowKind::PlantSpeedAppliedControl ||
+                row.kind==CanonicalHardRowKind::InputBox)
+                restricted_rows.push_back(row);
+        result.restricted_row_count=restricted_rows.size();
+
+        for (NodeId owner:mobile_ids_) {
+            const auto gamma=solveCanonicalGammaStar(
+                full_rows,owner,config_.acceleration_half_box);
+            result.current_gamma[owner]=gamma.valid
+                ?gamma.gamma:-std::numeric_limits<double>::infinity();
+        }
+        const CanonicalGammaFeedbackConfig maximum_config{
+            config_.acceleration_half_box,
+            config_.gamma_feedback_homotopy_segments,
+            GammaFeedbackSelectionMode::MaximumPredictedMargin,
+            std::nullopt,config_.gamma_feedback_tolerance};
+        CanonicalGammaFeedbackEvaluationContext feedback_context;
+        const auto predicted=evaluateCanonicalGammaFeedbackBatch(
+            snapshot,nominal,maximum_config,config_.dt_s,
+            config_.estimator_acceleration_variance,
+            [&](const JointEstimateSnapshot& value) {
+                return hardRowRequest(value,supervisor_.topology());
+            },feedback_context);
+        for (NodeId owner:mobile_ids_) {
+            const auto found=predicted.selections.find(owner);
+            result.local_maximum_predicted_gamma[owner]=
+                predicted.valid && found!=predicted.selections.end()
+                ?found->second.selected_predicted_gamma
+                :std::numeric_limits<double>::quiet_NaN();
+        }
+
+        Swarm::CertifiedControlBatch applied;
+        for (NodeId owner:mobile_ids_) {
+            const auto qp=controller_.solve({
+                config_.solver_profile,owner,snapshot_version,
+                supervisor_.topologyVersion(),supervisor_.mode(),
+                nominal.at(owner),config_.acceleration_half_box,
+                restricted_rows,config_.residual_tolerance});
+            if (!controlMayBeApplied(qp,snapshot_version,
+                    supervisor_.topologyVersion(),supervisor_.mode()) ||
+                qp.exact_oracle_error>config_.qp_oracle_tolerance) {
+                result.reason=qp.failure_reason.empty()
+                    ?"nominal_only_restricted_qp_failed":qp.failure_reason;
+                return result;
+            }
+            applied[static_cast<int>(owner)]=qp.control;
+            result.applied_controls[owner]=qp.control;
+            result.minimum_restricted_residual=std::min(
+                result.minimum_restricted_residual,
+                minimumCanonicalOwnerResidual(
+                    restricted_rows,owner,qp.control));
+            for (const auto& row:restricted_rows)
+                if (row.owner==owner &&
+                    row.kind==CanonicalHardRowKind::PlantSpeedAppliedControl)
+                    result.minimum_plant_speed_applied_control_residual=std::min(
+                        result.minimum_plant_speed_applied_control_residual,
+                        row.margin(qp.control));
+            result.minimum_full_hard_residual=std::min(
+                result.minimum_full_hard_residual,
+                minimumCanonicalOwnerResidual(full_rows,owner,qp.control));
+        }
+        std::map<int,double> yaw_batch;
+        for (const auto& [owner,rate]:yaw_rates)
+            yaw_batch[static_cast<int>(owner)]=rate;
+        const auto physical=swarm_.applyCertifiedControlsAndAdvance(
+            config_.dt_s,applied,yaw_batch,
+            config_.speed_limit_mps>0.0
+                ?std::optional<double>(config_.speed_limit_mps)
+                :std::nullopt);
+        if (!physical.advanced) {
+            result.reason=physical.reason;
+            return result;
+        }
+        for (NodeId owner:mobile_ids_)
+            estimator_.propagateLocal(owner,
+                applied.at(static_cast<int>(owner)),config_.dt_s,
+                config_.estimator_acceleration_variance);
+        applyDeterministicRangeBatch();
+        const auto after=estimator_.reconstructForAudit();
+        observeCoverageSnapshot(after);
+        result.truth_coverage=coverage_.truthFraction();
+        result.certified_coverage=coverage_.certifiedFraction();
+        result.advanced=true;
+        result.reason="nominal_only_causal_advanced";
+        return result;
+    }
+
     GrandFinaleSwarmStep stepWithNominalAndYawRates(
         const std::map<NodeId, Eigen::Vector2d>& nominal,
         const std::map<NodeId, double>& yaw_rates) {
@@ -534,12 +814,8 @@ public:
         const DirectedEdge& old_edge,
         bool update_supervisor_on_rejection = true) {
         if (pending_proposal_.has_value()) return false;
-        const JointEstimateSnapshot snapshot = estimator_.reconstructForAudit();
-        TransitionProposal proposal{
-            supervisor_.topology(), new_edge, old_edge,
-            supervisor_.topologyVersion(), estimator_.version()};
-        const TransitionCertificate certificate = TransitionCertifier{}.certify(
-            proposal, certificationContext(snapshot, {new_edge}), true);
+        const TransitionCertificate certificate=auditReplacement(
+            new_edge,old_edge);
         last_certification_reason_ = certificate.reason;
         if (!certificate.old_state.valid)
             last_certification_reason_ += ":old:" + certificate.old_state.reason;
@@ -575,10 +851,22 @@ public:
                 std::to_string(estimator_.version());
             return false;
         }
-        pending_proposal_ = proposal;
+        pending_proposal_ = TransitionProposal{
+            certificate.old_edges,new_edge,old_edge,
+            certificate.topology_version,certificate.estimator_version};
         pending_certificate_ = certificate;
         union_control_cycles_ = 0;
         return true;
+    }
+
+    TransitionCertificate auditReplacement(
+        const DirectedEdge& new_edge,const DirectedEdge& old_edge) {
+        const JointEstimateSnapshot snapshot=estimator_.reconstructForAudit();
+        const TransitionProposal proposal{
+            supervisor_.topology(),new_edge,old_edge,
+            supervisor_.topologyVersion(),estimator_.version()};
+        return TransitionCertifier{}.certify(
+            proposal,certificationContext(snapshot,{new_edge}),true);
     }
 
     GrandFinaleProposalResult proposeAndBegin(TopologyRequest request) {
@@ -715,6 +1003,12 @@ public:
     const InterimMasterDekf& estimator() const { return estimator_; }
     const CertifiedCoverageTracker& coverage() const { return coverage_; }
     const GrandFinaleSwarmAdapterConfig& config() const { return config_; }
+    std::vector<AcceptedRangeUpdateAudit> lastAcceptedRangeBatchAudit() const {
+        return last_accepted_range_batch_audit_;
+    }
+    std::vector<Eigen::Vector2d> searchPolygonVertices() const {
+        return searchPolygon();
+    }
     std::map<NodeId, Eigen::Vector2d> currentNominalControls() {
         return nominalControls(
             supervisor_.mode(), estimator_.reconstructForAudit());
@@ -780,6 +1074,8 @@ public:
         CurrentReferenceAudit audit;
         audit.minimum_effective_reference_count =
             std::numeric_limits<std::size_t>::max();
+        audit.minimum_information_edge_count =
+            std::numeric_limits<std::size_t>::max();
         for (NodeId owner : mobile_ids_) {
             std::vector<DirectedEdge> effective_edges;
             for (const DirectedEdge& edge : topology) {
@@ -792,26 +1088,90 @@ public:
                     effective_edges.push_back(edge);
                 }
             }
-            audit.minimum_effective_reference_count = std::min(
-                audit.minimum_effective_reference_count,
-                effective_edges.size());
-            const double fim = effective_edges.size() < 2
+            if (effective_edges.size()<
+                audit.minimum_effective_reference_count) {
+                audit.minimum_effective_reference_count=
+                    effective_edges.size();
+                audit.minimum_effective_reference_owner=owner;
+            }
+            const double reference_only_fim = effective_edges.size() < 2
                 ? -std::numeric_limits<double>::infinity()
                 : Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d>(
                     referenceFim(
                         owner, effective_edges, snapshot,
                         context.range_variances_m2))
                     .eigenvalues().minCoeff();
-            audit.minimum_fim_eigenvalue = std::min(
-                audit.minimum_fim_eigenvalue, fim);
-            const double robust_fim = effective_edges.size() < 2
+            if (reference_only_fim<
+                audit.minimum_reference_only_fim_eigenvalue) {
+                audit.minimum_reference_only_fim_eigenvalue=reference_only_fim;
+                audit.minimum_reference_only_fim_owner=owner;
+            }
+            const double reference_only_robust_fim = effective_edges.size()<2
+                ?-std::numeric_limits<double>::infinity()
+                :robustReferenceFimConeLowerBound(owner,effective_edges,snapshot,
+                    context.range_variances_m2,config_.uncertainty_sigma);
+            if (reference_only_robust_fim<
+                audit.minimum_reference_only_robust_fim_cone_lower_bound) {
+                audit.minimum_reference_only_robust_fim_cone_lower_bound=
+                    reference_only_robust_fim;
+                audit.minimum_reference_only_robust_fim_owner=owner;
+            }
+
+            std::vector<DirectedEdge> information_edges;
+            std::map<std::string,double> information_variances;
+            std::vector<NodeId> information_references=mobile_ids_;
+            for (const auto& [id,position]:fixed_positions_) {
+                (void)position;
+                information_references.push_back(id);
+            }
+            const double now_s=swarm_.robots.front()->runtime;
+            const Eigen::Vector2d owner_position=
+                detail::nodePosition(snapshot,owner);
+            for (const NodeId reference:information_references) {
+                if (reference==owner) continue;
+                const std::string id=UndirectedEdge::canonical(
+                    owner,reference).id();
+                const auto observed=range_last_observation_s_.find(id);
+                const auto quality=range_quality_.find(id);
+                const auto variance=range_variance_m2_.find(id);
+                if (observed==range_last_observation_s_.end() ||
+                    quality==range_quality_.end() ||
+                    variance==range_variance_m2_.end() ||
+                    !std::isfinite(observed->second) ||
+                    !std::isfinite(quality->second) ||
+                    !std::isfinite(variance->second) || variance->second<=0.0 ||
+                    std::max(0.0,now_s-observed->second)>
+                        config_.maximum_range_aoi_s+1.0e-12 ||
+                    quality->second+1.0e-12<config_.minimum_range_quality)
+                    continue;
+                const double distance=(owner_position-
+                    detail::nodePosition(snapshot,reference)).norm();
+                if (!std::isfinite(distance) || distance<=1.0e-12) continue;
+                information_edges.emplace_back(reference,owner);
+                information_variances.emplace(id,variance->second);
+            }
+            if (information_edges.size()<audit.minimum_information_edge_count) {
+                audit.minimum_information_edge_count=information_edges.size();
+                audit.minimum_information_edge_owner=owner;
+            }
+            const double fim = information_edges.size() < 2
+                ? -std::numeric_limits<double>::infinity()
+                : Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d>(
+                    referenceFim(owner,information_edges,snapshot,
+                        information_variances)).eigenvalues().minCoeff();
+            if (fim<audit.minimum_fim_eigenvalue) {
+                audit.minimum_fim_eigenvalue=fim;
+                audit.minimum_fim_owner=owner;
+            }
+            const double robust_fim = information_edges.size() < 2
                 ? -std::numeric_limits<double>::infinity()
                 : robustReferenceFimConeLowerBound(
-                    owner,effective_edges,snapshot,
-                    context.range_variances_m2,config_.uncertainty_sigma);
-            audit.minimum_robust_fim_cone_lower_bound=std::min(
-                audit.minimum_robust_fim_cone_lower_bound,robust_fim);
-            const double now_s=swarm_.robots.front()->runtime;
+                    owner,information_edges,snapshot,
+                    information_variances,config_.uncertainty_sigma);
+            if (robust_fim<audit.minimum_robust_fim_cone_lower_bound) {
+                audit.minimum_robust_fim_cone_lower_bound=robust_fim;
+                audit.minimum_robust_fim_owner=owner;
+            }
             for (const auto& edge : effective_edges) {
                 const std::string id=UndirectedEdge::canonical(
                     edge.owner,edge.reference).id();
@@ -819,27 +1179,39 @@ public:
                 if (observed==range_last_observation_s_.end()) {
                     audit.minimum_range_aoi_margin_s=
                         -std::numeric_limits<double>::infinity();
+                    audit.minimum_range_aoi_owner=owner;
+                    audit.minimum_range_aoi_edge=id;
                     continue;
                 }
-                audit.minimum_range_aoi_margin_s=std::min(
-                    audit.minimum_range_aoi_margin_s,
-                    config_.maximum_range_aoi_s-
-                        std::max(0.0,now_s-observed->second));
+                const double margin=config_.maximum_range_aoi_s-
+                    std::max(0.0,now_s-observed->second);
+                if (margin<audit.minimum_range_aoi_margin_s) {
+                    audit.minimum_range_aoi_margin_s=margin;
+                    audit.minimum_range_aoi_owner=owner;
+                    audit.minimum_range_aoi_edge=id;
+                }
             }
             const double posterior =
                 Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d>(
                     marginalPositionCovariance(snapshot, owner))
                     .eigenvalues().maxCoeff();
-            audit.maximum_posterior_eigenvalue = std::max(
-                audit.maximum_posterior_eigenvalue, posterior);
+            if (posterior>audit.maximum_posterior_eigenvalue) {
+                audit.maximum_posterior_eigenvalue=posterior;
+                audit.maximum_posterior_owner=owner;
+            }
         }
         return audit;
     }
 
 private:
-    void observeCoverageSnapshot(const JointEstimateSnapshot& snapshot) {
+    std::size_t observeCoverageSnapshot(const JointEstimateSnapshot& snapshot) {
+        std::size_t outside_observer_new_truth_cells=0;
+        const auto polygon=searchPolygon();
         for (std::size_t index=0; index<mobile_ids_.size(); ++index) {
             const Point truth = swarm_.robots.at(index)->model->xy();
+            const bool outside=distanceOutsidePolygon(
+                Eigen::Vector2d(truth.x,truth.y),polygon)>1e-12;
+            const int before=coverage_.truthCoveredCount();
             const Eigen::Vector2d estimate = snapshot.mean.segment<2>(4*index);
             const double coverage_error = std::max(
                 config_.certified_shadow_single_position_support_m,
@@ -859,7 +1231,11 @@ private:
                     truth,Point(estimate.x(),estimate.y()),coverage_error,
                     config_.sensor_radius_m);
             }
+            if (outside)
+                outside_observer_new_truth_cells+=static_cast<std::size_t>(
+                    coverage_.truthCoveredCount()-before);
         }
+        return outside_observer_new_truth_cells;
     }
 
     std::vector<MobileEstimate> initialEstimates() const {
@@ -945,14 +1321,18 @@ private:
             PairwiseSecondOrderBarrierKind::CollisionLower,
             config_.collision_distance_m,
             0.0,
-            1.0, 1.0, 1.0, 0.0};
+            1.0, config_.collision_lambda1,
+            config_.collision_lambda2, 0.0};
         request.acceleration_half_box = config_.acceleration_half_box;
         request.speed_limit_mps = config_.speed_limit_mps;
         request.speed_cbf_gain = config_.speed_cbf_gain;
+        request.plant_speed_facet_count =
+            config_.speed_limit_mps>0.0?config_.plant_speed_facet_count:0;
+        request.plant_speed_dt_s = config_.dt_s;
         request.require_snapshot_robust_rows = true;
         if (config_.speed_limit_mps > 0.0) {
             for (NodeId id : mobile_ids_) {
-                request.speed_snapshot_tubes[id] = {
+                request.plant_speed_snapshot_tubes[id] = {
                     0.0,
                     config_.uncertainty_sigma*std::sqrt(std::max(
                         0.0,detail::maximumVelocityEigenvalue(snapshot,id)))+
@@ -960,36 +1340,11 @@ private:
                     SnapshotTubeProvenance::CovarianceSigmaDevelopment};
             }
         }
-        if (config_.enforce_workspace_rows) {
-            const auto& boundary = swarm_.config.at("world").at("boundary");
-            if (!boundary.is_array() || boundary.size() < 3)
-                throw std::invalid_argument("workspace boundary is not polygonal");
-            std::vector<Eigen::Vector2d> points;
-            Eigen::Vector2d centroid = Eigen::Vector2d::Zero();
-            for (const auto& raw : boundary) {
-                const Eigen::Vector2d point(
-                    raw.at(0).get<double>(),raw.at(1).get<double>());
-                if (!point.allFinite())
-                    throw std::invalid_argument("workspace boundary is not finite");
-                points.push_back(point);
-                centroid += point;
-            }
-            centroid /= static_cast<double>(points.size());
-            for (std::size_t index=0; index<points.size(); ++index) {
-                const Eigen::Vector2d edge =
-                    points[(index+1)%points.size()]-points[index];
-                if (edge.norm() <= 1e-12)
-                    throw std::invalid_argument("workspace boundary has zero edge");
-                Eigen::Vector2d outward(edge.y(),-edge.x());
-                outward.normalize();
-                double offset = outward.dot(points[index]);
-                if (outward.dot(centroid) > offset) {
-                    outward = -outward;
-                    offset = -offset;
-                }
-                request.workspace_facets.push_back({
-                    "facet:"+std::to_string(index),outward,offset});
-            }
+        const BoundaryBlueprint boundary=buildBoundaryBlueprint(
+            config_.boundary,searchPolygon(),
+            config_.boundary.explicit_flight_polygon);
+        if (!boundary.hard_facets.empty()) {
+            request.workspace_facets=boundary.hard_facets;
             for (NodeId id : mobile_ids_) {
                 request.workspace_snapshot_tubes[id] = {
                     config_.uncertainty_sigma*std::sqrt(std::max(
@@ -1011,6 +1366,40 @@ private:
         return request;
     }
 
+    std::vector<Eigen::Vector2d> searchPolygon() const {
+        const auto& boundary=swarm_.config.at("world").at("boundary");
+        if (!boundary.is_array())
+            throw std::invalid_argument("search boundary is not polygonal");
+        std::vector<Eigen::Vector2d> points;
+        for (const auto& raw : boundary)
+            points.emplace_back(
+                raw.at(0).get<double>(),raw.at(1).get<double>());
+        return points;
+    }
+
+    std::vector<BoundarySoftRow> boundarySoftRows(
+        const JointEstimateSnapshot& snapshot) const {
+        const BoundaryBlueprint blueprint=buildBoundaryBlueprint(
+            config_.boundary,searchPolygon(),
+            config_.boundary.explicit_flight_polygon);
+        if (blueprint.soft_facets.empty()) return {};
+        const auto canonical=hardRowRequest(snapshot,supervisor_.topology());
+        BoundarySoftRowRequest request;
+        request.mobile_ids=mobile_ids_;
+        request.states=canonical.states;
+        request.facets=blueprint.soft_facets;
+        for (NodeId id : mobile_ids_)
+            request.snapshot_tubes[id]={
+                config_.uncertainty_sigma*std::sqrt(std::max(
+                    0.0,detail::maximumPositionEigenvalue(snapshot,id)))+
+                    config_.certified_shadow_single_position_support_m,
+                config_.uncertainty_sigma*std::sqrt(std::max(
+                    0.0,detail::maximumVelocityEigenvalue(snapshot,id)))+
+                    config_.certified_shadow_single_velocity_support_mps,
+                SnapshotTubeProvenance::CovarianceSigmaDevelopment};
+        return buildBoundarySoftRows(request);
+    }
+
     TransitionCertificationContext certificationContext(
         const JointEstimateSnapshot& snapshot,
         const std::vector<DirectedEdge>& additions) {
@@ -1029,11 +1418,44 @@ private:
             config_.maximum_posterior_eigenvalue_m2;
         context.gamma_accept = 0.05;
         context.estimate = snapshot;
+        std::vector<NodeId> information_references=mobile_ids_;
+        for (const auto& [id,position]:fixed_positions_) {
+            (void)position;
+            information_references.push_back(id);
+        }
+        const double now_s=swarm_.robots.front()->runtime;
+        for (const NodeId owner:mobile_ids_) {
+            const Eigen::Vector2d owner_position=
+                detail::nodePosition(snapshot,owner);
+            for (const NodeId reference:information_references) {
+                if (reference==owner) continue;
+                const std::string id=UndirectedEdge::canonical(
+                    owner,reference).id();
+                const auto observed=range_last_observation_s_.find(id);
+                const auto quality=range_quality_.find(id);
+                const auto variance=range_variance_m2_.find(id);
+                if (observed==range_last_observation_s_.end() ||
+                    quality==range_quality_.end() ||
+                    variance==range_variance_m2_.end() ||
+                    !std::isfinite(observed->second) ||
+                    !std::isfinite(quality->second) ||
+                    !std::isfinite(variance->second) || variance->second<=0.0 ||
+                    std::max(0.0,now_s-observed->second)>
+                        config_.maximum_range_aoi_s+1.0e-12 ||
+                    quality->second+1.0e-12<config_.minimum_range_quality)
+                    continue;
+                const double distance=(owner_position-
+                    detail::nodePosition(snapshot,reference)).norm();
+                if (!std::isfinite(distance) || distance<=1.0e-12) continue;
+                context.information_edges.emplace_back(reference,owner);
+                context.information_range_variances_m2.emplace(
+                    id,variance->second);
+            }
+        }
         std::vector<DirectedEdge> edges = supervisor_.topology();
         edges.insert(edges.end(), additions.begin(), additions.end());
         edges = transition_certifier_detail::canonicalEdges(std::move(edges));
         std::map<std::string, RangeLinkState> links;
-        const double now_s = swarm_.robots.front()->runtime;
         for (const auto& [id, observed_s] : range_last_observation_s_) {
             links[id] = {
                 std::max(0.0, now_s - observed_s),
@@ -1158,6 +1580,7 @@ private:
     }
 
     void applyDeterministicRangeBatch() {
+        last_accepted_range_batch_audit_.clear();
         std::vector<RangeMeasurement> measurements;
         const std::int64_t timestamp = static_cast<std::int64_t>(
             std::llround(swarm_.robots.front()->runtime * 1.0e9));
@@ -1210,6 +1633,8 @@ private:
                 swarm_.robots.front()->runtime;
             range_quality_[range_id] = 1.0;
             range_variance_m2_[range_id] = accepted.variance_m2;
+            last_accepted_range_batch_audit_.push_back({
+                accepted,master,update.innovation,update.innovation_variance});
             estimator_.applyUpdate(update);
         }
         ++range_batch_count_;
@@ -1223,6 +1648,7 @@ private:
     CertifiedCoverageTracker coverage_;
     HybridSupervisor supervisor_;
     CanonicalHocbfQpController controller_;
+    BoundarySoftNominalSelector boundary_soft_selector_;
     std::optional<TransitionProposal> pending_proposal_;
     std::optional<TransitionCertificate> pending_certificate_;
     std::size_t union_control_cycles_ = 0;
@@ -1233,6 +1659,7 @@ private:
     std::map<std::string, double> range_last_observation_s_;
     std::map<std::string, double> range_quality_;
     std::map<std::string, double> range_variance_m2_;
+    std::vector<AcceptedRangeUpdateAudit> last_accepted_range_batch_audit_;
     std::optional<std::map<NodeId, Eigen::Vector2d>> nominal_override_;
     std::optional<Swarm::CertifiedYawRateBatch> yaw_rate_override_;
     std::mt19937 range_rng_;

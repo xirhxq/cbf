@@ -33,6 +33,10 @@ struct TransitionCertificationContext {
     double max_posterior_eigenvalue_m2 = 0.0;
     double gamma_accept = 0.0;
     JointEstimateSnapshot estimate;
+    // Qualified accepted ranging-information graph.  This graph may contain
+    // cycles and is intentionally distinct from the reference-control DAG.
+    std::vector<DirectedEdge> information_edges;
+    std::map<std::string, double> information_range_variances_m2;
     std::map<std::string, double> range_variances_m2;
     std::map<std::string, CertifiedEdgeGate> edge_gates;
     CanonicalHardRowRequest hard_row_request;
@@ -143,11 +147,15 @@ inline CertifiedTopologyState evaluateState(
             return result;
         }
         std::vector<DirectedEdge> owner_edges;
-        for (const DirectedEdge& edge : edges)
+        for (const DirectedEdge& edge : context.information_edges)
             if (edge.owner == owner) owner_edges.push_back(edge);
+        if (owner_edges.size()<2) {
+            result.reason = "information_edges";
+            return result;
+        }
         const Eigen::Matrix2d fim = referenceFim(
             owner, owner_edges, context.estimate,
-            context.range_variances_m2);
+            context.information_range_variances_m2);
         const double minimum_fim =
             Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d>(fim)
                 .eigenvalues().minCoeff();

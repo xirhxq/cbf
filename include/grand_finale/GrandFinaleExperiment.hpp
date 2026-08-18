@@ -343,7 +343,10 @@ public:
                          detail::nodePosition(estimate, edge.reference)).norm();
                     refreshed_context.edge_gates[edge.id()] =
                         {true, true, distance + 0.02};
+                    refreshed_context.information_edges.push_back(edge);
                 }
+                refreshed_context.information_range_variances_m2=
+                    refreshed_context.range_variances_m2;
                 refreshed_context.hard_row_request = hardRowRequest(
                     mobiles, fixed_ids, estimate, topology);
                 TransitionProposal refreshed_proposal = *pending_proposal;
@@ -436,7 +439,10 @@ public:
                          detail::nodePosition(estimate, edge.reference)).norm();
                     certificate_context.edge_gates[edge.id()] =
                         {true, true, distance + 0.02};
+                    certificate_context.information_edges.push_back(edge);
                 }
+                certificate_context.information_range_variances_m2=
+                    certificate_context.range_variances_m2;
                 if (inject_uncertifiable_candidate) {
                     certificate_context.edge_gates.at(additions.front().id())
                         .robust_distance_m = 850.01;

@@ -44,6 +44,47 @@ struct BrakingSnapshotResult {
     std::vector<BrakingSnapshotOwnerAudit> owners;
 };
 
+struct MobilePairBrakingAudit {
+    bool valid = false;
+    std::string reason;
+    NodeId first_owner = 0;
+    NodeId second_owner = 0;
+    bool snapshot_coherent = false;
+    bool local_state_constants_coherent = false;
+    bool independent_central_verified = false;
+    double robust_separation_margin_m = 0.0;
+    double robust_radial_closing_speed_mps = 0.0;
+    double input_box_relative_separation_support_mps2 = 0.0;
+    double full_hard_relative_separation_support_mps2 = 0.0;
+    double stop_distance_m = 0.0;
+    double stop_time_s = 0.0;
+    double braking_slack_m = 0.0;
+    double local_coefficient_reserve_sum_mps2 = 0.0;
+    Eigen::Vector2d first_coefficient = Eigen::Vector2d::Zero();
+    Eigen::Vector2d second_coefficient = Eigen::Vector2d::Zero();
+    double first_constant = 0.0;
+    double second_constant = 0.0;
+    Eigen::Vector2d independent_central_first_coefficient =
+        Eigen::Vector2d::Zero();
+    Eigen::Vector2d independent_central_second_coefficient =
+        Eigen::Vector2d::Zero();
+    double independent_central_constant = 0.0;
+
+    double firstLocalResidual(const Eigen::Vector2d& control) const {
+        return first_coefficient.dot(control)+first_constant;
+    }
+    double secondLocalResidual(const Eigen::Vector2d& control) const {
+        return second_coefficient.dot(control)+second_constant;
+    }
+    double centralizedResidual(
+        const Eigen::Vector2d& first_control,
+        const Eigen::Vector2d& second_control) const {
+        return independent_central_first_coefficient.dot(first_control)+
+            independent_central_second_coefficient.dot(second_control)+
+            independent_central_constant;
+    }
+};
+
 namespace braking_snapshot_detail {
 
 struct DirectionSupport {
@@ -160,6 +201,207 @@ inline bool exactOwnerFeasible(
 }
 
 }  // namespace braking_snapshot_detail
+
+inline MobilePairBrakingAudit evaluateMobilePairBrakingRequestRows(
+    const CanonicalHardRowRequest& request,
+    const std::vector<CanonicalHardRow>& rows,
+    const UndirectedEdge& raw_edge,
+    double tolerance=1e-10) {
+    const double input_half_box=request.acceleration_half_box;
+    if (!std::isfinite(input_half_box) || input_half_box<=0.0 ||
+        !std::isfinite(tolerance) || tolerance<0.0) {
+        throw std::invalid_argument("invalid mobile-pair braking audit config");
+    }
+    using namespace braking_snapshot_detail;
+    const UndirectedEdge edge=UndirectedEdge::canonical(
+        raw_edge.first,raw_edge.second);
+    const std::string prefix="collision:"+edge.id();
+    const std::string first_id=prefix+":owner:"+
+        std::to_string(edge.first);
+    const std::string second_id=prefix+":owner:"+
+        std::to_string(edge.second);
+    const auto find_row=[&](const std::string& id)
+        -> const CanonicalHardRow* {
+        const auto found=std::find_if(rows.begin(),rows.end(),
+            [&](const auto& row) { return row.id==id; });
+        return found==rows.end()?nullptr:&*found;
+    };
+    const CanonicalHardRow* first=find_row(first_id);
+    const CanonicalHardRow* second=find_row(second_id);
+    MobilePairBrakingAudit result;
+    result.first_owner=edge.first;
+    result.second_owner=edge.second;
+    if (first==nullptr || second==nullptr ||
+        first->kind!=CanonicalHardRowKind::Collision ||
+        second->kind!=CanonicalHardRowKind::Collision ||
+        first->peer!=std::optional<NodeId>{edge.second} ||
+        second->peer!=std::optional<NodeId>{edge.first} ||
+        std::abs(first->responsibility-0.5)>tolerance ||
+        std::abs(second->responsibility-0.5)>tolerance) {
+        result.reason="collision_half_rows_missing_or_wrong_responsibility";
+        return result;
+    }
+    const auto close=[&](double lhs,double rhs) {
+        return std::abs(lhs-rhs)<=tolerance*
+            std::max({1.0,std::abs(lhs),std::abs(rhs)});
+    };
+    const bool provenance_same=first->tube_provenance==second->tube_provenance;
+    result.snapshot_coherent=
+        first->control_coefficient.isApprox(
+            -second->control_coefficient,tolerance) &&
+        first->normal.isApprox(-second->normal,tolerance) &&
+        close(first->barrier_h,second->barrier_h) &&
+        close(first->barrier_hdot,second->barrier_hdot) &&
+        close(first->barrier_psi1,second->barrier_psi1) &&
+        close(first->position_uncertainty_reserve_m,
+              second->position_uncertainty_reserve_m) &&
+        close(first->velocity_uncertainty_reserve_mps,
+              second->velocity_uncertainty_reserve_mps) &&
+        close(first->coefficient_uncertainty_reserve,
+              second->coefficient_uncertainty_reserve) && provenance_same;
+    if (!result.snapshot_coherent) {
+        result.reason="collision_half_row_snapshot_incoherent";
+        return result;
+    }
+    result.local_state_constants_coherent=close(
+        first->constant+first->coefficient_uncertainty_reserve,
+        second->constant+second->coefficient_uncertainty_reserve);
+    if (!result.local_state_constants_coherent) {
+        result.reason="collision_half_row_state_constant_incoherent";
+        return result;
+    }
+    const auto first_state=request.states.find(edge.first);
+    const auto second_state=request.states.find(edge.second);
+    const auto tube=request.collision_snapshot_tubes.find(edge.id());
+    if (first_state==request.states.end() ||
+        second_state==request.states.end() ||
+        tube==request.collision_snapshot_tubes.end()) {
+        result.reason="collision_independent_central_inputs_missing";
+        return result;
+    }
+    if (request.collision_spec.kind!=
+            PairwiseSecondOrderBarrierKind::CollisionLower ||
+        request.collision_spec.k!=1.0 ||
+        !std::isfinite(request.collision_spec.lambda1) ||
+        request.collision_spec.lambda1<=0.0 ||
+        !std::isfinite(request.collision_spec.lambda2) ||
+        request.collision_spec.lambda2<=0.0) {
+        result.reason="collision_independent_central_spec_unsupported";
+        return result;
+    }
+    // Deliberately reconstruct the collision central row from its closed form
+    // instead of calling the production pair-row builder.  This keeps the
+    // diagnostic independent from produced rows and from their helper.
+    const Eigen::Vector2d relative_position{
+        first_state->second.position.x-second_state->second.position.x,
+        first_state->second.position.y-second_state->second.position.y};
+    const Eigen::Vector2d relative_velocity=
+        first_state->second.velocity-second_state->second.velocity;
+    const double nominal_distance=relative_position.norm();
+    const double position_radius=request.collision_spec.uncertainty+
+        tube->second.position_radius_m;
+    if (!std::isfinite(nominal_distance) ||
+        nominal_distance<=position_radius || nominal_distance<1e-9) {
+        result.reason="collision_independent_central_radial_singularity";
+        return result;
+    }
+    const Eigen::Vector2d independent_coefficient=
+        relative_position/nominal_distance;
+    const double angle=std::asin(position_radius/nominal_distance);
+    const double direction_radius=2.0*std::sin(0.5*angle);
+    const double radial_velocity_uncertainty=
+        direction_radius*relative_velocity.norm()+
+        tube->second.velocity_radius_mps;
+    const double independent_h=nominal_distance-position_radius-
+        request.collision_spec.distanceLimit;
+    const double independent_hdot=
+        independent_coefficient.dot(relative_velocity)-
+        radial_velocity_uncertainty;
+    const double independent_psi1=
+        request.collision_spec.lambda1*independent_h+independent_hdot;
+    const double independent_central_constant_lower=
+        request.collision_spec.lambda1*request.collision_spec.lambda2*
+            independent_h+
+        (request.collision_spec.lambda1+request.collision_spec.lambda2)*
+            independent_hdot-
+        request.collision_spec.totalReserve;
+    const double independent_reserve=input_half_box*std::sqrt(2.0)*
+        direction_radius;
+    const double expected_local_constant=
+        0.5*independent_central_constant_lower-independent_reserve;
+    const double expected_central_constant=
+        independent_central_constant_lower-2.0*independent_reserve;
+    result.independent_central_verified=
+        first->control_coefficient.isApprox(
+            independent_coefficient,tolerance) &&
+        second->control_coefficient.isApprox(
+            -independent_coefficient,tolerance) &&
+        close(first->constant,expected_local_constant) &&
+        close(second->constant,expected_local_constant) &&
+        close(first->barrier_h,independent_h) &&
+        close(first->barrier_hdot,independent_hdot) &&
+        close(first->barrier_psi1,independent_psi1) &&
+        close(first->coefficient_uncertainty_reserve,
+              independent_reserve);
+    if (!result.independent_central_verified) {
+        result.reason="collision_half_row_independent_central_mismatch";
+        return result;
+    }
+    result.independent_central_first_coefficient=
+        independent_coefficient;
+    result.independent_central_second_coefficient=
+        -independent_coefficient;
+    result.independent_central_constant=expected_central_constant;
+    result.first_coefficient=first->control_coefficient;
+    result.second_coefficient=second->control_coefficient;
+    result.first_constant=first->constant;
+    result.second_constant=second->constant;
+    result.robust_separation_margin_m=first->barrier_h;
+    result.robust_radial_closing_speed_mps=std::max(
+        0.0,-first->barrier_hdot);
+    result.local_coefficient_reserve_sum_mps2=
+        first->coefficient_uncertainty_reserve+
+        second->coefficient_uncertainty_reserve;
+    result.input_box_relative_separation_support_mps2=
+        input_half_box*(first->control_coefficient.cwiseAbs().sum()+
+                        second->control_coefficient.cwiseAbs().sum());
+    const std::set<std::string> excluded{first_id,second_id};
+    const auto first_support=exactDirectionSupport(
+        rows,edge.first,excluded,first->control_coefficient,tolerance);
+    const auto second_support=exactDirectionSupport(
+        rows,edge.second,excluded,second->control_coefficient,tolerance);
+    if (!first_support.feasible || !second_support.feasible) {
+        result.reason="other_hard_rows_empty";
+        return result;
+    }
+    result.full_hard_relative_separation_support_mps2=
+        first_support.value+second_support.value-
+        result.local_coefficient_reserve_sum_mps2;
+    const double speed=result.robust_radial_closing_speed_mps;
+    const double acceleration=result.full_hard_relative_separation_support_mps2;
+    if (speed<=tolerance) {
+        result.stop_distance_m=0.0;
+        result.stop_time_s=0.0;
+    } else if (acceleration<=tolerance) {
+        result.stop_distance_m=std::numeric_limits<double>::infinity();
+        result.stop_time_s=std::numeric_limits<double>::infinity();
+    } else {
+        result.stop_distance_m=speed*speed/(2.0*acceleration);
+        result.stop_time_s=speed/acceleration;
+    }
+    result.braking_slack_m=result.robust_separation_margin_m-
+        result.stop_distance_m;
+    result.valid=true;
+    result.reason="audited";
+    return result;
+}
+
+inline MobilePairBrakingAudit evaluateMobilePairBraking(
+    const CanonicalHardRowRequest& request,
+    const UndirectedEdge& raw_edge,double tolerance=1e-10) {
+    return evaluateMobilePairBrakingRequestRows(
+        request,buildCanonicalHardRows(request),raw_edge,tolerance);
+}
 
 inline BrakingSnapshotResult evaluateBrakingSnapshot(
     const CanonicalHardRowRequest& request,

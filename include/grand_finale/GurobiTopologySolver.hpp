@@ -68,6 +68,8 @@ public:
                 model.addConstr(indegree >= static_cast<double>(request.min_indegree));
                 model.addConstr(indegree <= static_cast<double>(request.max_indegree));
             }
+            for (const auto& edge:request.required_edges)
+                model.addConstr(edge_variables.at(edge_index.at(edge.id()))==1.0);
             const double big_m = static_cast<double>(request.mobile_ids.size() + 1);
             std::set<NodeId> mobiles(request.mobile_ids.begin(), request.mobile_ids.end());
             for (std::size_t index = 0; index < decisions.size(); ++index) {

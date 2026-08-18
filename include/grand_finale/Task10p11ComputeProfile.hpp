@@ -22,7 +22,15 @@ enum class Task10p11ComputePhase {
     ResidualTokenAudit,
     DiagnosticSerialization,
     SolverInitialization,
-    SolverModelUpdate
+    SolverModelUpdate,
+    GridWorldTarget,
+    CurrentCanonicalRowRebuild,
+    PredictedCanonicalRowRebuild,
+    FinalQp,
+    InformationAudit,
+    TruthOnlyAudit,
+    OnlineEstimator,
+    PlantPreflightZoh
 };
 
 inline std::string task10p11ComputePhaseName(Task10p11ComputePhase phase) {
@@ -51,6 +59,22 @@ inline std::string task10p11ComputePhaseName(Task10p11ComputePhase phase) {
         return "solver_initialization";
     case Task10p11ComputePhase::SolverModelUpdate:
         return "solver_model_update";
+    case Task10p11ComputePhase::GridWorldTarget:
+        return "gridworld_target";
+    case Task10p11ComputePhase::CurrentCanonicalRowRebuild:
+        return "current_canonical_row_rebuild";
+    case Task10p11ComputePhase::PredictedCanonicalRowRebuild:
+        return "predicted_canonical_row_rebuild";
+    case Task10p11ComputePhase::FinalQp:
+        return "final_qp";
+    case Task10p11ComputePhase::InformationAudit:
+        return "information_audit";
+    case Task10p11ComputePhase::TruthOnlyAudit:
+        return "truth_only_audit";
+    case Task10p11ComputePhase::OnlineEstimator:
+        return "online_estimator";
+    case Task10p11ComputePhase::PlantPreflightZoh:
+        return "plant_preflight_zoh";
     }
     throw std::invalid_argument("unknown Task 10.11 compute phase");
 }

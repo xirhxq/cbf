@@ -11,6 +11,7 @@ TEST_CASE("Task 10.11g model constants are explicit and dimensionally unambiguou
     const auto model=gf::task10p11gFrozenModel();
     CHECK(model.speed_limit_mps==doctest::Approx(30.0));
     CHECK(model.acceleration_half_box_mps2==doctest::Approx(4.0));
+    CHECK(model.collision_distance_m==doctest::Approx(10.0));
     CHECK(model.maximum_acceleration_norm_mps2==
           doctest::Approx(4.0*std::sqrt(2.0)));
     CHECK(model.control_period_s==doctest::Approx(0.1));
@@ -21,9 +22,14 @@ TEST_CASE("Task 10.11g model constants are explicit and dimensionally unambiguou
         "/config/grand_finale/task10p11g_model_freeze.json"));
     CHECK(frozen.at("research_model").at("horizontal_speed_norm_limit_mps")
           .get<double>()==doctest::Approx(model.speed_limit_mps));
+    CHECK(frozen.at("research_model").at("plant_speed_facet_count")==64);
+    CHECK(frozen.at("research_model").at("speed_constraint_semantics")==
+          "zoh_safe_plant_applied_control_domain");
     CHECK(frozen.at("research_model")
           .at("acceleration_component_half_box_mps2").get<double>()==
           doctest::Approx(model.acceleration_half_box_mps2));
+    CHECK(frozen.at("research_model").at("collision_distance_m").get<double>()==
+          doctest::Approx(model.collision_distance_m));
     CHECK(frozen.at("coverage_heading").at("initial_yaw_deg").get<double>()==
           doctest::Approx(model.initial_yaw_rad*180.0/M_PI));
     CHECK(frozen.at("scheduler").at("logical_planner_period_s").get<double>()==
@@ -55,7 +61,9 @@ TEST_CASE("Position and yaw soft tasks cannot alter the hard-row ledger") {
                             gf::SupervisorMode::Union}) {
         auto changed=request;
         changed.mode=mode;
-        CHECK(gf::task10p11gSoftTask(changed,model).target_tracking_active);
+        const auto mode_task=gf::task10p11gSoftTask(changed,model);
+        CHECK_FALSE(mode_task.target_tracking_active);
+        CHECK(mode_task.yaw_rate_radps==doctest::Approx(0.0));
     }
     auto retreat=request;
     retreat.mode=gf::SupervisorMode::Retreat;
@@ -86,7 +94,7 @@ TEST_CASE("Yaw exact ZOH wraps and bounded controller follows shortest angle") {
     CHECK(gf::sectorContains(after,sector,{0.0,100.0}));
 }
 
-TEST_CASE("Both QP profiles match exact projection with the 30 mps speed row and 4 mps2 box") {
+TEST_CASE("Both QP profiles match exact projection with the 64-facet plant domain") {
     gf::CanonicalHardRowRequest hard;
     hard.mobile_ids={1};
     hard.states[1]={{0.0,0.0},{29.0,0.0},Eigen::Vector2d::Zero()};
@@ -96,10 +104,17 @@ TEST_CASE("Both QP profiles match exact projection with the 30 mps speed row and
         1.0,0.0,1.0,1.0,1.0,0.0};
     hard.acceleration_half_box=4.0;
     hard.speed_limit_mps=30.0;
-    hard.speed_cbf_gain=1.0;
-    hard.speed_snapshot_tubes[1]={0.0,0.2,
+    hard.plant_speed_facet_count=64;
+    hard.plant_speed_dt_s=0.1;
+    hard.plant_speed_snapshot_tubes[1]={0.0,0.2,
         gf::SnapshotTubeProvenance::CovarianceSigmaDevelopment};
     const auto rows=gf::buildCanonicalHardRows(hard);
+    CHECK(std::count_if(rows.begin(),rows.end(),[](const auto& row) {
+        return row.kind==gf::CanonicalHardRowKind::PlantSpeedAppliedControl;
+    })==64);
+    CHECK(std::none_of(rows.begin(),rows.end(),[](const auto& row) {
+        return row.kind==gf::CanonicalHardRowKind::SpeedLimit;
+    }));
     const auto gamma=gf::solveCanonicalGammaStar(rows,1,4.0);
     REQUIRE(gamma.valid);
     CHECK(gamma.gamma>=0.0);

@@ -14,6 +14,7 @@ struct Task10p11gFrozenModel {
     double speed_limit_mps = 30.0;
     double acceleration_half_box_mps2 = 4.0;
     double maximum_acceleration_norm_mps2 = 4.0*std::sqrt(2.0);
+    double collision_distance_m = 10.0;
     double control_period_s = 0.1;
     double planner_period_s = 1.0;
     double position_gain = 0.4;
@@ -76,9 +77,7 @@ inline Task10p11gSoftTaskResult task10p11gSoftTask(
         !std::isfinite(model.yaw_gain_per_s) || model.yaw_gain_per_s<0.0) {
         throw std::invalid_argument("invalid Task 10.11g soft-task request");
     }
-    const bool tracking_mode=request.mode==SupervisorMode::Search ||
-        request.mode==SupervisorMode::Reform ||
-        request.mode==SupervisorMode::Union;
+    const bool tracking_mode=request.mode==SupervisorMode::Search;
     Task10p11gSoftTaskResult result;
     result.desired_yaw_rad=wrapYawRad(request.yaw_rad);
     const bool valid_target=request.committed_target.has_value() &&

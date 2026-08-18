@@ -22,14 +22,21 @@ inline json task10p11gSwarmSettings(
 }
 
 inline GrandFinaleSwarmAdapterConfig task10p11gAdapterConfig(
-    SolverProfile profile) {
+    SolverProfile profile,
+    std::optional<BoundaryPolicyConfig> boundary_override=std::nullopt,
+    std::optional<double> historical_collision_override_m=std::nullopt) {
     const auto model=task10p11gFrozenModel();
     auto config=task10p10AdapterConfig(profile);
     config.acceleration_half_box=model.acceleration_half_box_mps2;
+    config.collision_distance_m=model.collision_distance_m;
+    if (historical_collision_override_m.has_value())
+        config.collision_distance_m=*historical_collision_override_m;
     config.speed_limit_mps=model.speed_limit_mps;
-    config.speed_cbf_gain=1.0;
+    config.plant_speed_facet_count=64;
     config.maximum_yaw_rate_radps=model.maximum_yaw_rate_radps;
-    config.enforce_workspace_rows=true;
+    config.boundary.policy=BoundaryPolicy::HardFlightBoundary;
+    config.boundary.flight_polygon_source=FlightPolygonSource::SearchPolygon;
+    if (boundary_override.has_value()) config.boundary=*boundary_override;
     config.gamma_feedback_selection=model.gamma_selection;
     config.predictive_gamma_tau_mps2=model.predictive_tau_mps2;
     config.position_gain=model.position_gain;
@@ -102,10 +109,14 @@ struct Task10p11gFixture {
     Task10p11SharedFrontierController controller;
 
     Task10p11gFixture(
-        const Task10p10Scenario& scenario,SolverProfile profile)
+        const Task10p10Scenario& scenario,SolverProfile profile,
+        std::optional<BoundaryPolicyConfig> boundary_override=std::nullopt,
+        std::optional<double> historical_collision_override_m=std::nullopt)
         : settings(task10p11gSwarmSettings(scenario,profile)),swarm(settings),
           adapter(swarm,scenario.mobile_ids,scenario.fixed_positions,
-                  scenario.initial_topology,task10p11gAdapterConfig(profile)),
+                  scenario.initial_topology,
+                  task10p11gAdapterConfig(profile,boundary_override,
+                      historical_collision_override_m)),
           controller(swarm,adapter,scenario.fixed_positions,
                      task10p11gAllocatorConfig()) {}
 };
@@ -155,8 +166,11 @@ private:
 };
 
 inline std::unique_ptr<Task10p11gFixture> makeTask10p11gFixture(
-    const Task10p10Scenario& scenario,SolverProfile profile) {
-    return std::make_unique<Task10p11gFixture>(scenario,profile);
+    const Task10p10Scenario& scenario,SolverProfile profile,
+    std::optional<BoundaryPolicyConfig> boundary_override=std::nullopt,
+    std::optional<double> historical_collision_override_m=std::nullopt) {
+    return std::make_unique<Task10p11gFixture>(
+        scenario,profile,boundary_override,historical_collision_override_m);
 }
 
 }  // namespace gf

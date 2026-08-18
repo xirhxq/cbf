@@ -109,6 +109,22 @@ TEST_CASE("Invalid candidate universes fail before optimization") {
         std::invalid_argument);
 }
 
+TEST_CASE("Required eligible edges are a hard topology constraint") {
+    gf::TopologyRequest request=baseRequest();
+    request.required_edges={gf::DirectedEdge{10,1}};
+    const gf::TopologyModel model(request);
+    const auto missing=model.evaluate({
+        gf::DirectedEdge{2,1},gf::DirectedEdge{11,1},
+        gf::DirectedEdge{1,2},gf::DirectedEdge{10,2}});
+    CHECK_FALSE(missing.valid);
+    CHECK(missing.reason=="required_edge");
+    CHECK(model.evaluate(ladder()).valid);
+
+    request.required_edges={gf::DirectedEdge{99,1}};
+    CHECK_THROWS_WITH_AS((gf::TopologyModel{request}),
+        "required edge must be eligible",std::invalid_argument);
+}
+
 TEST_CASE("Binary product rows implement y equals x1 times x2 exactly") {
     const std::array<gf::BinaryProductRow, 3> rows =
         gf::binaryProductRows(2, 5, 8);

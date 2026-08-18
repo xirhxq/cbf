@@ -198,6 +198,7 @@ private:
         config<<std::setprecision(17)<<adapter_.config().dt_s<<'|'
             <<adapter_.config().acceleration_half_box<<'|'
             <<adapter_.config().speed_limit_mps<<'|'
+            <<adapter_.config().plant_speed_facet_count<<'|'
             <<adapter_.config().speed_cbf_gain<<'|'
             <<adapter_.config().maximum_yaw_rate_radps<<'|'
             <<adapter_.config().reference_distance_m<<'|'

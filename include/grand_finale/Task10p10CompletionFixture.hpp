@@ -201,6 +201,9 @@ inline GrandFinaleSwarmAdapterConfig task10p10AdapterConfig(
     config.dt_s = frozen.control_period_s;
     config.minimum_dwell_s = frozen.control_period_s;
     config.acceleration_half_box = frozen.acceleration_half_box_mps2;
+    // Historical Task 10.10 scale fixture, retained as development evidence.
+    // Formal Task 10.11g/l scenarios override this with 10 m.
+    config.collision_distance_m = 0.1;
     config.sensor_radius_m = frozen.sector_outer_radius_m;
     config.coverage_footprint_kind = CoverageFootprintKind::ForwardSector;
     config.coverage_inner_radius_m = frozen.sector_inner_radius_m;

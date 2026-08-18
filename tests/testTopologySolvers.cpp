@@ -50,6 +50,10 @@ bool independentValid(
         ++graph_indegree[edge.owner];
         adjacency[edge.reference].push_back(edge.owner);
     }
+    std::set<std::string> selected_ids;
+    for (const auto& edge:selected) selected_ids.insert(edge.id());
+    for (const auto& edge:request.required_edges)
+        if (!selected_ids.count(edge.id())) return false;
     for (gf::NodeId id : request.mobile_ids) {
         if (indegree[id] < static_cast<int>(request.min_indegree) ||
             indegree[id] > static_cast<int>(request.max_indegree)) return false;
@@ -189,5 +193,25 @@ TEST_CASE("No-good rejection makes both proposers return a different topology") 
     for (const auto& edge : gurobi_first.edges) gurobi_first_ids.insert(edge.id());
     for (const auto& edge : gurobi_second.edges) gurobi_second_ids.insert(edge.id());
     CHECK(gurobi_second_ids != gurobi_first_ids);
+#endif
+}
+
+TEST_CASE("Both topology solvers enforce required retained edges") {
+    gf::TopologyRequest request=oracleRequest();
+    request.required_edges={gf::DirectedEdge{10,2}};
+    request.progress_coefficients["10->2"]=-1000.0;
+    const auto oracle=exhaustiveOracle(request);
+    REQUIRE(oracle.feasible);
+    gf::HighsTopologySolver highs;
+    const auto highs_solution=highs.solve(gf::TopologyModel(request));
+    REQUIRE(highs_solution.status==gf::TopologySolveStatus::Optimal);
+    CHECK(std::any_of(highs_solution.edges.begin(),highs_solution.edges.end(),
+        [](const auto& edge) { return edge.id()=="10->2"; }));
+#ifdef ENABLE_GUROBI
+    gf::GurobiTopologySolver gurobi;
+    const auto gurobi_solution=gurobi.solve(gf::TopologyModel(request));
+    REQUIRE(gurobi_solution.status==gf::TopologySolveStatus::Optimal);
+    CHECK(std::any_of(gurobi_solution.edges.begin(),gurobi_solution.edges.end(),
+        [](const auto& edge) { return edge.id()=="10->2"; }));
 #endif
 }

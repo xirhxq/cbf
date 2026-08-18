@@ -34,10 +34,24 @@ gf::GrandFinaleSwarmAdapterConfig adapterConfig(gf::SolverProfile profile) {
     config.dt_s = 0.1;
     config.acceleration_half_box = 0.4;
     config.sensor_radius_m = 2.0;
+    // Historical Task 10.5 mechanism fixture.  The formal Task 10.11g model
+    // uses 10 m and never relies on this value as a default.
+    config.collision_distance_m = 0.1;
     return config;
 }
 
 }  // namespace
+
+TEST_CASE("GrandFinale adapter rejects an omitted formal collision distance") {
+    json settings=settings4p2();
+    Swarm swarm(settings);
+    gf::GrandFinaleSwarmAdapterConfig missing;
+    CHECK_THROWS_WITH_AS(
+        gf::GrandFinaleSwarmAdapter(
+            swarm,{1,2,3,4},{{10,{4.0,4.0}},{11,{4.0,16.0}}},
+            topology(),missing),
+        "invalid GrandFinale safety configuration",std::invalid_argument);
+}
 
 TEST_CASE("Formal Swarm adapter closes SEARCH HOLD RETREAT REFORM and UNION QP flows") {
     json settings = settings4p2();
@@ -247,11 +261,43 @@ TEST_CASE("Certified primitive nominal uses the formal QP path and fails closed 
     CHECK(adapter.estimator().version() == estimator_version);
 }
 
-TEST_CASE("Formal adapter exposes snapshot robust workspace rows when enabled") {
+TEST_CASE("Boundary policy isolates none and soft from hard canonical ledger") {
+    json none_settings = settings4p2();
+    json soft_settings = settings4p2();
+    Swarm none_swarm(none_settings);
+    Swarm soft_swarm(soft_settings);
+    auto none_config=adapterConfig(gf::SolverProfile::OpenSource);
+    none_config.boundary.policy=gf::BoundaryPolicy::None;
+    auto soft_config=none_config;
+    soft_config.boundary.policy=gf::BoundaryPolicy::SoftSearchRetention;
+    gf::GrandFinaleSwarmAdapter none_adapter(
+        none_swarm,{1,2,3,4},{{10,{4.0,4.0}},{11,{4.0,16.0}}},
+        topology(),none_config);
+    gf::GrandFinaleSwarmAdapter soft_adapter(
+        soft_swarm,{1,2,3,4},{{10,{4.0,4.0}},{11,{4.0,16.0}}},
+        topology(),soft_config);
+    const auto none_request=none_adapter.currentSnapshotHardRowRequest(topology());
+    const auto soft_request=soft_adapter.currentSnapshotHardRowRequest(topology());
+    CHECK(none_request.workspace_facets.empty());
+    CHECK(soft_request.workspace_facets.empty());
+    const auto none_rows=gf::buildCanonicalHardRows(none_request);
+    const auto soft_rows=gf::buildCanonicalHardRows(soft_request);
+    REQUIRE(none_rows.size()==soft_rows.size());
+    for (std::size_t index=0;index<none_rows.size();++index) {
+        CHECK(none_rows[index].id==soft_rows[index].id);
+        CHECK(none_rows[index].control_coefficient.isApprox(
+            soft_rows[index].control_coefficient,1e-12));
+        CHECK(none_rows[index].constant==doctest::Approx(
+            soft_rows[index].constant).epsilon(1e-12));
+    }
+}
+
+TEST_CASE("Formal adapter exposes snapshot robust workspace rows only in hard mode") {
     json settings = settings4p2();
     Swarm swarm(settings);
     auto config = adapterConfig(gf::SolverProfile::OpenSource);
-    config.enforce_workspace_rows = true;
+    config.boundary.policy=gf::BoundaryPolicy::HardFlightBoundary;
+    config.boundary.flight_polygon_source=gf::FlightPolygonSource::SearchPolygon;
     gf::GrandFinaleSwarmAdapter adapter(
         swarm, {1, 2, 3, 4}, {{10, {4.0, 4.0}}, {11, {4.0, 16.0}}},
         topology(), config);
@@ -269,6 +315,34 @@ TEST_CASE("Formal adapter exposes snapshot robust workspace rows when enabled") 
               gf::SnapshotTubeProvenance::CovarianceSigmaDevelopment);
         CHECK(row.position_uncertainty_reserve_m > 0.0);
         CHECK(row.velocity_uncertainty_reserve_mps > 0.0);
+    }
+}
+
+TEST_CASE("Soft boundary nominal remains separate while applied hard residual passes") {
+    for (const auto profile : {gf::SolverProfile::OpenSource,
+                               gf::SolverProfile::Gurobi}) {
+        json settings=settings4p2();
+        if (profile==gf::SolverProfile::Gurobi) settings["optimiser"]="Gurobi";
+        Swarm swarm(settings);
+        auto config=adapterConfig(profile);
+        config.boundary.policy=gf::BoundaryPolicy::SoftSearchRetention;
+        gf::GrandFinaleSwarmAdapter adapter(
+            swarm,{1,2,3,4},{{10,{4.0,4.0}},{11,{4.0,16.0}}},
+            topology(),config);
+        const auto step=adapter.step();
+        INFO(step.reason);
+        REQUIRE(step.advanced);
+        REQUIRE(step.boundary_soft_nominal.size()==4);
+        CHECK(step.minimum_hard_residual>=-config.residual_tolerance);
+        const auto rows=adapter.currentSnapshotHardRows(topology());
+        CHECK(std::none_of(rows.begin(),rows.end(),[](const auto& row) {
+            return row.kind==gf::CanonicalHardRowKind::Workspace;
+        }));
+        for (const auto& [owner,soft] : step.boundary_soft_nominal) {
+            (void)owner;
+            CHECK(soft.nominal_available);
+            CHECK(soft.minimum_soft_residual>=-config.residual_tolerance);
+        }
     }
 }
 

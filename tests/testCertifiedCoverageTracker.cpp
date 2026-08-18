@@ -67,3 +67,13 @@ TEST_CASE("Forward-sector coverage uses frozen heading and angular tightening") 
     CHECK_FALSE(west.truthCovered(2,0));
     CHECK_FALSE(west.truthCovered(3,0));
 }
+
+TEST_CASE("Search-external footprint contributes only intersecting denominator cells") {
+    gf::CertifiedCoverageTracker tracker({0.0,4.0},2,{0.0,2.0},1);
+    tracker.observeSector(
+        Point(-1.0,1.0),Point(-1.0,1.0),0.0,
+        0.0,3.0,M_PI/3.0,0.0);
+    CHECK(tracker.truthCovered(0,0));
+    CHECK_FALSE(tracker.truthCovered(1,0));
+    CHECK(tracker.truthCoveredCount()==1);
+}

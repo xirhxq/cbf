@@ -2,9 +2,12 @@
   "status": "task10p11g_readiness_candidate_not_d1_campaign",
   "research_model": {
     "horizontal_speed_norm_limit_mps": 30.0,
+    "plant_speed_facet_count": 64,
+    "speed_constraint_semantics": "zoh_safe_plant_applied_control_domain",
     "acceleration_component_half_box_mps2": 4.0,
+    "collision_distance_m": 10.0,
     "control_period_s": 0.1,
-    "speed_cbf_gain_per_s": 1.0
+    "legacy_speed_cbf_status": "historical_fixture_only_not_formal"
   },
   "coverage_heading": {
     "cbf2026_geometry_source_commit": "47e7b3d6f5b1be74a3dfa32150b4246c619e9a0d",

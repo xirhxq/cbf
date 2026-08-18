@@ -1,0 +1,33 @@
+{
+  "protocol": "task10p11p_standard_scale_operational_envelope_v1",
+  "cbf2026_source_commit": "47e7b3d6f5b1be74a3dfa32150b4246c619e9a0d",
+  "map_m": [3000.0, 3000.0],
+  "grid_spacing_m": 10.0,
+  "valid_cells": 90000,
+  "coverage_sector": {
+    "inner_radius_m": 0.0,
+    "outer_radius_m": 400.0,
+    "half_angle_deg": 60.0
+  },
+  "mobile_count": 14,
+  "fixed_count": 3,
+  "initial_yaw_deg": 90.0,
+  "control_period_s": 0.1,
+  "timeout_s": 500.0,
+  "prefix_horizon_s": 60.0,
+  "plant_speed_norm_limit_mps": 30.0,
+  "plant_speed_facet_count": 64,
+  "operational_speed_matrix_status": "paused_not_run",
+  "predictive_policies": [
+    {"mode": "least_intervention", "tau_mps2": 0.0},
+    {"mode": "least_intervention", "tau_mps2": 14.0},
+    {"mode": "maximum_predicted_margin", "tau_mps2": null}
+  ],
+  "acceleration_component_bound_mps2": 4.0,
+  "collision_distance_m": 10.0,
+  "reference_keep_m": 850.0,
+  "reference_add_m": 849.0,
+  "boundary_policy": "none",
+  "nominal_only_stop_gate": "t100_or_500s_or_control_failure",
+  "safety_matrix_requires_nominal_t100": true
+}

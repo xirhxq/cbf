@@ -52,6 +52,11 @@ struct CanonicalQpResult {
     double solver_model_update_wall_s = 0.0;
     double solver_solve_wall_s = 0.0;
     double residual_token_audit_wall_s = 0.0;
+    int solver_iteration_count = -1;
+    double solver_primal_residual =
+        std::numeric_limits<double>::infinity();
+    double solver_dual_residual =
+        std::numeric_limits<double>::infinity();
 };
 
 inline bool controlMayBeApplied(
@@ -115,6 +120,9 @@ public:
             {"relative-tolerance", 1.0e-8},
             {"primal-infeasibility-tolerance", 1.0e-8},
             {"dual-infeasibility-tolerance", 1.0e-8},
+            {"maximum-iterations", 1000000},
+            {"scaling-iterations", 0},
+            {"explicit-row-scaling", true},
         };
         try {
             const std::string optimiser_name =
@@ -150,6 +158,11 @@ public:
                 std::chrono::steady_clock::now()-solve_started).count();
             const json status = optimiser.getStatus();
             result.solver_status = status.value("status", "unknown");
+            result.solver_iteration_count = status.value("iteration_count", -1);
+            result.solver_primal_residual = status.value(
+                "primal_residual",std::numeric_limits<double>::infinity());
+            result.solver_dual_residual = status.value(
+                "dual_residual",std::numeric_limits<double>::infinity());
             result.solver_succeeded =
                 result.solver_status == "optimal" ||
                 result.solver_status == "optimal_inaccurate";

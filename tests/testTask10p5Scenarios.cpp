@@ -54,7 +54,9 @@ struct Fixture4p2 {
                  gf::detail::nodePosition(snapshot, edge.reference)).norm();
             result.edge_gates[edge.id()] =
                 gf::CertifiedEdgeGate{true, true, distance + 0.02};
+            result.information_edges.push_back(edge);
         }
+        result.information_range_variances_m2=result.range_variances_m2;
         result.hard_row_request =
             gf::grand_finale_experiment_detail::hardRowRequest(
                 mobiles, fixed_ids, snapshot, topology);
@@ -90,7 +92,7 @@ TEST_CASE("Task 10.5 4+2 cycle candidate is rejected before installation") {
     CHECK(result.union_state.reason == "dag");
 }
 
-TEST_CASE("Task 10.5 4+2 collinear references fail the local FIM hard gate") {
+TEST_CASE("Task 10.5 4+2 collinear information graph fails the local FIM hard gate") {
     const Fixture4p2 fixture;
     auto snapshot = fixture.estimate();
     snapshot.fixed_positions.at(10) = Eigen::Vector2d(-1.0, -0.5);
@@ -108,6 +110,25 @@ TEST_CASE("Task 10.5 4+2 collinear references fail the local FIM hard gate") {
 
     CHECK_FALSE(result.valid);
     CHECK(result.old_state.reason == "fim");
+}
+
+TEST_CASE("A transverse accepted information edge repairs collinear reference parents") {
+    const Fixture4p2 fixture;
+    auto snapshot=fixture.estimate();
+    snapshot.fixed_positions.at(10)=Eigen::Vector2d(-1.0,-0.5);
+    snapshot.fixed_positions.at(11)=Eigen::Vector2d(-2.0,-0.5);
+    snapshot.mean.segment<2>(0)<<1.0,-0.5;
+    auto context=fixture.context(snapshot);
+    context.hard_row_request.states.at(1).position=Point(1.0,-0.5);
+    context.hard_row_request.states.at(10).position=Point(-1.0,-0.5);
+    context.hard_row_request.states.at(11).position=Point(-2.0,-0.5);
+    context.information_edges.emplace_back(2,1);
+    context.information_range_variances_m2["1--2"]=1.0;
+
+    const auto result=gf::TransitionCertifier{}.certify(
+        gf::TransitionProposal{
+            fixture.topology,{11,2},{10,2},1,0},context,false);
+    CHECK(result.old_state.valid);
 }
 
 TEST_CASE("Task 10.5 exact positive gamma warning triggers REFORM") {

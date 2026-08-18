@@ -56,4 +56,26 @@ TEST_CASE("Task 10.11e profiler names every frozen phase separately") {
     CHECK(gf::task10p11ComputePhaseName(
         gf::Task10p11ComputePhase::SolverModelUpdate)==
         "solver_model_update");
+    CHECK(gf::task10p11ComputePhaseName(
+        gf::Task10p11ComputePhase::GridWorldTarget)==
+        "gridworld_target");
+    CHECK(gf::task10p11ComputePhaseName(
+        gf::Task10p11ComputePhase::CurrentCanonicalRowRebuild)==
+        "current_canonical_row_rebuild");
+    CHECK(gf::task10p11ComputePhaseName(
+        gf::Task10p11ComputePhase::PredictedCanonicalRowRebuild)==
+        "predicted_canonical_row_rebuild");
+    CHECK(gf::task10p11ComputePhaseName(
+        gf::Task10p11ComputePhase::FinalQp)=="final_qp");
+    CHECK(gf::task10p11ComputePhaseName(
+        gf::Task10p11ComputePhase::InformationAudit)==
+        "information_audit");
+    CHECK(gf::task10p11ComputePhaseName(
+        gf::Task10p11ComputePhase::TruthOnlyAudit)==
+        "truth_only_audit");
+    CHECK(gf::task10p11ComputePhaseName(
+        gf::Task10p11ComputePhase::OnlineEstimator)=="online_estimator");
+    CHECK(gf::task10p11ComputePhaseName(
+        gf::Task10p11ComputePhase::PlantPreflightZoh)==
+        "plant_preflight_zoh");
 }

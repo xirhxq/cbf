@@ -76,6 +76,8 @@ public:
                 if (decisions[index].edge.owner == owner) row.coefficients[index] = 1.0;
             base_rows.push_back(row);
         }
+        for (const auto& edge:request.required_edges)
+            base_rows.push_back(Row{{{edge_index.at(edge.id()),1.0}},1.0,1.0});
         const double big_m = static_cast<double>(mobile_count + 1);
         for (int index = 0; index < edge_count; ++index) {
             const DirectedEdge& edge = decisions[index].edge;

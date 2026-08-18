@@ -37,6 +37,8 @@ gf::TransitionCertificationContext context() {
         {"1--10", 1.0}, {"1--11", 1.0}, {"1--2", 1.0},
         {"2--10", 1.0}, {"2--11", 1.0}, {"2--3", 1.0},
         {"3--11", 1.0}};
+    context.information_edges=oldGraph();
+    context.information_range_variances_m2=context.range_variances_m2;
 
     for (const gf::DirectedEdge& edge : {
              gf::DirectedEdge{10, 1}, gf::DirectedEdge{11, 1},

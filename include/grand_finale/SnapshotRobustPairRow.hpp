@@ -70,7 +70,9 @@ inline SnapshotRobustPairRow buildSnapshotRobustPairRow(
         !std::isfinite(spec.distanceLimit) || spec.distanceLimit <= 0.0 ||
         !std::isfinite(spec.uncertainty) || spec.uncertainty < 0.0 ||
         !std::isfinite(spec.totalReserve) || spec.totalReserve < 0.0 ||
-        spec.k != 1.0 || spec.lambda1 != 1.0 || spec.lambda2 != 1.0) {
+        spec.k != 1.0 || !std::isfinite(spec.lambda1) ||
+        spec.lambda1 <= 0.0 || !std::isfinite(spec.lambda2) ||
+        spec.lambda2 <= 0.0) {
         throw std::invalid_argument("invalid snapshot robust pair-row contract");
     }
 
@@ -112,7 +114,8 @@ inline SnapshotRobustPairRow buildSnapshotRobustPairRow(
         row.barrier_hdot_lower =
             nominal_radial_velocity - radial_velocity_uncertainty;
         row.central_constant_lower =
-            row.barrier_h_lower + 2.0 * row.barrier_hdot_lower -
+            spec.lambda1 * spec.lambda2 * row.barrier_h_lower +
+            (spec.lambda1 + spec.lambda2) * row.barrier_hdot_lower -
             spec.totalReserve;
     } else {
         row.nominal_control_coefficient = -row.nominal_normal;
@@ -120,12 +123,13 @@ inline SnapshotRobustPairRow buildSnapshotRobustPairRow(
         row.barrier_hdot_lower =
             -nominal_radial_velocity - radial_velocity_uncertainty;
         row.central_constant_lower =
-            row.barrier_h_lower + 2.0 * row.barrier_hdot_lower -
+            spec.lambda1 * spec.lambda2 * row.barrier_h_lower +
+            (spec.lambda1 + spec.lambda2) * row.barrier_hdot_lower -
             relative_speed_upper * relative_speed_upper / row.distance_lower -
             spec.totalReserve;
     }
     row.barrier_psi1_lower =
-        row.barrier_h_lower + row.barrier_hdot_lower;
+        spec.lambda1 * row.barrier_h_lower + row.barrier_hdot_lower;
     return row;
 }
 

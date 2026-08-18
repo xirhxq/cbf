@@ -48,6 +48,7 @@ struct TopologyRequest {
     std::map<std::string, double> fim_linear_coefficients;
     std::map<std::string, double> fim_pair_coefficients;
     std::vector<std::vector<DirectedEdge>> forbidden_topologies;
+    std::vector<DirectedEdge> required_edges;
 };
 
 struct EdgeDecision {
@@ -149,6 +150,12 @@ public:
         for (const DirectedEdge& edge : request_.old_edges) {
             old_ids_.insert(edge.id());
         }
+        for (const DirectedEdge& edge : request_.required_edges) {
+            if (eligible_ids_.count(edge.id())==0)
+                throw std::invalid_argument("required edge must be eligible");
+            if (!required_ids_.insert(edge.id()).second)
+                throw std::invalid_argument("duplicate required edge");
+        }
         for (auto& topology : request_.forbidden_topologies) {
             std::set<std::string> ids;
             for (const DirectedEdge& edge : topology) {
@@ -189,6 +196,12 @@ public:
             ++indegree[edge.owner];
             ++graph_indegree[edge.owner];
             adjacency[edge.reference].push_back(edge.owner);
+        }
+        for (const auto& id:required_ids_) {
+            if (selected_ids.count(id)==0) {
+                result.reason="required_edge";
+                return result;
+            }
         }
         for (NodeId owner : request_.mobile_ids) {
             if (indegree[owner] < request_.min_indegree ||
@@ -287,6 +300,7 @@ private:
     std::vector<EdgeDecision> edges_;
     std::set<std::string> eligible_ids_;
     std::set<std::string> old_ids_;
+    std::set<std::string> required_ids_;
     std::vector<std::set<std::string>> forbidden_ids_;
 };
 
