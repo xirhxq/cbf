@@ -4,6 +4,7 @@
 #include "grand_finale/Task10p11gFrozenModel.hpp"
 #include "grand_finale/Task10p11hLeaderCoveragePolicy.hpp"
 #include "grand_finale/Task10p11hSimpleCoveragePolicy.hpp"
+#include "grand_finale/Task10p11tDynamicPairResponsibility.hpp"
 #include "grand_finale/TargetLiftTransitionPrototype.hpp"
 
 namespace gf {
@@ -197,7 +198,54 @@ public:
             Task10p11ComputePhase::GridWorldTarget,
             std::chrono::duration<double>(
                 std::chrono::steady_clock::now()-target_started).count(),true);
-        result.step=adapter_.stepWithNominalAndYawRates(nominal,yaw_rates);
+        if (dynamic_pair_override_.has_value()) {
+            const auto pair_started = std::chrono::steady_clock::now();
+            std::vector<CanonicalHardRow> rows;
+            try {
+                rows = adapter_.currentSnapshotHardRows(runtime.topology);
+            } catch (...) {
+                result.step.reason = "snapshot_robust_hard_row_invalid";
+                result.step.dynamic_pair.attempted = true;
+                result.step.dynamic_pair.pair_base_id = *dynamic_pair_override_;
+                result.step.dynamic_pair.reason = result.step.reason;
+            }
+            if (result.step.reason.empty()) {
+                const auto coordinated = solveTask10p11tDistributedLocalStep(
+                    rows, runtime.estimate.mobile_ids, nominal,
+                    adapter_.config().acceleration_half_box,
+                    *dynamic_pair_override_);
+                if (!coordinated.feasible) {
+                    result.step.reason = coordinated.reason;
+                    result.step.dynamic_pair.attempted = true;
+                    result.step.dynamic_pair.pair_base_id =
+                        *dynamic_pair_override_;
+                    result.step.dynamic_pair.reason = coordinated.reason;
+                    result.step.dynamic_pair.first_owner =
+                        coordinated.pair.pair.first.owner;
+                    result.step.dynamic_pair.second_owner =
+                        coordinated.pair.pair.second.owner;
+                } else {
+                    DynamicPairCertifiedControlRequest request;
+                    request.pair_base_id = *dynamic_pair_override_;
+                    request.first_owner = coordinated.pair.pair.first.owner;
+                    request.second_owner = coordinated.pair.pair.second.owner;
+                    request.transfer_interval_lower_mps2 =
+                        coordinated.pair.shared_interval.lower;
+                    request.transfer_interval_upper_mps2 =
+                        coordinated.pair.shared_interval.upper;
+                    request.transfer_mps2 =
+                        coordinated.pair.selected_transfer_mps2;
+                    request.controls = coordinated.controls;
+                    result.step = adapter_.stepWithDynamicPairCertifiedControls(
+                        request, yaw_rates, runtime.estimator_token,
+                        runtime.topology_token);
+                }
+            }
+            result.step.qp_wall_s += std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - pair_started).count();
+        } else {
+            result.step=adapter_.stepWithNominalAndYawRates(nominal,yaw_rates);
+        }
         result.compute_profile.merge(result.step.compute_profile);
         if (!result.step.advanced) ++consecutive_failures_;
         else {
@@ -317,6 +365,22 @@ public:
     std::size_t settlingDwellCycles() const { return settling_dwell_cycles_; }
     const std::map<NodeId,Eigen::Vector2d>& lastNominalControls() const {
         return last_nominal_controls_;
+    }
+    SimpleCoverageControlStep advanceWithDynamicPairResponsibility(
+        const std::string& pair_base_id) {
+        if (pair_base_id.empty())
+            throw std::invalid_argument("dynamic pair base id is empty");
+        if (dynamic_pair_override_.has_value())
+            throw std::logic_error("dynamic pair override already active");
+        dynamic_pair_override_=pair_base_id;
+        try {
+            auto result=advance();
+            dynamic_pair_override_.reset();
+            return result;
+        } catch (...) {
+            dynamic_pair_override_.reset();
+            throw;
+        }
     }
 
 private:
@@ -443,6 +507,7 @@ private:
     std::optional<double> t100_coverage_s_;
     std::size_t settling_dwell_cycles_=0;
     std::map<NodeId,Eigen::Vector2d> last_nominal_controls_;
+    std::optional<std::string> dynamic_pair_override_;
     BoundaryExcursionAudit boundary_excursion_;
 };
 

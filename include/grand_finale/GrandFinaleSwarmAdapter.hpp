@@ -3,6 +3,7 @@
 #include "Swarm.hpp"
 #include "grand_finale/CanonicalHocbfQpController.hpp"
 #include "grand_finale/CanonicalGammaStarFeedback.hpp"
+#include "grand_finale/DynamicPairCertifiedControl.hpp"
 #include "grand_finale/BoundaryPolicy.hpp"
 #include "grand_finale/BoundarySoftNominalSelector.hpp"
 #include "grand_finale/CertifiedCoverageTracker.hpp"
@@ -143,6 +144,29 @@ struct GrandFinaleGammaFeedbackDiagnostic {
     std::string fallback_reason;
 };
 
+struct GrandFinaleDynamicPairDiagnostic {
+    bool attempted = false;
+    bool applied = false;
+    std::string reason;
+    std::string pair_base_id;
+    NodeId first_owner = 0;
+    NodeId second_owner = 0;
+    double transfer_interval_lower_mps2 =
+        std::numeric_limits<double>::quiet_NaN();
+    double transfer_interval_upper_mps2 =
+        std::numeric_limits<double>::quiet_NaN();
+    double selected_transfer_mps2 =
+        std::numeric_limits<double>::quiet_NaN();
+    double minimum_local_residual_mps2 =
+        std::numeric_limits<double>::quiet_NaN();
+    NodeId limiting_owner = 0;
+    std::string limiting_row_id;
+    double dynamic_pair_local_sum_residual_mps2 =
+        std::numeric_limits<double>::quiet_NaN();
+    double once_reserve_full_pair_residual_mps2 =
+        std::numeric_limits<double>::quiet_NaN();
+};
+
 struct GrandFinaleSwarmStep {
     bool advanced = false;
     std::string reason;
@@ -173,6 +197,7 @@ struct GrandFinaleSwarmStep {
     std::map<NodeId,BoundarySoftQpResult> boundary_soft_nominal;
     std::map<NodeId, double> applied_yaw_rates_radps;
     std::map<NodeId, GrandFinaleGammaFeedbackDiagnostic> gamma_feedback;
+    GrandFinaleDynamicPairDiagnostic dynamic_pair;
     Task10p11ComputeProfile compute_profile;
 };
 
@@ -807,6 +832,166 @@ public:
             yaw_rate_override_.reset();
             throw;
         }
+    }
+
+    GrandFinaleSwarmStep stepWithDynamicPairCertifiedControls(
+        const DynamicPairCertifiedControlRequest& request,
+        const std::map<NodeId, double>& yaw_rates,
+        std::uint64_t expected_estimator_version,
+        std::uint64_t expected_topology_version) {
+        GrandFinaleSwarmStep metrics;
+        metrics.mode = supervisor_.mode();
+        metrics.topology_version = supervisor_.topologyVersion();
+        metrics.estimator_version_before = estimator_.version();
+        metrics.dynamic_pair.attempted = true;
+        metrics.dynamic_pair.pair_base_id = request.pair_base_id;
+        metrics.dynamic_pair.first_owner = request.first_owner;
+        metrics.dynamic_pair.second_owner = request.second_owner;
+        metrics.dynamic_pair.transfer_interval_lower_mps2 =
+            request.transfer_interval_lower_mps2;
+        metrics.dynamic_pair.transfer_interval_upper_mps2 =
+            request.transfer_interval_upper_mps2;
+        metrics.dynamic_pair.selected_transfer_mps2 = request.transfer_mps2;
+        if (yaw_rates.size() != mobile_ids_.size()) {
+            metrics.reason = "yaw_rate_batch_incomplete";
+            metrics.dynamic_pair.reason = metrics.reason;
+            return metrics;
+        }
+        for (const auto& [id, rate] : yaw_rates) {
+            if (std::find(mobile_ids_.begin(), mobile_ids_.end(), id) ==
+                    mobile_ids_.end() || !std::isfinite(rate) ||
+                std::abs(rate) > config_.maximum_yaw_rate_radps + 1e-12) {
+                metrics.reason = "yaw_rate_batch_invalid";
+                metrics.dynamic_pair.reason = metrics.reason;
+                return metrics;
+            }
+        }
+
+        swarm_.prepareCertifiedControlStep();
+        const JointEstimateSnapshot snapshot = estimator_.reconstructForAudit();
+        const std::uint64_t snapshot_version = estimator_.version();
+        if (snapshot_version != expected_estimator_version ||
+            supervisor_.topologyVersion() != expected_topology_version ||
+            supervisor_.mode() != SupervisorMode::Search ||
+            pending_proposal_.has_value() || supervisor_.transitionPending()) {
+            metrics.reason = "dynamic_pair_control_epoch_stale";
+            metrics.dynamic_pair.reason = metrics.reason;
+            return metrics;
+        }
+        std::vector<CanonicalHardRow> rows;
+        try {
+            rows = buildCanonicalHardRows(
+                hardRowRequest(snapshot, supervisor_.topology()));
+        } catch (...) {
+            metrics.reason = "snapshot_robust_hard_row_invalid";
+            metrics.dynamic_pair.reason = metrics.reason;
+            return metrics;
+        }
+        const auto audit = auditDynamicPairCertifiedControls(
+            rows, mobile_ids_, config_.acceleration_half_box,
+            config_.residual_tolerance, request);
+        metrics.dynamic_pair.reason = audit.reason;
+        metrics.dynamic_pair.minimum_local_residual_mps2 =
+            audit.minimum_local_residual_mps2;
+        metrics.dynamic_pair.limiting_owner = audit.limiting_owner;
+        metrics.dynamic_pair.limiting_row_id = audit.limiting_row_id;
+        metrics.dynamic_pair.dynamic_pair_local_sum_residual_mps2 =
+            audit.dynamic_pair_local_sum_residual_mps2;
+        metrics.dynamic_pair.once_reserve_full_pair_residual_mps2 =
+            audit.once_reserve_full_pair_residual_mps2;
+        if (!audit.valid) {
+            metrics.reason = audit.reason;
+            return metrics;
+        }
+
+        Swarm::CertifiedControlBatch applied;
+        for (const auto& [owner, control] : request.controls)
+            applied[static_cast<int>(owner)] = control;
+        metrics.minimum_hard_residual = audit.minimum_local_residual_mps2;
+        std::vector<const CanonicalHardRow*> selected_pair_rows;
+        for (const CanonicalHardRow& row : rows) {
+            if (dynamicPairBaseId(row.id) == request.pair_base_id)
+                selected_pair_rows.push_back(&row);
+        }
+        std::sort(selected_pair_rows.begin(), selected_pair_rows.end(),
+            [](const auto* left, const auto* right) {
+                return left->owner < right->owner;
+            });
+        for (const CanonicalHardRow& row : rows) {
+            const auto control = request.controls.find(row.owner);
+            double residual = row.margin(control->second);
+            if (selected_pair_rows.size() == 2 &&
+                row.id == selected_pair_rows[0]->id)
+                residual += request.transfer_mps2;
+            if (selected_pair_rows.size() == 2 &&
+                row.id == selected_pair_rows[1]->id)
+                residual -= request.transfer_mps2;
+            if (row.kind == CanonicalHardRowKind::PlantSpeedAppliedControl) {
+                metrics.minimum_plant_speed_applied_control_residual = std::min(
+                    metrics.minimum_plant_speed_applied_control_residual,
+                    residual);
+            } else if (row.kind == CanonicalHardRowKind::Collision) {
+                metrics.minimum_collision_h = std::min(
+                    metrics.minimum_collision_h, row.barrier_h);
+                metrics.minimum_collision_psi1 = std::min(
+                    metrics.minimum_collision_psi1, row.barrier_psi1);
+                metrics.minimum_collision_residual = std::min(
+                    metrics.minimum_collision_residual, residual);
+            } else if (row.kind == CanonicalHardRowKind::ReferenceDistance) {
+                metrics.minimum_reference_h = std::min(
+                    metrics.minimum_reference_h, row.barrier_h);
+                metrics.minimum_reference_psi1 = std::min(
+                    metrics.minimum_reference_psi1, row.barrier_psi1);
+                metrics.minimum_reference_residual = std::min(
+                    metrics.minimum_reference_residual, residual);
+            }
+        }
+        std::map<int, double> yaw_batch;
+        for (const auto& [owner, rate] : yaw_rates)
+            yaw_batch[static_cast<int>(owner)] = rate;
+        const auto physical_started = std::chrono::steady_clock::now();
+        const auto physical = swarm_.applyCertifiedControlsAndAdvance(
+            config_.dt_s, applied, yaw_batch,
+            config_.speed_limit_mps > 0.0
+                ? std::optional<double>(config_.speed_limit_mps)
+                : std::nullopt);
+        metrics.compute_profile.record(
+            Task10p11ComputePhase::PlantPreflightZoh,
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - physical_started).count(),
+            true);
+        metrics.advanced = physical.advanced;
+        metrics.updated_truth_cells = physical.updated_truth_cells;
+        if (!physical.advanced) {
+            metrics.reason = physical.reason;
+            metrics.dynamic_pair.reason = physical.reason;
+            return metrics;
+        }
+
+        const auto estimator_started = std::chrono::steady_clock::now();
+        for (NodeId owner : mobile_ids_) {
+            estimator_.propagateLocal(
+                owner, request.controls.at(owner), config_.dt_s,
+                config_.estimator_acceleration_variance);
+        }
+        applyDeterministicRangeBatch();
+        metrics.compute_profile.record(
+            Task10p11ComputePhase::OnlineEstimator,
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - estimator_started).count(),
+            true);
+        const JointEstimateSnapshot after = estimator_.reconstructForAudit();
+        metrics.outside_observer_new_truth_cells = observeCoverageSnapshot(after);
+        metrics.certified_control_count = request.controls.size();
+        metrics.applied_controls = request.controls;
+        metrics.applied_yaw_rates_radps = yaw_rates;
+        metrics.estimator_version_after = estimator_.version();
+        metrics.truth_coverage = coverage_.truthFraction();
+        metrics.certified_coverage = coverage_.certifiedFraction();
+        metrics.reason = "advanced";
+        metrics.dynamic_pair.applied = true;
+        metrics.dynamic_pair.reason = "dynamic_pair_control_batch_applied";
+        return metrics;
     }
 
     bool beginReplacement(

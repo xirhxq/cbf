@@ -151,3 +151,27 @@ TEST_CASE("Fixed baseline metric snapshot separates information and reference gr
     CHECK(std::isfinite(metrics.minimum_reference_h));
     CHECK(std::isfinite(metrics.minimum_reference_psi1));
 }
+
+TEST_CASE("Fixed stage zero applies one certified dynamic pair control batch") {
+    auto fixture=gf::makeTask10p11rFixedBaselineFixture();
+    REQUIRE(fixture->adapter.initializeStageZero().initialized);
+
+    const auto step=fixture->controller.advanceWithDynamicPairResponsibility(
+        "reference:2->4");
+
+    REQUIRE(step.step.advanced);
+    REQUIRE(step.step.dynamic_pair.attempted);
+    CHECK(step.step.dynamic_pair.applied);
+    CHECK(step.step.dynamic_pair.pair_base_id=="reference:2->4");
+    CHECK(step.step.dynamic_pair.transfer_interval_lower_mps2<=
+          step.step.dynamic_pair.selected_transfer_mps2);
+    CHECK(step.step.dynamic_pair.selected_transfer_mps2<=
+          step.step.dynamic_pair.transfer_interval_upper_mps2);
+    CHECK(step.step.certified_control_count==14);
+    CHECK(step.step.minimum_hard_residual>=-1e-7);
+    CHECK(fixture->topologyFrozen());
+
+    const auto next=fixture->controller.advance();
+    REQUIRE(next.step.advanced);
+    CHECK_FALSE(next.step.dynamic_pair.attempted);
+}
