@@ -1,5 +1,6 @@
 #include "grand_finale/Task10p11xRecoveryCampaign.hpp"
 #include "grand_finale/Task10p11qStandardSafetyOn.hpp"
+#include "grand_finale/Task10p11yEvidence.hpp"
 
 #include <chrono>
 #include <iomanip>
@@ -164,7 +165,7 @@ json run(const std::string& mode,
         if (!decision.has_value())
             throw std::runtime_error("component decision callback missing");
         const bool mode_changed=component_active!=active_before;
-        if (component_active) {
+        if (control.step.advanced && component_active) {
             ++component_cycles;
             if (!active_before) {
                 ++component_entries;
@@ -172,11 +173,13 @@ json run(const std::string& mode,
                     first_intervention=decision_time;
             }
         }
-        minimum_full_residual=std::min(minimum_full_residual,
-            decision->current_full_row_residual_mps2);
-        minimum_successor_full_residual=std::min(
-            minimum_successor_full_residual,
-            decision->successor_audit.full_residual);
+        if (control.step.advanced) {
+            minimum_full_residual=std::min(minimum_full_residual,
+                decision->current_full_row_residual_mps2);
+            minimum_successor_full_residual=std::min(
+                minimum_successor_full_residual,
+                decision->successor_audit.full_residual);
+        }
         const bool final_planned=cycle+1==maximum_cycles;
         const bool save_event=mode_changed || !control.step.advanced ||
             final_planned;
@@ -235,7 +238,16 @@ json run(const std::string& mode,
             stop_reason="truth_collision";
         else if (truth.speed<-1e-9)
             stop_reason="plant_speed_violation";
-        if (!stop_reason.empty()) break;
+        if (!stop_reason.empty()) {
+            gf::writeTask10p11yPostAdvanceFailureCheckpoint(
+                checkpoint_directory/eventName(checkpoint_index++,
+                    fixture->swarm.robots.front()->runtime,
+                    "post_advance_fail_closed"),
+                *fixture,stop_reason,{{"campaign",
+                    "fixed-baseline-multi-path-recovery-v1"},
+                    {"route","pair_2_4_component"}});
+            break;
+        }
         const double time=fixture->swarm.robots.front()->runtime;
         const double coverage=fixture->adapter.coverage().truthFraction();
         if (!t95.has_value() && coverage>=0.95-1e-12) t95=time;

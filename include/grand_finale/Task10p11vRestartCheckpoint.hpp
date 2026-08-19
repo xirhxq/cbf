@@ -460,8 +460,25 @@ inline nlohmann::json readTask10p11vJson(
     return result;
 }
 
+inline void validateTask10p11vFiniteJson(const nlohmann::json& value,
+    const std::string& path="$") {
+    if (value.is_number_float() &&
+        !std::isfinite(value.get<double>()))
+        throw std::invalid_argument(
+            "non-finite Task 10.11v JSON value at "+path);
+    if (value.is_array()) {
+        for (std::size_t index=0;index<value.size();++index)
+            validateTask10p11vFiniteJson(value.at(index),path+"["+
+                std::to_string(index)+"]");
+    } else if (value.is_object()) {
+        for (auto item=value.begin();item!=value.end();++item)
+            validateTask10p11vFiniteJson(item.value(),path+"."+item.key());
+    }
+}
+
 inline void writeTask10p11vJson(const std::filesystem::path& path,
     const nlohmann::json& value) {
+    validateTask10p11vFiniteJson(value);
     if (std::filesystem::exists(path))
         throw std::runtime_error(
             "refusing to overwrite Task 10.11v evidence: "+path.string());
