@@ -10,6 +10,11 @@ namespace gf {
 
 enum class CoverageFootprintKind { Circular, ForwardSector };
 
+struct CertifiedCoverageRestartState {
+    std::vector<bool> truth;
+    std::vector<bool> certified;
+};
+
 class CertifiedCoverageTracker {
 public:
     CertifiedCoverageTracker(
@@ -162,6 +167,16 @@ public:
     }
     const GridWorld& truthGrid() const { return truth_; }
     const GridWorld& certifiedGrid() const { return certified_; }
+    CertifiedCoverageRestartState restartState() const {
+        return {truth_.vis,certified_.vis};
+    }
+    void restoreRestartState(const CertifiedCoverageRestartState& state) {
+        if (state.truth.size()!=truth_.vis.size() ||
+            state.certified.size()!=certified_.vis.size())
+            throw std::invalid_argument("coverage restart dimension mismatch");
+        truth_.vis=state.truth;
+        certified_.vis=state.certified;
+    }
 
 private:
     static int coveredCount(const GridWorld& grid) {

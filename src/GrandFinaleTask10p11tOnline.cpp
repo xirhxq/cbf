@@ -102,6 +102,7 @@ json run(
     const std::optional<std::filesystem::path>& checkpoint_directory) {
     constexpr std::size_t maximum_cycles = 5000;
     constexpr std::size_t coverage_stride_cycles = 10;
+    constexpr std::size_t sparse_checkpoint_stride_cycles = 100;
     auto fixture = gf::makeTask10p11rFixedBaselineFixture(
         gf::GammaFeedbackSelectionMode::LeastIntervention, 14.0);
     const auto initialized = fixture->adapter.initializeStageZero();
@@ -110,6 +111,9 @@ json run(
                 {"outcome", "initialization_failed"},
                 {"reason", initialized.reason}};
     }
+    if (fixture->adapter.config().range_noise_std_m!=0.0 ||
+        fixture->adapter.config().range_dropout_probability!=0.0)
+        throw std::runtime_error("restart_contract_requires_zero_range_rng");
 
     const auto initial_topology = fixture->adapter.runtimeSnapshot().topology;
     std::string topology_canonical;
@@ -159,6 +163,7 @@ json run(
     int previous_covered = fixture->adapter.coverage().truthCoveredCount();
     const auto wall_start = std::chrono::steady_clock::now();
     std::size_t checkpoint_index=0;
+    std::size_t sparse_checkpoint_count=0;
 
     for (std::size_t cycle = 0; cycle < maximum_cycles; ++cycle) {
         if (!fixture->topologyFrozen()) {
@@ -167,6 +172,27 @@ json run(
         }
         const auto runtime = fixture->adapter.runtimeSnapshot();
         const double decision_time = runtime.runtime_s;
+        if (checkpoint_directory.has_value() &&
+            cycle%sparse_checkpoint_stride_cycles==0) {
+            auto sparse=gf::makeTask10p11vSparseRestartCheckpoint(
+                *fixture,active_pair,cycle);
+            sparse["source"]={{"parent_commit",parent_commit},
+                {"parent_tree",parent_tree},{"cbf_commit",cbf_commit},
+                {"cbf_tree",cbf_tree},{"binary_sha256",binary_sha256}};
+            sparse["config_digest"]=
+                gf::task10p11qConfigDigest(fixture->adapter.config());
+            sparse["frozen_restart_contract"]={{"range_noise_std_m",0.0},
+                {"range_dropout_probability",0.0},
+                {"fixed_topology",true},{"selection_mode",
+                    "least_intervention"},{"tau_mps2",14.0}};
+            std::ostringstream name;
+            name<<"sparse-"<<std::setw(4)<<std::setfill('0')<<cycle
+                <<"-t"<<std::fixed<<std::setprecision(1)<<decision_time
+                <<".json";
+            gf::writeTask10p11vJson(
+                *checkpoint_directory/name.str(),sparse);
+            ++sparse_checkpoint_count;
+        }
         if (!active_pair.has_value()) {
             const auto rows = fixture->adapter.currentSnapshotHardRows(
                 runtime.topology);
@@ -229,7 +255,7 @@ json run(
                     "dynamic_intervention")
                 :"fail_closed";
             auto checkpoint=gf::makeTask10p11vRestartCheckpoint(
-                base,*checkpoint_fields,fixture->controller,event);
+                base,*checkpoint_fields,event);
             checkpoint["restart_checkpoint"]["source"]={
                 {"parent_commit",parent_commit},{"parent_tree",parent_tree},
                 {"cbf_commit",cbf_commit},{"cbf_tree",cbf_tree},
@@ -240,8 +266,7 @@ json run(
             name<<"checkpoint-"<<std::setw(3)<<std::setfill('0')
                 <<checkpoint_index<<"-t"<<std::fixed<<std::setprecision(1)
                 <<decision_time<<"-"<<event<<".json";
-            std::filesystem::create_directories(*checkpoint_directory);
-            gf::writeTask10p11sSnapshot(
+            gf::writeTask10p11vJson(
                 *checkpoint_directory/name.str(),checkpoint);
             ++checkpoint_index;
         }
@@ -482,6 +507,7 @@ json run(
         {"restart_checkpoint_capture_enabled",
          checkpoint_directory.has_value()},
         {"restart_checkpoint_count",checkpoint_index},
+        {"sparse_restart_checkpoint_count",sparse_checkpoint_count},
         {"second_run_performed", false},
         {"task11_performed", false},
         {"recursive_feasibility_claimed", false}};
@@ -504,16 +530,12 @@ int main(int argc, char** argv) {
     }
     try {
         const std::filesystem::path output_path = argv[1];
-        if (!output_path.parent_path().empty())
-            std::filesystem::create_directories(output_path.parent_path());
         const std::optional<std::filesystem::path> checkpoint_directory=
             argc==8?std::optional<std::filesystem::path>{argv[7]}:
                 std::nullopt;
         const json output = run(argv[2], argv[3], argv[4], argv[5], argv[6],
             checkpoint_directory);
-        std::ofstream destination(output_path);
-        if (!destination) throw std::runtime_error("cannot open output path");
-        destination << output.dump(2) << '\n';
+        gf::writeTask10p11vJson(output_path,output);
         std::cout << output.dump(2) << '\n';
         return 0;
     } catch (const std::exception& error) {

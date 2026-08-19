@@ -62,6 +62,19 @@ struct SimpleCoverageControlStep {
     Task10p11ComputeProfile compute_profile;
 };
 
+struct SimpleCoverageControllerRestartState {
+    std::map<NodeId,FrontierCell> targets;
+    std::size_t target_epoch=0;
+    std::size_t consecutive_failures=0;
+    std::size_t successful_control_cycles=0;
+    std::size_t control_boundaries=0;
+    SimpleCoveragePhase phase=SimpleCoveragePhase::CoverageSearch;
+    std::optional<double> t100_coverage_s;
+    std::size_t settling_dwell_cycles=0;
+    std::map<NodeId,Eigen::Vector2d> last_nominal_controls;
+    BoundaryExcursionAudit boundary_excursion;
+};
+
 class Task10p11hSimpleCoverageController {
 public:
     Task10p11hSimpleCoverageController(
@@ -365,6 +378,42 @@ public:
     std::size_t settlingDwellCycles() const { return settling_dwell_cycles_; }
     const std::map<NodeId,Eigen::Vector2d>& lastNominalControls() const {
         return last_nominal_controls_;
+    }
+    SimpleCoverageControllerRestartState restartState() const {
+        if (dynamic_pair_override_.has_value())
+            throw std::logic_error(
+                "cannot checkpoint during dynamic-pair call");
+        return {targets_,target_epoch_,consecutive_failures_,
+            successful_control_cycles_,control_boundaries_,phase_,
+            t100_coverage_s_,settling_dwell_cycles_,last_nominal_controls_,
+            boundary_excursion_};
+    }
+    void restoreRestartState(
+        const SimpleCoverageControllerRestartState& state) {
+        if (dynamic_pair_override_.has_value() ||
+            (state.targets.size()!=0 && state.targets.size()!=14) ||
+            (state.last_nominal_controls.size()!=0 &&
+             state.last_nominal_controls.size()!=14))
+            throw std::invalid_argument("invalid coverage-controller restart");
+        for (const auto& [owner,target]:state.targets) {
+            if (owner<1 || owner>14 ||
+                (target.x_index>=0 && !denominator_ids_.count(target.id())) ||
+                !target.center.allFinite())
+                throw std::invalid_argument("invalid restart target ledger");
+        }
+        for (const auto& [owner,control]:state.last_nominal_controls)
+            if (owner<1 || owner>14 || !control.allFinite())
+                throw std::invalid_argument("invalid restart nominal control");
+        targets_=state.targets;
+        target_epoch_=state.target_epoch;
+        consecutive_failures_=state.consecutive_failures;
+        successful_control_cycles_=state.successful_control_cycles;
+        control_boundaries_=state.control_boundaries;
+        phase_=state.phase;
+        t100_coverage_s_=state.t100_coverage_s;
+        settling_dwell_cycles_=state.settling_dwell_cycles;
+        last_nominal_controls_=state.last_nominal_controls;
+        boundary_excursion_=state.boundary_excursion;
     }
     SimpleCoverageControlStep advanceWithDynamicPairResponsibility(
         const std::string& pair_base_id) {

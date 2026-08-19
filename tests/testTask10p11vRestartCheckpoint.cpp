@@ -31,12 +31,13 @@ TEST_CASE("Short fixture checkpoint survives an independent file round trip") {
         before,request,fixture->controller.lastNominalControls(),
         fixture->adapter.config());
     const auto checkpoint=gf::makeTask10p11vRestartCheckpoint(
-        base,restart_fields,fixture->controller,"short_fixture");
+        base,restart_fields,"short_fixture");
     const auto direct=gf::auditTask10p11vRestartCheckpoint(checkpoint);
     INFO(direct.reason);
+    INFO(nlohmann::json(direct.missing_fields).dump());
     CHECK(direct.offline_oracle_complete);
     CHECK(direct.capture_fields_complete);
-    CHECK_FALSE(direct.deterministic_restart_complete);
+    CHECK(direct.deterministic_restart_complete);
 
     const auto path=std::filesystem::temp_directory_path()/
         "task10p11v-restart-checkpoint-fixture.json";
@@ -62,5 +63,37 @@ TEST_CASE("Short fixture checkpoint survives an independent file round trip") {
     malformed["restart_checkpoint"]["plant"]["robots"][0]["state"]={0.0};
     CHECK_FALSE(gf::auditTask10p11vRestartCheckpoint(
         malformed).capture_fields_complete);
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("Sparse restart reproduces the uninterrupted next control boundary") {
+    auto shadow=gf::makeTask10p11rFixedBaselineFixture();
+    REQUIRE(shadow->adapter.initializeStageZero().initialized);
+    REQUIRE(shadow->controller.advance().step.advanced);
+    REQUIRE(shadow->controller.advance().step.advanced);
+
+    const auto sparse=gf::makeTask10p11vSparseRestartCheckpoint(
+        *shadow,std::nullopt,2);
+    const auto path=std::filesystem::temp_directory_path()/
+        "task10p11v-sparse-restart-fixture.json";
+    gf::writeTask10p11vJson(path,sparse);
+    const auto loaded=gf::readTask10p11vJson(path);
+    const auto before=gf::task10p11vRestartStateJson(*shadow);
+    const auto shadow_step=shadow->controller.advance();
+    REQUIRE(shadow_step.step.advanced);
+    const auto shadow_after=gf::task10p11vRestartStateJson(*shadow);
+
+    auto restored=gf::makeTask10p11rFixedBaselineFixture();
+    REQUIRE(restored->adapter.initializeStageZero().initialized);
+    const auto metadata=gf::restoreTask10p11vSparseRestartCheckpoint(
+        *restored,loaded);
+    CHECK(metadata.cycle==2);
+    CHECK_FALSE(metadata.active_pair.has_value());
+    CHECK(gf::task10p11vRestartStateJson(*restored)==before);
+    const auto restored_step=restored->controller.advance();
+    REQUIRE(restored_step.step.advanced);
+    CHECK(gf::task10p11vRestartStateJson(*restored)==shadow_after);
+    CHECK(restored->controller.lastNominalControls()==
+        shadow->controller.lastNominalControls());
     std::filesystem::remove(path);
 }

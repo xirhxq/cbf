@@ -40,6 +40,16 @@ struct DekfInternalAudit {
     bool has_last_measurement = false;
 };
 
+struct DekfRestartState {
+    std::vector<NodeId> mobile_ids;
+    std::vector<Eigen::Vector4d> means;
+    std::vector<Eigen::Matrix4d> propagation_factors;
+    std::vector<std::vector<Eigen::Matrix4d>> correlation_rows;
+    std::map<NodeId,Eigen::Vector2d> fixed_positions;
+    std::uint64_t version=0;
+    std::optional<std::tuple<std::int64_t,NodeId,NodeId>> last_measurement;
+};
+
 class InterimMasterDekf {
 public:
     InterimMasterDekf(
@@ -335,6 +345,43 @@ public:
     }
 
     std::uint64_t version() const { return version_; }
+
+    DekfRestartState restartState() const {
+        return {mobile_ids_,means_,propagation_factors_,correlation_rows_,
+            fixed_positions_,version_,last_measurement_};
+    }
+
+    void restoreRestartState(const DekfRestartState& state) {
+        const std::size_t count=mobile_ids_.size();
+        if (state.mobile_ids!=mobile_ids_ ||
+            state.fixed_positions.size()!=fixed_positions_.size() ||
+            state.means.size()!=count ||
+            state.propagation_factors.size()!=count ||
+            state.correlation_rows.size()!=count)
+            throw std::invalid_argument("DEKF restart dimension mismatch");
+        for (const auto& [id,position]:fixed_positions_) {
+            const auto found=state.fixed_positions.find(id);
+            if (found==state.fixed_positions.end() ||
+                !found->second.isApprox(position,1e-12))
+                throw std::invalid_argument("DEKF restart fixed-node mismatch");
+        }
+        for (std::size_t row=0;row<count;++row) {
+            if (!state.means[row].allFinite() ||
+                !state.propagation_factors[row].allFinite() ||
+                state.correlation_rows[row].size()!=count)
+                throw std::invalid_argument("DEKF restart state is invalid");
+            for (std::size_t column=0;column<count;++column)
+                if (!state.correlation_rows[row][column].allFinite())
+                    throw std::invalid_argument(
+                        "DEKF restart correlation is invalid");
+        }
+        mobile_ids_=state.mobile_ids;
+        means_=state.means;
+        propagation_factors_=state.propagation_factors;
+        correlation_rows_=state.correlation_rows;
+        version_=state.version;
+        last_measurement_=state.last_measurement;
+    }
 
 private:
     using MeasurementKey = std::tuple<std::int64_t, NodeId, NodeId>;

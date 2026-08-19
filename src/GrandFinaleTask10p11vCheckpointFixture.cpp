@@ -27,8 +27,8 @@ int main(int argc,char** argv) {
             fixture->controller.lastNominalControls(),
             fixture->adapter.config());
         const auto checkpoint=gf::makeTask10p11vRestartCheckpoint(
-            base,restart_fields,fixture->controller,"short_fixture");
-        gf::writeTask10p11sSnapshot(argv[1],checkpoint);
+            base,restart_fields,"short_fixture");
+        gf::writeTask10p11vJson(argv[1],checkpoint);
         const auto audit=gf::auditTask10p11vRestartCheckpoint(checkpoint);
         const double wall=std::chrono::duration<double>(
             std::chrono::steady_clock::now()-started).count();

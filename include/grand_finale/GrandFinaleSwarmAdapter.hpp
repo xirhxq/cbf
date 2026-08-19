@@ -300,6 +300,21 @@ struct GrandFinaleRuntimeSnapshot {
     std::map<std::string, RuntimeRangeLinkState> range_links;
 };
 
+struct GrandFinaleFixedRestartState {
+    DekfRestartState estimator;
+    CertifiedCoverageRestartState coverage;
+    std::vector<DirectedEdge> topology;
+    SupervisorMode mode=SupervisorMode::Search;
+    std::uint64_t topology_version=0;
+    double supervisor_last_transition_s=0.0;
+    bool stage_zero_initialized=false;
+    std::map<std::string,double> range_last_observation_s;
+    std::map<std::string,double> range_quality;
+    std::map<std::string,double> range_variance_m2;
+    std::size_t range_batch_count=0;
+    std::string last_certification_reason;
+};
+
 struct AcceptedRangeUpdateAudit {
     RangeMeasurement measurement;
     NodeId master=0;
@@ -1200,6 +1215,53 @@ public:
     }
     const std::string& lastCertificationReason() const {
         return last_certification_reason_;
+    }
+    GrandFinaleFixedRestartState fixedRestartState() const {
+        if (supervisor_.mode()!=SupervisorMode::Search ||
+            supervisor_.transitionPending() || pending_proposal_.has_value() ||
+            pending_certificate_.has_value() || !transition_stack_.empty() ||
+            pending_is_retreat_ || union_control_cycles_!=0 ||
+            nominal_override_.has_value() || yaw_rate_override_.has_value())
+            throw std::logic_error(
+                "adapter is not in fixed-search checkpoint state");
+        return {estimator_.restartState(),coverage_.restartState(),
+            supervisor_.topology(),supervisor_.mode(),
+            supervisor_.topologyVersion(),supervisor_.lastTransitionS(),
+            stage_zero_initialized_,range_last_observation_s_,range_quality_,
+            range_variance_m2_,range_batch_count_,last_certification_reason_};
+    }
+    void restoreFixedRestartState(
+        const GrandFinaleFixedRestartState& state) {
+        if (config_.range_noise_std_m!=0.0 ||
+            config_.range_dropout_probability!=0.0 ||
+            !state.stage_zero_initialized ||
+            state.mode!=SupervisorMode::Search ||
+            supervisor_.mode()!=SupervisorMode::Search ||
+            supervisor_.transitionPending() ||
+            transition_certifier_detail::canonicalEdges(state.topology)!=
+                transition_certifier_detail::canonicalEdges(
+                    supervisor_.topology()) ||
+            state.topology_version!=supervisor_.topologyVersion() ||
+            std::abs(state.supervisor_last_transition_s-
+                supervisor_.lastTransitionS())>1e-12)
+            throw std::invalid_argument(
+                "fixed adapter restart contract mismatch");
+        estimator_.restoreRestartState(state.estimator);
+        coverage_.restoreRestartState(state.coverage);
+        stage_zero_initialized_=true;
+        range_last_observation_s_=state.range_last_observation_s;
+        range_quality_=state.range_quality;
+        range_variance_m2_=state.range_variance_m2;
+        range_batch_count_=state.range_batch_count;
+        last_certification_reason_=state.last_certification_reason;
+        last_accepted_range_batch_audit_.clear();
+        pending_proposal_.reset();
+        pending_certificate_.reset();
+        transition_stack_.clear();
+        pending_is_retreat_=false;
+        union_control_cycles_=0;
+        nominal_override_.reset();
+        yaw_rate_override_.reset();
     }
     GrandFinaleRuntimeSnapshot runtimeSnapshot() const {
         GrandFinaleRuntimeSnapshot snapshot;
