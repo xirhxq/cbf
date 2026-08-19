@@ -210,7 +210,9 @@ struct Decision {
     std::size_t selected_index=0;
 };
 
-inline Decision decide(const nlohmann::json& snapshot) {
+inline Decision decideWithPreparedBaseline(const nlohmann::json& snapshot,
+    const std::map<NodeId,Eigen::Vector2d>& baseline_controls,
+    double baseline_transfer,bool baseline_fixed_half) {
     Decision result;
     try {
         const auto request=task10p11s_capture_detail::requestFromJson(
@@ -225,23 +227,14 @@ inline Decision decide(const nlohmann::json& snapshot) {
             result.reason="current_signed_transfer_interval_empty";
             return result;
         }
-        const auto fixed=task10p11x_detail::selectedDistributedControls(
-            snapshot,14.0);
-        if (fixed.has_value()) {
-            result.baseline_fixed_half=true;
-            result.baseline_controls=*fixed;
-            result.baseline_transfer=0.0;
-        } else {
-            const auto dynamic=solveTask10p11tDistributedLocalStep(
-                rows,request.mobile_ids,nominal,
-                request.acceleration_half_box,kPair);
-            if (!dynamic.feasible) {
-                result.reason=dynamic.reason;
-                return result;
-            }
-            result.baseline_controls=dynamic.controls;
-            result.baseline_transfer=dynamic.pair.selected_transfer_mps2;
+        if (baseline_controls.size()!=request.mobile_ids.size() ||
+            !std::isfinite(baseline_transfer)) {
+            result.reason="prepared_baseline_control_identity_invalid";
+            return result;
         }
+        result.baseline_fixed_half=baseline_fixed_half;
+        result.baseline_controls=baseline_controls;
+        result.baseline_transfer=baseline_transfer;
         result.baseline_successor=successorAudit(
             snapshot,result.baseline_controls);
         result.preventive_trigger=
@@ -334,6 +327,34 @@ inline Decision decide(const nlohmann::json& snapshot) {
         result.reason=error.what();
     }
     return result;
+}
+
+inline Decision decide(const nlohmann::json& snapshot) {
+    try {
+        const auto request=task10p11s_capture_detail::requestFromJson(
+            snapshot.at("canonical_request"));
+        const auto rows=buildCanonicalHardRows(request);
+        const auto nominal=task10p11s_capture_detail::nominalFromJson(
+            snapshot.at("nominal_controls"));
+        const auto fixed=task10p11x_detail::selectedDistributedControls(
+            snapshot,14.0);
+        if (fixed.has_value())
+            return decideWithPreparedBaseline(snapshot,*fixed,0.0,true);
+        const auto dynamic=solveTask10p11tDistributedLocalStep(
+            rows,request.mobile_ids,nominal,
+            request.acceleration_half_box,kPair);
+        if (!dynamic.feasible) {
+            Decision result;
+            result.reason=dynamic.reason;
+            return result;
+        }
+        return decideWithPreparedBaseline(snapshot,dynamic.controls,
+            dynamic.pair.selected_transfer_mps2,false);
+    } catch (const std::exception& error) {
+        Decision result;
+        result.reason=error.what();
+        return result;
+    }
 }
 
 inline nlohmann::json intervalJson(double lower,double upper,bool feasible) {
