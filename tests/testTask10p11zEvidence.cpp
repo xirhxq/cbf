@@ -66,6 +66,26 @@ TEST_CASE("prepared baseline is the native controller proposal from the same res
         prepared.control.step.applied_controls,1.0e-12));
 }
 
+TEST_CASE("restart evidence is captured before entering the control override") {
+    auto fixture=gf::makeTask10p11rFixedBaselineFixture(
+        gf::GammaFeedbackSelectionMode::LeastIntervention,14.0);
+    REQUIRE(fixture->adapter.initializeStageZero().initialized);
+    const auto before=gf::task10p11zCaptureBeforeOverride(*fixture);
+    bool callback=false;
+    const auto control=fixture->controller.advanceWithDevelopmentControlOverride(
+        [&](const gf::GrandFinaleRuntimeSnapshot& runtime,
+            const std::map<gf::NodeId,Eigen::Vector2d>& nominal,
+            const std::map<gf::NodeId,double>& yaw_rates) {
+            callback=true;
+            CHECK(runtime.runtime_s==doctest::Approx(before.runtime.runtime_s));
+            CHECK(before.restart_fields.contains("plant"));
+            return fixture->adapter.stepWithNominalAndYawRates(
+                nominal,yaw_rates);
+        });
+    REQUIRE(callback);
+    CHECK(control.step.advanced);
+}
+
 TEST_CASE("disabled prevention preserves the C0 native proposal and commit for every suffix frame") {
     const auto packed=gf::readTask10p11vJson(
         std::filesystem::path(PROJECT_ROOT).parent_path()/

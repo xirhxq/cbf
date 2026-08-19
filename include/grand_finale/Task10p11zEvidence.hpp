@@ -56,6 +56,20 @@ struct Task10p11zPreparedBaseline {
     std::map<NodeId,Eigen::Vector2d> nominal_controls;
 };
 
+struct Task10p11zPreOverrideCapture {
+    GrandFinaleRuntimeSnapshot runtime;
+    CanonicalHardRowRequest request;
+    nlohmann::json restart_fields;
+};
+
+inline Task10p11zPreOverrideCapture task10p11zCaptureBeforeOverride(
+    const Task10p11rFixedBaselineFixture& fixture) {
+    const auto runtime=fixture.adapter.runtimeSnapshot();
+    return {runtime,fixture.adapter.snapshotHardRowRequest(
+        runtime.estimate,runtime.topology),
+        captureTask10p11vRestartFields(fixture)};
+}
+
 inline Task10p11zPreparedBaseline task10p11zPrepareNativeBaseline(
     const Task10p11rFixedBaselineFixture& source,
     GammaFeedbackSelectionMode selection,double tau,

@@ -285,6 +285,7 @@ gf::SimpleCoverageControlStep advanceR0R2(
 gf::SimpleCoverageControlStep advanceR1(
     gf::Task10p11rFixedBaselineFixture& fixture,RunState& state,double tau,
     CycleEvidence& evidence) {
+    const auto boundary=gf::task10p11zCaptureBeforeOverride(fixture);
     const auto prepared=gf::task10p11zPrepareNativeBaseline(fixture,
         gf::GammaFeedbackSelectionMode::LeastIntervention,tau,
         state.active_pair);
@@ -317,10 +318,9 @@ gf::SimpleCoverageControlStep advanceR1(
                 rejected.reason="prepared_native_nominal_mismatch";
                 return rejected;
             }
-            const auto request=fixture.adapter.snapshotHardRowRequest(
-                runtime.estimate,runtime.topology);
+            const auto& request=boundary.request;
             evidence.decision_time=runtime.runtime_s;
-            evidence.restart=gf::captureTask10p11vRestartFields(fixture);
+            evidence.restart=boundary.restart_fields;
             evidence.snapshot=gf::makeTask10p11sSnapshot(runtime,request,
                 nominal,fixture.adapter.config());
             const bool fixed_half=!prepared.control.step.dynamic_pair.applied;
@@ -390,6 +390,7 @@ gf::SimpleCoverageControlStep advanceR1(
 gf::SimpleCoverageControlStep advanceR3(
     gf::Task10p11rFixedBaselineFixture& fixture,RunState& state,double tau,
     CycleEvidence& evidence) {
+    const auto boundary=gf::task10p11zCaptureBeforeOverride(fixture);
     const auto prepared=gf::task10p11zPrepareNativeBaseline(fixture,
         gf::GammaFeedbackSelectionMode::LeastIntervention,tau,
         state.active_pair);
@@ -408,11 +409,10 @@ gf::SimpleCoverageControlStep advanceR3(
                 rejected.reason="prepared_native_nominal_mismatch";
                 return rejected;
             }
-            const auto request=fixture.adapter.snapshotHardRowRequest(
-                runtime.estimate,runtime.topology);
+            const auto& request=boundary.request;
             const auto rows=gf::buildCanonicalHardRows(request);
             evidence.decision_time=runtime.runtime_s;
-            evidence.restart=gf::captureTask10p11vRestartFields(fixture);
+            evidence.restart=boundary.restart_fields;
             evidence.snapshot=gf::makeTask10p11sSnapshot(runtime,request,
                 nominal,fixture.adapter.config());
             if (prepared.control.step.advanced)
