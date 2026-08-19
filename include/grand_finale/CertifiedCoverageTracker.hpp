@@ -160,6 +160,8 @@ public:
     bool certifiedCovered(int x, int y) {
         return certified_.getValue(x, y);
     }
+    const GridWorld& truthGrid() const { return truth_; }
+    const GridWorld& certifiedGrid() const { return certified_; }
 
 private:
     static int coveredCount(const GridWorld& grid) {

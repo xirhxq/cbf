@@ -1,16 +1,19 @@
 #include "grand_finale/Task10p11rFixedBaseline.hpp"
 #include "grand_finale/Task10p11qStandardSafetyOn.hpp"
 #include "grand_finale/Task10p11tOnlinePairResponsibility.hpp"
+#include "grand_finale/Task10p11vRestartCheckpoint.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <map>
 #include <optional>
+#include <sstream>
 #include <vector>
 
 namespace {
@@ -95,7 +98,8 @@ json run(
     const std::string& parent_tree,
     const std::string& cbf_commit,
     const std::string& cbf_tree,
-    const std::string& binary_sha256) {
+    const std::string& binary_sha256,
+    const std::optional<std::filesystem::path>& checkpoint_directory) {
     constexpr std::size_t maximum_cycles = 5000;
     constexpr std::size_t coverage_stride_cycles = 10;
     auto fixture = gf::makeTask10p11rFixedBaselineFixture(
@@ -154,6 +158,7 @@ json run(
     std::size_t stagnant_cycles = 0;
     int previous_covered = fixture->adapter.coverage().truthCoveredCount();
     const auto wall_start = std::chrono::steady_clock::now();
+    std::size_t checkpoint_index=0;
 
     for (std::size_t cycle = 0; cycle < maximum_cycles; ++cycle) {
         if (!fixture->topologyFrozen()) {
@@ -199,10 +204,47 @@ json run(
             }
         }
 
+        std::optional<gf::CanonicalHardRowRequest> checkpoint_request;
+        std::optional<json> checkpoint_fields;
+        if (active_pair.has_value() && checkpoint_directory.has_value()) {
+            checkpoint_request=fixture->adapter.snapshotHardRowRequest(
+                runtime.estimate,runtime.topology);
+            checkpoint_fields=gf::captureTask10p11vRestartFields(*fixture);
+        }
+
         const auto control = active_pair.has_value()
             ? fixture->controller.advanceWithDynamicPairResponsibility(
                   *active_pair)
             : fixture->controller.advance();
+        if (checkpoint_request.has_value() && checkpoint_fields.has_value()) {
+            if (fixture->controller.lastNominalControls().size()!=14)
+                throw std::runtime_error(
+                    "checkpoint_nominal_controls_incomplete");
+            const auto base=gf::makeTask10p11sSnapshot(runtime,
+                *checkpoint_request,
+                fixture->controller.lastNominalControls(),
+                fixture->adapter.config());
+            const std::string event=control.step.advanced
+                ?(checkpoint_index==0?"first_dynamic_intervention":
+                    "dynamic_intervention")
+                :"fail_closed";
+            auto checkpoint=gf::makeTask10p11vRestartCheckpoint(
+                base,*checkpoint_fields,fixture->controller,event);
+            checkpoint["restart_checkpoint"]["source"]={
+                {"parent_commit",parent_commit},{"parent_tree",parent_tree},
+                {"cbf_commit",cbf_commit},{"cbf_tree",cbf_tree},
+                {"binary_sha256",binary_sha256}};
+            checkpoint["restart_checkpoint"]["config_digest"]=
+                gf::task10p11qConfigDigest(fixture->adapter.config());
+            std::ostringstream name;
+            name<<"checkpoint-"<<std::setw(3)<<std::setfill('0')
+                <<checkpoint_index<<"-t"<<std::fixed<<std::setprecision(1)
+                <<decision_time<<"-"<<event<<".json";
+            std::filesystem::create_directories(*checkpoint_directory);
+            gf::writeTask10p11sSnapshot(
+                *checkpoint_directory/name.str(),checkpoint);
+            ++checkpoint_index;
+        }
         if (!control.step.advanced) {
             failure = control.reason.empty()
                 ? control.step.reason : control.reason;
@@ -437,6 +479,9 @@ json run(
         {"target_epoch", fixture->controller.targetEpoch()},
         {"coverage_progress", coverage_progress},
         {"parameters_scanned", false},
+        {"restart_checkpoint_capture_enabled",
+         checkpoint_directory.has_value()},
+        {"restart_checkpoint_count",checkpoint_index},
         {"second_run_performed", false},
         {"task11_performed", false},
         {"recursive_feasibility_claimed", false}};
@@ -445,10 +490,10 @@ json run(
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc != 7) {
+    if (argc != 7 && argc != 8) {
         std::cerr << "usage: GrandFinaleTask10p11tOnline OUTPUT_JSON "
                      "PARENT_COMMIT PARENT_TREE CBF_COMMIT CBF_TREE "
-                     "BINARY_SHA256\n";
+                     "BINARY_SHA256 [CHECKPOINT_DIRECTORY]\n";
         return 2;
     }
     if (!hexDigest(argv[2], 40) || !hexDigest(argv[3], 40) ||
@@ -461,7 +506,11 @@ int main(int argc, char** argv) {
         const std::filesystem::path output_path = argv[1];
         if (!output_path.parent_path().empty())
             std::filesystem::create_directories(output_path.parent_path());
-        const json output = run(argv[2], argv[3], argv[4], argv[5], argv[6]);
+        const std::optional<std::filesystem::path> checkpoint_directory=
+            argc==8?std::optional<std::filesystem::path>{argv[7]}:
+                std::nullopt;
+        const json output = run(argv[2], argv[3], argv[4], argv[5], argv[6],
+            checkpoint_directory);
         std::ofstream destination(output_path);
         if (!destination) throw std::runtime_error("cannot open output path");
         destination << output.dump(2) << '\n';
