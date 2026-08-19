@@ -7,6 +7,8 @@
 #include "grand_finale/Task10p11tDynamicPairResponsibility.hpp"
 #include "grand_finale/TargetLiftTransitionPrototype.hpp"
 
+#include <functional>
+
 namespace gf {
 
 enum class SimpleCoveragePhase {
@@ -77,6 +79,11 @@ struct SimpleCoverageControllerRestartState {
 
 class Task10p11hSimpleCoverageController {
 public:
+    using DevelopmentControlOverride = std::function<GrandFinaleSwarmStep(
+        const GrandFinaleRuntimeSnapshot&,
+        const std::map<NodeId,Eigen::Vector2d>&,
+        const std::map<NodeId,double>&)>;
+
     Task10p11hSimpleCoverageController(
         Swarm& swarm,GrandFinaleSwarmAdapter& adapter,
         SimpleCoveragePolicyConfig config={},NaturalSettlingConfig settling={},
@@ -211,7 +218,10 @@ public:
             Task10p11ComputePhase::GridWorldTarget,
             std::chrono::duration<double>(
                 std::chrono::steady_clock::now()-target_started).count(),true);
-        if (dynamic_pair_override_.has_value()) {
+        if (development_control_override_.has_value()) {
+            result.step=(*development_control_override_)(
+                runtime,nominal,yaw_rates);
+        } else if (dynamic_pair_override_.has_value()) {
             const auto pair_started = std::chrono::steady_clock::now();
             std::vector<CanonicalHardRow> rows;
             try {
@@ -380,9 +390,10 @@ public:
         return last_nominal_controls_;
     }
     SimpleCoverageControllerRestartState restartState() const {
-        if (dynamic_pair_override_.has_value())
+        if (dynamic_pair_override_.has_value() ||
+            development_control_override_.has_value())
             throw std::logic_error(
-                "cannot checkpoint during dynamic-pair call");
+                "cannot checkpoint during control override call");
         return {targets_,target_epoch_,consecutive_failures_,
             successful_control_cycles_,control_boundaries_,phase_,
             t100_coverage_s_,settling_dwell_cycles_,last_nominal_controls_,
@@ -428,6 +439,23 @@ public:
             return result;
         } catch (...) {
             dynamic_pair_override_.reset();
+            throw;
+        }
+    }
+
+    SimpleCoverageControlStep advanceWithDevelopmentControlOverride(
+        DevelopmentControlOverride control_override) {
+        if (!control_override)
+            throw std::invalid_argument("development control override empty");
+        if (development_control_override_.has_value())
+            throw std::logic_error("development control override active");
+        development_control_override_=std::move(control_override);
+        try {
+            auto result=advance();
+            development_control_override_.reset();
+            return result;
+        } catch (...) {
+            development_control_override_.reset();
             throw;
         }
     }
@@ -557,6 +585,7 @@ private:
     std::size_t settling_dwell_cycles_=0;
     std::map<NodeId,Eigen::Vector2d> last_nominal_controls_;
     std::optional<std::string> dynamic_pair_override_;
+    std::optional<DevelopmentControlOverride> development_control_override_;
     BoundaryExcursionAudit boundary_excursion_;
 };
 

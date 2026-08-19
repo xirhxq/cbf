@@ -4,6 +4,7 @@
 #include "grand_finale/CanonicalHocbfQpController.hpp"
 #include "grand_finale/CanonicalGammaStarFeedback.hpp"
 #include "grand_finale/DynamicPairCertifiedControl.hpp"
+#include "grand_finale/DevelopmentFullPairCertifiedControl.hpp"
 #include "grand_finale/BoundaryPolicy.hpp"
 #include "grand_finale/BoundarySoftNominalSelector.hpp"
 #include "grand_finale/CertifiedCoverageTracker.hpp"
@@ -1006,6 +1007,115 @@ public:
         metrics.reason = "advanced";
         metrics.dynamic_pair.applied = true;
         metrics.dynamic_pair.reason = "dynamic_pair_control_batch_applied";
+        return metrics;
+    }
+
+    // Development-campaign-only atomic application path.  It accepts no
+    // centralized optimizer object: the caller supplies a 14-owner batch in
+    // which only the preregistered conflict component may differ from the
+    // independently solved local controls.  This method rebuilds and audits
+    // every once-reserve full-pair row before the physical ZOH advance.
+    GrandFinaleSwarmStep stepWithDevelopmentFullPairCertifiedControls(
+        const std::map<NodeId,Eigen::Vector2d>& controls,
+        const std::map<NodeId,double>& yaw_rates,
+        std::uint64_t expected_estimator_version,
+        std::uint64_t expected_topology_version,
+        bool successor_full_pair_verified,
+        double successor_minimum_full_row_residual_mps2) {
+        GrandFinaleSwarmStep metrics;
+        metrics.mode=supervisor_.mode();
+        metrics.topology_version=supervisor_.topologyVersion();
+        metrics.estimator_version_before=estimator_.version();
+        if (!stage_zero_initialized_ || yaw_rates.size()!=mobile_ids_.size() ||
+            !successor_full_pair_verified ||
+            !std::isfinite(successor_minimum_full_row_residual_mps2) ||
+            successor_minimum_full_row_residual_mps2<
+                -config_.residual_tolerance) {
+            metrics.reason="development_full_pair_preflight_invalid";
+            return metrics;
+        }
+        for (NodeId owner:mobile_ids_) {
+            const auto yaw=yaw_rates.find(owner);
+            if (yaw==yaw_rates.end() || !std::isfinite(yaw->second) ||
+                std::abs(yaw->second)>
+                    config_.maximum_yaw_rate_radps+1.0e-12) {
+                metrics.reason="yaw_rate_batch_invalid";
+                return metrics;
+            }
+        }
+        swarm_.prepareCertifiedControlStep();
+        const auto snapshot=estimator_.reconstructForAudit();
+        const auto snapshot_version=estimator_.version();
+        if (snapshot_version!=expected_estimator_version ||
+            supervisor_.topologyVersion()!=expected_topology_version ||
+            supervisor_.mode()!=SupervisorMode::Search ||
+            pending_proposal_.has_value() || supervisor_.transitionPending()) {
+            metrics.reason="development_full_pair_control_epoch_stale";
+            return metrics;
+        }
+        std::vector<CanonicalHardRow> rows;
+        try {
+            rows=buildCanonicalHardRows(
+                hardRowRequest(snapshot,supervisor_.topology()));
+        } catch (...) {
+            metrics.reason="snapshot_robust_hard_row_invalid";
+            return metrics;
+        }
+        const auto audit=auditDevelopmentFullPairCertifiedControls(
+            rows,mobile_ids_,config_.acceleration_half_box,
+            config_.residual_tolerance,controls);
+        if (!audit.valid) {
+            metrics.reason=audit.reason;
+            return metrics;
+        }
+        metrics.minimum_hard_residual=audit.minimum_residual_mps2;
+        for (const auto& row:rows) {
+            if (row.kind==CanonicalHardRowKind::PlantSpeedAppliedControl)
+                metrics.minimum_plant_speed_applied_control_residual=std::min(
+                    metrics.minimum_plant_speed_applied_control_residual,
+                    row.margin(controls.at(row.owner)));
+            else if (row.kind==CanonicalHardRowKind::Collision) {
+                metrics.minimum_collision_h=std::min(
+                    metrics.minimum_collision_h,row.barrier_h);
+                metrics.minimum_collision_psi1=std::min(
+                    metrics.minimum_collision_psi1,row.barrier_psi1);
+            } else if (row.kind==CanonicalHardRowKind::ReferenceDistance) {
+                metrics.minimum_reference_h=std::min(
+                    metrics.minimum_reference_h,row.barrier_h);
+                metrics.minimum_reference_psi1=std::min(
+                    metrics.minimum_reference_psi1,row.barrier_psi1);
+            }
+        }
+        Swarm::CertifiedControlBatch applied;
+        std::map<int,double> yaw_batch;
+        for (const auto& [owner,control]:controls)
+            applied[static_cast<int>(owner)]=control;
+        for (const auto& [owner,rate]:yaw_rates)
+            yaw_batch[static_cast<int>(owner)]=rate;
+        const auto physical=swarm_.applyCertifiedControlsAndAdvance(
+            config_.dt_s,applied,yaw_batch,
+            config_.speed_limit_mps>0.0
+                ?std::optional<double>(config_.speed_limit_mps)
+                :std::nullopt);
+        metrics.advanced=physical.advanced;
+        metrics.updated_truth_cells=physical.updated_truth_cells;
+        if (!physical.advanced) {
+            metrics.reason=physical.reason;
+            return metrics;
+        }
+        for (NodeId owner:mobile_ids_)
+            estimator_.propagateLocal(owner,controls.at(owner),config_.dt_s,
+                config_.estimator_acceleration_variance);
+        applyDeterministicRangeBatch();
+        const auto after=estimator_.reconstructForAudit();
+        metrics.outside_observer_new_truth_cells=observeCoverageSnapshot(after);
+        metrics.certified_control_count=controls.size();
+        metrics.applied_controls=controls;
+        metrics.applied_yaw_rates_radps=yaw_rates;
+        metrics.estimator_version_after=estimator_.version();
+        metrics.truth_coverage=coverage_.truthFraction();
+        metrics.certified_coverage=coverage_.certifiedFraction();
+        metrics.reason="development_full_pair_control_batch_applied";
         return metrics;
     }
 
