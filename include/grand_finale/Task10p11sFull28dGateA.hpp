@@ -23,6 +23,7 @@ struct Task10p11sRow28d {
     Eigen::VectorXd coefficient;
     double constant = 0.0;
     bool coupled_mobile_pair = false;
+    bool participates_in_gamma = false;
     double uncertainty_reserve_counted_once = 0.0;
 
     double residual(const Eigen::VectorXd& controls) const {
@@ -84,6 +85,7 @@ inline Task10p11sRows28d buildTask10p11sRows28d(
         expanded.coefficient.segment<2>(owner->second) =
             row.control_coefficient;
         expanded.constant = row.constant;
+        expanded.participates_in_gamma = row.participates_in_gamma;
         result.rows.push_back(std::move(expanded));
         ++result.uncoupled_row_count;
     }
@@ -120,6 +122,8 @@ inline Task10p11sRows28d buildTask10p11sRows28d(
         coupled.constant = 2.0 * first.constant +
             coupled.uncertainty_reserve_counted_once;
         coupled.coupled_mobile_pair = true;
+        coupled.participates_in_gamma =
+            first.participates_in_gamma && second.participates_in_gamma;
         result.rows.push_back(std::move(coupled));
         ++result.coupled_mobile_pair_count;
     }
