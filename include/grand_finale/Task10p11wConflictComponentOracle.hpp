@@ -94,8 +94,13 @@ inline RestrictedResult solveRestricted(
                         expression += coefficient * found->second;
                 }
             }
-            if (maximize_margin && row.participates_in_gamma)
-                expression -= *gamma;
+            bool component_incident = false;
+            if (maximize_margin && row.participates_in_gamma) {
+                for (NodeId owner : rowOwners(row, problem.mobile_ids))
+                    component_incident = component_incident ||
+                        component.count(owner) != 0;
+            }
+            if (component_incident) expression -= *gamma;
             model.addConstr(expression >= 0.0);
         }
         if (maximize_margin) {
@@ -447,8 +452,7 @@ inline nlohmann::json runTask10p11wOfflineOracle(
                 frame.snapshot, controls, component, frame.request.mobile_ids);
             const double deviation =
                 (controls - component_solution.controls).norm();
-            const double score = std::min(
-                audit.component_margin.margin, audit.full_margin.margin);
+            const double score = audit.component_margin.margin;
             candidates.push_back({{"index", index}, {"alpha", alpha},
                 {"controls", controlsJson(frame.request.mobile_ids, controls)},
                 {"current_feasible", residual.first >=
@@ -469,12 +473,15 @@ inline nlohmann::json runTask10p11wOfflineOracle(
                 last_recovery = frame.time_s;
         std::size_t predicted_argmax = 0;
         double predicted_best = -std::numeric_limits<double>::infinity();
+        double predicted_full_tie_break =
+            -std::numeric_limits<double>::infinity();
         for (std::size_t index = 0; index < candidate_audits.size(); ++index) {
-            const double score = std::min(
-                candidate_audits[index].component_margin.margin,
-                candidate_audits[index].full_margin.margin);
-            if (score > predicted_best) {
+            const double score = candidate_audits[index].component_margin.margin;
+            const double full = candidate_audits[index].full_margin.margin;
+            if (score > predicted_best ||
+                (score == predicted_best && full > predicted_full_tie_break)) {
                 predicted_best = score;
+                predicted_full_tie_break = full;
                 predicted_argmax = index;
             }
         }
@@ -535,15 +542,19 @@ inline nlohmann::json runTask10p11wOfflineOracle(
             {"preventive_homotopy", {{"segments", 8},
                 {"candidate_count", 9},
                 {"endpoint_semantics",
-                 "coverage_projection_to_current_full_row_maximum_margin"},
+                 "coverage_projection_to_current_component_incident_physical_row_maximum_margin"},
+                {"maximum_predicted_command_semantics",
+                 "argmax_predicted_component_margin_then_full_pair_margin_over_fixed_nine_candidates"},
                 {"current_maximum_margin_endpoint", restrictedJson(
                     maximum_margin, frame.problem)},
                 {"coverage_predicts_next_local_interval_empty",
                     coverage_predicts_empty},
                 {"maximum_predicted_full_pair_margin_candidate_index",
                     predicted_argmax},
-                {"maximum_predicted_component_full_margin_mps2",
+                {"maximum_predicted_component_margin_mps2",
                     number(predicted_best)},
+                {"maximum_predicted_full_pair_margin_tie_break_mps2",
+                    number(predicted_full_tie_break)},
                 {"selection", selection}, {"selected_index", selected},
                 {"selected_alpha", static_cast<double>(selected) / 8.0},
                 {"selected_successor_feasible", selected_successor},

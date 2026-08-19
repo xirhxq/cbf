@@ -49,6 +49,22 @@ TEST_CASE("Task 10.11w audits exactly the six frozen intervention checkpoints") 
     CHECK(result.at("summary").contains("last_local_recovery_s"));
     CHECK(result.at("summary").contains(
         "fallback_restores_local_feasibility"));
+    CHECK(result.at("summary").at("pair_2_4_4d_sufficient") == true);
+    CHECK(result.at("summary").at("earliest_preventive_intervention_s") ==
+          doctest::Approx(132.8));
+    CHECK(result.at("summary").at("last_local_recovery_s") ==
+          doctest::Approx(132.8));
+    CHECK(result.at("frames").at(4).at("preventive_homotopy")
+          .at("selection") == "least_coverage_deviation_restoring_local");
+    CHECK(result.at("frames").at(4).at("preventive_homotopy")
+          .at("selected_index") == 8);
+    CHECK(result.at("frames").at(5).at("preventive_homotopy")
+          .at("selection") ==
+          "second_order_inspired_maximum_predicted_margin_fallback");
+    CHECK(result.at("frames").at(5).at("preventive_homotopy")
+          .at("selected_successor_feasible") == true);
+    CHECK(result.at("summary").at("fallback_restores_local_feasibility") ==
+          false);
     CHECK(result.at("claim_boundary").at("recursive_feasibility_claimed") ==
           false);
 }
