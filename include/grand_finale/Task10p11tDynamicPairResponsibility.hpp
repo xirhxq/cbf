@@ -121,6 +121,19 @@ struct Task10p11tDynamicPairResult {
     double full_pair_residual = std::numeric_limits<double>::quiet_NaN();
 };
 
+struct Task10p11tDistributedLocalStepResult {
+    bool valid = false;
+    bool feasible = false;
+    std::string reason;
+    Task10p11tDynamicPairResult pair;
+    std::map<NodeId, Task10p11tLocalReplay> owner_results;
+    std::map<NodeId, Eigen::Vector2d> controls;
+    double minimum_local_residual =
+        std::numeric_limits<double>::quiet_NaN();
+    NodeId limiting_owner = 0;
+    std::string limiting_row_id;
+};
+
 namespace task10p11t_detail {
 
 inline const CanonicalHardRow& targetRowForOwner(
@@ -445,6 +458,61 @@ inline Task10p11tDynamicPairResult solveTask10p11tDynamicPair(
     return result;
 }
 
+inline Task10p11tDistributedLocalStepResult
+solveTask10p11tDistributedLocalStep(
+    const std::vector<CanonicalHardRow>& rows,
+    const std::vector<NodeId>& mobile_ids,
+    const std::map<NodeId, Eigen::Vector2d>& nominal_controls,
+    double acceleration_half_box,
+    const std::string& selected_pair_base_id) {
+    Task10p11tDistributedLocalStepResult result;
+    result.pair = solveTask10p11tDynamicPair(
+        rows, mobile_ids, nominal_controls, acceleration_half_box,
+        selected_pair_base_id);
+    result.valid = result.pair.valid;
+    if (!result.pair.feasible) {
+        result.reason = "pair_coordination_failed:" + result.pair.reason;
+        return result;
+    }
+#ifdef ENABLE_GUROBI
+    result.minimum_local_residual = std::numeric_limits<double>::infinity();
+    for (NodeId owner : mobile_ids) {
+        const auto nominal = nominal_controls.find(owner);
+        if (nominal == nominal_controls.end()) {
+            result.valid = false;
+            result.reason = "owner_nominal_control_missing:" +
+                std::to_string(owner);
+            return result;
+        }
+        const auto replay = task10p11t_detail::localReplay(
+            rows, result.pair.pair, owner,
+            result.pair.selected_transfer_mps2, acceleration_half_box,
+            nominal->second);
+        result.owner_results.emplace(owner, replay);
+        if (!replay.feasible || !std::isfinite(replay.minimum_residual)) {
+            result.reason = "owner_local_qp_failed:" +
+                std::to_string(owner);
+            return result;
+        }
+        result.controls.emplace(owner, replay.control);
+        if (replay.minimum_residual < result.minimum_local_residual) {
+            result.minimum_local_residual = replay.minimum_residual;
+            result.limiting_owner = owner;
+            result.limiting_row_id = replay.limiting_row_id;
+        }
+    }
+    result.feasible = result.owner_results.size() == mobile_ids.size() &&
+        result.controls.size() == mobile_ids.size() &&
+        result.minimum_local_residual >= -1e-8;
+    result.reason = result.feasible
+        ? "all_distributed_local_qps_feasible"
+        : "distributed_local_residual_negative";
+#else
+    result.reason = "gurobi_not_enabled";
+#endif
+    return result;
+}
+
 inline nlohmann::json task10p11tResultJson(
     const Task10p11tDynamicPairResult& result) {
     const auto number = [](double value) {
@@ -505,6 +573,36 @@ inline nlohmann::json task10p11tResultJson(
         {"trajectory_run_performed", false}};
 }
 
+inline nlohmann::json task10p11tDistributedStepJson(
+    const Task10p11tDistributedLocalStepResult& result) {
+    nlohmann::json controls = nlohmann::json::object();
+    nlohmann::json owners = nlohmann::json::object();
+    for (const auto& [owner, replay] : result.owner_results) {
+        controls[std::to_string(owner)] = {
+            replay.control.x(), replay.control.y()};
+        owners[std::to_string(owner)] = {
+            {"feasible", replay.feasible},
+            {"objective", std::isfinite(replay.objective)
+                ? nlohmann::json(replay.objective) : nlohmann::json(nullptr)},
+            {"minimum_residual_mps2",
+             std::isfinite(replay.minimum_residual)
+                ? nlohmann::json(replay.minimum_residual)
+                : nlohmann::json(nullptr)},
+            {"limiting_row_id", replay.limiting_row_id}};
+    }
+    return {
+        {"valid", result.valid}, {"feasible", result.feasible},
+        {"reason", result.reason}, {"owner_count", owners.size()},
+        {"pair", task10p11tResultJson(result.pair)},
+        {"controls", controls}, {"owner_results", owners},
+        {"minimum_local_residual_mps2",
+         std::isfinite(result.minimum_local_residual)
+            ? nlohmann::json(result.minimum_local_residual)
+            : nlohmann::json(nullptr)},
+        {"limiting_owner", result.limiting_owner},
+        {"limiting_row_id", result.limiting_row_id}};
+}
+
 inline nlohmann::json runTask10p11tFailureSnapshotOffline(
     const nlohmann::json& snapshot,
     const std::string& selected_pair_base_id) {
@@ -524,6 +622,73 @@ inline nlohmann::json runTask10p11tFailureSnapshotOffline(
     output["snapshot_complete"] = true;
     output["input_snapshot_protocol"] = snapshot.at("protocol");
     output["canonical_row_count"] = rows.size();
+    return output;
+}
+
+inline nlohmann::json runTask10p11tOneStepSuccessorAudit(
+    const nlohmann::json& snapshot,
+    const std::string& selected_pair_base_id) {
+    const auto validation = validateTask10p11sSnapshot(snapshot);
+    if (!validation.complete) {
+        throw std::invalid_argument(
+            "incomplete failure snapshot: " + validation.reason);
+    }
+    const auto current_request =
+        task10p11s_capture_detail::requestFromJson(
+            snapshot.at("canonical_request"));
+    const auto current_nominal =
+        task10p11s_capture_detail::nominalFromJson(
+            snapshot.at("nominal_controls"));
+    const auto current_rows = buildCanonicalHardRows(current_request);
+    const auto current = solveTask10p11tDistributedLocalStep(
+        current_rows, current_request.mobile_ids, current_nominal,
+        current_request.acceleration_half_box, selected_pair_base_id);
+
+    nlohmann::json output = {
+        {"protocol", "task10p11t-exact-zoh-one-step-successor-v1"},
+        {"prediction", "exact_zoh_no_measurement_one_step"},
+        {"applied_dt_s",
+         snapshot.at("successor_parameters").at("dt_s")},
+        {"current_canonical_row_count", current_rows.size()},
+        {"current", task10p11tDistributedStepJson(current)},
+        {"current_nominal_objective_source", "snapshot_nominal_controls"},
+        {"successor_performed", false},
+        {"successor_feasible", false},
+        {"trajectory_run_performed", false},
+        {"production_controller_modified", false},
+        {"recursive_feasibility_claimed", false},
+        {"claim_boundary",
+         "one_step_distributed_successor_feasibility_not_recursive_feasibility"}};
+    if (!current.feasible) {
+        output["successor_reason"] =
+            "current_distributed_counterfactual_not_feasible";
+        return output;
+    }
+
+    const auto successor_request = rebuildTask10p11sSuccessorRequest(
+        snapshot, current.controls);
+    const auto successor_rows = buildCanonicalHardRows(successor_request);
+    const auto successor = solveTask10p11tDistributedLocalStep(
+        successor_rows, successor_request.mobile_ids, current.controls,
+        successor_request.acceleration_half_box, selected_pair_base_id);
+    nlohmann::json serialized_rows = nlohmann::json::array();
+    for (const CanonicalHardRow& row : successor_rows) {
+        serialized_rows.push_back(
+            task10p11s_capture_detail::rowJson(row));
+    }
+    output["successor_performed"] = true;
+    output["successor_feasible"] = successor.feasible;
+    output["successor_reason"] = successor.reason;
+    output["successor_canonical_row_count"] = successor_rows.size();
+    output["successor"] = task10p11tDistributedStepJson(successor);
+    output["successor_canonical_rows"] = std::move(serialized_rows);
+    output["successor_nominal_objective_source"] =
+        "current_applied_controls_frozen_for_feasibility_audit";
+    output["coverage_nominal_recomputed_at_successor"] = false;
+    output["all_14_current_local_controls_applied"] =
+        current.controls.size() == 14;
+    output["fixed_topology_unchanged"] = true;
+    output["measurement_update_performed"] = false;
     return output;
 }
 
