@@ -1,5 +1,6 @@
 #include "grand_finale/Task10p11aaCampaign.hpp"
 #include "grand_finale/Task10p11aaGraphOracle.hpp"
+#include "grand_finale/Task10p11acCampaign.hpp"
 #include "grand_finale/Task10p11zCampaign.hpp"
 #include "grand_finale/Task10p11qStandardSafetyOn.hpp"
 
@@ -27,6 +28,15 @@ struct SourceIdentity {
     std::string parent_commit,parent_tree,cbf_commit,cbf_tree,binary_sha256;
 };
 
+struct Task10p11acContext {
+    std::string initialization_id;
+    std::string initialization_record_sha256;
+    std::string initialization_manifest_sha256;
+    std::string base_config_sha256_without_tau;
+    std::string hard_gate_sha256;
+    double wall_limit_s=6.0*3600.0;
+};
+
 struct TruthMargins {
     double mobile_mobile=std::numeric_limits<double>::infinity();
     double mobile_fixed=std::numeric_limits<double>::infinity();
@@ -49,6 +59,10 @@ struct CycleEvidence {
     double current_residual=std::numeric_limits<double>::quiet_NaN();
     double successor_residual=std::numeric_limits<double>::quiet_NaN();
     double deviation=0.0;
+    json owner_decisions=json::array();
+    json owner_branch_histogram=json::object();
+    json owner_alpha_histogram=json::object();
+    bool invalid_prediction_fallback=false;
 };
 
 struct RunState {
@@ -57,7 +71,8 @@ struct RunState {
     std::optional<double> first_dynamic_pair;
     std::optional<double> first_graph;
     std::optional<double> first_margin_divergence;
-    std::optional<double> t95,t100,coverage132p4,coverage147p2,coverage162p8;
+    std::optional<double> t95,t100,coverage132p4,coverage147p2,coverage162p8,
+        coverage250p4;
     std::size_t advanced=0,local_feedback_cycles=0,dynamic_pair_cycles=0;
     std::size_t graph_cycles=0,checkpoint_index=0,sparse_count=0;
     std::size_t stagnant=0;
@@ -72,6 +87,13 @@ struct RunState {
     std::string stop_reason;
     json coverage_progress=json::array();
     json margin_trace=json::array();
+    json owner_decision_ledger=json::array();
+    gf::Task10p11acCycleStatistics task10p11ac_statistics;
+    std::map<std::string,double> first_branch_time,last_branch_time;
+    std::map<std::string,std::size_t> cycle_branch_counts;
+    std::map<std::string,std::size_t> cycle_alpha_signature_counts;
+    std::optional<std::string> initial_alpha_signature;
+    bool alpha_change_saved=false;
 };
 
 bool hexDigest(const std::string& value,std::size_t length) {
@@ -82,8 +104,19 @@ bool hexDigest(const std::string& value,std::size_t length) {
 double tauFor(const std::string& profile) {
     if (profile=="D20") return 20.0;
     if (profile=="D22") return 22.0;
+    if (profile.size()>6 && profile.substr(profile.size()-5)=="tau20")
+        return 20.0;
+    if (profile.size()>6 && profile.substr(profile.size()-5)=="tau22")
+        return 22.0;
     if (profile=="G1" || profile=="G2") return 14.0;
     throw std::invalid_argument("profile must be D20, D22, G1, or G2");
+}
+
+bool distributedProfile(const std::string& profile) {
+    return profile=="D20" || profile=="D22" ||
+        (profile.size()>6 &&
+         (profile.substr(profile.size()-5)=="tau20" ||
+          profile.substr(profile.size()-5)=="tau22"));
 }
 
 json sourceJson(const SourceIdentity& value) {
@@ -117,6 +150,47 @@ void validatePrereg(const json& prereg,const std::string& profile,
         prereg.at("source").at("cbf_tree")!=source.cbf_tree ||
         prereg.at("source").at("binary_sha256")!=source.binary_sha256)
         throw std::runtime_error("preregistration_identity_mismatch");
+}
+
+Task10p11acContext validateTask10p11acPrereg(
+    const json& prereg,const std::string& profile,
+    const SourceIdentity& source,const std::string& initialization_id,
+    const std::string& initialization_record_sha256,
+    const std::string& manifest_sha256,
+    const gf::Task10p11rFixedBaselineFixture& fixture) {
+    static const std::vector<std::string> order{
+        "I0-tau20","I0-tau22","P1-tau20","P1-tau22",
+        "P2-tau20","P2-tau22","P3-tau20","P3-tau22"};
+    const double tau=tauFor(profile);
+    if (prereg.at("protocol")!="task10p11ac-preregistration-v1" ||
+        prereg.at("frozen_before_first_trajectory")!=true ||
+        prereg.at("profile_order").get<std::vector<std::string>>()!=order ||
+        prereg.at("profiles").at(profile).at("tau_mps2")!=tau ||
+        prereg.at("profiles").at(profile).at("initialization")!=
+            initialization_id ||
+        prereg.at("candidate_count")!=9 ||
+        prereg.at("maximum_cells")!=8 ||
+        prereg.at("maximum_wall_hours_per_cell")!=6.0 ||
+        prereg.at("source").at("parent_commit")!=source.parent_commit ||
+        prereg.at("source").at("parent_tree")!=source.parent_tree ||
+        prereg.at("source").at("cbf_commit")!=source.cbf_commit ||
+        prereg.at("source").at("cbf_tree")!=source.cbf_tree ||
+        prereg.at("source").at("binary_sha256")!=source.binary_sha256 ||
+        prereg.at("initialization_manifest_sha256")!=manifest_sha256 ||
+        prereg.at("initialization_record_sha256").at(initialization_id)!=
+            initialization_record_sha256 ||
+        prereg.at("base_config_without_tau")!=
+            gf::task10p11acBaseIdentityJson(fixture) ||
+        !hexDigest(prereg.at("base_config_sha256_without_tau").
+            get<std::string>(),64) ||
+        !hexDigest(prereg.at("hard_gate_sha256").get<std::string>(),64))
+        throw std::runtime_error("task10p11ac_preregistration_identity_mismatch");
+    if (!fixture.adapter.config().predictive_gamma_tau_mps2.has_value() ||
+        *fixture.adapter.config().predictive_gamma_tau_mps2!=tau)
+        throw std::runtime_error("task10p11ac_explicit_tau_mismatch");
+    return {initialization_id,initialization_record_sha256,manifest_sha256,
+        prereg.at("base_config_sha256_without_tau").get<std::string>(),
+        prereg.at("hard_gate_sha256").get<std::string>(),6.0*3600.0};
 }
 
 TruthMargins truthMargins(const gf::Task10p11rFixedBaselineFixture& fixture) {
@@ -187,20 +261,37 @@ std::string checkpointName(std::size_t index,double time,
 }
 
 void decorate(json& checkpoint,const std::string& profile,
-    const SourceIdentity& source,const json& decision) {
+    const SourceIdentity& source,const json& decision,
+    const std::optional<Task10p11acContext>& task10p11ac=std::nullopt) {
     checkpoint["task10p11aa"]={{"protocol","task10p11aa-stage-zero-v1"},
         {"profile",profile},{"source",sourceJson(source)},
         {"decision",decision}};
+    if (task10p11ac.has_value()) checkpoint["task10p11ac"]={{"protocol",
+        "task10p11ac-checkpoint-v1"},{"profile",profile},
+        {"initialization_id",task10p11ac->initialization_id},
+        {"initialization_record_sha256",
+            task10p11ac->initialization_record_sha256},
+        {"initialization_manifest_sha256",
+            task10p11ac->initialization_manifest_sha256},
+        {"base_config_sha256_without_tau",
+            task10p11ac->base_config_sha256_without_tau},
+        {"explicit_tau_mps2",tauFor(profile)},
+        {"hard_gate_sha256",task10p11ac->hard_gate_sha256},
+        {"source",sourceJson(source)},{"decision",decision}};
 }
 
 void saveSparse(const std::filesystem::path& directory,
     const gf::Task10p11rFixedBaselineFixture& fixture,const RunState& state,
-    const std::string& profile,const SourceIdentity& source,double tau) {
+    const std::string& profile,const SourceIdentity& source,double tau,
+    const std::optional<Task10p11acContext>& task10p11ac=std::nullopt) {
     auto value=gf::makeTask10p11vSparseRestartCheckpoint(
         fixture,state.active_pair,state.advanced);
     value["task10p11aa"]={{"protocol","task10p11aa-stage-zero-v1"},
         {"profile",profile},{"source",sourceJson(source)},
         {"tau_mps2",tau},{"fixed_topology",true}};
+    if (task10p11ac.has_value()) decorate(value,profile,source,
+        {{"checkpoint_phase","sparse_restart"},
+         {"advanced_cycles",state.advanced}},task10p11ac);
     std::ostringstream name;
     name<<"sparse-"<<std::setw(4)<<std::setfill('0')<<state.advanced
         <<"-t"<<std::fixed<<std::setprecision(1)
@@ -210,10 +301,11 @@ void saveSparse(const std::filesystem::path& directory,
 
 void savePre(const std::filesystem::path& directory,RunState& state,
     const std::string& profile,const SourceIdentity& source,
-    const CycleEvidence& evidence,const std::string& event) {
+    const CycleEvidence& evidence,const std::string& event,
+    const std::optional<Task10p11acContext>& task10p11ac=std::nullopt) {
     auto value=gf::makeTask10p11vRestartCheckpoint(
         evidence.snapshot,evidence.restart,event);
-    decorate(value,profile,source,evidence.decision);
+    decorate(value,profile,source,evidence.decision,task10p11ac);
     gf::writeTask10p11vJson(directory/checkpointName(state.checkpoint_index++,
         evidence.decision_time,event),value);
 }
@@ -221,9 +313,10 @@ void savePre(const std::filesystem::path& directory,RunState& state,
 void saveCurrent(const std::filesystem::path& directory,RunState& state,
     const std::string& profile,const SourceIdentity& source,
     gf::Task10p11rFixedBaselineFixture& fixture,const std::string& event,
-    const json& decision) {
+    const json& decision,
+    const std::optional<Task10p11acContext>& task10p11ac=std::nullopt) {
     auto value=gf::makeTask10p11yCurrentPackedCheckpoint(fixture,event);
-    decorate(value,profile,source,decision);
+    decorate(value,profile,source,decision,task10p11ac);
     gf::writeTask10p11vJson(directory/checkpointName(state.checkpoint_index++,
         fixture.swarm.robots.front()->runtime,event),value);
 }
@@ -302,9 +395,25 @@ gf::SimpleCoverageControlStep advanceDistributed(
     evidence.baseline=fixture.controller.lastNominalControls();
     evidence.dynamic_pair_intervened=control.step.dynamic_pair.applied;
     for (const auto& [owner,diagnostic]:control.step.gamma_feedback) {
-        (void)owner;
         evidence.local_feedback_intervened=
             evidence.local_feedback_intervened || diagnostic.intervened;
+        if (control.step.applied_controls.size()==14 &&
+            evidence.baseline.size()==14) {
+            const auto decision=gf::task10p11acOwnerDecisionJson(owner,
+                diagnostic,evidence.baseline.at(owner),
+                control.step.applied_controls.at(owner),9);
+            const auto branch=decision.at("branch").get<std::string>();
+            const auto alpha=std::to_string(decision.at(
+                "selected_candidate_index").get<std::size_t>());
+            evidence.owner_decisions.push_back(decision);
+            evidence.owner_branch_histogram[branch]=
+                evidence.owner_branch_histogram.value(branch,0)+1;
+            evidence.owner_alpha_histogram[alpha]=
+                evidence.owner_alpha_histogram.value(alpha,0)+1;
+            evidence.invalid_prediction_fallback=
+                evidence.invalid_prediction_fallback || branch==
+                    "invalid_prediction_projection_fallback";
+        }
     }
     if (control.step.advanced) {
         computeMargins(evidence);
@@ -319,6 +428,11 @@ gf::SimpleCoverageControlStep advanceDistributed(
         {"active_pair",state.active_pair.has_value()?json(*state.active_pair):json(nullptr)},
         {"local_gamma_feedback_intervened",evidence.local_feedback_intervened},
         {"dynamic_pair_intervened",evidence.dynamic_pair_intervened},
+        {"owner_decisions",evidence.owner_decisions},
+        {"owner_branch_histogram",evidence.owner_branch_histogram},
+        {"owner_alpha_histogram",evidence.owner_alpha_histogram},
+        {"invalid_prediction_projection_fallback",
+            evidence.invalid_prediction_fallback},
         {"current_owner_local_gamma_mps2",number(evidence.current_local_gamma)},
         {"current_full_pair_global_gamma_mps2",number(evidence.current_global_gamma)},
         {"successor_full_pair_global_gamma_mps2",number(evidence.successor_global_gamma)}};
@@ -401,9 +515,10 @@ gf::SimpleCoverageControlStep advanceGraph(
 json runProfile(const std::string& profile,
     gf::Task10p11rFixedBaselineFixture& fixture,
     const std::filesystem::path& directory,const SourceIdentity& source,
-    const json& prereg) {
+    const json& prereg,
+    const std::optional<Task10p11acContext>& task10p11ac=std::nullopt) {
     const double tau=tauFor(profile);
-    validatePrereg(prereg,profile,source);
+    if (!task10p11ac.has_value()) validatePrereg(prereg,profile,source);
     const auto initialized=fixture.adapter.initializeStageZero();
     if (!initialized.initialized)
         throw std::runtime_error("stage_zero_initialization_failed:"+
@@ -419,13 +534,22 @@ json runProfile(const std::string& profile,
         {"truth_coverage",fixture.adapter.coverage().truthFraction()}});
     const auto wall_start=std::chrono::steady_clock::now();
     for (std::size_t cycle=0;cycle<kMaximumCycles;++cycle) {
+        if (task10p11ac.has_value() && state.advanced>0 &&
+            std::chrono::duration<double>(std::chrono::steady_clock::now()-
+                wall_start).count()>=task10p11ac->wall_limit_s) {
+            saveCurrent(directory,state,profile,source,fixture,
+                "wall_clock_limit",{{"advanced",true},
+                    {"wall_limit_s",task10p11ac->wall_limit_s}},task10p11ac);
+            state.stop_reason="registered_6h_wall_clock_limit";
+            break;
+        }
         if (cycle%kSparseStride==0) {
-            saveSparse(directory,fixture,state,profile,source,tau);
+            saveSparse(directory,fixture,state,profile,source,tau,task10p11ac);
             ++state.sparse_count;
         }
         CycleEvidence evidence;
         gf::SimpleCoverageControlStep control;
-        if (profile=="D20" || profile=="D22")
+        if (distributedProfile(profile))
             control=advanceDistributed(fixture,state,evidence);
         else
             control=advanceGraph(fixture,state,evidence,
@@ -451,6 +575,18 @@ json runProfile(const std::string& profile,
         if (first_pair) state.first_dynamic_pair=evidence.decision_time;
         if (first_graph) state.first_graph=evidence.decision_time;
         if (first_divergence) state.first_margin_divergence=evidence.decision_time;
+        std::vector<std::string> first_branches;
+        if (task10p11ac.has_value()) {
+            for (auto it=evidence.owner_branch_histogram.begin();
+                 it!=evidence.owner_branch_histogram.end();++it) {
+                if (it.value().get<std::size_t>()==0) continue;
+                const auto& branch=it.key();
+                if (state.first_branch_time.emplace(
+                        branch,evidence.decision_time).second)
+                    first_branches.push_back(branch);
+                state.last_branch_time[branch]=evidence.decision_time;
+            }
+        }
         const bool milestone=std::abs(evidence.decision_time-132.4)<1e-9 ||
             std::abs(evidence.decision_time-147.2)<1e-9 ||
             std::abs(evidence.decision_time-162.8)<1e-9;
@@ -461,8 +597,11 @@ json runProfile(const std::string& profile,
                 first_local?"first_local_gamma_intervention":
                 first_pair?"first_dynamic_pair_intervention":
                 first_divergence?"first_margin_layer_divergence":"frozen_time";
-            savePre(directory,state,profile,source,evidence,event);
+            savePre(directory,state,profile,source,evidence,event,task10p11ac);
         }
+        for (const auto& branch:first_branches)
+            savePre(directory,state,profile,source,evidence,"first_"+branch,
+                task10p11ac);
         if (!control.step.advanced) {
             state.stop_reason=control.reason.empty()?control.step.reason:
                                                     control.reason;
@@ -473,6 +612,31 @@ json runProfile(const std::string& profile,
         if (evidence.dynamic_pair_intervened) ++state.dynamic_pair_cycles;
         if (evidence.graph_intervened) ++state.graph_cycles;
         state.cumulative_deviation+=evidence.deviation;
+        if (task10p11ac.has_value()) {
+            state.task10p11ac_statistics.observe(
+                true,evidence.owner_decisions);
+            const std::string alpha_signature=
+                evidence.owner_alpha_histogram.dump();
+            ++state.cycle_alpha_signature_counts[alpha_signature];
+            for (auto it=evidence.owner_branch_histogram.begin();
+                 it!=evidence.owner_branch_histogram.end();++it)
+                if (it.value().get<std::size_t>()>0)
+                    ++state.cycle_branch_counts[it.key()];
+            state.owner_decision_ledger.push_back({
+                {"time_s",evidence.decision_time},
+                {"coverage_after",control.step.truth_coverage},
+                {"branch_histogram",evidence.owner_branch_histogram},
+                {"selected_alpha_histogram",evidence.owner_alpha_histogram},
+                {"owner_decisions",evidence.owner_decisions}});
+            if (!state.initial_alpha_signature.has_value())
+                state.initial_alpha_signature=alpha_signature;
+            else if (!state.alpha_change_saved &&
+                     alpha_signature!=*state.initial_alpha_signature) {
+                savePre(directory,state,profile,source,evidence,
+                    "first_selected_alpha_change",task10p11ac);
+                state.alpha_change_saved=true;
+            }
+        }
         if (std::isfinite(evidence.current_residual))
             state.minimum_current_residual=std::min(
                 state.minimum_current_residual,evidence.current_residual);
@@ -498,11 +662,21 @@ json runProfile(const std::string& profile,
             {"local_feedback_intervened",evidence.local_feedback_intervened},
             {"graph_intervened",evidence.graph_intervened},
             {"coverage_after",control.step.truth_coverage}});
+        if (task10p11ac.has_value() &&
+            evidence.invalid_prediction_fallback) {
+            saveCurrent(directory,state,profile,source,fixture,
+                "invalid_prediction_projection_fallback",
+                {{"advanced",true},{"owner_decisions",
+                    evidence.owner_decisions}},task10p11ac);
+            state.stop_reason="invalid_prediction_projection_fallback";
+            break;
+        }
         const auto truth=truthMargins(fixture);
         const auto gate=hardGate(fixture,truth);
         if (!gate.empty()) {
             saveCurrent(directory,state,profile,source,fixture,
-                "post_advance_hard_gate_failure",{{"reason",gate},{"advanced",true}});
+                "post_advance_hard_gate_failure",
+                {{"reason",gate},{"advanced",true}},task10p11ac);
             state.stop_reason=gate;
             break;
         }
@@ -511,15 +685,16 @@ json runProfile(const std::string& profile,
         if (std::abs(time-132.4)<1e-9) state.coverage132p4=coverage;
         if (std::abs(time-147.2)<1e-9) state.coverage147p2=coverage;
         if (std::abs(time-162.8)<1e-9) state.coverage162p8=coverage;
+        if (std::abs(time-250.4)<1e-9) state.coverage250p4=coverage;
         if (!state.t95.has_value() && coverage>=0.95-1e-12) {
             state.t95=time;
             saveCurrent(directory,state,profile,source,fixture,"t95",
-                {{"coverage",coverage}});
+                {{"coverage",coverage}},task10p11ac);
         }
         if (!state.t100.has_value() && coverage>=1.0-1e-12) {
             state.t100=time;
             saveCurrent(directory,state,profile,source,fixture,"t100",
-                {{"coverage",coverage}});
+                {{"coverage",coverage}},task10p11ac);
         }
         if ((cycle+1)%kCoverageStride==0 || state.t95.has_value() ||
             state.t100.has_value())
@@ -542,8 +717,38 @@ json runProfile(const std::string& profile,
     const double final_coverage=fixture.adapter.coverage().truthFraction();
     const bool hard_failure=state.stop_reason!="t100_reached" &&
         state.stop_reason!="coverage_stagnation_100s" &&
-        state.stop_reason!="registered_500s_limit";
-    return {{"protocol","task10p11aa-stage-zero-result-v1"},{"valid",true},
+        state.stop_reason!="registered_500s_limit" &&
+        state.stop_reason!="registered_6h_wall_clock_limit";
+    json owner_alpha_counts=json::object();
+    for (const auto& [index,count]:state.task10p11ac_statistics.owner_alpha_counts)
+        owner_alpha_counts[std::to_string(index)]=count;
+    json task10p11ac_result=task10p11ac.has_value()?json{
+        {"initialization_id",task10p11ac->initialization_id},
+        {"initialization_record_sha256",
+            task10p11ac->initialization_record_sha256},
+        {"initialization_manifest_sha256",
+            task10p11ac->initialization_manifest_sha256},
+        {"base_config_sha256_without_tau",
+            task10p11ac->base_config_sha256_without_tau},
+        {"explicit_tau_mps2",tau},
+        {"hard_gate_sha256",task10p11ac->hard_gate_sha256},
+        {"owner_branch_counts",
+            state.task10p11ac_statistics.owner_branch_counts},
+        {"owner_selected_alpha_index_histogram",owner_alpha_counts},
+        {"cycle_branch_counts",state.cycle_branch_counts},
+        {"cycle_selected_alpha_signature_counts",
+            state.cycle_alpha_signature_counts},
+        {"first_branch_time_s",state.first_branch_time},
+        {"last_branch_time_s",state.last_branch_time},
+        {"branch_gamma_feedback_deviation_l2_mps2",
+            state.task10p11ac_statistics.branch_feedback_deviation},
+        {"branch_final_control_deviation_l2_mps2",
+            state.task10p11ac_statistics.branch_final_deviation},
+        {"owner_decision_ledger",std::move(state.owner_decision_ledger)}}:
+        json(nullptr);
+    return {{"protocol",task10p11ac.has_value()
+            ?"task10p11ac-stage-zero-result-v1":
+             "task10p11aa-stage-zero-result-v1"},{"valid",true},
         {"profile",profile},{"source",sourceJson(source)},
         {"config_digest",gf::task10p11qConfigDigest(fixture.adapter.config())},
         {"frozen",{{"dt_s",0.1},{"collision_distance_m",10.0},
@@ -560,6 +765,7 @@ json runProfile(const std::string& profile,
         {"coverage_at_132p4",metric(state.coverage132p4,"not_reached")},
         {"coverage_at_147p2",metric(state.coverage147p2,"not_reached")},
         {"coverage_at_162p8",metric(state.coverage162p8,"not_reached")},
+        {"coverage_at_250p4",metric(state.coverage250p4,"not_reached")},
         {"t95_s",metric(state.t95,"not_attained")},
         {"t100_s",metric(state.t100,"not_attained")},
         {"first_local_gamma_feedback_intervention_s",metric(
@@ -589,6 +795,7 @@ json runProfile(const std::string& profile,
         {"sparse_checkpoint_count",state.sparse_count},
         {"coverage_progress",std::move(state.coverage_progress)},
         {"margin_trace",std::move(state.margin_trace)},
+        {"task10p11ac",std::move(task10p11ac_result)},
         {"claim_boundary",{{"finite_trajectory_only",true},
             {"recursive_feasibility_claimed",false},
             {"g1_development_centralized_oracle",profile=="G1"},
@@ -601,7 +808,8 @@ json runProfile(const std::string& profile,
 void publishInvalid(const std::filesystem::path& result_path,
     const std::filesystem::path& directory,const std::string& profile,
     const SourceIdentity& source,gf::Task10p11rFixedBaselineFixture& fixture,
-    const std::string& reason) {
+    const std::string& reason,
+    const std::optional<Task10p11acContext>& task10p11ac=std::nullopt) {
     std::filesystem::create_directories(directory);
     const bool advanced=fixture.controller.successfulControlCycles()>0;
     auto checkpoint=fixture.controller.lastNominalControls().size()==14
@@ -610,10 +818,15 @@ void publishInvalid(const std::filesystem::path& result_path,
             fixture,std::nullopt,fixture.controller.successfulControlCycles());
     decorate(checkpoint,profile,source,{{"valid",false},{"reason",reason},
         {"advanced",advanced}});
+    if (task10p11ac.has_value()) checkpoint["task10p11ac"]={{"protocol",
+        "task10p11ac-termination-v1"},{"initialization_id",
+        task10p11ac->initialization_id},{"explicit_tau_mps2",tauFor(profile)},
+        {"valid",false},{"reason",reason},{"advanced",advanced}};
     const auto checkpoint_path=directory/"termination-exception.json";
     gf::writeTask10p11vJson(checkpoint_path,checkpoint);
     gf::writeTask10p11vJson(result_path,{{"protocol",
-        "task10p11aa-stage-zero-result-v1"},{"valid",false},
+        task10p11ac.has_value()?"task10p11ac-stage-zero-result-v1":
+            "task10p11aa-stage-zero-result-v1"},{"valid",false},
         {"profile",profile},{"advanced",advanced},{"reason",reason},
         {"checkpoint_published",true},
         {"checkpoint_path",checkpoint_path.filename().string()},
@@ -623,36 +836,78 @@ void publishInvalid(const std::filesystem::path& result_path,
 }  // namespace
 
 int main(int argc,char** argv) {
-    if (argc!=10) {
+    const bool task10p11ac=argc==13;
+    if (argc!=10 && !task10p11ac) {
         std::cerr<<"usage: GrandFinaleTask10p11aaCampaign "
             "D20|D22|G1|G2 RESULT_JSON CHECKPOINT_DIR PREREG_JSON "
-            "PARENT_COMMIT PARENT_TREE CBF_COMMIT CBF_TREE BINARY_SHA256\n";
+            "PARENT_COMMIT PARENT_TREE CBF_COMMIT CBF_TREE BINARY_SHA256\n"
+            "or: GrandFinaleTask10p11acCampaign CELL RESULT_JSON "
+            "CHECKPOINT_DIR PREREG_JSON INITIALIZATION_ID "
+            "INITIALIZATION_MANIFEST MANIFEST_SHA256 PARENT_COMMIT "
+            "PARENT_TREE CBF_COMMIT CBF_TREE BINARY_SHA256\n";
         return 2;
     }
     const std::string profile=argv[1];
     const std::filesystem::path result_path=argv[2];
     const std::filesystem::path directory=argv[3];
-    const SourceIdentity source{argv[5],argv[6],argv[7],argv[8],argv[9]};
-    if (!hexDigest(source.parent_commit,40) || !hexDigest(source.parent_tree,40) ||
-        !hexDigest(source.cbf_commit,40) || !hexDigest(source.cbf_tree,40) ||
-        !hexDigest(source.binary_sha256,64)) {
-        std::cerr<<"provenance_preflight_failed\n";
-        return 3;
-    }
+    const std::size_t source_offset=task10p11ac?8:5;
+    const SourceIdentity source{argv[source_offset],argv[source_offset+1],
+        argv[source_offset+2],argv[source_offset+3],argv[source_offset+4]};
     std::unique_ptr<gf::Task10p11rFixedBaselineFixture> fixture;
+    std::optional<Task10p11acContext> task10p11ac_context;
     try {
-        fixture=gf::makeTask10p11rFixedBaselineFixture(
-            gf::GammaFeedbackSelectionMode::LeastIntervention,tauFor(profile));
+        if (task10p11ac) {
+            const std::string initialization_id=argv[5];
+            const auto manifest=gf::readTask10p11vJson(argv[6]);
+            const std::string manifest_sha256=argv[7];
+            if (manifest.at("protocol")!=
+                    "task10p11ac-initialization-manifest-v1" ||
+                !hexDigest(manifest_sha256,64))
+                throw std::runtime_error(
+                    "task10p11ac_initialization_manifest_identity_invalid");
+            const auto initialization=
+                gf::task10p11acInitializationFromManifest(
+                    manifest,initialization_id);
+            const auto prereg=gf::readTask10p11vJson(argv[4]);
+            task10p11ac_context=Task10p11acContext{
+                initialization_id,initialization.record_sha256,
+                manifest_sha256,
+                prereg.value("base_config_sha256_without_tau",std::string{}),
+                prereg.value("hard_gate_sha256",std::string{}),6.0*3600.0};
+            auto scenario=gf::task10p11rFixedBaselineScenario();
+            scenario.mobile_positions=initialization.positions;
+            auto settings=gf::task10p11acSwarmSettings(
+                scenario,initialization.velocities);
+            fixture=gf::makeTask10p11rFixedBaselineFixture(
+                std::move(scenario),std::move(settings),
+                gf::GammaFeedbackSelectionMode::LeastIntervention,
+                tauFor(profile));
+            task10p11ac_context=validateTask10p11acPrereg(
+                prereg,profile,source,
+                initialization_id,initialization.record_sha256,
+                manifest_sha256,*fixture);
+        } else {
+            fixture=gf::makeTask10p11rFixedBaselineFixture(
+                gf::GammaFeedbackSelectionMode::LeastIntervention,
+                tauFor(profile));
+        }
+        if (!hexDigest(source.parent_commit,40) ||
+            !hexDigest(source.parent_tree,40) ||
+            !hexDigest(source.cbf_commit,40) ||
+            !hexDigest(source.cbf_tree,40) ||
+            !hexDigest(source.binary_sha256,64))
+            throw std::runtime_error("provenance_preflight_failed");
         const auto result=runProfile(profile,*fixture,directory,source,
-            gf::readTask10p11vJson(argv[4]));
+            gf::readTask10p11vJson(argv[4]),task10p11ac_context);
         gf::writeTask10p11vJson(result_path,result);
         std::cout<<result.dump(2)<<'\n';
         return 0;
     } catch (const std::exception& error) {
-        std::cerr<<"Task 10.11aa campaign failed: "<<error.what()<<'\n';
+        std::cerr<<(task10p11ac?"Task 10.11ac":"Task 10.11aa")
+                 <<" campaign failed: "<<error.what()<<'\n';
         if (fixture) {
             try { publishInvalid(result_path,directory,profile,source,
-                                  *fixture,error.what()); }
+                                  *fixture,error.what(),task10p11ac_context); }
             catch (const std::exception& publication) {
                 std::cerr<<"termination publication failed: "
                          <<publication.what()<<'\n';

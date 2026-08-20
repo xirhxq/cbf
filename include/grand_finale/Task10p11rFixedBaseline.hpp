@@ -118,6 +118,19 @@ struct Task10p11rFixedBaselineFixture {
           frozen_topology(scenario.initial_topology),
           initial_topology_version(adapter.supervisor().topologyVersion()) {}
 
+    Task10p11rFixedBaselineFixture(
+        Task10p10Scenario scenario_value,json settings_value,
+        GammaFeedbackSelectionMode selection,
+        std::optional<double> predictive_tau_mps2)
+        : scenario(std::move(scenario_value)),settings(std::move(settings_value)),
+          swarm(settings),
+          adapter(swarm,scenario.mobile_ids,scenario.fixed_positions,
+              scenario.initial_topology,task10p11rFixedAdapterConfig(
+                  selection,predictive_tau_mps2)),
+          controller(swarm,adapter,{}, {},task10p11rAuthorityContract().branches),
+          frozen_topology(scenario.initial_topology),
+          initial_topology_version(adapter.supervisor().topologyVersion()) {}
+
     bool topologyFrozen() const {
         const auto runtime=adapter.runtimeSnapshot();
         return runtime.topology==frozen_topology &&
@@ -139,6 +152,16 @@ makeTask10p11rFixedBaselineFixture(
     std::optional<double> predictive_tau_mps2) {
     return std::make_unique<Task10p11rFixedBaselineFixture>(
         selection,predictive_tau_mps2);
+}
+
+inline std::unique_ptr<Task10p11rFixedBaselineFixture>
+makeTask10p11rFixedBaselineFixture(
+    Task10p10Scenario scenario,json settings,
+    GammaFeedbackSelectionMode selection,
+    std::optional<double> predictive_tau_mps2) {
+    return std::make_unique<Task10p11rFixedBaselineFixture>(
+        std::move(scenario),std::move(settings),selection,
+        predictive_tau_mps2);
 }
 
 }  // namespace gf

@@ -143,6 +143,12 @@ foreach(SOURCE ${SOURCES})
     target_link_libraries(${EXECUTABLE} PRIVATE cbf_deps)
 endforeach()
 
+add_executable(GrandFinaleTask10p11acCampaign
+    src/GrandFinaleTask10p11aaCampaign.cpp)
+target_compile_definitions(GrandFinaleTask10p11acCampaign
+    PRIVATE PROJECT_ROOT="${CMAKE_SOURCE_DIR}")
+target_link_libraries(GrandFinaleTask10p11acCampaign PRIVATE cbf_deps)
+
 file(GLOB_RECURSE CBF_BUILD_FINGERPRINT_FILES
     CONFIGURE_DEPENDS
     RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
