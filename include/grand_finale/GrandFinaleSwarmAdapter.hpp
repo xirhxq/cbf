@@ -141,6 +141,9 @@ struct GrandFinaleGammaFeedbackDiagnostic {
     Eigen::Vector2d maximum_margin_control = Eigen::Vector2d::Zero();
     Eigen::Vector2d selected_nominal = Eigen::Vector2d::Zero();
     bool intervened = false;
+    std::size_t selected_candidate_index = 0;
+    bool tau_attainment_valid = false;
+    bool tau_attained = false;
     std::string dominant_row;
     std::string fallback_reason;
 };
@@ -529,6 +532,9 @@ public:
                     stage.maximum_margin_control,
                     selected.selected_control,
                     selected.intervened,
+                    selected.selected_candidate_index,
+                    selected.tau_attainment_valid,
+                    selected.tau_attained,
                     selected.dominant_row,
                     selected.fallback_reason});
         }

@@ -64,6 +64,9 @@ struct CanonicalGammaFeedbackResult {
     double controllable_predicted_gamma_range = 0.0;
     bool intervened = false;
     bool actual_next_gamma_guaranteed = false;
+    std::size_t selected_candidate_index = 0;
+    bool tau_attainment_valid = false;
+    bool tau_attained = false;
     std::string dominant_row;
     std::string fallback_reason;
 };
@@ -198,6 +201,8 @@ CanonicalGammaFeedbackResult selectCanonicalGammaFeedback(
             result.valid=true;
             result.reason="current_projection_fallback";
             result.selected_control=stage.task_projection;
+            result.selected_candidate_index=0;
+            result.tau_attainment_valid=false;
             result.fallback_reason="invalid_prediction_use_current_projection";
             return result;
         }
@@ -215,6 +220,7 @@ CanonicalGammaFeedbackResult selectCanonicalGammaFeedback(
     if (config.selection_mode==GammaFeedbackSelectionMode::MaximumPredictedMargin) {
         selected=best_index;
     } else if (config.selection_mode==GammaFeedbackSelectionMode::LeastIntervention) {
+        result.tau_attainment_valid=true;
         const auto threshold=std::find_if(
             scores.begin(),scores.end(),[&](const auto& value) {
                 return value.gamma+config.feasibility_tolerance>=
@@ -222,15 +228,18 @@ CanonicalGammaFeedbackResult selectCanonicalGammaFeedback(
             });
         if (threshold==scores.end()) {
             selected=best_index;
+            result.tau_attained=false;
             result.fallback_reason="tau_unattained_maximum_predicted_margin";
         } else {
             selected=static_cast<std::size_t>(
                 std::distance(scores.begin(),threshold));
+            result.tau_attained=true;
         }
     }
     result.valid=true;
     result.reason="selected";
     result.selected_control=stage.candidates[selected];
+    result.selected_candidate_index=selected;
     result.selected_predicted_gamma=scores[selected].gamma;
     result.controllable_predicted_gamma_range=
         best->gamma-scores.front().gamma;

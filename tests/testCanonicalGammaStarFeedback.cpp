@@ -294,6 +294,9 @@ TEST_CASE("Predictive selection uses fallback semantics without claiming joint n
         });
     REQUIRE(selected.valid);
     CHECK(selected.fallback_reason=="tau_unattained_maximum_predicted_margin");
+    CHECK(selected.tau_attainment_valid);
+    CHECK_FALSE(selected.tau_attained);
+    CHECK(selected.selected_candidate_index==2);
     CHECK(selected.selected_predicted_gamma==doctest::Approx(0.4));
     CHECK_FALSE(selected.actual_next_gamma_guaranteed);
 
@@ -306,6 +309,8 @@ TEST_CASE("Predictive selection uses fallback semantics without claiming joint n
     REQUIRE(invalid.valid);
     CHECK(invalid.selected_control.isApprox(stage.task_projection));
     CHECK(invalid.fallback_reason=="invalid_prediction_use_current_projection");
+    CHECK_FALSE(invalid.tau_attainment_valid);
+    CHECK(invalid.selected_candidate_index==0);
 }
 
 TEST_CASE("Predictive tau is an explicit nonnegative reserve threshold") {
