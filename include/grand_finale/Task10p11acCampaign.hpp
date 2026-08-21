@@ -2,10 +2,13 @@
 
 #include "grand_finale/Task10p11rFixedBaseline.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -18,6 +21,28 @@ enum class Task10p11acFeedbackBranch {
     TauUnattainedMaximumMarginFallback,
     InvalidPredictionProjectionFallback
 };
+
+enum class Task10p11aeLedgerStatus {
+    ValidFeedbackDecision,
+    NotApplicableDynamicPairOverride,
+    NotApplicableOtherFrozenControlPath,
+    Invalid
+};
+
+inline std::string task10p11aeLedgerStatusName(
+    Task10p11aeLedgerStatus status) {
+    switch (status) {
+        case Task10p11aeLedgerStatus::ValidFeedbackDecision:
+            return "valid_feedback_decision";
+        case Task10p11aeLedgerStatus::NotApplicableDynamicPairOverride:
+            return "not_applicable_dynamic_pair_override";
+        case Task10p11aeLedgerStatus::NotApplicableOtherFrozenControlPath:
+            return "not_applicable_other_frozen_control_path";
+        case Task10p11aeLedgerStatus::Invalid:
+            return "invalid";
+    }
+    throw std::logic_error("unknown Task 10.11ae ledger status");
+}
 
 inline std::string task10p11acFeedbackBranchName(
     Task10p11acFeedbackBranch branch) {
@@ -96,7 +121,11 @@ inline nlohmann::json task10p11acOwnerDecisionJson(
     if (!std::isfinite(feedback_deviation) || !std::isfinite(final_deviation))
         throw std::invalid_argument(
             "Task 10.11ac owner deviation is non-finite");
-    return {{"owner",owner},{"branch",task10p11acFeedbackBranchName(branch)},
+    return {{"owner",owner},{"status",task10p11aeLedgerStatusName(
+                Task10p11aeLedgerStatus::ValidFeedbackDecision)},
+        {"feedback_applicable",true},
+        {"control_provenance","canonical_gamma_feedback"},
+        {"branch",task10p11acFeedbackBranchName(branch)},
         {"current_gamma_mps2",task10p11acDiagnosticMetricJson(
             diagnostic.current_gamma,true,{})},
         {"nominal_predicted_gamma_mps2",task10p11acDiagnosticMetricJson(
@@ -128,8 +157,148 @@ inline nlohmann::json task10p11acOwnerDecisionJson(
         {"dominant_row",diagnostic.dominant_row}};
 }
 
+inline nlohmann::json task10p11aeDynamicPairJson(
+    const GrandFinaleDynamicPairDiagnostic& pair) {
+    const auto metric=[](double value,const std::string& reason) {
+        return std::isfinite(value)
+            ?nlohmann::json{{"status","valid"},{"value",value},
+                {"reason","observed"}}
+            :nlohmann::json{{"status","not_applicable"},{"value",nullptr},
+                {"reason",reason}};
+    };
+    return {{"attempted",pair.attempted},{"applied",pair.applied},
+        {"reason",pair.reason},{"pair_base_id",pair.pair_base_id},
+        {"first_owner",pair.first_owner},{"second_owner",pair.second_owner},
+        {"transfer_interval_lower_mps2",metric(
+            pair.transfer_interval_lower_mps2,"interval_not_available")},
+        {"transfer_interval_upper_mps2",metric(
+            pair.transfer_interval_upper_mps2,"interval_not_available")},
+        {"selected_transfer_mps2",metric(
+            pair.selected_transfer_mps2,"transfer_not_applied")}};
+}
+
+inline double task10p11aeOwnerMinimumCurrentResidual(
+    NodeId owner,const std::vector<CanonicalHardRow>& rows,
+    const std::map<NodeId,Eigen::Vector2d>& controls,
+    const GrandFinaleDynamicPairDiagnostic& pair) {
+    const auto control=controls.find(owner);
+    if (control==controls.end() || !control->second.allFinite())
+        return -std::numeric_limits<double>::infinity();
+    std::vector<const CanonicalHardRow*> pair_rows;
+    if (pair.applied) {
+        for (const auto& row:rows)
+            if (dynamicPairBaseId(row.id)==pair.pair_base_id)
+                pair_rows.push_back(&row);
+        std::sort(pair_rows.begin(),pair_rows.end(),
+            [](const auto* left,const auto* right) {
+                return left->owner<right->owner;
+            });
+    }
+    double minimum=std::numeric_limits<double>::infinity();
+    bool observed=false;
+    for (const auto& row:rows) {
+        if (row.owner!=owner) continue;
+        double residual=row.margin(control->second);
+        if (pair.applied && pair_rows.size()==2 &&
+            row.id==pair_rows[0]->id)
+            residual+=pair.selected_transfer_mps2;
+        if (pair.applied && pair_rows.size()==2 &&
+            row.id==pair_rows[1]->id)
+            residual-=pair.selected_transfer_mps2;
+        minimum=std::min(minimum,residual);
+        observed=true;
+    }
+    return observed?minimum:-std::numeric_limits<double>::infinity();
+}
+
+inline nlohmann::json task10p11aeOwnerLedger(
+    const std::vector<NodeId>& mobile_ids,
+    const std::map<NodeId,GrandFinaleGammaFeedbackDiagnostic>& diagnostics,
+    const std::map<NodeId,Eigen::Vector2d>& coverage_nominal,
+    const std::map<NodeId,Eigen::Vector2d>& applied_controls,
+    const std::vector<CanonicalHardRow>& rows,
+    const GrandFinaleDynamicPairDiagnostic& pair,bool advanced,
+    std::size_t candidate_count) {
+    if (mobile_ids.size()!=14)
+        throw std::invalid_argument(
+            "Task 10.11ae ledger requires fourteen mobile owners");
+    nlohmann::json result=nlohmann::json::array();
+    std::set<NodeId> seen;
+    for (NodeId owner:mobile_ids) {
+        if (!seen.insert(owner).second)
+            throw std::invalid_argument(
+                "Task 10.11ae ledger owner identifiers are not unique");
+        const auto diagnostic=diagnostics.find(owner);
+        const auto nominal=coverage_nominal.find(owner);
+        const auto applied=applied_controls.find(owner);
+        if (advanced && diagnostic!=diagnostics.end()) {
+            if (nominal==coverage_nominal.end() ||
+                applied==applied_controls.end())
+                throw std::invalid_argument(
+                    "Task 10.11ae feedback decision lacks control vectors");
+            auto entry=task10p11acOwnerDecisionJson(owner,diagnostic->second,
+                nominal->second,applied->second,candidate_count);
+            const double residual=task10p11aeOwnerMinimumCurrentResidual(
+                owner,rows,applied_controls,pair);
+            entry["all_current_hard_rows_passed"]=
+                std::isfinite(residual) && residual>=-1.0e-8;
+            entry["minimum_current_hard_row_residual_mps2"]=
+                task10p11acDiagnosticMetricJson(residual,
+                    std::isfinite(residual),"current_rows_unavailable");
+            result.push_back(std::move(entry));
+            continue;
+        }
+        if (advanced && applied!=applied_controls.end()) {
+            const bool pair_owner=pair.applied &&
+                (owner==pair.first_owner || owner==pair.second_owner);
+            const auto status=pair_owner
+                ?Task10p11aeLedgerStatus::NotApplicableDynamicPairOverride
+                :Task10p11aeLedgerStatus::
+                    NotApplicableOtherFrozenControlPath;
+            const double residual=task10p11aeOwnerMinimumCurrentResidual(
+                owner,rows,applied_controls,pair);
+            result.push_back({{"owner",owner},
+                {"status",task10p11aeLedgerStatusName(status)},
+                {"feedback_applicable",false},{"branch",nullptr},
+                {"not_applicable_reason",pair_owner
+                    ?"dynamic_pair_signed_transfer_override"
+                    :"control_frozen_by_dynamic_pair_batch"},
+                {"actual_applied_control",task10p11acVectorJson(
+                    applied->second)},
+                {"control_provenance",pair_owner
+                    ?"dynamic_signed_transfer_local_qp"
+                    :"canonical_local_qp_frozen_during_dynamic_pair"},
+                {"dynamic_pair",task10p11aeDynamicPairJson(pair)},
+                {"all_current_hard_rows_passed",
+                    std::isfinite(residual) && residual>=-1.0e-8},
+                {"minimum_current_hard_row_residual_mps2",
+                    task10p11acDiagnosticMetricJson(residual,
+                        std::isfinite(residual),"current_rows_unavailable")}});
+            continue;
+        }
+        result.push_back({{"owner",owner},
+            {"status",task10p11aeLedgerStatusName(
+                Task10p11aeLedgerStatus::Invalid)},
+            {"feedback_applicable",false},{"branch",nullptr},
+            {"invalid_reason",advanced
+                ?"advanced_cycle_missing_applied_control_or_decision"
+                :"cycle_not_advanced"},
+            {"actual_applied_control",nullptr},
+            {"control_provenance","no_control_applied"},
+            {"dynamic_pair",task10p11aeDynamicPairJson(pair)},
+            {"all_current_hard_rows_passed",nullptr},
+            {"minimum_current_hard_row_residual_mps2",{{"status","invalid"},
+                {"value",nullptr},{"reason","cycle_not_advanced"}}}});
+    }
+    return result;
+}
+
 struct Task10p11acCycleStatistics {
     std::size_t advanced_cycles=0;
+    std::size_t feedback_applicable_owner_decisions=0;
+    std::size_t not_applicable_owner_decisions=0;
+    std::size_t invalid_owner_decisions=0;
+    std::map<std::string,std::size_t> owner_status_counts;
     std::map<std::string,std::size_t> owner_branch_counts;
     std::map<std::size_t,std::size_t> owner_alpha_counts;
     std::map<std::string,double> branch_feedback_deviation;
@@ -142,6 +311,14 @@ struct Task10p11acCycleStatistics {
                 "Task 10.11ac advanced cycle requires fourteen owner decisions");
         ++advanced_cycles;
         for (const auto& decision:owner_decisions) {
+            const auto status=decision.at("status").get<std::string>();
+            ++owner_status_counts[status];
+            if (status!="valid_feedback_decision") {
+                if (status=="invalid") ++invalid_owner_decisions;
+                else ++not_applicable_owner_decisions;
+                continue;
+            }
+            ++feedback_applicable_owner_decisions;
             const auto branch=decision.at("branch").get<std::string>();
             const auto index=decision.at("selected_candidate_index").
                 get<std::size_t>();
@@ -157,6 +334,9 @@ struct Task10p11acCycleStatistics {
             branch_feedback_deviation[branch]+=feedback;
             branch_final_deviation[branch]+=final;
         }
+        if (invalid_owner_decisions>0)
+            throw std::invalid_argument(
+                "Task 10.11ae advanced cycle contains invalid ledger entries");
     }
 };
 

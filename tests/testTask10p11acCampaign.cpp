@@ -89,6 +89,9 @@ TEST_CASE("Task 10.11ac cycle statistics count only advanced cycles") {
     CHECK(statistics.owner_branch_counts.empty());
     statistics.observe(true,decisions);
     CHECK(statistics.advanced_cycles==1);
+    CHECK(statistics.feedback_applicable_owner_decisions==14);
+    CHECK(statistics.not_applicable_owner_decisions==0);
+    CHECK(statistics.owner_status_counts.at("valid_feedback_decision")==14);
     CHECK(statistics.owner_branch_counts.at("nominal_retention")==14);
     CHECK(statistics.owner_alpha_counts.at(0)==14);
 }
@@ -101,18 +104,21 @@ TEST_CASE("Task 10.11ac observation leaves applied controls unchanged") {
     REQUIRE(plain->adapter.initializeStageZero().initialized);
     REQUIRE(observed->adapter.initializeStageZero().initialized);
     for (std::size_t cycle=0;cycle<2;++cycle) {
+        const auto runtime=observed->adapter.runtimeSnapshot();
+        const auto rows=gf::buildCanonicalHardRows(
+            observed->adapter.snapshotHardRowRequest(
+                runtime.estimate,runtime.topology));
         const auto plain_step=plain->controller.advance();
         const auto observed_step=observed->controller.advance();
         REQUIRE(plain_step.step.advanced);
         REQUIRE(observed_step.step.advanced);
         REQUIRE(plain_step.step.applied_controls.size()==14);
         REQUIRE(observed_step.step.applied_controls.size()==14);
-        nlohmann::json ledger=nlohmann::json::array();
-        for (const auto& [owner,value]:observed_step.step.gamma_feedback) {
-            ledger.push_back(gf::task10p11acOwnerDecisionJson(owner,value,
-                observed->controller.lastNominalControls().at(owner),
-                observed_step.step.applied_controls.at(owner),9));
-        }
+        const auto ledger=gf::task10p11aeOwnerLedger(
+            runtime.estimate.mobile_ids,observed_step.step.gamma_feedback,
+            observed->controller.lastNominalControls(),
+            observed_step.step.applied_controls,rows,
+            observed_step.step.dynamic_pair,true,9);
         CHECK(ledger.size()==14);
         for (const auto& [owner,control]:plain_step.step.applied_controls)
             CHECK((control-observed_step.step.applied_controls.at(owner)).norm()==
@@ -120,6 +126,108 @@ TEST_CASE("Task 10.11ac observation leaves applied controls unchanged") {
         CHECK(gf::captureTask10p11vRestartFields(*plain)==
               gf::captureTask10p11vRestartFields(*observed));
     }
+}
+
+TEST_CASE("Task 10.11ae dynamic pair ledger is complete and observational") {
+    auto plain=gf::makeTask10p11rFixedBaselineFixture(
+        gf::GammaFeedbackSelectionMode::LeastIntervention,22.0);
+    auto observed=gf::makeTask10p11rFixedBaselineFixture(
+        gf::GammaFeedbackSelectionMode::LeastIntervention,22.0);
+    REQUIRE(plain->adapter.initializeStageZero().initialized);
+    REQUIRE(observed->adapter.initializeStageZero().initialized);
+
+    for (std::size_t cycle=0;cycle<2;++cycle) {
+        const auto runtime=observed->adapter.runtimeSnapshot();
+        const auto rows=gf::buildCanonicalHardRows(
+            observed->adapter.snapshotHardRowRequest(
+                runtime.estimate,runtime.topology));
+        const auto plain_step=plain->controller.
+            advanceWithDynamicPairResponsibility("reference:2->4");
+        const auto observed_step=observed->controller.
+            advanceWithDynamicPairResponsibility("reference:2->4");
+        REQUIRE(plain_step.step.advanced);
+        REQUIRE(observed_step.step.advanced);
+        REQUIRE(observed_step.step.dynamic_pair.applied);
+        CHECK(observed_step.step.gamma_feedback.empty());
+        const auto ledger=gf::task10p11aeOwnerLedger(
+            runtime.estimate.mobile_ids,observed_step.step.gamma_feedback,
+            observed->controller.lastNominalControls(),
+            observed_step.step.applied_controls,rows,
+            observed_step.step.dynamic_pair,true,9);
+        REQUIRE(ledger.size()==14);
+        std::size_t pair=0,frozen=0;
+        for (const auto& entry:ledger) {
+            const auto status=entry.at("status").get<std::string>();
+            pair+=status=="not_applicable_dynamic_pair_override";
+            frozen+=status=="not_applicable_other_frozen_control_path";
+            CHECK_FALSE(entry.at("feedback_applicable").get<bool>());
+            CHECK(entry.at("all_current_hard_rows_passed").get<bool>());
+        }
+        CHECK(pair==2);
+        CHECK(frozen==12);
+        gf::Task10p11acCycleStatistics statistics;
+        statistics.observe(true,ledger);
+        CHECK(statistics.feedback_applicable_owner_decisions==0);
+        CHECK(statistics.not_applicable_owner_decisions==14);
+        CHECK(statistics.owner_branch_counts.empty());
+        CHECK(statistics.owner_alpha_counts.empty());
+        for (const auto& [owner,control]:plain_step.step.applied_controls)
+            CHECK((control-observed_step.step.applied_controls.at(owner)).norm()==
+                doctest::Approx(0.0));
+        for (const auto& [owner,rate]:plain_step.step.applied_yaw_rates_radps)
+            CHECK(rate==doctest::Approx(
+                observed_step.step.applied_yaw_rates_radps.at(owner)));
+        CHECK(plain_step.step.minimum_hard_residual==doctest::Approx(
+            observed_step.step.minimum_hard_residual));
+        CHECK(gf::captureTask10p11vRestartFields(*plain)==
+              gf::captureTask10p11vRestartFields(*observed));
+    }
+
+    const auto runtime=observed->adapter.runtimeSnapshot();
+    const auto rows=gf::buildCanonicalHardRows(
+        observed->adapter.snapshotHardRowRequest(
+            runtime.estimate,runtime.topology));
+    const auto plain_exit=plain->controller.advance();
+    const auto observed_exit=observed->controller.advance();
+    REQUIRE(plain_exit.step.advanced);
+    REQUIRE(observed_exit.step.advanced);
+    CHECK_FALSE(observed_exit.step.dynamic_pair.attempted);
+    const auto exit_ledger=gf::task10p11aeOwnerLedger(
+        runtime.estimate.mobile_ids,observed_exit.step.gamma_feedback,
+        observed->controller.lastNominalControls(),
+        observed_exit.step.applied_controls,rows,
+        observed_exit.step.dynamic_pair,true,9);
+    REQUIRE(exit_ledger.size()==14);
+    for (const auto& entry:exit_ledger)
+        CHECK(entry.at("status")=="valid_feedback_decision");
+    CHECK(gf::captureTask10p11vRestartFields(*plain)==
+          gf::captureTask10p11vRestartFields(*observed));
+}
+
+TEST_CASE("Task 10.11ae fail-closed ledger is explicit and finite") {
+    auto fixture=gf::makeTask10p11rFixedBaselineFixture(
+        gf::GammaFeedbackSelectionMode::LeastIntervention,22.0);
+    REQUIRE(fixture->adapter.initializeStageZero().initialized);
+    const auto runtime=fixture->adapter.runtimeSnapshot();
+    const auto rows=gf::buildCanonicalHardRows(
+        fixture->adapter.snapshotHardRowRequest(
+            runtime.estimate,runtime.topology));
+    gf::GrandFinaleDynamicPairDiagnostic failed;
+    failed.attempted=true;
+    failed.reason="dynamic_pair_responsibility_interval_empty";
+    failed.pair_base_id="reference:2->4";
+    const auto ledger=gf::task10p11aeOwnerLedger(runtime.estimate.mobile_ids,
+        {},fixture->controller.lastNominalControls(),{},rows,failed,false,9);
+    REQUIRE(ledger.size()==14);
+    for (const auto& entry:ledger) {
+        CHECK(entry.at("status")=="invalid");
+        CHECK(entry.at("actual_applied_control").is_null());
+    }
+    const auto path=std::filesystem::temp_directory_path()/
+        ("task10p11ae-fail-closed-ledger-"+std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count())+
+         ".json");
+    CHECK_NOTHROW(gf::writeTask10p11vJson(path,ledger));
 }
 
 TEST_CASE("Task 10.11ac base identity excludes only explicit tau") {

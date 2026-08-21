@@ -205,7 +205,8 @@ int main(int argc,char** argv) {
                 "task10p11ac-initialization-manifest-v1" ||
             manifest.at("matrix_order").get<std::vector<std::string>>()!=order ||
             manifest.at("replacement_permitted")!=false ||
-            prereg.at("protocol")!="task10p11ac-preregistration-v1" ||
+            (prereg.at("protocol")!="task10p11ac-preregistration-v1" &&
+             prereg.at("protocol")!="task10p11ae-preregistration-v1") ||
             prereg.at("frozen_before_first_trajectory")!=true ||
             prereg.at("profile_order").get<std::vector<std::string>>()!=order ||
             prereg.at("source")!=sourceJson(argv) ||
@@ -232,7 +233,11 @@ int main(int argc,char** argv) {
             all_passed=all_passed && result.at("pass").get<bool>();
             initializations.push_back(result);
         }
-        const json output={{"protocol","task10p11ac-gate1-preflight-v1"},
+        const bool task10p11ae=prereg.at("protocol")==
+            "task10p11ae-preregistration-v1";
+        const json output={{"protocol",task10p11ae
+                ?"task10p11ae-gate1-preflight-v1"
+                :"task10p11ac-gate1-preflight-v1"},
             {"valid",true},{"all_passed",all_passed},
             {"source",sourceJson(argv)},{"initializations",initializations},
             {"replacement_initialization_generated",false},

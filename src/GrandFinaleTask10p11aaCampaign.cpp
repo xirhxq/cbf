@@ -29,6 +29,7 @@ struct SourceIdentity {
 };
 
 struct Task10p11acContext {
+    std::string evidence_protocol="task10p11ac-preregistration-v1";
     std::string initialization_id;
     std::string initialization_record_sha256;
     std::string initialization_manifest_sha256;
@@ -60,6 +61,7 @@ struct CycleEvidence {
     double successor_residual=std::numeric_limits<double>::quiet_NaN();
     double deviation=0.0;
     json owner_decisions=json::array();
+    json owner_status_histogram=json::object();
     json owner_branch_histogram=json::object();
     json owner_alpha_histogram=json::object();
     bool invalid_prediction_fallback=false;
@@ -90,7 +92,10 @@ struct RunState {
     json owner_decision_ledger=json::array();
     gf::Task10p11acCycleStatistics task10p11ac_statistics;
     std::map<std::string,double> first_branch_time,last_branch_time;
+    std::map<std::string,double> first_ledger_status_time,
+        last_ledger_status_time;
     std::map<std::string,std::size_t> cycle_branch_counts;
+    std::map<std::string,std::size_t> cycle_ledger_status_counts;
     std::map<std::string,std::size_t> cycle_alpha_signature_counts;
     std::optional<std::string> initial_alpha_signature;
     bool alpha_change_saved=false;
@@ -162,7 +167,9 @@ Task10p11acContext validateTask10p11acPrereg(
         "I0-tau20","I0-tau22","P1-tau20","P1-tau22",
         "P2-tau20","P2-tau22","P3-tau20","P3-tau22"};
     const double tau=tauFor(profile);
-    if (prereg.at("protocol")!="task10p11ac-preregistration-v1" ||
+    const std::string protocol=prereg.at("protocol").get<std::string>();
+    const bool task10p11ae=protocol=="task10p11ae-preregistration-v1";
+    if ((!task10p11ae && protocol!="task10p11ac-preregistration-v1") ||
         prereg.at("frozen_before_first_trajectory")!=true ||
         prereg.at("profile_order").get<std::vector<std::string>>()!=order ||
         prereg.at("profiles").at(profile).at("tau_mps2")!=tau ||
@@ -185,10 +192,31 @@ Task10p11acContext validateTask10p11acPrereg(
             get<std::string>(),64) ||
         !hexDigest(prereg.at("hard_gate_sha256").get<std::string>(),64))
         throw std::runtime_error("task10p11ac_preregistration_identity_mismatch");
+    if (task10p11ae) {
+        static const std::vector<std::string> statuses{
+            "valid_feedback_decision",
+            "not_applicable_dynamic_pair_override",
+            "not_applicable_other_frozen_control_path","invalid"};
+        if (prereg.at("ledger").at(
+                "exact_owner_entries_per_advanced_cycle")!=14 ||
+            prereg.at("ledger").at("statuses").
+                get<std::vector<std::string>>()!=statuses ||
+            prereg.at("ledger").at("branch_denominator")!=
+                "feedback_applicable_owner_decisions_only" ||
+            prereg.at("ledger").at("observation_only")!=true ||
+            prereg.at("gate2").at("full_same_binary_eight_cell_rerun")!=true ||
+            prereg.at("gate2").at(
+                "task10p11ad_results_preserved_but_not_substituted")!=true ||
+            prereg.at("gate2").at(
+                "task10p11ad_p2_tau20_is_shared_ledger_error")!=true)
+            throw std::runtime_error(
+                "task10p11ae_ledger_preregistration_identity_mismatch");
+    }
     if (!fixture.adapter.config().predictive_gamma_tau_mps2.has_value() ||
         *fixture.adapter.config().predictive_gamma_tau_mps2!=tau)
         throw std::runtime_error("task10p11ac_explicit_tau_mismatch");
-    return {initialization_id,initialization_record_sha256,manifest_sha256,
+    return {protocol,initialization_id,initialization_record_sha256,
+        manifest_sha256,
         prereg.at("base_config_sha256_without_tau").get<std::string>(),
         prereg.at("hard_gate_sha256").get<std::string>(),6.0*3600.0};
 }
@@ -267,7 +295,9 @@ void decorate(json& checkpoint,const std::string& profile,
         {"profile",profile},{"source",sourceJson(source)},
         {"decision",decision}};
     if (task10p11ac.has_value()) checkpoint["task10p11ac"]={{"protocol",
-        "task10p11ac-checkpoint-v1"},{"profile",profile},
+        task10p11ac->evidence_protocol=="task10p11ae-preregistration-v1"
+            ?"task10p11ae-checkpoint-v1":"task10p11ac-checkpoint-v1"},
+        {"ledger_protocol",task10p11ac->evidence_protocol},{"profile",profile},
         {"initialization_id",task10p11ac->initialization_id},
         {"initialization_record_sha256",
             task10p11ac->initialization_record_sha256},
@@ -395,17 +425,22 @@ gf::SimpleCoverageControlStep advanceDistributed(
     evidence.baseline=fixture.controller.lastNominalControls();
     evidence.dynamic_pair_intervened=control.step.dynamic_pair.applied;
     for (const auto& [owner,diagnostic]:control.step.gamma_feedback) {
+        (void)owner;
         evidence.local_feedback_intervened=
             evidence.local_feedback_intervened || diagnostic.intervened;
-        if (control.step.applied_controls.size()==14 &&
-            evidence.baseline.size()==14) {
-            const auto decision=gf::task10p11acOwnerDecisionJson(owner,
-                diagnostic,evidence.baseline.at(owner),
-                control.step.applied_controls.at(owner),9);
+    }
+    evidence.owner_decisions=gf::task10p11aeOwnerLedger(
+        runtime.estimate.mobile_ids,control.step.gamma_feedback,
+        evidence.baseline,control.step.applied_controls,rows,
+        control.step.dynamic_pair,control.step.advanced,9);
+    for (const auto& decision:evidence.owner_decisions) {
+        const auto status=decision.at("status").get<std::string>();
+        evidence.owner_status_histogram[status]=
+            evidence.owner_status_histogram.value(status,0)+1;
+        if (decision.at("feedback_applicable").get<bool>()) {
             const auto branch=decision.at("branch").get<std::string>();
             const auto alpha=std::to_string(decision.at(
                 "selected_candidate_index").get<std::size_t>());
-            evidence.owner_decisions.push_back(decision);
             evidence.owner_branch_histogram[branch]=
                 evidence.owner_branch_histogram.value(branch,0)+1;
             evidence.owner_alpha_histogram[alpha]=
@@ -429,6 +464,7 @@ gf::SimpleCoverageControlStep advanceDistributed(
         {"local_gamma_feedback_intervened",evidence.local_feedback_intervened},
         {"dynamic_pair_intervened",evidence.dynamic_pair_intervened},
         {"owner_decisions",evidence.owner_decisions},
+        {"owner_status_histogram",evidence.owner_status_histogram},
         {"owner_branch_histogram",evidence.owner_branch_histogram},
         {"owner_alpha_histogram",evidence.owner_alpha_histogram},
         {"invalid_prediction_projection_fallback",
@@ -576,6 +612,7 @@ json runProfile(const std::string& profile,
         if (first_graph) state.first_graph=evidence.decision_time;
         if (first_divergence) state.first_margin_divergence=evidence.decision_time;
         std::vector<std::string> first_branches;
+        std::vector<std::string> first_ledger_statuses;
         if (task10p11ac.has_value()) {
             for (auto it=evidence.owner_branch_histogram.begin();
                  it!=evidence.owner_branch_histogram.end();++it) {
@@ -585,6 +622,15 @@ json runProfile(const std::string& profile,
                         branch,evidence.decision_time).second)
                     first_branches.push_back(branch);
                 state.last_branch_time[branch]=evidence.decision_time;
+            }
+            for (auto it=evidence.owner_status_histogram.begin();
+                 it!=evidence.owner_status_histogram.end();++it) {
+                if (it.value().get<std::size_t>()==0) continue;
+                const auto& status=it.key();
+                if (state.first_ledger_status_time.emplace(
+                        status,evidence.decision_time).second)
+                    first_ledger_statuses.push_back(status);
+                state.last_ledger_status_time[status]=evidence.decision_time;
             }
         }
         const bool milestone=std::abs(evidence.decision_time-132.4)<1e-9 ||
@@ -602,6 +648,9 @@ json runProfile(const std::string& profile,
         for (const auto& branch:first_branches)
             savePre(directory,state,profile,source,evidence,"first_"+branch,
                 task10p11ac);
+        for (const auto& status:first_ledger_statuses)
+            savePre(directory,state,profile,source,evidence,
+                "first_ledger_status_"+status,task10p11ac);
         if (!control.step.advanced) {
             state.stop_reason=control.reason.empty()?control.step.reason:
                                                     control.reason;
@@ -622,9 +671,14 @@ json runProfile(const std::string& profile,
                  it!=evidence.owner_branch_histogram.end();++it)
                 if (it.value().get<std::size_t>()>0)
                     ++state.cycle_branch_counts[it.key()];
+            for (auto it=evidence.owner_status_histogram.begin();
+                 it!=evidence.owner_status_histogram.end();++it)
+                if (it.value().get<std::size_t>()>0)
+                    ++state.cycle_ledger_status_counts[it.key()];
             state.owner_decision_ledger.push_back({
                 {"time_s",evidence.decision_time},
                 {"coverage_after",control.step.truth_coverage},
+                {"status_histogram",evidence.owner_status_histogram},
                 {"branch_histogram",evidence.owner_branch_histogram},
                 {"selected_alpha_histogram",evidence.owner_alpha_histogram},
                 {"owner_decisions",evidence.owner_decisions}});
@@ -723,6 +777,7 @@ json runProfile(const std::string& profile,
     for (const auto& [index,count]:state.task10p11ac_statistics.owner_alpha_counts)
         owner_alpha_counts[std::to_string(index)]=count;
     json task10p11ac_result=task10p11ac.has_value()?json{
+        {"ledger_protocol",task10p11ac->evidence_protocol},
         {"initialization_id",task10p11ac->initialization_id},
         {"initialization_record_sha256",
             task10p11ac->initialization_record_sha256},
@@ -734,12 +789,23 @@ json runProfile(const std::string& profile,
         {"hard_gate_sha256",task10p11ac->hard_gate_sha256},
         {"owner_branch_counts",
             state.task10p11ac_statistics.owner_branch_counts},
+        {"owner_ledger_status_counts",
+            state.task10p11ac_statistics.owner_status_counts},
+        {"feedback_applicable_owner_decision_count",
+            state.task10p11ac_statistics.feedback_applicable_owner_decisions},
+        {"not_applicable_owner_decision_count",
+            state.task10p11ac_statistics.not_applicable_owner_decisions},
+        {"invalid_owner_decision_count",
+            state.task10p11ac_statistics.invalid_owner_decisions},
         {"owner_selected_alpha_index_histogram",owner_alpha_counts},
         {"cycle_branch_counts",state.cycle_branch_counts},
+        {"cycle_ledger_status_counts",state.cycle_ledger_status_counts},
         {"cycle_selected_alpha_signature_counts",
             state.cycle_alpha_signature_counts},
         {"first_branch_time_s",state.first_branch_time},
         {"last_branch_time_s",state.last_branch_time},
+        {"first_ledger_status_time_s",state.first_ledger_status_time},
+        {"last_ledger_status_time_s",state.last_ledger_status_time},
         {"branch_gamma_feedback_deviation_l2_mps2",
             state.task10p11ac_statistics.branch_feedback_deviation},
         {"branch_final_control_deviation_l2_mps2",
@@ -747,7 +813,10 @@ json runProfile(const std::string& profile,
         {"owner_decision_ledger",std::move(state.owner_decision_ledger)}}:
         json(nullptr);
     return {{"protocol",task10p11ac.has_value()
-            ?"task10p11ac-stage-zero-result-v1":
+            ?(task10p11ac->evidence_protocol==
+                    "task10p11ae-preregistration-v1"
+                ?"task10p11ae-stage-zero-result-v1"
+                :"task10p11ac-stage-zero-result-v1"):
              "task10p11aa-stage-zero-result-v1"},{"valid",true},
         {"profile",profile},{"source",sourceJson(source)},
         {"config_digest",gf::task10p11qConfigDigest(fixture.adapter.config())},
@@ -819,13 +888,20 @@ void publishInvalid(const std::filesystem::path& result_path,
     decorate(checkpoint,profile,source,{{"valid",false},{"reason",reason},
         {"advanced",advanced}});
     if (task10p11ac.has_value()) checkpoint["task10p11ac"]={{"protocol",
-        "task10p11ac-termination-v1"},{"initialization_id",
+        task10p11ac->evidence_protocol=="task10p11ae-preregistration-v1"
+            ?"task10p11ae-termination-v1":"task10p11ac-termination-v1"},
+        {"ledger_protocol",task10p11ac->evidence_protocol},
+        {"initialization_id",
         task10p11ac->initialization_id},{"explicit_tau_mps2",tauFor(profile)},
         {"valid",false},{"reason",reason},{"advanced",advanced}};
     const auto checkpoint_path=directory/"termination-exception.json";
     gf::writeTask10p11vJson(checkpoint_path,checkpoint);
     gf::writeTask10p11vJson(result_path,{{"protocol",
-        task10p11ac.has_value()?"task10p11ac-stage-zero-result-v1":
+        task10p11ac.has_value()
+            ?(task10p11ac->evidence_protocol==
+                    "task10p11ae-preregistration-v1"
+                ?"task10p11ae-stage-zero-result-v1"
+                :"task10p11ac-stage-zero-result-v1"):
             "task10p11aa-stage-zero-result-v1"},{"valid",false},
         {"profile",profile},{"advanced",advanced},{"reason",reason},
         {"checkpoint_published",true},
@@ -870,7 +946,8 @@ int main(int argc,char** argv) {
                     manifest,initialization_id);
             const auto prereg=gf::readTask10p11vJson(argv[4]);
             task10p11ac_context=Task10p11acContext{
-                initialization_id,initialization.record_sha256,
+                prereg.at("protocol").get<std::string>(),initialization_id,
+                initialization.record_sha256,
                 manifest_sha256,
                 prereg.value("base_config_sha256_without_tau",std::string{}),
                 prereg.value("hard_gate_sha256",std::string{}),6.0*3600.0};

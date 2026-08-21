@@ -52,6 +52,7 @@ def main() -> None:
     parser.add_argument("--cbf-tree", required=True)
     parser.add_argument("--binary-sha256", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--task-ae", action="store_true")
     arguments = parser.parse_args()
 
     manifest = load_finite(arguments.manifest)
@@ -87,7 +88,11 @@ def main() -> None:
     base = identity["base_config_without_tau"]
     hard_gates = identity["hard_gates"]
     preregistration = {
-        "protocol": "task10p11ac-preregistration-v1",
+        "protocol": (
+            "task10p11ae-preregistration-v1"
+            if arguments.task_ae
+            else "task10p11ac-preregistration-v1"
+        ),
         "frozen_before_first_trajectory": True,
         "profile_order": ORDER,
         "profiles": profiles,
@@ -108,12 +113,22 @@ def main() -> None:
             "cbf_tree": arguments.cbf_tree,
             "binary_sha256": arguments.binary_sha256,
         },
-        "gate2": {
-            "requires_legacy_D20_D22_scientific_field_reproduction": True,
-            "requires_per_cycle_applied_control_trajectory_comparison": True,
-            "failure_stops_before_P1_P2_P3": True,
-            "extra_legacy_reference_trajectory_authorized": False,
-        },
+        "gate2": (
+            {
+                "full_same_binary_eight_cell_rerun": True,
+                "i0_tau22_t100_required_before_perturbation_matrix": True,
+                "task10p11ad_results_preserved_but_not_substituted": True,
+                "task10p11ad_p2_tau20_is_shared_ledger_error": True,
+                "extra_legacy_reference_trajectory_authorized": False,
+            }
+            if arguments.task_ae
+            else {
+                "requires_legacy_D20_D22_scientific_field_reproduction": True,
+                "requires_per_cycle_applied_control_trajectory_comparison": True,
+                "failure_stops_before_P1_P2_P3": True,
+                "extra_legacy_reference_trajectory_authorized": False,
+            }
+        ),
         "prohibitions": {
             "additional_tau": True,
             "g1_g2": True,
@@ -126,6 +141,18 @@ def main() -> None:
             "production_centralized_controller": True,
         },
     }
+    if arguments.task_ae:
+        preregistration["ledger"] = {
+            "exact_owner_entries_per_advanced_cycle": 14,
+            "statuses": [
+                "valid_feedback_decision",
+                "not_applicable_dynamic_pair_override",
+                "not_applicable_other_frozen_control_path",
+                "invalid",
+            ],
+            "branch_denominator": "feedback_applicable_owner_decisions_only",
+            "observation_only": True,
+        }
     arguments.output.parent.mkdir(parents=True, exist_ok=True)
     arguments.output.write_text(
         json.dumps(preregistration, indent=2, sort_keys=True, allow_nan=False)
