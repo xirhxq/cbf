@@ -64,3 +64,40 @@ TEST_CASE("Task 10.11ag evidence encoding rejects nonfinite values") {
     CHECK(encoded.at("coverage_control_deviation_l2_mps2").is_null());
     CHECK(encoded.at("strict_infeasibility_proven")==false);
 }
+
+TEST_CASE("157.8 H2 witness contains three independently auditable full-row sets") {
+    const auto path=std::filesystem::path(PROJECT_ROOT).parent_path()/"docs"/
+        "evidence"/"task10p11ag-full-domain-predecessor-recovery"/"gate4"/
+        "h2-witness-157.8.json";
+    const auto evidence=gf::readTask10p11vJson(path);
+    REQUIRE(evidence.at("valid").get<bool>());
+    REQUIRE(evidence.at("witness_found").get<bool>());
+    for (const auto* key:{"current","x1_full_pair","x2_full_pair"}) {
+        const auto& frame=evidence.at(key);
+        CHECK(frame.at("row_count")==1113);
+        CHECK(frame.at("all_1113_residuals").size()==1113);
+        CHECK(frame.at("minimum_residual_mps2").get<double>()>=-1.0e-8);
+    }
+    CHECK(evidence.at("x1_full_pair").at("global_gamma_mps2")
+        .get<double>()>=0.0);
+    CHECK(evidence.at("x2_full_pair").at("global_gamma_mps2")
+        .get<double>()>=0.0);
+}
+
+TEST_CASE("157.9 global H2 necessary bound is a strict negative certificate") {
+    const auto path=std::filesystem::path(PROJECT_ROOT).parent_path()/"docs"/
+        "evidence"/"task10p11ag-full-domain-predecessor-recovery"/"gate4"/
+        "h2-collision-2--9-necessary-upper-bound-157.9.json";
+    const auto evidence=gf::readTask10p11vJson(path);
+    REQUIRE(evidence.at("valid").get<bool>());
+    CHECK(evidence.at("global_optimal").get<bool>());
+    CHECK(evidence.at("mip_gap")==doctest::Approx(0.0));
+    CHECK(evidence.at("global_objective_bound_mps2").get<double>()<0.0);
+    CHECK(evidence.at("strict_full_domain_H2_infeasible").get<bool>());
+    const double incumbent=evidence.at(
+        "incumbent_upper_row_residual_mps2").get<double>();
+    CHECK(evidence.at("independent_formula_residual_mps2").get<double>()==
+        doctest::Approx(incumbent).epsilon(1.0e-9));
+    CHECK(evidence.at("canonical_builder_support_residual_mps2").get<double>()==
+        doctest::Approx(incumbent).epsilon(1.0e-9));
+}
