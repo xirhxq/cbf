@@ -2,6 +2,7 @@
 #include "doctest.h"
 
 #include "grand_finale/Task10p11ahEarlyH2Recovery.hpp"
+#include "grand_finale/Task10p11ahTerminalRecoveryOptimizer.hpp"
 
 #include <filesystem>
 #include <chrono>
@@ -45,6 +46,116 @@ TEST_CASE("Task 10.11ah freezes early H2 component semantics") {
     CHECK(frozen.horizon_steps==2);
     CHECK(frozen.fixed_topology);
     CHECK_FALSE(frozen.recursive_feasibility_claimed);
+}
+
+TEST_CASE("post-hoc terminal optimizer freezes lexicographic component protocol") {
+    const auto frozen=gf::task10p11ahPosthocOptimizerProtocol();
+    CHECK(frozen.post_hoc_development_extension);
+    CHECK(frozen.component==std::set<gf::NodeId>{2,9});
+    CHECK(frozen.horizon_steps==2);
+    CHECK(frozen.tau_mps2==doctest::Approx(22.0));
+    CHECK(frozen.fixed_topology);
+    CHECK(frozen.external_controls==
+        "same_frame_canonical_distributed_controls");
+    CHECK(frozen.optimizer=="deterministic_continuous_pattern_search");
+    CHECK_FALSE(frozen.component_expansion_allowed);
+    CHECK_FALSE(frozen.depth_expansion_allowed);
+}
+
+TEST_CASE("terminal optimizer orders feasibility then recovery then deviation") {
+    gf::Task10p11ahPlanScore infeasible,recovery_missing,recovered,closer;
+    infeasible.full_rows_feasible=false;
+    infeasible.minimum_full_row_residual_mps2=-0.1;
+    recovery_missing.full_rows_feasible=true;
+    recovery_missing.terminal_recovered=false;
+    recovery_missing.terminal_recovery_margin_mps2=-0.01;
+    recovered.full_rows_feasible=true;
+    recovered.terminal_recovered=true;
+    recovered.cumulative_coverage_deviation_l2_mps2=2.0;
+    closer=recovered;
+    closer.cumulative_coverage_deviation_l2_mps2=1.0;
+    CHECK(gf::task10p11ahBetterPlan(recovery_missing,infeasible));
+    CHECK(gf::task10p11ahBetterPlan(recovered,recovery_missing));
+    CHECK(gf::task10p11ahBetterPlan(closer,recovered));
+    CHECK_FALSE(gf::task10p11ahBetterPlan(recovered,closer));
+}
+
+TEST_CASE("negative terminal optimizer outcomes retain certificate strength") {
+    CHECK(gf::task10p11ahOptimizerClassificationName(
+        gf::Task10p11ahOptimizerClassification::StrictlyInfeasible)==
+        "strictly_infeasible");
+    CHECK(gf::task10p11ahOptimizerClassificationName(
+        gf::Task10p11ahOptimizerClassification::Undetermined)==
+        "undetermined");
+    CHECK(gf::task10p11ahOptimizerClassificationName(
+        gf::Task10p11ahOptimizerClassification::LocalNoWitness)==
+        "local_optimizer_no_witness");
+}
+
+TEST_CASE("legacy component prefix is rebuilt with native outside controls") {
+    const auto snapshot=gf::readTask10p11vJson(
+        evidence("gate2/derived-from-sparse-157.8.json"));
+    const auto legacy=gf::readTask10p11vJson(
+        std::filesystem::path(PROJECT_ROOT).parent_path()/"docs"/"evidence"/
+        "task10p11ah-early-h2-component-recovery"/"development-attempts"/
+        "legacy-component-prefix-plan.json");
+    auto fixture=makeP3();
+    gf::restoreTask10p11vRestartState(
+        *fixture,snapshot.at("restart_checkpoint"));
+    const auto x0=gf::task10p11ah_detail::controlsFromJson(
+        legacy.at("x0").at("controls"),
+        fixture->adapter.runtimeSnapshot().estimate.mobile_ids);
+    const auto x1=gf::task10p11ah_detail::controlsFromJson(
+        legacy.at("x1").at("controls"),
+        fixture->adapter.runtimeSnapshot().estimate.mobile_ids);
+    gf::Task10p11ahComponentPlan plan;
+    plan.owner2_u0=x0.at(2); plan.owner9_u0=x0.at(9);
+    plan.owner2_u1=x1.at(2); plan.owner9_u1=x1.at(9);
+    const auto audit=gf::evaluateTask10p11ahTerminalRecoveryPlan(
+        *fixture,std::nullopt,plan);
+    REQUIRE(audit.valid);
+    CHECK(audit.full_row_count_x0==1113);
+    CHECK(audit.full_row_count_x1==1113);
+    CHECK(audit.full_row_count_x2==1113);
+    CHECK(audit.score.full_rows_feasible);
+    CHECK_FALSE(audit.score.terminal_recovered);
+    CHECK(audit.classification==
+        gf::Task10p11ahOptimizerClassification::LocalNoWitness);
+    CHECK(gf::task10p11ahOnlyComponentDiffers(
+        audit.distributed_u0,audit.selected_u0,{2,9},1.0e-12));
+    CHECK(gf::task10p11ahOnlyComponentDiffers(
+        audit.distributed_u1,audit.selected_u1,{2,9},1.0e-12));
+    CHECK(audit.terminal_native_successor_gamma_mps2<0.0);
+}
+
+TEST_CASE("deterministic continuous search respects frozen component bounds") {
+    gf::Task10p11ahPatternSearchSettings settings;
+    settings.step_schedule_mps2={1.0,0.5,0.25};
+    settings.maximum_sweeps_per_step=2;
+    settings.maximum_evaluations=80;
+    settings.wall_clock_limit_s=5.0;
+    gf::Task10p11ahComponentPlan start;
+    const auto evaluator=[](const gf::Task10p11ahComponentPlan& plan) {
+        gf::Task10p11ahPlanEvaluation value;
+        value.valid=true;
+        value.classification=
+            gf::Task10p11ahOptimizerClassification::LocalNoWitness;
+        const auto vector=gf::task10p11ahPlanVector(plan);
+        value.score.full_rows_feasible=true;
+        value.score.terminal_recovery_margin_mps2=
+            1.0-(vector-Eigen::Matrix<double,8,1>::Constant(1.0)).squaredNorm();
+        value.score.terminal_recovered=
+            value.score.terminal_recovery_margin_mps2>=0.0;
+        value.score.cumulative_coverage_deviation_l2_mps2=vector.norm();
+        return value;
+    };
+    const auto result=gf::solveTask10p11ahTerminalRecovery(
+        {start},evaluator,settings);
+    REQUIRE(result.valid);
+    CHECK(result.evaluations<=settings.maximum_evaluations);
+    CHECK(gf::task10p11ahPlanVector(result.plan).cwiseAbs().maxCoeff()<=4.0);
+    CHECK(result.evaluation.score.terminal_recovery_margin_mps2>
+        evaluator(start).score.terminal_recovery_margin_mps2);
 }
 
 TEST_CASE("disabled early H2 decision preserves all distributed controls") {
