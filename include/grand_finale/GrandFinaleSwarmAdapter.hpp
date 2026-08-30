@@ -82,6 +82,10 @@ struct GrandFinaleSwarmAdapterConfig {
     double speed_limit_mps = 0.0;
     double speed_cbf_gain = 1.0;
     std::size_t plant_speed_facet_count = 64;
+    // Task 11b S1 (prereg v1.1): retire the 64-facet applied-control speed
+    // domain in favour of the nominal single-row speed HOCBF (no tube
+    // reserve).  The exact-ZOH interval guarantee is demoted to monitoring.
+    bool speed_row_nominal = false;
     double maximum_yaw_rate_radps = 0.0;
     double position_gain = 0.4;
     double velocity_gain = 0.8;
@@ -368,7 +372,8 @@ public:
             !std::isfinite(config_.speed_cbf_gain) ||
             config_.speed_cbf_gain <= 0.0 ||
             (config_.speed_limit_mps>0.0 &&
-             config_.plant_speed_facet_count!=64) ||
+             config_.plant_speed_facet_count!=64 &&
+             !config_.speed_row_nominal) ||
             !std::isfinite(config_.maximum_yaw_rate_radps) ||
             config_.maximum_yaw_rate_radps < 0.0 ||
             !std::isfinite(config_.collision_distance_m) ||
@@ -1690,9 +1695,17 @@ private:
         request.speed_limit_mps = config_.speed_limit_mps;
         request.speed_cbf_gain = config_.speed_cbf_gain;
         request.plant_speed_facet_count =
-            config_.speed_limit_mps>0.0?config_.plant_speed_facet_count:0;
+            config_.speed_limit_mps>0.0&&!config_.speed_row_nominal
+                ?config_.plant_speed_facet_count:0;
         request.plant_speed_dt_s = config_.dt_s;
         request.require_snapshot_robust_rows = true;
+        if (config_.speed_limit_mps > 0.0 && config_.speed_row_nominal) {
+            for (NodeId id : mobile_ids_) {
+                request.speed_snapshot_tubes[id] = {
+                    0.0,0.0,
+                    SnapshotTubeProvenance::CovarianceSigmaDevelopment};
+            }
+        }
         if (config_.speed_limit_mps > 0.0) {
             for (NodeId id : mobile_ids_) {
                 request.plant_speed_snapshot_tubes[id] = {
