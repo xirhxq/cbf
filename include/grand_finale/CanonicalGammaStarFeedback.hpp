@@ -37,7 +37,23 @@ struct CanonicalGammaFeedbackConfig {
     // full hard-QP path still runs on the task projection.
     bool margin_gate_enabled = false;
     double margin_gate_threshold_mps2 = 1.0;
+    // Task 11b V-c (prereg): restrictive predictive scoring - the predicted
+    // gamma* for an owner is solved over the limiting row family recorded on
+    // the previous tick (base id of the previous dominant row) instead of
+    // the full row set.  Null pointer = baseline semantics.
+    const std::map<NodeId,std::string>* limiting_family_filter = nullptr;
 };
+
+inline std::string task11bRowFamilyBase(const std::string& row_id) {
+    std::string base=row_id;
+    const std::string owner_suffix=":owner:";
+    auto position=base.rfind(owner_suffix);
+    if (position!=std::string::npos) base=base.substr(0,position);
+    const std::string facet_suffix=":facet:";
+    position=base.rfind(facet_suffix);
+    if (position!=std::string::npos) base=base.substr(0,position);
+    return base;
+}
 
 struct CanonicalGammaFeedbackStage {
     bool valid = false;
@@ -424,8 +440,27 @@ CanonicalGammaFeedbackBatchResult evaluateCanonicalGammaFeedbackBatchReference(
                         snapshot,surrogate_controls,dt_s,
                         acceleration_variance);
                     ++result.work.canonical_row_rebuilds;
-                    const auto predicted_rows=buildCanonicalHardRows(
+                    auto predicted_rows=buildCanonicalHardRows(
                         build_request(predicted));
+                    if (config.limiting_family_filter!=nullptr) {
+                        const auto family=
+                            config.limiting_family_filter->find(owner);
+                        if (family!=config.limiting_family_filter->end() &&
+                            !family->second.empty()) {
+                            std::vector<CanonicalHardRow> filtered;
+                            for (auto& row:predicted_rows) {
+                                if (row.owner!=owner) continue;
+                                const std::string base=task11bRowFamilyBase(
+                                    row.id);
+                                if (base==family->second ||
+                                    row.kind==
+                                        CanonicalHardRowKind::InputBox)
+                                    filtered.push_back(row);
+                            }
+                            if (!filtered.empty())
+                                predicted_rows=std::move(filtered);
+                        }
+                    }
                     ++result.work.exact_gamma_solves;
                     const auto gamma=solveCanonicalGammaStar(
                         predicted_rows,owner,config.acceleration_half_box);

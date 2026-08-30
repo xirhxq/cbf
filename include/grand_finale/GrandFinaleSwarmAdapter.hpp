@@ -89,6 +89,9 @@ struct GrandFinaleSwarmAdapterConfig {
     // Task 11b V-b (prereg v1.1 section 11.1): skip predictive rollouts when
     // current gamma clears the frozen 1.0 m/s^2 threshold.
     bool tau_margin_gate_enabled = false;
+    // Task 11b V-c (prereg): restrict the predicted gamma* solve to the
+    // limiting row family recorded on the previous tick.
+    bool tau_family_predict = false;
     double maximum_yaw_rate_radps = 0.0;
     double position_gain = 0.4;
     double velocity_gain = 0.8;
@@ -508,7 +511,11 @@ public:
             config_.gamma_feedback_selection,
             config_.predictive_gamma_tau_mps2,
             config_.gamma_feedback_tolerance,
-            config_.tau_margin_gate_enabled};
+            config_.tau_margin_gate_enabled,
+            1.0,
+            config_.tau_family_predict?&limiting_family_memory_:nullptr};
+        if (config_.tau_family_predict)
+            limiting_family_memory_.clear();
         CanonicalGammaFeedbackEvaluationContext feedback_context;
         const auto feedback_batch=evaluateCanonicalGammaFeedbackBatch(
             snapshot,task_nominal,feedback_config,config_.dt_s,
@@ -516,6 +523,11 @@ public:
             [&](const JointEstimateSnapshot& value) {
                 return hardRowRequest(value,supervisor_.topology());
             },feedback_context);
+        if (config_.tau_family_predict)
+            for (const auto& [owner,selection]:feedback_batch.selections)
+                if (!selection.dominant_row.empty())
+                    limiting_family_memory_[owner]=task11bRowFamilyBase(
+                        selection.dominant_row);
         metrics.gamma_policy_work=feedback_batch.work;
         metrics.compute_profile.merge(feedback_batch.compute_profile);
         if (!feedback_batch.valid) {
@@ -2024,6 +2036,7 @@ private:
     std::vector<NodeId> mobile_ids_;
     std::map<NodeId, Eigen::Vector2d> fixed_positions_;
     GrandFinaleSwarmAdapterConfig config_;
+    std::map<NodeId,std::string> limiting_family_memory_;
     InterimMasterDekf estimator_;
     CertifiedCoverageTracker coverage_;
     HybridSupervisor supervisor_;

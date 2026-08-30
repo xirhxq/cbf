@@ -18,11 +18,12 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     auto settings=gf::task10p11pSwarmSettings(scenario,
         gf::SolverProfile::Gurobi);
     const bool margin_gate=variant=="margin_gate";
-    if (!s1_on||variant=="baseline"||margin_gate) {
+    const bool family_predict=variant=="family_predict";
+    if (!s1_on&&(variant=="baseline"||margin_gate||family_predict)) {
         return std::make_unique<gf::Task10p11rFixedBaselineFixture>(
             std::move(scenario),std::move(settings),
             gf::GammaFeedbackSelectionMode::LeastIntervention,tau,s1_on,
-            margin_gate);
+            margin_gate,family_predict);
     }
     throw std::runtime_error("variant not implemented:"+variant);
 }
@@ -45,7 +46,8 @@ int main(int argc,char** argv) {
         const bool s1_on=std::string(argv[2])=="on";
         const double window_s=std::stod(argv[5]);
         const std::string variant=argc==7?argv[6]:"baseline";
-        if (variant!="baseline"&&variant!="margin_gate") {
+        if (variant!="baseline"&&variant!="margin_gate"&&
+            variant!="family_predict") {
             std::cerr<<"variant "<<variant<<" not implemented\n";
             return 2;
         }
