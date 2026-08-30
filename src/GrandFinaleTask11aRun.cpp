@@ -126,6 +126,7 @@ int main(int argc,char** argv) {
         // mechanism" (a certified alternative existed but the trigger/dwell
         // semantics had not authorised a switch in time).
         if (hard_stop) {
+          try {
             gf::Task11aFrozenConstants probe_constants=constants;
             probe_constants.proposals_enabled=true;
             gf::Task11aDynamicTopologyCoordinator probe(
@@ -138,7 +139,7 @@ int main(int argc,char** argv) {
                 fixture->controller.successfulControlCycles());
             gf::writeTask10p11vJson(
                 progress_directory/"failure-sparse-checkpoint.json",
-                checkpoint.at("restart_checkpoint"));
+                checkpoint);
             const std::size_t unhandled=
                 coordinator.attribution().last_immediate_trigger_condition_met
                 ?1u:0u;
@@ -173,6 +174,11 @@ int main(int argc,char** argv) {
                                 "ineffective_on_this_state")}}}};
             record["failure_attribution"]=failure_attribution;
             emit("99-failure-attribution.json",failure_attribution);
+          } catch (const std::exception& packaging_error) {
+              record["failure_attribution_packaging_error"]=
+                  packaging_error.what();
+              gf::writeTask10p11vJson(argv[3],record);
+          }
         }
         // Supplementary requirement (2026-08-31): annotate every archived
         // stop — any hard stop, or any stop after crossing 132.4 s — with the
@@ -180,6 +186,7 @@ int main(int argc,char** argv) {
         const bool crossed_132p4=fixture->adapter.runtimeSnapshot().
             runtime_s>=132.4;
         if (hard_stop||crossed_132p4) {
+          try {
             const auto classification=gf::task11aClassifyStopFrame(*fixture,
                 tau);
             record["stop_frame_classification"]={{"annotated",true},
@@ -194,8 +201,16 @@ int main(int argc,char** argv) {
                         classification.minimum_owner_local_gamma_mps2)}};
             emit("98-stop-frame-classification.json",
                 record["stop_frame_classification"]);
+          } catch (const std::exception& classification_error) {
+              record["stop_classification_packaging_error"]=
+                  classification_error.what();
+          }
         }
         record["evaluations"]=events;
+        // Primary result is written before the archival extras so an
+        // infrastructure failure there cannot destroy the science record.
+        gf::writeTask10p11vJson(argv[3],record);
+        std::cout<<record.dump(2)<<'\n';
         record["attribution_final"]={{"evaluations",
             coordinator.attribution().evaluations},
             {"solver_optimal_no_change",
@@ -214,7 +229,6 @@ int main(int argc,char** argv) {
             {"recursive_feasibility_claimed",false},
             {"production_controller_claimed",false}};
         gf::writeTask10p11vJson(argv[3],record);
-        std::cout<<record.dump(2)<<'\n';
         return 0;
     } catch (const std::exception& error) {
         std::cerr<<"Task 11a run failed: "<<error.what()<<'\n';
