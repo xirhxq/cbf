@@ -31,6 +31,12 @@ struct CanonicalGammaFeedbackConfig {
         GammaFeedbackSelectionMode::DiagnosticsOnly;
     std::optional<double> predictive_tau_mps2;
     double feasibility_tolerance = 1.0e-10;
+    // Task 11b V-b (prereg v1.1 section 11.1): pure efficiency gate - skip
+    // the per-candidate predictive rollouts when the owner's current gamma
+    // already clears the frozen threshold.  Safety is unaffected: the
+    // full hard-QP path still runs on the task projection.
+    bool margin_gate_enabled = false;
+    double margin_gate_threshold_mps2 = 1.0;
 };
 
 struct CanonicalGammaFeedbackStage {
@@ -191,6 +197,64 @@ CanonicalGammaFeedbackResult selectCanonicalGammaFeedback(
     CanonicalGammaFeedbackResult result;
     if (!stage.valid || stage.candidates.empty()) {
         result.reason="invalid_current_stage";
+        return result;
+    }
+    if (config.margin_gate_enabled &&
+        stage.current_gamma>=config.margin_gate_threshold_mps2) {
+        // V-b (prereg v1.1 section 11.1): skip the predictive rollouts and
+        // score the candidates with exact current-state margins instead.
+        // "沿用 current gamma" semantics - least-intervention selection on
+        // current-state values, no estimator propagation or row rebuild.
+        std::vector<CanonicalPredictedGammaScore> current_scores;
+        current_scores.reserve(stage.candidates.size());
+        for (const auto& candidate:stage.candidates) {
+            CanonicalPredictedGammaScore value;
+            value.valid=true;
+            value.gamma=std::numeric_limits<double>::infinity();
+            for (const auto& row:stage.current_rows)
+                value.gamma=std::min(value.gamma,row.margin(candidate));
+            if (!std::isfinite(value.gamma)) value.gamma=
+                -std::numeric_limits<double>::infinity();
+            current_scores.push_back(value);
+        }
+        result.valid=true;
+        result.reason="margin_gate_current_state_scoring";
+        std::size_t selected=0;
+        if (config.selection_mode==
+            GammaFeedbackSelectionMode::LeastIntervention) {
+            result.tau_attainment_valid=true;
+            const auto threshold=std::find_if(
+                current_scores.begin(),current_scores.end(),
+                [&](const auto& value) {
+                    return value.gamma+config.feasibility_tolerance>=
+                        *config.predictive_tau_mps2;
+                });
+            if (threshold==current_scores.end()) {
+                selected=static_cast<std::size_t>(std::distance(
+                    current_scores.begin(),std::max_element(
+                        current_scores.begin(),current_scores.end(),
+                        [](const auto& lhs,const auto& rhs) {
+                            return lhs.gamma<rhs.gamma;
+                        })));
+                result.tau_attained=false;
+                result.fallback_reason=
+                    "margin_gate_tau_unattained_maximum_current_margin";
+            } else {
+                selected=static_cast<std::size_t>(std::distance(
+                    current_scores.begin(),threshold));
+                result.tau_attained=true;
+            }
+        }
+        result.selected_control=stage.candidates[selected];
+        result.selected_candidate_index=selected;
+        result.selected_predicted_gamma=current_scores[selected].gamma;
+        result.nominal_predicted_gamma=current_scores.front().gamma;
+        result.maximum_margin_candidate_predicted_gamma=
+            current_scores.back().gamma;
+        result.controllable_predicted_gamma_range=
+            current_scores.back().gamma-current_scores.front().gamma;
+        result.intervened=selected!=0;
+        result.dominant_row=current_scores[selected].dominant_row;
         return result;
     }
     std::vector<CanonicalPredictedGammaScore> scores;

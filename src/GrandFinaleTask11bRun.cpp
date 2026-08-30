@@ -13,13 +13,18 @@ namespace {
 using json=nlohmann::json;
 
 std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
-    double tau,bool s1_on) {
+    double tau,bool s1_on,const std::string& variant) {
     auto scenario=gf::task10p11rFixedBaselineScenario();
     auto settings=gf::task10p11pSwarmSettings(scenario,
         gf::SolverProfile::Gurobi);
-    return std::make_unique<gf::Task10p11rFixedBaselineFixture>(
-        std::move(scenario),std::move(settings),
-        gf::GammaFeedbackSelectionMode::LeastIntervention,tau,s1_on);
+    const bool margin_gate=variant=="margin_gate";
+    if (!s1_on||variant=="baseline"||margin_gate) {
+        return std::make_unique<gf::Task10p11rFixedBaselineFixture>(
+            std::move(scenario),std::move(settings),
+            gf::GammaFeedbackSelectionMode::LeastIntervention,tau,s1_on,
+            margin_gate);
+    }
+    throw std::runtime_error("variant not implemented:"+variant);
 }
 
 }  // namespace
@@ -40,13 +45,12 @@ int main(int argc,char** argv) {
         const bool s1_on=std::string(argv[2])=="on";
         const double window_s=std::stod(argv[5]);
         const std::string variant=argc==7?argv[6]:"baseline";
-        if (variant!="baseline") {
-            std::cerr<<"variant "<<variant<<" not implemented in this "
-                "binary (P2)\n";
+        if (variant!="baseline"&&variant!="margin_gate") {
+            std::cerr<<"variant "<<variant<<" not implemented\n";
             return 2;
         }
         const auto constants=gf::task11aFrozenConstants();
-        auto fixture=makeFixture(tau,s1_on);
+        auto fixture=makeFixture(tau,s1_on,variant);
         if (!fixture->adapter.initializeStageZero().initialized)
             throw std::runtime_error("stage-zero initialization failed");
         // S1 evidence: row-kind counts at the live request.
@@ -64,7 +68,9 @@ int main(int argc,char** argv) {
         json record={{"protocol","task11b-efficiency-run-v1"},
             {"preregistration","task-11b-approved-v1.1-2026-09-01"},
             {"tau_mps2",tau},{"s1_speed_row_nominal",s1_on},
-            {"variant",variant},{"window_s",window_s},
+            {"variant",variant},
+            {"margin_gate_threshold_mps2",variant=="margin_gate"?json(1.0):json(nullptr)},
+            {"window_s",window_s},
             {"identity_t0",{{"topology_matches_fixed_baseline",
                 fixture->topologyFrozen()}}},
             {"row_counts",{{"speed_limit_rows",speed_limit_rows},

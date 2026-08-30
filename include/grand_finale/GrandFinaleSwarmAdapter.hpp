@@ -86,6 +86,9 @@ struct GrandFinaleSwarmAdapterConfig {
     // domain in favour of the nominal single-row speed HOCBF (no tube
     // reserve).  The exact-ZOH interval guarantee is demoted to monitoring.
     bool speed_row_nominal = false;
+    // Task 11b V-b (prereg v1.1 section 11.1): skip predictive rollouts when
+    // current gamma clears the frozen 1.0 m/s^2 threshold.
+    bool tau_margin_gate_enabled = false;
     double maximum_yaw_rate_radps = 0.0;
     double position_gain = 0.4;
     double velocity_gain = 0.8;
@@ -504,7 +507,8 @@ public:
             config_.gamma_feedback_homotopy_segments,
             config_.gamma_feedback_selection,
             config_.predictive_gamma_tau_mps2,
-            config_.gamma_feedback_tolerance};
+            config_.gamma_feedback_tolerance,
+            config_.tau_margin_gate_enabled};
         CanonicalGammaFeedbackEvaluationContext feedback_context;
         const auto feedback_batch=evaluateCanonicalGammaFeedbackBatch(
             snapshot,task_nominal,feedback_config,config_.dt_s,
