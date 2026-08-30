@@ -228,7 +228,13 @@ int main(int argc,char** argv) {
             {"c2_t95_efficiency_exploratory_only",true},
             {"recursive_feasibility_claimed",false},
             {"production_controller_claimed",false}};
-        gf::writeTask10p11vJson(argv[3],record);
+        // result.json was already published before the archival extras; the
+        // no-overwrite guard forbids rewriting it, so the final claim record
+        // goes to its own file.
+        gf::writeTask10p11vJson(
+            progress_directory/"claim-boundary.json",
+            {{"claim_boundary",record["claim_boundary"]},
+             {"terminality",record["terminality"]}});
         return 0;
     } catch (const std::exception& error) {
         std::cerr<<"Task 11a run failed: "<<error.what()<<'\n';
