@@ -8,6 +8,13 @@ namespace {
 
 using json=nlohmann::json;
 
+// Numeric fields encode non-finite sentinels as JSON null.
+double numberField(const json& object,const std::string& key) {
+    if (!object.contains(key)||object.at(key).is_null())
+        return std::numeric_limits<double>::quiet_NaN();
+    return object.at(key).get<double>();
+}
+
 std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeP3(
     const json& manifest) {
     const auto initialization=gf::task10p11acInitializationFromManifest(
@@ -156,14 +163,12 @@ int main(int argc,char** argv) {
                 "mobile_pair",true);
             const bool solved=chain.value("solved",false);
             const bool global_optimal=chain.value("global_optimal",false);
-            const double bound=chain.value("global_bound_mps2",
-                std::numeric_limits<double>::quiet_NaN());
-            const double incumbent=chain.value("incumbent_mps2",
-                std::numeric_limits<double>::quiet_NaN());
-            const double formula=chain.value("independent_formula_mps2",
-                std::numeric_limits<double>::quiet_NaN());
-            const double canonical_value=chain.value("canonical_builder_mps2",
-                std::numeric_limits<double>::quiet_NaN());
+            const double bound=numberField(chain,"global_bound_mps2");
+            const double incumbent=numberField(chain,"incumbent_mps2");
+            const double formula=numberField(chain,
+                "independent_formula_mps2");
+            const double canonical_value=numberField(chain,
+                "canonical_builder_mps2");
             const bool strict=chain.value("strict",false);
             const std::string name=(collision?"collision:":"reference:")+
                 owner_a+(mobile_pair?"--":"->")+owner_b;
