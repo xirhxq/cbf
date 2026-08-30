@@ -289,6 +289,30 @@ TEST_CASE("chain solver closes on a synthetic collision chain with agreement") {
         1.0e-7);
 }
 
+TEST_CASE("witness start plans clamp chain incumbents and dedupe") {
+    std::vector<Eigen::Matrix<double,8,1>> incumbents;
+    Eigen::Matrix<double,8,1> outside;
+    outside<<6.0,-6.0,-6.0,6.0,0.5,0.5,-0.5,-0.5;
+    incumbents.push_back(outside);
+    const auto plans=gf::task10p11aiWitnessStartPlans(std::nullopt,
+        std::nullopt,std::nullopt,incumbents);
+    REQUIRE(plans.size()==2);  // frozen best + clamped chain projection
+    const auto frozen=task10p11ahPlanVector(plans.front());
+    CHECK(frozen(0)==doctest::Approx(-4.0));
+    CHECK(frozen(1)==doctest::Approx(4.0));
+    const auto projected=task10p11ahPlanVector(plans.back());
+    CHECK(projected(0)==doctest::Approx(3.0));   // 0.5*6 within box
+    CHECK(projected(1)==doctest::Approx(-3.0));  // 0.5*-6 within box
+    CHECK(projected(2)==doctest::Approx(-3.0));
+    CHECK(projected(3)==doctest::Approx(3.0));
+    CHECK(projected(4)==doctest::Approx(0.25));  // 0.5*0.5
+    CHECK(projected(7)==doctest::Approx(-0.25));
+    // Duplicated incumbents collapse.
+    const auto deduped=gf::task10p11aiWitnessStartPlans(std::nullopt,
+        std::nullopt,std::nullopt,{outside,outside});
+    CHECK(deduped.size()==2);
+}
+
 TEST_CASE("limiting-row replay reproduces the frozen 10.11ah terminal") {
     const auto packed=gf::readTask10p11vJson(packed157p8().string());
     const auto manifest=gf::readTask10p11vJson(

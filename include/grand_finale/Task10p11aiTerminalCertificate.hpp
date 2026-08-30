@@ -958,6 +958,73 @@ struct Task10p11aiIntervalAuditResult {
     std::array<Task10p11aiLayerAudit,4> layers;
 };
 
+// Stage B (prereg section 4): deterministic registered-start family for the
+// extended witness search.  Combines the frozen v3 starts, the Task 10.11ah
+// best plan, and projections of Stage A chain incumbents (relative controls
+// halved to absolute component controls and clamped to the input box).
+inline std::vector<Task10p11ahComponentPlan>
+task10p11aiWitnessStartPlans(
+    const std::optional<Task10p11ahComponentPlan>& legacy,
+    const std::optional<Task10p11ahComponentPlan>& full28,
+    const std::optional<Task10p11ahComponentPlan>& native,
+    const std::vector<Eigen::Matrix<double,8,1>>& chain_incumbents) {
+    constexpr double kHalfBox=4.0;
+    std::vector<Task10p11ahComponentPlan> plans;
+    auto push=[&](const Task10p11ahComponentPlan& plan) {
+
+        for (const auto& existing:plans) {
+            const Eigen::Matrix<double,8,1> a=task10p11ahPlanVector(plan);
+            const Eigen::Matrix<double,8,1> b=task10p11ahPlanVector(existing);
+            if ((a-b).cwiseAbs().maxCoeff()<=1.0e-12) return;
+        }
+        plans.push_back(plan);
+    };
+    auto clamp_pair=[kHalfBox](const Eigen::Vector2d& value) {
+        return Eigen::Vector2d(std::clamp(value.x(),-kHalfBox,kHalfBox),
+            std::clamp(value.y(),-kHalfBox,kHalfBox));
+    };
+    if (legacy.has_value()) push(*legacy);
+    if (full28.has_value()) push(*full28);
+    if (native.has_value()) push(*native);
+    {
+        Task10p11ahComponentPlan frozen_best;
+        frozen_best.owner2_u0=Eigen::Vector2d(-4,4);
+        frozen_best.owner9_u0=Eigen::Vector2d(4,-4);
+        frozen_best.owner2_u1=Eigen::Vector2d(-4,4);
+        frozen_best.owner9_u1=Eigen::Vector2d(4,-4);
+        push(frozen_best);
+    }
+    for (const auto& incumbent:chain_incumbents) {
+        Task10p11ahComponentPlan plan;
+        plan.owner2_u0=clamp_pair(Eigen::Vector2d(0.5*incumbent(0),
+            0.5*incumbent(1)));
+        plan.owner9_u0=clamp_pair(Eigen::Vector2d(0.5*incumbent(2),
+            0.5*incumbent(3)));
+        plan.owner2_u1=clamp_pair(Eigen::Vector2d(0.5*incumbent(4),
+            0.5*incumbent(5)));
+        plan.owner9_u1=clamp_pair(Eigen::Vector2d(0.5*incumbent(6),
+            0.5*incumbent(7)));
+        push(plan);
+    }
+    return plans;
+}
+
+inline std::vector<Eigen::Matrix<double,8,1>>
+task10p11aiChainIncumbentsFromStageA(const nlohmann::json& stage_a_result) {
+    std::vector<Eigen::Matrix<double,8,1>> incumbents;
+    if (!stage_a_result.contains("stage_a1_chains")) return incumbents;
+    for (const auto& chain:stage_a_result.at("stage_a1_chains")) {
+        const auto controls=chain.value("incumbent_relative_controls",
+            std::vector<double>{});
+        if (controls.size()!=8) continue;
+        Eigen::Matrix<double,8,1> vector;
+        for (std::size_t index=0;index<8;++index)
+            vector(static_cast<Eigen::Index>(index))=controls[index];
+        incumbents.push_back(vector);
+    }
+    return incumbents;
+}
+
 struct Task10p11aiCanonicalChainCheck {
     bool valid=false;
     std::string fail_reason;
