@@ -297,7 +297,7 @@ int main(int argc,char** argv) {
                             item.minimum_sup_mps2)},
                         {"limiting_row_id",item.limiting_row_id}});
                 }
-                record["stage_a3_interval_audit"]={"layers",layers};
+                record["stage_a3_interval_audit"]={{"layers",layers}};
                 emit("20-interval-audit.json",
                     record["stage_a3_interval_audit"]);
             } else {
