@@ -59,6 +59,14 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
             gf::GammaFeedbackSelectionMode::LeastIntervention,tau,true,
             false,false,false,false,false,true,true);
     }
+    if (s1_on&&s1_v4_prime) {
+        // v4' (prereg v2.2): bare nominal (no saturation), speed rows
+        // entirely removed, preflight demoted to 31 m/s fuse.
+        return std::make_unique<gf::Task10p11rFixedBaselineFixture>(
+            std::move(scenario),std::move(settings),
+            gf::GammaFeedbackSelectionMode::LeastIntervention,tau,false,
+            false,false,false,true,false,false,true,true);
+    }
     throw std::runtime_error("variant not implemented:"+variant);
 }
 
