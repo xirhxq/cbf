@@ -106,6 +106,11 @@ struct GrandFinaleSwarmAdapterConfig {
     bool nominal_throttle_enabled = false;
     double throttle_gamma_th_mps2 = 2.0;
     double throttle_gamma_floor_mps2 = 0.5;
+    // Task 12 Phase 1 v2.2: endpoint in-flight margin signal.
+    bool throttle_v2_enabled = false;
+    // Frozen endpoints from Phase 0 derivation (phase1-v2-endpoint-derivation.json)
+    std::map<NodeId,std::string> throttle_v2_endpoint_family={
+        {2,"reference:101->2"},{4,"reference:2->4"}};
     double maximum_yaw_rate_radps = 0.0;
     double position_gain = 0.4;
     double velocity_gain = 0.8;
@@ -531,7 +536,9 @@ public:
             config_.tau_analytic_first_order,
             config_.nominal_throttle_enabled,
             config_.throttle_gamma_th_mps2,
-            config_.throttle_gamma_floor_mps2};
+            config_.throttle_gamma_floor_mps2,
+            config_.throttle_v2_enabled,
+            config_.throttle_v2_endpoint_family};
         if (config_.tau_family_predict)
             limiting_family_memory_.clear();
         CanonicalGammaFeedbackEvaluationContext feedback_context;
@@ -545,6 +552,11 @@ public:
         throttle_telemetry_s=feedback_batch.throttle_s;
         throttle_telemetry_min_gamma=feedback_batch.throttle_min_gamma;
         throttle_telemetry_owner=feedback_batch.throttle_limiting_owner;
+        throttle_telemetry_v2_active=feedback_batch.throttle_v2_active;
+        throttle_telemetry_v2_endpoint_s=
+            feedback_batch.throttle_v2_endpoint_s;
+        throttle_telemetry_v2_endpoint_signal=
+            feedback_batch.throttle_v2_endpoint_signal;
         if (config_.tau_family_predict)
             for (const auto& [owner,selection]:feedback_batch.selections)
                 if (!selection.dominant_row.empty())
@@ -2077,6 +2089,9 @@ private:
     double throttle_telemetry_s=1.0;
     double throttle_telemetry_min_gamma=0.0;
     NodeId throttle_telemetry_owner=0;
+    bool throttle_telemetry_v2_active=false;
+    std::map<NodeId,double> throttle_telemetry_v2_endpoint_s;
+    std::map<NodeId,double> throttle_telemetry_v2_endpoint_signal;
     InterimMasterDekf estimator_;
     CertifiedCoverageTracker coverage_;
     HybridSupervisor supervisor_;

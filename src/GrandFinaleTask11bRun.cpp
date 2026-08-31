@@ -21,13 +21,22 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     const bool family_predict=variant=="family_predict";
     const bool analytic=variant=="analytic_first_order";
     const bool throttle=variant=="throttle";
+    const bool throttle_v2=variant=="throttle_v2";
     const bool s1_v3=variant=="s1_v3";
     if (!s1_on&&(variant=="baseline"||margin_gate||family_predict||
-            analytic||throttle)) {
+            analytic||throttle||throttle_v2)) {
+        // Runtime parameter assertion (process requirement): variant/S1
+        // coherence checked before any fixture construction.
+        if (s1_on) throw std::runtime_error(
+            "assert_failed:s1_must_be_off_for_variant_runs");
+        if (!margin_gate&&!family_predict&&!analytic&&!throttle&&
+            !throttle_v2&&variant!="baseline")
+            throw std::runtime_error("assert_failed:unknown_variant");
         return std::make_unique<gf::Task10p11rFixedBaselineFixture>(
             std::move(scenario),std::move(settings),
             gf::GammaFeedbackSelectionMode::LeastIntervention,tau,s1_on,
-            margin_gate,family_predict,analytic,false,throttle);
+            margin_gate,family_predict,analytic,
+            false,throttle,throttle_v2);
     }
     if (s1_on&&s1_v3) {
         return std::make_unique<gf::Task10p11rFixedBaselineFixture>(
@@ -60,7 +69,8 @@ int main(int argc,char** argv) {
         const std::string variant=argc==7?argv[6]:"baseline";
         if (variant!="baseline"&&variant!="margin_gate"&&
             variant!="family_predict"&&variant!="analytic_first_order"&&
-            variant!="throttle"&&variant!="s1_v3") {
+            variant!="throttle"&&variant!="throttle_v2"&&
+            variant!="s1_v3") {
             std::cerr<<"variant "<<variant<<" not implemented\n";
             return 2;
         }

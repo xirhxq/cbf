@@ -56,6 +56,12 @@ struct CanonicalGammaFeedbackConfig {
     bool nominal_throttle_enabled = false;
     double throttle_gamma_th_mps2 = 2.0;
     double throttle_gamma_floor_mps2 = 0.5;
+    // Task 12 Phase 1 v2.2: signal replacement - per-endpoint in-flight
+    // margin on the eroding row family (selected-control basis), instead of
+    // the exact box-optimal gamma*.  Endpoints frozen from the Phase 0
+    // derivation: owner 2 <-> reference:101->2, owner 4 <-> reference:2->4.
+    bool throttle_v2_enabled = false;
+    std::map<NodeId,std::string> throttle_v2_endpoint_family;
 };
 
 inline double task12NominalThrottleScale(
@@ -246,6 +252,10 @@ struct CanonicalGammaFeedbackBatchResult {
     double throttle_s=1.0;
     double throttle_min_gamma=-std::numeric_limits<double>::infinity();
     NodeId throttle_limiting_owner=0;
+    // v2.2 per-endpoint telemetry
+    std::map<NodeId,double> throttle_v2_endpoint_s;
+    std::map<NodeId,double> throttle_v2_endpoint_signal;
+    bool throttle_v2_active=false;
 };
 
 inline void validateCanonicalGammaFeedbackConfig(
@@ -711,22 +721,53 @@ CanonicalGammaFeedbackBatchResult evaluateCanonicalGammaFeedbackBatchOptimized(
             return result;
         }
         Eigen::Vector2d effective_nominal=nominal->second;
-        if (config.nominal_throttle_enabled) {
-            ++result.work.exact_gamma_solves;
-            const auto gamma_now_sol=solveCanonicalGammaStar(
-                result.current_rows,owner,config.acceleration_half_box);
-            const double gamma_now=gamma_now_sol.valid&&
-                std::isfinite(gamma_now_sol.gamma)?gamma_now_sol.gamma:
-                std::numeric_limits<double>::infinity();
-            if (gamma_now<throttle_min_gamma) {
-                throttle_min_gamma=gamma_now;
-                throttle_owner=owner;
+        if (config.nominal_throttle_enabled ||
+            config.throttle_v2_enabled) {
+            double signal_gamma=std::numeric_limits<double>::infinity();
+            std::string signal_family;
+            if (config.throttle_v2_enabled) {
+                // v2.2: in-flight margin on the owner's eroding row family
+                // (selected-control basis), exact per endpoint.
+                const auto family_it=
+                    config.throttle_v2_endpoint_family.find(owner);
+                if (family_it!=config.throttle_v2_endpoint_family.end()) {
+                    signal_family=family_it->second;
+                    for (const auto& row:result.current_rows) {
+                        if (row.owner!=owner ||
+                            !row.participates_in_gamma) continue;
+                        if (task11bRowFamilyBase(row.id)!=signal_family)
+                            continue;
+                        const double m=row.margin(nominal->second);
+                        if (m<signal_gamma) signal_gamma=m;
+                    }
+                }
+                if (!std::isfinite(signal_gamma))
+                    signal_gamma=std::numeric_limits<double>::infinity();
+            } else {
+                const auto gamma_now_sol=solveCanonicalGammaStar(
+                    result.current_rows,owner,config.acceleration_half_box);
+                signal_gamma=gamma_now_sol.valid&&
+                    std::isfinite(gamma_now_sol.gamma)?gamma_now_sol.gamma:
+                    std::numeric_limits<double>::infinity();
             }
-            throttle_s=task12NominalThrottleScale(gamma_now,
+            const double s_now=task12NominalThrottleScale(signal_gamma,
                 config.throttle_gamma_th_mps2,
                 config.throttle_gamma_floor_mps2);
-            effective_nominal*=throttle_s;
+            if (s_now<result.throttle_s ||
+                !std::isfinite(result.throttle_s)) {
+                result.throttle_s=s_now;
+                result.throttle_min_gamma=signal_gamma;
+                result.throttle_limiting_owner=owner;
+                result.throttle_active=s_now<1.0;
+            }
+            result.throttle_v2_endpoint_s[owner]=s_now;
+            result.throttle_v2_endpoint_signal[owner]=signal_gamma;
+            if (s_now<1.0) {
+                result.throttle_v2_active=true;
+                effective_nominal*=s_now;
+            }
         }
+
         ++result.work.exact_gamma_solves;
         auto stage=buildCanonicalGammaFeedbackStage(
             result.current_rows,owner,effective_nominal,config,
@@ -737,12 +778,6 @@ CanonicalGammaFeedbackBatchResult evaluateCanonicalGammaFeedbackBatchOptimized(
         }
         projected_controls.emplace(owner,stage.task_projection);
         result.stages.emplace(owner,std::move(stage));
-    }
-    if (config.nominal_throttle_enabled) {
-        result.throttle_active=throttle_s<1.0;
-        result.throttle_s=throttle_s;
-        result.throttle_min_gamma=throttle_min_gamma;
-        result.throttle_limiting_owner=throttle_owner;
     }
     JointEstimateSnapshot baseline_predicted;
     try {
