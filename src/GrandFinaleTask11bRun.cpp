@@ -20,18 +20,20 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     const bool margin_gate=variant=="margin_gate";
     const bool family_predict=variant=="family_predict";
     const bool analytic=variant=="analytic_first_order";
+    const bool throttle=variant=="throttle";
+    const bool s1_v3=variant=="s1_v3";
     if (!s1_on&&(variant=="baseline"||margin_gate||family_predict||
-            analytic)) {
+            analytic||throttle)) {
         return std::make_unique<gf::Task10p11rFixedBaselineFixture>(
             std::move(scenario),std::move(settings),
             gf::GammaFeedbackSelectionMode::LeastIntervention,tau,s1_on,
-            margin_gate,family_predict,analytic);
+            margin_gate,family_predict,analytic,throttle);
     }
-    if (s1_on&&variant=="s1_v3") {
+    if (s1_on&&s1_v3) {
         return std::make_unique<gf::Task10p11rFixedBaselineFixture>(
             std::move(scenario),std::move(settings),
             gf::GammaFeedbackSelectionMode::LeastIntervention,tau,true,
-            false,false,false,true);
+            false,false,false,true,false);
     }
     throw std::runtime_error("variant not implemented:"+variant);
 }
@@ -52,10 +54,13 @@ int main(int argc,char** argv) {
     try {
         const double tau=std::stod(argv[1]);
         const bool s1_on=std::string(argv[2])=="on";
+        const bool throttle_requested=argc==7&&
+            std::string(argv[6])=="throttle";
         const double window_s=std::stod(argv[5]);
         const std::string variant=argc==7?argv[6]:"baseline";
         if (variant!="baseline"&&variant!="margin_gate"&&
-            variant!="family_predict"&&variant!="analytic_first_order") {
+            variant!="family_predict"&&variant!="analytic_first_order"&&
+            variant!="throttle"&&variant!="s1_v3") {
             std::cerr<<"variant "<<variant<<" not implemented\n";
             return 2;
         }
@@ -103,11 +108,15 @@ int main(int argc,char** argv) {
         std::optional<std::size_t> t95_tick,t100_tick;
         std::size_t tick=0;
         bool hard_stop=false;
+        std::size_t throttle_activation_ticks=0;
         gf::SimpleCoverageControlStep last_step;
         while (fixture->adapter.runtimeSnapshot().runtime_s<window_s) {
             last_step=fixture->controller.advance();
             const double fraction=
                 fixture->adapter.coverage().truthFraction();
+            const auto telemetry=fixture->adapter.lastThrottleTelemetry();
+            if (throttle_requested&&telemetry.active)
+                ++throttle_activation_ticks;
             if (!t95_tick.has_value()&&fraction>=0.95) t95_tick=tick;
             if (!t100_tick.has_value()&&fraction>=1.0-1e-12) t100_tick=tick;
             if (last_step.step.advanced) {
@@ -167,6 +176,13 @@ int main(int argc,char** argv) {
             {"same_reason_as_fixed_132p4",last_step.step.reason==
                 "current_gamma_negative"}};
         // Prereg v1.1 section 11.4 quantified realism verdicts.
+        record["throttle_telemetry_summary"]={
+            {"activation_ticks",throttle_activation_ticks},
+            {"last_active",fixture->adapter.lastThrottleTelemetry().active},
+            {"last_s",fixture->adapter.lastThrottleTelemetry().s},
+            {"last_min_gamma_mps2",gf::task10p11w_detail::number(
+                fixture->adapter.lastThrottleTelemetry().min_gamma_mps2)},
+            {"last_owner",fixture->adapter.lastThrottleTelemetry().owner}};
         record["realism"]={{"max_truth_overspeed_mps",
             gf::task10p11w_detail::number(max_truth_overspeed)},
             {"truth_overspeed_ticks",truth_overspeed_ticks},

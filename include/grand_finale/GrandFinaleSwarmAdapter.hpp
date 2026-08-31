@@ -102,6 +102,10 @@ struct GrandFinaleSwarmAdapterConfig {
     // Task 11b V-a (prereg): first-order analytic prediction instead of
     // per-candidate rollout.
     bool tau_analytic_first_order = false;
+    // Task 12 Phase 1: margin-aware nominal throttle (soft task only).
+    bool nominal_throttle_enabled = false;
+    double throttle_gamma_th_mps2 = 2.0;
+    double throttle_gamma_floor_mps2 = 0.5;
     double maximum_yaw_rate_radps = 0.0;
     double position_gain = 0.4;
     double velocity_gain = 0.8;
@@ -524,7 +528,10 @@ public:
             config_.tau_margin_gate_enabled,
             1.0,
             config_.tau_family_predict?&limiting_family_memory_:nullptr,
-            config_.tau_analytic_first_order};
+            config_.tau_analytic_first_order,
+            config_.nominal_throttle_enabled,
+            config_.throttle_gamma_th_mps2,
+            config_.throttle_gamma_floor_mps2};
         if (config_.tau_family_predict)
             limiting_family_memory_.clear();
         CanonicalGammaFeedbackEvaluationContext feedback_context;
@@ -534,6 +541,10 @@ public:
             [&](const JointEstimateSnapshot& value) {
                 return hardRowRequest(value,supervisor_.topology());
             },feedback_context);
+        throttle_telemetry_active=feedback_batch.throttle_active;
+        throttle_telemetry_s=feedback_batch.throttle_s;
+        throttle_telemetry_min_gamma=feedback_batch.throttle_min_gamma;
+        throttle_telemetry_owner=feedback_batch.throttle_limiting_owner;
         if (config_.tau_family_predict)
             for (const auto& [owner,selection]:feedback_batch.selections)
                 if (!selection.dominant_row.empty())
@@ -1350,6 +1361,17 @@ public:
     InterimMasterDekf& estimator() { return estimator_; }
     const InterimMasterDekf& estimator() const { return estimator_; }
     const CertifiedCoverageTracker& coverage() const { return coverage_; }
+
+    struct Task12ThrottleTelemetry {
+        bool active=false;
+        double s=1.0;
+        double min_gamma_mps2=0.0;
+        NodeId owner=0;
+    };
+    Task12ThrottleTelemetry lastThrottleTelemetry() const {
+        return {throttle_telemetry_active,throttle_telemetry_s,
+            throttle_telemetry_min_gamma,throttle_telemetry_owner};
+    }
     const GrandFinaleSwarmAdapterConfig& config() const { return config_; }
     std::vector<AcceptedRangeUpdateAudit> lastAcceptedRangeBatchAudit() const {
         return last_accepted_range_batch_audit_;
@@ -2050,6 +2072,11 @@ private:
     std::map<NodeId, Eigen::Vector2d> fixed_positions_;
     GrandFinaleSwarmAdapterConfig config_;
     std::map<NodeId,std::string> limiting_family_memory_;
+    // Task 12 Phase 1 throttle telemetry (last feedback batch).
+    bool throttle_telemetry_active=false;
+    double throttle_telemetry_s=1.0;
+    double throttle_telemetry_min_gamma=0.0;
+    NodeId throttle_telemetry_owner=0;
     InterimMasterDekf estimator_;
     CertifiedCoverageTracker coverage_;
     HybridSupervisor supervisor_;

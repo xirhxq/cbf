@@ -100,13 +100,14 @@ inline GrandFinaleSwarmAdapterConfig task10p11rFixtureAdapterConfig(
     std::optional<double> predictive_tau_mps2,
     bool speed_row_nominal,bool tau_margin_gate=false,
     bool tau_family_predict=false,bool tau_analytic_first_order=false,
-    bool s1_v3_preflight_demoted=false) {
+    bool s1_v3_preflight_demoted=false,bool nominal_throttle=false) {
     auto config=task10p11rFixedAdapterConfig(selection,predictive_tau_mps2);
     config.speed_row_nominal=speed_row_nominal;
     config.tau_margin_gate_enabled=tau_margin_gate;
     config.tau_family_predict=tau_family_predict;
     config.tau_analytic_first_order=tau_analytic_first_order;
     config.speed_preflight_demoted=s1_v3_preflight_demoted;
+    config.nominal_throttle_enabled=nominal_throttle;
     return config;
 }
 
@@ -139,14 +140,15 @@ struct Task10p11rFixedBaselineFixture {
         std::optional<double> predictive_tau_mps2,
         bool speed_row_nominal=false,bool tau_margin_gate=false,
     bool tau_family_predict=false,bool tau_analytic_first_order=false,
-    bool s1_v3_preflight_demoted=false)
+    bool s1_v3_preflight_demoted=false,bool nominal_throttle=false)
         : scenario(std::move(scenario_value)),settings(std::move(settings_value)),
           swarm(settings),
           adapter(swarm,scenario.mobile_ids,scenario.fixed_positions,
               scenario.initial_topology,task10p11rFixtureAdapterConfig(
                   selection,predictive_tau_mps2,speed_row_nominal,
                   tau_margin_gate,tau_family_predict,
-                  tau_analytic_first_order,s1_v3_preflight_demoted)),
+                  tau_analytic_first_order,s1_v3_preflight_demoted,
+                  nominal_throttle)),
           controller(swarm,adapter,{}, {},task10p11rAuthorityContract().branches),
           frozen_topology(scenario.initial_topology),
           initial_topology_version(adapter.supervisor().topologyVersion()) {}

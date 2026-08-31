@@ -48,7 +48,22 @@ struct CanonicalGammaFeedbackConfig {
     // per-candidate propagation + rebuild + solve.  Validated against
     // central finite differences by focused tests (section 11.3 guardrail).
     bool analytic_first_order_enabled = false;
+    // Task 12 Phase 1 (approved 2026-08-31): margin-aware nominal throttle.
+    // Purely soft-task: scales the coverage nominal velocity by the frozen
+    // piecewise rule of the min-owner current gamma*.  Hard ledger, tau and
+    // predictive evaluation untouched.  Zero extra solves (reuses the
+    // per-owner current gamma* already computed each tick).
+    bool nominal_throttle_enabled = false;
+    double throttle_gamma_th_mps2 = 2.0;
+    double throttle_gamma_floor_mps2 = 0.5;
 };
+
+inline double task12NominalThrottleScale(
+    double min_owner_current_gamma,double gamma_th,double gamma_floor) {
+    if (min_owner_current_gamma>=gamma_th) return 1.0;
+    if (min_owner_current_gamma<=gamma_floor) return 0.0;
+    return (min_owner_current_gamma-gamma_floor)/(gamma_th-gamma_floor);
+}
 
 // Task 11b V-a: analytic time derivative of a canonical row margin along
 // the ZOH trajectory with the candidate control held.  Derived per row kind
@@ -201,6 +216,7 @@ struct CanonicalGammaFeedbackResult {
     bool tau_attained = false;
     std::string dominant_row;
     std::string fallback_reason;
+    // Task 12 Phase 1 throttle telemetry (activation = s<1).
 };
 
 struct CanonicalGammaFeedbackWork {
@@ -225,6 +241,11 @@ struct CanonicalGammaFeedbackBatchResult {
     std::map<NodeId,Eigen::Vector2d> selected_controls;
     CanonicalGammaFeedbackWork work;
     Task10p11ComputeProfile compute_profile;
+    // Task 12 Phase 1 throttle telemetry (activation = s<1).
+    bool throttle_active=false;
+    double throttle_s=1.0;
+    double throttle_min_gamma=-std::numeric_limits<double>::infinity();
+    NodeId throttle_limiting_owner=0;
 };
 
 inline void validateCanonicalGammaFeedbackConfig(
@@ -677,15 +698,38 @@ CanonicalGammaFeedbackBatchResult evaluateCanonicalGammaFeedbackBatchOptimized(
         return result;
     }
     std::map<NodeId,Eigen::Vector2d> projected_controls;
+    // Task 12 Phase 1: margin-aware nominal throttle - scale the coverage
+    // nominal by s(min-owner current gamma*) BEFORE stage construction
+    // (purely soft-task; hard rows, tau, candidates machinery unchanged).
+    double throttle_min_gamma=std::numeric_limits<double>::infinity();
+    NodeId throttle_owner=0;
+    double throttle_s=1.0;
     for (NodeId owner:snapshot.mobile_ids) {
         const auto nominal=task_nominals.find(owner);
         if (nominal==task_nominals.end()) {
             result.reason="task_nominal_missing";
             return result;
         }
+        Eigen::Vector2d effective_nominal=nominal->second;
+        if (config.nominal_throttle_enabled) {
+            ++result.work.exact_gamma_solves;
+            const auto gamma_now_sol=solveCanonicalGammaStar(
+                result.current_rows,owner,config.acceleration_half_box);
+            const double gamma_now=gamma_now_sol.valid&&
+                std::isfinite(gamma_now_sol.gamma)?gamma_now_sol.gamma:
+                std::numeric_limits<double>::infinity();
+            if (gamma_now<throttle_min_gamma) {
+                throttle_min_gamma=gamma_now;
+                throttle_owner=owner;
+            }
+            throttle_s=task12NominalThrottleScale(gamma_now,
+                config.throttle_gamma_th_mps2,
+                config.throttle_gamma_floor_mps2);
+            effective_nominal*=throttle_s;
+        }
         ++result.work.exact_gamma_solves;
         auto stage=buildCanonicalGammaFeedbackStage(
-            result.current_rows,owner,nominal->second,config,
+            result.current_rows,owner,effective_nominal,config,
             &result.compute_profile);
         if (!stage.valid) {
             result.reason=stage.reason;
@@ -693,6 +737,12 @@ CanonicalGammaFeedbackBatchResult evaluateCanonicalGammaFeedbackBatchOptimized(
         }
         projected_controls.emplace(owner,stage.task_projection);
         result.stages.emplace(owner,std::move(stage));
+    }
+    if (config.nominal_throttle_enabled) {
+        result.throttle_active=throttle_s<1.0;
+        result.throttle_s=throttle_s;
+        result.throttle_min_gamma=throttle_min_gamma;
+        result.throttle_limiting_owner=throttle_owner;
     }
     JointEstimateSnapshot baseline_predicted;
     try {
