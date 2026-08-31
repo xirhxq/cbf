@@ -115,7 +115,7 @@ struct GrandFinaleSwarmAdapterConfig {
     // entirely; saturate the nominal so projected speed stays <= 29.9 m/s;
     // speed becomes telemetry with a 31 m/s preflight fuse.
     bool speed_rows_removed = false;
-    double nominal_speed_saturation_mps = 29.9;
+    double nominal_speed_saturation_mps = 0.0;  // opt-in (S1-v4: 29.9)
     double maximum_yaw_rate_radps = 0.0;
     double position_gain = 0.4;
     double velocity_gain = 0.8;

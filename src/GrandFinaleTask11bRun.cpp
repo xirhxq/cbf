@@ -49,7 +49,7 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
         return std::make_unique<gf::Task10p11rFixedBaselineFixture>(
             std::move(scenario),std::move(settings),
             gf::GammaFeedbackSelectionMode::LeastIntervention,tau,true,
-            false,false,false,false,false,true);
+            false,false,false,false,false,true,true);
     }
     throw std::runtime_error("variant not implemented:"+variant);
 }

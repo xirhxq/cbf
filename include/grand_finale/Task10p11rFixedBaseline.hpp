@@ -111,6 +111,7 @@ inline GrandFinaleSwarmAdapterConfig task10p11rFixtureAdapterConfig(
     config.nominal_throttle_enabled=nominal_throttle;
     config.throttle_v2_enabled=throttle_v2;
     config.speed_rows_removed=speed_rows_removed;
+    if (speed_rows_removed) config.nominal_speed_saturation_mps=29.9;
     return config;
 }
 
