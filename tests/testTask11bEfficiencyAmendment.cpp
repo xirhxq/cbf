@@ -260,3 +260,41 @@ TEST_CASE("S1 paired prefix advances without hard failure and ZOH audit monitors
     CHECK(max_interval<=0.05);
     CHECK(max_truth<=0.01);
 }
+
+TEST_CASE("Task 12 Phase 1 throttle scale is piecewise and frozen") {
+    CHECK(gf::task12NominalThrottleScale(2.0,2.0,0.5)==doctest::Approx(1.0));
+    CHECK(gf::task12NominalThrottleScale(5.0,2.0,0.5)==doctest::Approx(1.0));
+    CHECK(gf::task12NominalThrottleScale(1.25,2.0,0.5)==
+        doctest::Approx(0.5));
+    CHECK(gf::task12NominalThrottleScale(0.5,2.0,0.5)==doctest::Approx(0.0));
+    CHECK(gf::task12NominalThrottleScale(0.0,2.0,0.5)==doctest::Approx(0.0));
+}
+
+TEST_CASE("throttle-off and healthy-phase throttle keep tick-zero identity") {
+    auto plain=gf::makeTask10p11rFixedBaselineFixture(
+        gf::GammaFeedbackSelectionMode::LeastIntervention,14.0);
+    auto throttled=std::make_unique<gf::Task10p11rFixedBaselineFixture>(
+        gf::task10p11rFixedBaselineScenario(),
+        gf::task10p11pSwarmSettings(gf::task10p11rFixedBaselineScenario(),
+            gf::SolverProfile::Gurobi),
+        gf::GammaFeedbackSelectionMode::LeastIntervention,14.0,
+        false,false,false,false,false,true);
+    REQUIRE(plain->adapter.initializeStageZero().initialized);
+    REQUIRE(throttled->adapter.initializeStageZero().initialized);
+    // At stage zero gamma* ~ 5-10 > gamma_th: the throttle must be dormant
+    // (s == 1) and both fixtures must advance identically.
+    for (int tick=0;tick<20;++tick) {
+        const auto plain_step=plain->controller.advance();
+        const auto throttle_step=throttled->controller.advance();
+        REQUIRE(plain_step.step.advanced==throttle_step.step.advanced);
+        REQUIRE(plain_step.step.reason==throttle_step.step.reason);
+        const auto tl=throttled->adapter.lastThrottleTelemetry();
+        CHECK(tl.s==doctest::Approx(1.0));
+        CHECK(tl.active==false);
+        for (const auto& [owner,u]:plain_step.step.applied_controls) {
+            const Eigen::Vector2d diff=u-
+                throttle_step.step.applied_controls.at(owner);
+            CHECK(diff.norm()<1e-12);
+        }
+    }
+}
