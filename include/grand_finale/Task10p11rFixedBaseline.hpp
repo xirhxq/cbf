@@ -101,7 +101,8 @@ inline GrandFinaleSwarmAdapterConfig task10p11rFixtureAdapterConfig(
     bool speed_row_nominal,bool tau_margin_gate=false,
     bool tau_family_predict=false,bool tau_analytic_first_order=false,
     bool s1_v3_preflight_demoted=false,bool nominal_throttle=false,
-    bool throttle_v2=false,bool speed_rows_removed=false) {
+    bool throttle_v2=false,bool speed_rows_removed=false,
+    bool s1_rung_b=false) {
     auto config=task10p11rFixedAdapterConfig(selection,predictive_tau_mps2);
     config.speed_row_nominal=speed_row_nominal;
     config.tau_margin_gate_enabled=tau_margin_gate;
@@ -112,6 +113,16 @@ inline GrandFinaleSwarmAdapterConfig task10p11rFixtureAdapterConfig(
     config.throttle_v2_enabled=throttle_v2;
     config.speed_rows_removed=speed_rows_removed;
     if (speed_rows_removed) config.nominal_speed_saturation_mps=29.9;
+    if (s1_rung_b) {
+        // Ladder rung B: keep the single speed row at the FULL 30 m/s
+        // limit, saturate the nominal at 29.9, demote the preflight to the
+        // 31 m/s fuse.
+        config.speed_row_nominal=true;
+        config.speed_row_nominal_limit_mps=30.0;
+        config.plant_speed_facet_count=0;
+        config.nominal_speed_saturation_mps=29.9;
+        config.speed_preflight_demoted=true;
+    }
     return config;
 }
 
@@ -145,7 +156,8 @@ struct Task10p11rFixedBaselineFixture {
         bool speed_row_nominal=false,bool tau_margin_gate=false,
     bool tau_family_predict=false,bool tau_analytic_first_order=false,
     bool s1_v3_preflight_demoted=false,bool nominal_throttle=false,
-    bool throttle_v2=false,bool speed_rows_removed=false)
+    bool throttle_v2=false,bool speed_rows_removed=false,
+    bool s1_rung_b=false)
         : scenario(std::move(scenario_value)),settings(std::move(settings_value)),
           swarm(settings),
           adapter(swarm,scenario.mobile_ids,scenario.fixed_positions,
@@ -153,7 +165,8 @@ struct Task10p11rFixedBaselineFixture {
                   selection,predictive_tau_mps2,speed_row_nominal,
                   tau_margin_gate,tau_family_predict,
                   tau_analytic_first_order,s1_v3_preflight_demoted,
-                  nominal_throttle,throttle_v2,speed_rows_removed)),
+                  nominal_throttle,throttle_v2,speed_rows_removed,
+                  s1_rung_b)),
           controller(swarm,adapter,{}, {},task10p11rAuthorityContract().branches),
           frozen_topology(scenario.initial_topology),
           initial_topology_version(adapter.supervisor().topologyVersion()) {}
