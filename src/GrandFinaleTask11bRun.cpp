@@ -27,7 +27,7 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
         return std::make_unique<gf::Task10p11rFixedBaselineFixture>(
             std::move(scenario),std::move(settings),
             gf::GammaFeedbackSelectionMode::LeastIntervention,tau,s1_on,
-            margin_gate,family_predict,analytic,throttle);
+            margin_gate,family_predict,analytic,false,throttle);
     }
     if (s1_on&&s1_v3) {
         return std::make_unique<gf::Task10p11rFixedBaselineFixture>(
