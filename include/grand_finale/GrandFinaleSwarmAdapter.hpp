@@ -116,6 +116,12 @@ struct GrandFinaleSwarmAdapterConfig {
     // speed becomes telemetry with a 31 m/s preflight fuse.
     bool speed_rows_removed = false;
     double nominal_speed_saturation_mps = 0.0;  // opt-in (S1-v4: 29.9)
+    // Task 11b rung B' (researcher-approved, post-adjudication): keep the
+    // single nominal row at the full 30 m/s limit with an unsaturated
+    // nominal; the QP-side estimate SpeedLimit initial-set precheck is
+    // bypassed (it trips on boundary numerics) and the initial-set
+    // judgment is carried by truth telemetry in the runner.
+    bool speed_initial_set_truth_gate = false;
     double maximum_yaw_rate_radps = 0.0;
     double position_gain = 0.4;
     double velocity_gain = 0.8;
@@ -611,7 +617,8 @@ public:
                             snapshot_version, supervisor_.topologyVersion(),
                             supervisor_.mode(), selected_nominal.at(owner),
                             config_.acceleration_half_box, rows,
-                            config_.residual_tolerance});
+                            config_.residual_tolerance,
+                            config_.speed_initial_set_truth_gate});
                     metrics.qp_wall_s += std::chrono::duration<double>(
                         std::chrono::steady_clock::now() - qp_start).count();
                     const bool steady=result.solver_instance_reused;

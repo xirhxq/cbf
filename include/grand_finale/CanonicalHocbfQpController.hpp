@@ -27,6 +27,12 @@ struct CanonicalQpRequest {
     double acceleration_half_box = 0.0;
     std::vector<CanonicalHardRow> rows;
     double residual_tolerance = 1.0e-7;
+    // Task 11b rung B': the estimate-side SpeedLimit initial-set precheck
+    // trips on ~1e-9-scale boundary numerics when the row binds at cruise
+    // (S1-v3 death).  Under the truth-gate flag the row stays binding as a
+    // QP constraint, and the initial-set judgment moves to truth telemetry
+    // in the runner (hard gate at 30.01 m/s, fuse at 31).
+    bool speed_initial_set_truth_gate = false;
 };
 
 struct CanonicalQpResult {
@@ -88,13 +94,15 @@ public:
             result.failure_reason = "invalid_request";
             return result;
         }
-        for (const auto& row : request.rows) {
-            if (row.owner==request.owner &&
-                row.kind==CanonicalHardRowKind::SpeedLimit &&
-                (!std::isfinite(row.barrier_h) ||
-                 row.barrier_h < -request.residual_tolerance)) {
-                result.failure_reason="speed_initial_set_violated";
-                return result;
+        if (!request.speed_initial_set_truth_gate) {
+            for (const auto& row : request.rows) {
+                if (row.owner==request.owner &&
+                    row.kind==CanonicalHardRowKind::SpeedLimit &&
+                    (!std::isfinite(row.barrier_h) ||
+                     row.barrier_h < -request.residual_tolerance)) {
+                    result.failure_reason="speed_initial_set_violated";
+                    return result;
+                }
             }
         }
 

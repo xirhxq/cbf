@@ -21,6 +21,7 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     const bool s1_v4=variant=="s1_v4";
     const bool s1_v4_prime=variant=="s1_v4_prime";
     const bool s1_v4_bare=variant=="s1_v4_bare";
+    const bool s1_rung_b_prime=variant=="s1_rung_b_prime";
     if (!s1_on&&variant=="baseline") {
         return std::make_unique<gf::Task10p11rFixedBaselineFixture>(
             std::move(scenario),std::move(settings),
@@ -45,6 +46,19 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
             gf::GammaFeedbackSelectionMode::LeastIntervention,tau,true,
             false,false,false,false,false,false,true,
             false,false,true);
+    }
+    if (s1_on&&s1_rung_b_prime) {
+        // Rung B' (post-adjudication): single speed row @30, unsaturated
+        // nominal, preflight demoted to the 31 m/s fuse, QP-side estimate
+        // SpeedLimit initial-set precheck bypassed (truth-gate flag).
+        // NOTE: speed_rows_removed must stay false - the single row IS the
+        // experiment; only the 896-row facet block is dropped (via
+        // plant_speed_facet_count=0 in the config builder).
+        return std::make_unique<gf::Task10p11rFixedBaselineFixture>(
+            std::move(scenario),std::move(settings),
+            gf::GammaFeedbackSelectionMode::LeastIntervention,tau,true,
+            false,false,false,false,false,false,
+            false,false,false,false,true);
     }
     throw std::runtime_error("variant not implemented:"+variant);
 }
@@ -74,7 +88,8 @@ int main(int argc,char** argv) {
         const double window_s=std::stod(argv[5]);
         const std::string variant=argv[6];
         if (variant!="baseline"&&variant!="s1_v4"&&
-            variant!="s1_v4_prime"&&variant!="s1_v4_bare") {
+            variant!="s1_v4_prime"&&variant!="s1_v4_bare"&&
+            variant!="s1_rung_b_prime") {
             std::cerr<<"variant "<<variant<<" not implemented\n";
             return 2;
         }
@@ -94,7 +109,7 @@ int main(int argc,char** argv) {
                 ++plant_facet_rows;
         }
         json record={{"protocol","task11b-efficiency-run-v1"},
-            {"preregistration","task-11b-approved-v1.1-2026-09-01"},
+            {"preregistration","task-11b-rung-b-prime-2026-08-31"},
             {"tau_mps2",tau},{"s1_speed_row_nominal",s1_on},
             {"variant",variant},
             {"margin_gate_threshold_mps2",json(nullptr)},
@@ -104,6 +119,29 @@ int main(int argc,char** argv) {
             {"row_counts",{{"speed_limit_rows",speed_limit_rows},
                 {"plant_facet_rows",plant_facet_rows},
                 {"total",rows0.size()}}},
+            {"config_digest",{{"speed_row_nominal",
+                fixture->adapter.config().speed_row_nominal},
+                {"speed_row_nominal_limit_mps",
+                fixture->adapter.config().speed_row_nominal_limit_mps},
+                {"speed_limit_mps",fixture->adapter.config().speed_limit_mps},
+                {"plant_speed_facet_count",
+                fixture->adapter.config().plant_speed_facet_count},
+                {"speed_rows_removed",
+                fixture->adapter.config().speed_rows_removed},
+                {"nominal_speed_saturation_mps",
+                fixture->adapter.config().nominal_speed_saturation_mps},
+                {"speed_preflight_demoted",
+                fixture->adapter.config().speed_preflight_demoted},
+                {"speed_preflight_fuse_mps",
+                fixture->adapter.config().speed_preflight_fuse_mps},
+                {"speed_initial_set_truth_gate",
+                fixture->adapter.config().speed_initial_set_truth_gate},
+                {"acceleration_half_box",
+                fixture->adapter.config().acceleration_half_box},
+                {"residual_tolerance",
+                fixture->adapter.config().residual_tolerance},
+                {"dt_s",fixture->adapter.config().dt_s},
+                {"truth_initial_set_gate_mps",30.01}}},
             {"s3_stop_rule","terminate_at_t100_latch"},
             {"evaluations",json::array()},
             {"complete",false}};
@@ -120,6 +158,8 @@ int main(int argc,char** argv) {
         std::optional<std::size_t> t95_tick,t100_tick;
         std::size_t tick=0;
         bool hard_stop=false;
+        bool truth_gate_violation=false;
+        double truth_gate_max_speed=0.0;
         gf::SimpleCoverageControlStep last_step;
         const auto mobile_ids=
             fixture->adapter.runtimeSnapshot().estimate.mobile_ids;
@@ -130,6 +170,30 @@ int main(int argc,char** argv) {
             throw std::runtime_error("unknown robot id");
         };
         while (fixture->adapter.runtimeSnapshot().runtime_s<window_s) {
+            // Rung B' truth initial-set gate: fail closed BEFORE advancing
+            // when truth telemetry leaves the row's initial set (30.01 m/s
+            // = the established 0.01 m/s realism threshold; boundary
+            // numerics are ~1e-9).  Fuse at 31 m/s stays armed inside the
+            // adapter as the last-resort layer.
+            if (fixture->adapter.config().speed_initial_set_truth_gate) {
+                truth_gate_max_speed=0.0;
+                for (const auto& robot:fixture->swarm.robots) {
+                    const Eigen::VectorXd tv=robot->model->getVelocity();
+                    truth_gate_max_speed=std::max(truth_gate_max_speed,
+                        tv.head<2>().norm());
+                }
+                if (truth_gate_max_speed>30.01) {
+                    truth_gate_violation=true;
+                    hard_stop=true;
+                    record["evaluations"].push_back({{"tick",tick},
+                        {"advanced",false},
+                        {"reason","speed_initial_set_truth_violated"},
+                        {"coverage_fraction",
+                        fixture->adapter.coverage().truthFraction()},
+                        {"minimum_hard_residual",json(nullptr)}});
+                    break;
+                }
+            }
             last_step=fixture->controller.advance();
             const double fraction=
                 fixture->adapter.coverage().truthFraction();
@@ -251,10 +315,15 @@ int main(int argc,char** argv) {
             fixture->adapter.coverage().truthFraction();
         record["cycles"]=tick;
         record["hard_stop"]=hard_stop;
-        record["failure"]={{"advanced",last_step.step.advanced},
-            {"reason",last_step.step.reason},
-            {"same_reason_as_fixed_132p4",last_step.step.reason==
-                "current_gamma_negative"}};
+        record["failure"]={
+            {"advanced",truth_gate_violation?false:last_step.step.advanced},
+            {"reason",truth_gate_violation?
+                json("speed_initial_set_truth_violated"):
+                json(last_step.step.reason)},
+            {"truth_gate_max_speed_mps",truth_gate_violation?
+                json(truth_gate_max_speed):json(nullptr)},
+            {"same_reason_as_fixed_132p4",!truth_gate_violation&&
+                last_step.step.reason=="current_gamma_negative"}};
         record["throttle_telemetry_summary"]={
             {"activation_ticks",-1},
             {"last_active",fixture->adapter.lastThrottleTelemetry().active},
