@@ -23,6 +23,7 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     const bool throttle=variant=="throttle";
     const bool throttle_v2=variant=="throttle_v2";
     const bool s1_v4=variant=="s1_v4";
+    const bool s1_v4_prime=variant=="s1_v4_prime";
     const bool s1_v3=variant=="s1_v3";
     const bool s1_rung_b=variant=="s1_rung_b";
     if (!s1_on&&(variant=="baseline"||margin_gate||family_predict||
@@ -85,7 +86,7 @@ int main(int argc,char** argv) {
             variant!="family_predict"&&variant!="analytic_first_order"&&
             variant!="throttle"&&variant!="throttle_v2"&&
             variant!="s1_v3"&&variant!="s1_v4"&&
-            variant!="s1_rung_b") {
+            variant!="s1_v4_prime"&&variant!="s1_rung_b") {
             std::cerr<<"variant "<<variant<<" not implemented\n";
             return 2;
         }
