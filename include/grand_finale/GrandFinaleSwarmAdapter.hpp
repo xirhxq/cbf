@@ -86,6 +86,13 @@ struct GrandFinaleSwarmAdapterConfig {
     // domain in favour of the nominal single-row speed HOCBF (no tube
     // reserve).  The exact-ZOH interval guarantee is demoted to monitoring.
     bool speed_row_nominal = false;
+    // Task 11b S1-v3 (researcher-frozen): the nominal single row uses a
+    // reduced execution limit (29.97 m/s: tube + ZOH/discretization
+    // derivation); the preflight is demoted to telemetry with a 31 m/s
+    // coarse fuse.  Successor/token/full-pair audits untouched.
+    double speed_row_nominal_limit_mps = 29.97;
+    double speed_preflight_fuse_mps = 31.0;
+    bool speed_preflight_demoted = false;
     // Task 11b V-b (prereg v1.1 section 11.1): skip predictive rollouts when
     // current gamma clears the frozen 1.0 m/s^2 threshold.
     bool tau_margin_gate_enabled = false;
@@ -650,7 +657,7 @@ public:
             config_.dt_s, certified_controls, yaw_rate_override_,
             config_.speed_limit_mps>0.0
                 ?std::optional<double>(config_.speed_limit_mps)
-                :std::nullopt);
+                :std::nullopt,config_.speed_preflight_demoted?std::optional<double>(config_.speed_preflight_fuse_mps):std::nullopt);
         metrics.compute_profile.record(
             Task10p11ComputePhase::PlantPreflightZoh,
             std::chrono::duration<double>(
@@ -830,7 +837,7 @@ public:
             config_.dt_s,applied,yaw_batch,
             config_.speed_limit_mps>0.0
                 ?std::optional<double>(config_.speed_limit_mps)
-                :std::nullopt);
+                :std::nullopt,config_.speed_preflight_demoted?std::optional<double>(config_.speed_preflight_fuse_mps):std::nullopt);
         if (!physical.advanced) {
             result.reason=physical.reason;
             return result;
@@ -1001,7 +1008,7 @@ public:
             config_.dt_s, applied, yaw_batch,
             config_.speed_limit_mps > 0.0
                 ? std::optional<double>(config_.speed_limit_mps)
-                : std::nullopt);
+                : std::nullopt,config_.speed_preflight_demoted?std::optional<double>(config_.speed_preflight_fuse_mps):std::nullopt);
         metrics.compute_profile.record(
             Task10p11ComputePhase::PlantPreflightZoh,
             std::chrono::duration<double>(
@@ -1127,7 +1134,7 @@ public:
             config_.dt_s,applied,yaw_batch,
             config_.speed_limit_mps>0.0
                 ?std::optional<double>(config_.speed_limit_mps)
-                :std::nullopt);
+                :std::nullopt,config_.speed_preflight_demoted?std::optional<double>(config_.speed_preflight_fuse_mps):std::nullopt);
         metrics.advanced=physical.advanced;
         metrics.updated_truth_cells=physical.updated_truth_cells;
         if (!physical.advanced) {
@@ -1712,7 +1719,9 @@ private:
             1.0, config_.collision_lambda1,
             config_.collision_lambda2, 0.0};
         request.acceleration_half_box = config_.acceleration_half_box;
-        request.speed_limit_mps = config_.speed_limit_mps;
+        request.speed_limit_mps = config_.speed_row_nominal
+            ?config_.speed_row_nominal_limit_mps
+            :config_.speed_limit_mps;
         request.speed_cbf_gain = config_.speed_cbf_gain;
         request.plant_speed_facet_count =
             config_.speed_limit_mps>0.0&&!config_.speed_row_nominal

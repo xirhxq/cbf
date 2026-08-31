@@ -62,7 +62,8 @@ public:
             double dt,
             const std::optional<CertifiedControlBatch>& controls,
             const std::optional<CertifiedYawRateBatch>& yaw_rates,
-            const std::optional<double>& plant_speed_limit_mps) {
+            const std::optional<double>& plant_speed_limit_mps,
+            const std::optional<double>& plant_speed_fuse_mps = std::nullopt) {
         CertifiedStepResult result;
         if (!std::isfinite(dt) || dt <= 0.0) {
             result.reason = "invalid_step_request";
@@ -113,7 +114,16 @@ public:
                 const auto audit=gf::auditPlantSpeedExactZoh(
                     velocity.head<2>(),controls->at(robot->id),dt,
                     *plant_speed_limit_mps,1.0e-9);
-                if (!audit.valid) {
+                // Task 11b S1-v3: the preflight is demoted to telemetry with
+                // a coarse fuse when one is configured (researcher-frozen
+                // 31 m/s); the audit numbers remain the realism record.
+                if (plant_speed_fuse_mps.has_value()) {
+                    if (!(audit.maximum_interval_speed_mps<=
+                            *plant_speed_fuse_mps)) {
+                        result.reason="plant_speed_fuse_tripped";
+                        return result;
+                    }
+                } else if (!audit.valid) {
                     result.reason="plant_speed_preflight_rejected";
                     return result;
                 }
