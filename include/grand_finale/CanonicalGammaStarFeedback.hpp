@@ -56,12 +56,15 @@ struct CanonicalGammaFeedbackConfig {
     bool nominal_throttle_enabled = false;
     double throttle_gamma_th_mps2 = 2.0;
     double throttle_gamma_floor_mps2 = 0.5;
+    // Task 11b S1-v4: nominal speed saturation (0 disables).
+    double nominal_speed_saturation_mps = 0.0;
+    // Task 12 Phase 1 v2.2: endpoint in-flight margin signal.
+    bool throttle_v2_enabled = false;
+    std::map<NodeId,std::string> throttle_v2_endpoint_family;
     // Task 12 Phase 1 v2.2: signal replacement - per-endpoint in-flight
     // margin on the eroding row family (selected-control basis), instead of
     // the exact box-optimal gamma*.  Endpoints frozen from the Phase 0
     // derivation: owner 2 <-> reference:101->2, owner 4 <-> reference:2->4.
-    bool throttle_v2_enabled = false;
-    std::map<NodeId,std::string> throttle_v2_endpoint_family;
 };
 
 inline double task12NominalThrottleScale(
@@ -707,6 +710,40 @@ CanonicalGammaFeedbackBatchResult evaluateCanonicalGammaFeedbackBatchOptimized(
         result.reason="current_canonical_row_rebuild_failed";
         return result;
     }
+    // Task 11b S1-v4: nominal speed saturation - scale each owner's nominal
+    // acceleration so the projected velocity |v + dt*n| stays <= the
+    // saturation limit (29.9 m/s).  Purely soft-task; hard rows untouched.
+    std::map<NodeId,Eigen::Vector2d> effective_nominals;
+    if (config.nominal_speed_saturation_mps>0.0) {
+        for (NodeId owner:snapshot.mobile_ids) {
+            const auto nominal=task_nominals.find(owner);
+            if (nominal==task_nominals.end()) continue;
+            const Eigen::Index off=4*static_cast<Eigen::Index>(
+                std::distance(snapshot.mobile_ids.begin(),
+                    std::find(snapshot.mobile_ids.begin(),
+                        snapshot.mobile_ids.end(),owner)));
+            const Eigen::Vector2d v=snapshot.mean.segment<2>(off);
+            const Eigen::Vector2d& n=nominal->second;
+            const Eigen::Vector2d w=v+dt_s*n;
+            const double wspeed=w.norm();
+            effective_nominals.emplace(owner,n);
+            const double limit=config.nominal_speed_saturation_mps;
+            if (wspeed>limit) {
+                // |v + dt*k*n| = limit  ->  k from the quadratic, smaller
+                // nonnegative root, clamped to [0,1].
+                const double a=dt_s*dt_s*n.squaredNorm();
+                const double b=2.0*dt_s*v.dot(n);
+                const double c=v.squaredNorm()-limit*limit;
+                double k=0.0;
+                if (a>1e-12) {
+                    const double disc=b*b-4.0*a*c;
+                    if (disc>=0.0)
+                        k=std::clamp((-b+std::sqrt(disc))/(2.0*a),0.0,1.0);
+                }
+                effective_nominals[owner]=k*n;
+            }
+        }
+    }
     std::map<NodeId,Eigen::Vector2d> projected_controls;
     // Task 12 Phase 1: margin-aware nominal throttle - scale the coverage
     // nominal by s(min-owner current gamma*) BEFORE stage construction
@@ -721,6 +758,9 @@ CanonicalGammaFeedbackBatchResult evaluateCanonicalGammaFeedbackBatchOptimized(
             return result;
         }
         Eigen::Vector2d effective_nominal=nominal->second;
+        if (const auto it=effective_nominals.find(owner);
+            it!=effective_nominals.end())
+            effective_nominal=it->second;
         if (config.nominal_throttle_enabled ||
             config.throttle_v2_enabled) {
             double signal_gamma=std::numeric_limits<double>::infinity();

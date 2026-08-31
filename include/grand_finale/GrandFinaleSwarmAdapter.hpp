@@ -111,6 +111,11 @@ struct GrandFinaleSwarmAdapterConfig {
     // Frozen endpoints from Phase 0 derivation (phase1-v2-endpoint-derivation.json)
     std::map<NodeId,std::string> throttle_v2_endpoint_family={
         {2,"reference:101->2"},{4,"reference:2->4"}};
+    // Task 11b S1-v4 (researcher-approved ladder): remove speed rows
+    // entirely; saturate the nominal so projected speed stays <= 29.9 m/s;
+    // speed becomes telemetry with a 31 m/s preflight fuse.
+    bool speed_rows_removed = false;
+    double nominal_speed_saturation_mps = 29.9;
     double maximum_yaw_rate_radps = 0.0;
     double position_gain = 0.4;
     double velocity_gain = 0.8;
@@ -537,6 +542,7 @@ public:
             config_.nominal_throttle_enabled,
             config_.throttle_gamma_th_mps2,
             config_.throttle_gamma_floor_mps2,
+            config_.nominal_speed_saturation_mps,
             config_.throttle_v2_enabled,
             config_.throttle_v2_endpoint_family};
         if (config_.tau_family_predict)
@@ -680,7 +686,7 @@ public:
             config_.dt_s, certified_controls, yaw_rate_override_,
             config_.speed_limit_mps>0.0
                 ?std::optional<double>(config_.speed_limit_mps)
-                :std::nullopt,config_.speed_preflight_demoted?std::optional<double>(config_.speed_preflight_fuse_mps):std::nullopt);
+                :std::nullopt,(config_.speed_preflight_demoted||config_.speed_rows_removed)?std::optional<double>(config_.speed_preflight_fuse_mps):std::nullopt);
         metrics.compute_profile.record(
             Task10p11ComputePhase::PlantPreflightZoh,
             std::chrono::duration<double>(
@@ -860,7 +866,7 @@ public:
             config_.dt_s,applied,yaw_batch,
             config_.speed_limit_mps>0.0
                 ?std::optional<double>(config_.speed_limit_mps)
-                :std::nullopt,config_.speed_preflight_demoted?std::optional<double>(config_.speed_preflight_fuse_mps):std::nullopt);
+                :std::nullopt,(config_.speed_preflight_demoted||config_.speed_rows_removed)?std::optional<double>(config_.speed_preflight_fuse_mps):std::nullopt);
         if (!physical.advanced) {
             result.reason=physical.reason;
             return result;
@@ -1031,7 +1037,7 @@ public:
             config_.dt_s, applied, yaw_batch,
             config_.speed_limit_mps > 0.0
                 ? std::optional<double>(config_.speed_limit_mps)
-                : std::nullopt,config_.speed_preflight_demoted?std::optional<double>(config_.speed_preflight_fuse_mps):std::nullopt);
+                : std::nullopt,(config_.speed_preflight_demoted||config_.speed_rows_removed)?std::optional<double>(config_.speed_preflight_fuse_mps):std::nullopt);
         metrics.compute_profile.record(
             Task10p11ComputePhase::PlantPreflightZoh,
             std::chrono::duration<double>(
@@ -1157,7 +1163,7 @@ public:
             config_.dt_s,applied,yaw_batch,
             config_.speed_limit_mps>0.0
                 ?std::optional<double>(config_.speed_limit_mps)
-                :std::nullopt,config_.speed_preflight_demoted?std::optional<double>(config_.speed_preflight_fuse_mps):std::nullopt);
+                :std::nullopt,(config_.speed_preflight_demoted||config_.speed_rows_removed)?std::optional<double>(config_.speed_preflight_fuse_mps):std::nullopt);
         metrics.advanced=physical.advanced;
         metrics.updated_truth_cells=physical.updated_truth_cells;
         if (!physical.advanced) {
@@ -1753,16 +1759,20 @@ private:
             1.0, config_.collision_lambda1,
             config_.collision_lambda2, 0.0};
         request.acceleration_half_box = config_.acceleration_half_box;
-        request.speed_limit_mps = config_.speed_row_nominal
-            ?config_.speed_row_nominal_limit_mps
-            :config_.speed_limit_mps;
+        request.speed_limit_mps = config_.speed_rows_removed
+            ?0.0
+            :(config_.speed_row_nominal
+                ?config_.speed_row_nominal_limit_mps
+                :config_.speed_limit_mps);
         request.speed_cbf_gain = config_.speed_cbf_gain;
         request.plant_speed_facet_count =
-            config_.speed_limit_mps>0.0&&!config_.speed_row_nominal
+            config_.speed_limit_mps>0.0&&!config_.speed_row_nominal&&
+            !config_.speed_rows_removed
                 ?config_.plant_speed_facet_count:0;
         request.plant_speed_dt_s = config_.dt_s;
         request.require_snapshot_robust_rows = true;
-        if (config_.speed_limit_mps > 0.0 && config_.speed_row_nominal) {
+        if (config_.speed_limit_mps > 0.0 && config_.speed_row_nominal &&
+            !config_.speed_rows_removed) {
             for (NodeId id : mobile_ids_) {
                 request.speed_snapshot_tubes[id] = {
                     0.0,0.0,

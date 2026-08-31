@@ -22,6 +22,7 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     const bool analytic=variant=="analytic_first_order";
     const bool throttle=variant=="throttle";
     const bool throttle_v2=variant=="throttle_v2";
+    const bool s1_v4=variant=="s1_v4";
     const bool s1_v3=variant=="s1_v3";
     if (!s1_on&&(variant=="baseline"||margin_gate||family_predict||
             analytic||throttle||throttle_v2)) {
@@ -43,6 +44,12 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
             std::move(scenario),std::move(settings),
             gf::GammaFeedbackSelectionMode::LeastIntervention,tau,true,
             false,false,false,true,false);
+    }
+    if (s1_on&&s1_v4) {
+        return std::make_unique<gf::Task10p11rFixedBaselineFixture>(
+            std::move(scenario),std::move(settings),
+            gf::GammaFeedbackSelectionMode::LeastIntervention,tau,true,
+            false,false,false,false,false,true);
     }
     throw std::runtime_error("variant not implemented:"+variant);
 }
@@ -70,7 +77,7 @@ int main(int argc,char** argv) {
         if (variant!="baseline"&&variant!="margin_gate"&&
             variant!="family_predict"&&variant!="analytic_first_order"&&
             variant!="throttle"&&variant!="throttle_v2"&&
-            variant!="s1_v3") {
+            variant!="s1_v3"&&variant!="s1_v4") {
             std::cerr<<"variant "<<variant<<" not implemented\n";
             return 2;
         }
@@ -207,7 +214,13 @@ int main(int argc,char** argv) {
             {"interval_overspeed_005_ticks",interval_overspeed_005_ticks},
             {"interval_overspeed_fail",interval_overspeed_005_ticks>=5},
             {"verdict",(max_truth_overspeed>0.01||
-                interval_overspeed_005_ticks>=5)?"S1_rejected":"S1_pass"}};
+                interval_overspeed_005_ticks>=5)?"S1_rejected":"S1_pass"},
+            {"s1v4_fuse_limit_mps",variant=="s1_v4"?json(1.0):json(nullptr)},
+            {"s1v4_fuse_tripped",variant=="s1_v4"&&
+                max_interval_overspeed>1.0},
+            {"s1v4_verdict",variant!="s1_v4"?json("n/a"):
+                (max_interval_overspeed>1.0?json("fuse_tripped"):
+                 json("s1v4_pass"))}};
         record["complete"]=true;
         record["wall_time_s"]=elapsed();
         record["claim_boundary"]={{"efficiency_readout_development_only",
