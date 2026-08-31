@@ -42,7 +42,117 @@ struct CanonicalGammaFeedbackConfig {
     // the previous tick (base id of the previous dominant row) instead of
     // the full row set.  Null pointer = baseline semantics.
     const std::map<NodeId,std::string>* limiting_family_filter = nullptr;
+    // Task 11b V-a (prereg): first-order analytic prediction - the predicted
+    // gamma for a candidate is its exact current-state margin plus dt times
+    // the analytic row-margin rate along the ZOH trajectory, replacing the
+    // per-candidate propagation + rebuild + solve.  Validated against
+    // central finite differences by focused tests (section 11.3 guardrail).
+    bool analytic_first_order_enabled = false;
 };
+
+// Task 11b V-a: analytic time derivative of a canonical row margin along
+// the ZOH trajectory with the candidate control held.  Derived per row kind
+// from the builder formulas (CanonicalHardRows / SnapshotRobustPairRow /
+// PlantSpeedAppliedControl); validated against central finite differences
+// by focused tests (prereg v1.1 section 11.3 guardrail).
+inline double task11bAnalyticRowRate(
+    const CanonicalHardRow& row,NodeId owner,
+    const Eigen::Vector2d& control,
+    const std::map<NodeId,PairwiseSecondOrderState2D>& states,
+    const std::map<NodeId,Eigen::Vector2d>& all_controls,
+    const PairwiseSecondOrderRowSpec& collision_spec,
+    const PairwiseSecondOrderRowSpec& reference_spec,
+    double acceleration_half_box,double dt_s) {
+    const Eigen::Vector2d u=control;
+    switch (row.kind) {
+    case CanonicalHardRowKind::InputBox:
+    case CanonicalHardRowKind::Auxiliary:
+        return 0.0;
+    case CanonicalHardRowKind::Workspace: {
+        const auto& state=states.at(owner);
+        // row.normal equals the stored control coefficient (-facet normal);
+        // margin = normal.u + h + 2*hdot with h,hdot affine in (p,v).
+        return row.normal.dot(state.velocity+2.0*u);
+    }
+    case CanonicalHardRowKind::PlantSpeedAppliedControl: {
+        const auto& state=states.at(owner);
+        const Eigen::Vector2d n=-row.control_coefficient;
+        const Eigen::Vector2d n_perp(-n.y(),n.x());
+        const double speed2=state.velocity.squaredNorm();
+        const double theta_dot=speed2>1e-12?
+            (state.velocity.x()*u.y()-state.velocity.y()*u.x())/speed2:
+            0.0;
+        return -theta_dot*n_perp.dot(u)+
+            (-theta_dot*n_perp.dot(state.velocity)-n.dot(u))/dt_s;
+    }
+    case CanonicalHardRowKind::SpeedLimit: {
+        const auto& state=states.at(owner);
+        const Eigen::Vector2d c=row.control_coefficient;
+        const double gain=1.0;  // formal speed_cbf_gain
+        return c.dot(u)-2.0*gain*state.velocity.dot(u);
+    }
+    case CanonicalHardRowKind::ReferenceDistance:
+    case CanonicalHardRowKind::Collision: {
+        if (!row.peer.has_value()) return 0.0;
+        const NodeId peer=*row.peer;
+        const auto& first=states.at(owner);
+        const auto& second=states.at(peer);
+        Eigen::Vector2d u_second=Eigen::Vector2d::Zero();
+        const auto found=all_controls.find(peer);
+        if (found!=all_controls.end()) u_second=found->second;
+        const Eigen::Vector2d rel_p(first.position.x-second.position.x,
+            first.position.y-second.position.y);
+        const Eigen::Vector2d rel_v=first.velocity-second.velocity;
+        const Eigen::Vector2d rel_u=u-u_second;
+        const double d=rel_p.norm();
+        if (d<1e-9) return 0.0;
+        const Eigen::Vector2d n_hat=rel_p/d;
+        const double radial=n_hat.dot(rel_v);
+        const double speed=rel_v.norm();
+        const double speed_rate=speed>1e-9?
+            rel_v.dot(rel_u)/speed:0.0;
+        const double n_hat_rate_dot_u_owner=
+            (rel_v.dot(u)-radial*n_hat.dot(u))/d;
+        const double radial_rate=
+            (rel_v.dot(rel_v)-radial*radial)/d+n_hat.dot(rel_u);
+        const double pr=row.position_uncertainty_reserve_m;
+        const double q=pr/d;
+        if (!(q<1.0)) return 0.0;
+        const double s_q=std::sqrt(1.0-q*q);
+        const double dir=std::sqrt(2.0*(1.0-s_q));
+        const double q_dot=-q*radial/d;
+        const double dir_dot=q>1e-12?
+            -q*q*radial/(d*s_q*dir):0.0;
+        const double reserve_rate=acceleration_half_box*std::sqrt(2.0)*
+            dir_dot;
+        const bool collision=row.kind==CanonicalHardRowKind::Collision;
+        const auto& spec=collision?collision_spec:reference_spec;
+        const double tv=row.velocity_uncertainty_reserve_mps;
+        double central_rate=0.0;
+        if (collision) {
+            central_rate=spec.lambda1*spec.lambda2*radial+
+                (spec.lambda1+spec.lambda2)*
+                (radial_rate-dir_dot*speed-dir*speed_rate);
+        } else {
+            const double speed_upper=speed+tv;
+            const double d_lower=d-pr;
+            if (d_lower<=0.0) return 0.0;
+            const double ratio_rate=
+                (2.0*speed_upper*speed_rate*d_lower-
+                 speed_upper*speed_upper*radial)/(d_lower*d_lower);
+            central_rate=spec.lambda1*spec.lambda2*(-radial)+
+                (spec.lambda1+spec.lambda2)*
+                (-(radial_rate+dir_dot*speed+dir*speed_rate))-
+                ratio_rate;
+        }
+        const double control_term_rate=
+            (collision?1.0:-1.0)*n_hat_rate_dot_u_owner;
+        return control_term_rate+row.responsibility*central_rate-
+            reserve_rate;
+    }
+    }
+    return 0.0;
+}
 
 inline std::string task11bRowFamilyBase(const std::string& row_id) {
     std::string base=row_id;
@@ -428,10 +538,55 @@ CanonicalGammaFeedbackBatchResult evaluateCanonicalGammaFeedbackBatchReference(
         projected_controls.emplace(owner,stage.task_projection);
         result.stages.emplace(owner,std::move(stage));
     }
+    // Shared V-a state table: current states for analytic row rates.
+    const auto base_request=build_request(snapshot);
+    const auto collision_spec=base_request.collision_spec;
+    const auto reference_spec=base_request.reference_spec;
+    std::map<NodeId,PairwiseSecondOrderState2D> current_states;
+    if (config.analytic_first_order_enabled)
+        for (std::size_t index=0;index<snapshot.mobile_ids.size();++index) {
+            const Eigen::Vector4d state=snapshot.mean.segment<4>(
+                static_cast<Eigen::Index>(4*index));
+            PairwiseSecondOrderState2D value;
+            value.position=Point(state.x(),state.y());
+            value.velocity=state.tail<2>();
+            value.acceleration=Eigen::Vector2d::Zero();
+            current_states.emplace(snapshot.mobile_ids[index],value);
+        }
     for (NodeId owner:snapshot.mobile_ids) {
         const auto& stage=result.stages.at(owner);
         const auto selected=selectCanonicalGammaFeedback(
-            stage,config,[&](const Eigen::Vector2d& candidate) {
+            stage,config,
+            config.analytic_first_order_enabled?
+                static_cast<std::function<CanonicalPredictedGammaScore(
+                    const Eigen::Vector2d&)>>(
+                [&](const Eigen::Vector2d& candidate) {
+                    CanonicalPredictedGammaScore value;
+                    value.valid=true;
+                    value.gamma=std::numeric_limits<double>::infinity();
+                    const CanonicalHardRow* limiting=nullptr;
+                    for (const auto& row:stage.current_rows) {
+                        const double margin=row.margin(candidate);
+                        if (margin<value.gamma) {
+                            value.gamma=margin;
+                            limiting=&row;
+                        }
+                    }
+                    if (limiting==nullptr)
+                        return CanonicalPredictedGammaScore{};
+                    const double rate=task11bAnalyticRowRate(
+                        *limiting,owner,candidate,current_states,
+                        projected_controls,collision_spec,reference_spec,
+                        config.acceleration_half_box,dt_s);
+                    if (!std::isfinite(rate))
+                        return CanonicalPredictedGammaScore{};
+                    value.gamma+=dt_s*rate;
+                    value.dominant_row=limiting->id;
+                    return value;
+                }):
+                static_cast<std::function<CanonicalPredictedGammaScore(
+                    const Eigen::Vector2d&)>>(
+                [&](const Eigen::Vector2d& candidate) {
                 try {
                     auto surrogate_controls=projected_controls;
                     surrogate_controls.at(owner)=candidate;
@@ -473,7 +628,7 @@ CanonicalGammaFeedbackBatchResult evaluateCanonicalGammaFeedbackBatchReference(
                 } catch (...) {
                     return CanonicalPredictedGammaScore{};
                 }
-            });
+            }));
         if (!selected.valid) {
             result.reason=selected.reason;
             return result;

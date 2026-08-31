@@ -92,6 +92,9 @@ struct GrandFinaleSwarmAdapterConfig {
     // Task 11b V-c (prereg): restrict the predicted gamma* solve to the
     // limiting row family recorded on the previous tick.
     bool tau_family_predict = false;
+    // Task 11b V-a (prereg): first-order analytic prediction instead of
+    // per-candidate rollout.
+    bool tau_analytic_first_order = false;
     double maximum_yaw_rate_radps = 0.0;
     double position_gain = 0.4;
     double velocity_gain = 0.8;
@@ -513,7 +516,8 @@ public:
             config_.gamma_feedback_tolerance,
             config_.tau_margin_gate_enabled,
             1.0,
-            config_.tau_family_predict?&limiting_family_memory_:nullptr};
+            config_.tau_family_predict?&limiting_family_memory_:nullptr,
+            config_.tau_analytic_first_order};
         if (config_.tau_family_predict)
             limiting_family_memory_.clear();
         CanonicalGammaFeedbackEvaluationContext feedback_context;

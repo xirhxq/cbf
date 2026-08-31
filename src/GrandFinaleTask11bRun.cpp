@@ -19,11 +19,13 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
         gf::SolverProfile::Gurobi);
     const bool margin_gate=variant=="margin_gate";
     const bool family_predict=variant=="family_predict";
-    if (!s1_on&&(variant=="baseline"||margin_gate||family_predict)) {
+    const bool analytic=variant=="analytic_first_order";
+    if (!s1_on&&(variant=="baseline"||margin_gate||family_predict||
+            analytic)) {
         return std::make_unique<gf::Task10p11rFixedBaselineFixture>(
             std::move(scenario),std::move(settings),
             gf::GammaFeedbackSelectionMode::LeastIntervention,tau,s1_on,
-            margin_gate,family_predict);
+            margin_gate,family_predict,analytic);
     }
     throw std::runtime_error("variant not implemented:"+variant);
 }
@@ -47,7 +49,7 @@ int main(int argc,char** argv) {
         const double window_s=std::stod(argv[5]);
         const std::string variant=argc==7?argv[6]:"baseline";
         if (variant!="baseline"&&variant!="margin_gate"&&
-            variant!="family_predict") {
+            variant!="family_predict"&&variant!="analytic_first_order") {
             std::cerr<<"variant "<<variant<<" not implemented\n";
             return 2;
         }

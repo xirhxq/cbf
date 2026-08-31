@@ -99,11 +99,12 @@ inline GrandFinaleSwarmAdapterConfig task10p11rFixtureAdapterConfig(
     GammaFeedbackSelectionMode selection,
     std::optional<double> predictive_tau_mps2,
     bool speed_row_nominal,bool tau_margin_gate=false,
-    bool tau_family_predict=false) {
+    bool tau_family_predict=false,bool tau_analytic_first_order=false) {
     auto config=task10p11rFixedAdapterConfig(selection,predictive_tau_mps2);
     config.speed_row_nominal=speed_row_nominal;
     config.tau_margin_gate_enabled=tau_margin_gate;
     config.tau_family_predict=tau_family_predict;
+    config.tau_analytic_first_order=tau_analytic_first_order;
     return config;
 }
 
@@ -135,13 +136,14 @@ struct Task10p11rFixedBaselineFixture {
         GammaFeedbackSelectionMode selection,
         std::optional<double> predictive_tau_mps2,
         bool speed_row_nominal=false,bool tau_margin_gate=false,
-    bool tau_family_predict=false)
+    bool tau_family_predict=false,bool tau_analytic_first_order=false)
         : scenario(std::move(scenario_value)),settings(std::move(settings_value)),
           swarm(settings),
           adapter(swarm,scenario.mobile_ids,scenario.fixed_positions,
               scenario.initial_topology,task10p11rFixtureAdapterConfig(
                   selection,predictive_tau_mps2,speed_row_nominal,
-                  tau_margin_gate,tau_family_predict)),
+                  tau_margin_gate,tau_family_predict,
+                  tau_analytic_first_order)),
           controller(swarm,adapter,{}, {},task10p11rAuthorityContract().branches),
           frozen_topology(scenario.initial_topology),
           initial_topology_version(adapter.supervisor().topologyVersion()) {}
