@@ -716,12 +716,56 @@ CanonicalGammaFeedbackBatchResult evaluateCanonicalGammaFeedbackBatchOptimized(
     Eigen::Matrix4d transition=Eigen::Matrix4d::Identity();
     transition(0,2)=dt_s;
     transition(1,3)=dt_s;
+    // Shared V-a tables (prereg v1.1 section 11.1): current states, specs,
+    // and per-owner current rows for the analytic first-order predictor.
+    std::map<NodeId,PairwiseSecondOrderState2D> current_states;
+    if (config.analytic_first_order_enabled)
+        for (std::size_t index=0;index<snapshot.mobile_ids.size();++index) {
+            const Eigen::Vector4d state=snapshot.mean.segment<4>(
+                static_cast<Eigen::Index>(4*index));
+            PairwiseSecondOrderState2D value;
+            value.position=Point(state.x(),state.y());
+            value.velocity=state.tail<2>();
+            value.acceleration=Eigen::Vector2d::Zero();
+            current_states.emplace(snapshot.mobile_ids[index],value);
+        }
+    const auto base_request=config.analytic_first_order_enabled
+        ?std::optional<CanonicalHardRowRequest>(build_request(snapshot))
+        :std::nullopt;
     for (std::size_t owner_index=0;owner_index<snapshot.mobile_ids.size();
          ++owner_index) {
         const NodeId owner=snapshot.mobile_ids[owner_index];
         const auto& stage=result.stages.at(owner);
+        std::vector<CanonicalHardRow> va_owner_rows;
+        if (config.analytic_first_order_enabled && base_request.has_value())
+            va_owner_rows=buildCanonicalOwnerHardRows(*base_request,owner);
         const auto selected=selectCanonicalGammaFeedback(
             stage,config,[&](const Eigen::Vector2d& candidate) {
+                if (config.analytic_first_order_enabled) {
+                    CanonicalPredictedGammaScore value;
+                    value.valid=true;
+                    value.gamma=std::numeric_limits<double>::infinity();
+                    const CanonicalHardRow* limiting=nullptr;
+                    for (const auto& row:va_owner_rows) {
+                        const double margin=row.margin(candidate);
+                        if (margin<value.gamma) {
+                            value.gamma=margin;
+                            limiting=&row;
+                        }
+                    }
+                    if (limiting==nullptr)
+                        return CanonicalPredictedGammaScore{};
+                    const double rate=task11bAnalyticRowRate(
+                        *limiting,owner,candidate,current_states,
+                        projected_controls,base_request->collision_spec,
+                        base_request->reference_spec,
+                        config.acceleration_half_box,dt_s);
+                    if (!std::isfinite(rate))
+                        return CanonicalPredictedGammaScore{};
+                    value.gamma+=dt_s*rate;
+                    value.dominant_row=limiting->id;
+                    return value;
+                }
                 try {
                     auto predicted=baseline_predicted;
                     predicted.mean.segment<4>(4*owner_index)=
