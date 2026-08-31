@@ -103,7 +103,8 @@ inline GrandFinaleSwarmAdapterConfig task10p11rFixtureAdapterConfig(
     bool s1_v3_preflight_demoted=false,bool nominal_throttle=false,
     bool throttle_v2=false,bool speed_rows_removed=false,
     bool s1_rung_b=false,bool s1_v4_prime=false,
-    bool s1_v4_bare=false,bool s1_rung_b_prime=false) {
+    bool s1_v4_bare=false,bool s1_rung_b_prime=false,
+    bool s1_rung_b2=false) {
     auto config=task10p11rFixedAdapterConfig(selection,predictive_tau_mps2);
     config.speed_row_nominal=speed_row_nominal;
     config.tau_margin_gate_enabled=tau_margin_gate;
@@ -144,6 +145,21 @@ inline GrandFinaleSwarmAdapterConfig task10p11rFixtureAdapterConfig(
         config.speed_preflight_demoted=true;
         config.speed_initial_set_truth_gate=true;
     }
+    if (s1_rung_b2) {
+        // Ladder rung B'' (researcher-approved 2026-09-01): rung B' with
+        // speed_cbf_gain raised to 7.0.  The first-order discretization
+        // asymptote becomes h* = -(dt/gain)|u|^2 = -|u|^2/70, i.e. a speed
+        // asymptote of ~30.0076 at the box-corner |u|=5.657 - inside the
+        // 30.01 truth gate (B' at gain=1 asymptoted at 30.038-30.053 and
+        // was rejected).
+        config.speed_row_nominal=true;
+        config.speed_row_nominal_limit_mps=30.0;
+        config.plant_speed_facet_count=0;
+        config.nominal_speed_saturation_mps=0.0;
+        config.speed_preflight_demoted=true;
+        config.speed_initial_set_truth_gate=true;
+        config.speed_cbf_gain=7.0;
+    }
     return config;
 }
 
@@ -179,7 +195,7 @@ struct Task10p11rFixedBaselineFixture {
     bool s1_v3_preflight_demoted=false,bool nominal_throttle=false,
     bool throttle_v2=false,bool speed_rows_removed=false,
     bool s1_rung_b=false,bool s1_v4_prime=false,bool s1_v4_bare=false,
-    bool s1_rung_b_prime=false)
+    bool s1_rung_b_prime=false,bool s1_rung_b2=false)
         : scenario(std::move(scenario_value)),settings(std::move(settings_value)),
           swarm(settings),
           adapter(swarm,scenario.mobile_ids,scenario.fixed_positions,
@@ -188,7 +204,8 @@ struct Task10p11rFixedBaselineFixture {
                   tau_margin_gate,tau_family_predict,
                   tau_analytic_first_order,s1_v3_preflight_demoted,
                   nominal_throttle,throttle_v2,speed_rows_removed,
-                  s1_rung_b,s1_v4_prime,s1_v4_bare,s1_rung_b_prime)),
+                  s1_rung_b,s1_v4_prime,s1_v4_bare,s1_rung_b_prime,
+                  s1_rung_b2)),
           controller(swarm,adapter,{}, {},task10p11rAuthorityContract().branches),
           frozen_topology(scenario.initial_topology),
           initial_topology_version(adapter.supervisor().topologyVersion()) {}

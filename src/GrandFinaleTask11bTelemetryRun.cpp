@@ -22,6 +22,7 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     const bool s1_v4_prime=variant=="s1_v4_prime";
     const bool s1_v4_bare=variant=="s1_v4_bare";
     const bool s1_rung_b_prime=variant=="s1_rung_b_prime";
+    const bool s1_rung_b2=variant=="s1_rung_b2";
     if (!s1_on&&variant=="baseline") {
         return std::make_unique<gf::Task10p11rFixedBaselineFixture>(
             std::move(scenario),std::move(settings),
@@ -60,6 +61,17 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
             false,false,false,false,false,false,
             false,false,false,false,true);
     }
+    if (s1_on&&s1_rung_b2) {
+        // Rung B'' (2026-09-01): rung B' with speed_cbf_gain=7.0 - the
+        // discretization speed asymptote drops to ~30.0076 at box-corner
+        // |u|, inside the 30.01 truth gate.  Speed row stays at the full
+        // 30 m/s limit; saturation stays off.
+        return std::make_unique<gf::Task10p11rFixedBaselineFixture>(
+            std::move(scenario),std::move(settings),
+            gf::GammaFeedbackSelectionMode::LeastIntervention,tau,true,
+            false,false,false,false,false,false,
+            false,false,false,false,true,true);
+    }
     throw std::runtime_error("variant not implemented:"+variant);
 }
 
@@ -89,7 +101,7 @@ int main(int argc,char** argv) {
         const std::string variant=argv[6];
         if (variant!="baseline"&&variant!="s1_v4"&&
             variant!="s1_v4_prime"&&variant!="s1_v4_bare"&&
-            variant!="s1_rung_b_prime") {
+            variant!="s1_rung_b_prime"&&variant!="s1_rung_b2") {
             std::cerr<<"variant "<<variant<<" not implemented\n";
             return 2;
         }
@@ -109,7 +121,9 @@ int main(int argc,char** argv) {
                 ++plant_facet_rows;
         }
         json record={{"protocol","task11b-efficiency-run-v1"},
-            {"preregistration","task-11b-rung-b-prime-2026-08-31"},
+            {"preregistration",variant=="s1_rung_b2"?
+                json("task-11b-rung-b2-2026-09-01"):
+                json("task-11b-rung-b-prime-2026-08-31")},
             {"tau_mps2",tau},{"s1_speed_row_nominal",s1_on},
             {"variant",variant},
             {"margin_gate_threshold_mps2",json(nullptr)},
@@ -136,6 +150,7 @@ int main(int argc,char** argv) {
                 fixture->adapter.config().speed_preflight_fuse_mps},
                 {"speed_initial_set_truth_gate",
                 fixture->adapter.config().speed_initial_set_truth_gate},
+                {"speed_cbf_gain",fixture->adapter.config().speed_cbf_gain},
                 {"acceleration_half_box",
                 fixture->adapter.config().acceleration_half_box},
                 {"residual_tolerance",
