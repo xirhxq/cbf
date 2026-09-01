@@ -328,6 +328,8 @@ int main(int argc,char** argv) {
                 cell(150,50),0,0,-90.0,600,true},
             {"bottom_left_boundary_shield",cell(120,100),cell(180,100),
                 cell(0,0),7,14,-90.0,1000,true},
+            {"right_lower_boundary_shield",cell(120,100),cell(180,100),
+                cell(272,32),7,14,0.0,1000,true},
             {"large_target_change_viability",cell(120,100),cell(180,100),
                 cell(0,299),7,14,90.0,100,false}};
         json records=json::array();
