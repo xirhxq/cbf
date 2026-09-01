@@ -593,6 +593,10 @@ private:
                     std::move(disks);
             }
             request.leader_reachability_filter=true;
+            request.leader_reachability_sensing_bound_m=
+                config.reference_distance_m+config.sensor_outer_radius_m;
+            request.leader_reachability_weight=
+                config.leader_reachability_weight;
         }
         for (std::size_t index=0;
              index<runtime.estimate.mobile_ids.size();++index)

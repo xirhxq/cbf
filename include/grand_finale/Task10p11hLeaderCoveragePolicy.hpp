@@ -42,6 +42,11 @@ struct LeaderCoverageRequest {
     bool leader_reachability_filter=false;
     std::map<NodeId,std::vector<std::pair<Eigen::Vector2d,double>>>
         leader_reference_disks;
+    // Corrected (sensing) semantics: hard bound on the distance to the
+    // NEAREST reference; the per-reference R_eff radii in the disks act
+    // only as the sorting weight.
+    double leader_reachability_sensing_bound_m = 0.0;
+    double leader_reachability_weight = 0.25;
 };
 
 struct LeaderCoverageResult {
@@ -188,19 +193,21 @@ inline LeaderCoverageResult allocateLeaderCoverageTargets(
                     request.leader_reference_disks.find(leader.id);
                 if (!request.leader_reachability_filter ||
                     disk_it==request.leader_reference_disks.end() ||
-                    disk_it->second.empty()) {
+                    disk_it->second.empty() ||
+                    request.leader_reachability_sensing_bound_m<=0.0) {
                     reachable=candidates;
                 } else {
+                    // Corrected (sensing) semantics: only the distance to
+                    // the NEAREST reference is bounded; the per-reference
+                    // R_eff radii act solely as the sorting weight.
                     for (const auto& cell : candidates) {
-                        bool ok=true;
-                        for (const auto& disk : disk_it->second) {
-                            if ((cell.center-disk.first).norm()>
-                                    disk.second) {
-                                ok=false;
-                                break;
-                            }
-                        }
-                        if (ok) reachable.push_back(cell);
+                        double d_min=std::numeric_limits<double>::infinity();
+                        for (const auto& disk : disk_it->second)
+                            d_min=std::min(d_min,
+                                (cell.center-disk.first).norm());
+                        if (d_min<=request.
+                                leader_reachability_sensing_bound_m)
+                            reachable.push_back(cell);
                     }
                     if (reachable.empty())
                         result.leader_reachability_fallback_leaders.insert(
@@ -243,6 +250,13 @@ inline LeaderCoverageResult allocateLeaderCoverageTargets(
                             delta.dot(centroid_dir)/(dist*centroid_norm),
                             -1.0,1.0);
                         score=dist*(1.0+0.5*(1.0-cos_theta));
+                    }
+                    if (request.leader_reachability_weight>0.0) {
+                        double d_min=std::numeric_limits<double>::infinity();
+                        for (const auto& disk : disk_it->second)
+                            d_min=std::min(d_min,
+                                (cell.center-disk.first).norm());
+                        score+=request.leader_reachability_weight*d_min;
                     }
                     scored.emplace_back(score,&cell);
                 }
