@@ -105,7 +105,7 @@ inline GrandFinaleSwarmAdapterConfig task10p11rFixtureAdapterConfig(
     bool s1_rung_b=false,bool s1_v4_prime=false,
     bool s1_v4_bare=false,bool s1_rung_b_prime=false,
     bool s1_rung_b2=false,bool target_policy_v2=false,
-    bool velocity_augmented_rows=false) {
+    bool velocity_augmented_rows=false,bool target_policy_v3=false) {
     auto config=task10p11rFixedAdapterConfig(selection,predictive_tau_mps2);
     config.speed_row_nominal=speed_row_nominal;
     config.tau_margin_gate_enabled=tau_margin_gate;
@@ -162,6 +162,7 @@ inline GrandFinaleSwarmAdapterConfig task10p11rFixtureAdapterConfig(
         config.speed_cbf_gain=7.0;
     }
     if (target_policy_v2) config.target_policy_v2=true;
+    if (target_policy_v3) config.target_policy_v3=true;
     if (velocity_augmented_rows) {
         config.velocity_augmented_rows=true;
         config.row_slack_epsilon_m=0.5;
@@ -202,7 +203,8 @@ struct Task10p11rFixedBaselineFixture {
     bool throttle_v2=false,bool speed_rows_removed=false,
     bool s1_rung_b=false,bool s1_v4_prime=false,bool s1_v4_bare=false,
     bool s1_rung_b_prime=false,bool s1_rung_b2=false,
-    bool target_policy_v2=false,bool velocity_augmented_rows=false)
+    bool target_policy_v2=false,bool velocity_augmented_rows=false,
+    bool target_policy_v3=false)
         : scenario(std::move(scenario_value)),settings(std::move(settings_value)),
           swarm(settings),
           adapter(swarm,scenario.mobile_ids,scenario.fixed_positions,
@@ -212,7 +214,8 @@ struct Task10p11rFixedBaselineFixture {
                   tau_analytic_first_order,s1_v3_preflight_demoted,
                   nominal_throttle,throttle_v2,speed_rows_removed,
                   s1_rung_b,s1_v4_prime,s1_v4_bare,s1_rung_b_prime,
-                  s1_rung_b2,target_policy_v2,velocity_augmented_rows)),
+                  s1_rung_b2,target_policy_v2,velocity_augmented_rows,
+                  target_policy_v3)),
           controller(swarm,adapter,{}, {},task10p11rAuthorityContract().branches),
           frozen_topology(scenario.initial_topology),
           initial_topology_version(adapter.supervisor().topologyVersion()) {}

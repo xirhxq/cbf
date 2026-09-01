@@ -131,10 +131,16 @@ public:
         const auto target_started=std::chrono::steady_clock::now();
 
         const bool policy_v2=adapter_.config().target_policy_v2;
+        const bool policy_v3=adapter_.config().target_policy_v3;
         if (policy_v2) {
             // Task 13 Phase B0-a: demand field (low-frequency/event-driven
             // recompute) + reachability projection + target-lock contract.
             advanceV2Targets(runtime,result);
+        } else if (policy_v3) {
+            // Task 13 Phase B0-a v3: CBF2026 leader-CVT design restored
+            // (centroid-primary leader targets) with the target-lock
+            // contract and low-frequency/event-driven partition recompute.
+            advanceV3Targets(runtime,result);
         } else {
         const auto cells=currentUncoveredCells();
         std::set<std::string> uncovered;
@@ -473,6 +479,68 @@ public:
     }
 
 private:
+    // ---- Task 13 Phase B0-a v3: leader-CVT centroid-primary targeting
+    // with the lock contract and low-frequency/event-driven recompute.
+    void advanceV3Targets(
+        const GrandFinaleRuntimeSnapshot& runtime,
+        SimpleCoverageControlStep& result) {
+        const auto& config=adapter_.config();
+        const double now=runtime.runtime_s;
+        bool event=targets_.empty();
+        for (NodeId owner:runtime.estimate.mobile_ids) {
+            const auto found=targets_.find(owner);
+            if (found==targets_.end()) { event=true; continue; }
+            const double distance=
+                (v2Position(runtime,owner)-found->second.center).norm();
+            if (distance<=config.target_lock_epsilon_m) { event=true; break; }
+            const std::size_t dwell=++v2_dwell_cycles_[owner];
+            if (dwell==1) v2_dwell_start_distance_[owner]=distance;
+            else if (dwell>=config.target_lock_dwell_cycles) {
+                const double progress=
+                    v2_dwell_start_distance_[owner]-distance;
+                if (progress>=config.target_lock_progress_epsilon_m) {
+                    v2_dwell_cycles_[owner]=0;
+                    v2_dwell_start_distance_[owner]=distance;
+                } else {
+                    event=true;
+                    break;
+                }
+            }
+        }
+        const bool interval=now-last_demand_recompute_s_>=
+            config.demand_recompute_interval_s;
+        if (!event && !interval) {
+            result.target_epoch=target_epoch_;
+            return;
+        }
+        // Low-frequency/event-driven partition recompute (runs outside
+        // lock periods only).
+        const auto cells=currentUncoveredCells();
+        LeaderCoverageRequest request;
+        request.uncovered_cells=cells;
+        request.domain_cells=denominator_cells_;
+        request.branches=branches_;
+        request.leader_centroid_primary=true;
+        for (std::size_t index=0;
+             index<runtime.estimate.mobile_ids.size();++index)
+            request.agents.push_back({runtime.estimate.mobile_ids[index],
+                runtime.estimate.mean.segment<2>(4*index),
+                runtime.estimate.mean.segment<2>(4*index+2)});
+        result.allocation_evaluated=true;
+        result.allocation=allocateLeaderCoverageTargets(request);
+        if (!result.allocation.valid) {
+            result.reason=result.allocation.reason;
+            return;
+        }
+        targets_=result.allocation.targets;
+        ++target_epoch_;
+        last_demand_recompute_s_=now;
+        consecutive_failures_=0;
+        v2_dwell_cycles_.clear();
+        v2_dwell_start_distance_.clear();
+        result.target_epoch=target_epoch_;
+    }
+
     // ---- Task 13 Phase B0-a: target policy v2 -------------------------
     void advanceV2Targets(
         const GrandFinaleRuntimeSnapshot& runtime,

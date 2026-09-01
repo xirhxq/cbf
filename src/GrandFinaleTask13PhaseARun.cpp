@@ -115,7 +115,7 @@ PhaseATemplate makeTemplate(const std::string& id) {
 
 std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     const PhaseATemplate& def,double tau,bool policy_v2,
-    bool velocity_augmented_rows) {
+    bool velocity_augmented_rows,bool policy_v3) {
     auto scenario=gf::task10p11rFixedBaselineScenario();
     scenario.mobile_positions=def.positions;
     scenario.initial_topology=def.topology;
@@ -125,13 +125,14 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     // saturation, preflight demoted (31 m/s fuse), truth initial-set gate.
     // Bool order: srnm, margin, family, analytic, demoted, throttle,
     // throttle_v2, rows_removed, rung_b, v4_prime, bare, rung_b_prime,
-    // rung_b2, target_policy_v2, velocity_augmented_rows.
+    // rung_b2, target_policy_v2, velocity_augmented_rows,
+    // target_policy_v3.
     return std::make_unique<gf::Task10p11rFixedBaselineFixture>(
         std::move(scenario),std::move(settings),
         gf::GammaFeedbackSelectionMode::LeastIntervention,tau,true,
         false,false,false,false,false,false,
         false,false,false,false,false,true,policy_v2,
-        velocity_augmented_rows);
+        velocity_augmented_rows,policy_v3);
 }
 
 }  // namespace
@@ -156,11 +157,16 @@ int main(int argc,char** argv) {
         const double tau=argc>=6?std::stod(argv[5]):22.0;
         const std::string policy=argc>=8?argv[7]:"classic";
         const bool policy_v2=policy=="v2";
+        const bool policy_v3=policy=="v3";
+        if (policy_v2&&policy_v3) {
+            std::cerr<<"policies v2 and v3 are mutually exclusive\n";
+            return 2;
+        }
         const std::string rows_mode=argc==9?argv[8]:"classic";
         const bool velocity_augmented_rows=rows_mode=="vaug";
         const auto def=makeTemplate(template_id);
         auto fixture=makeFixture(def,tau,policy_v2,
-            velocity_augmented_rows);
+            velocity_augmented_rows,policy_v3);
         if (!fixture->adapter.initializeStageZero().initialized) {
             // Qualification-gate boundary point: recorded, not run.
             json boundary={{"protocol","task13-phase-a-run-v1"},
@@ -241,6 +247,8 @@ int main(int argc,char** argv) {
                 {"projection_passes",config.projection_passes},
                 {"speed_tracking_gain",config.speed_tracking_gain},
                 {"speed_tracking_blend_m",config.speed_tracking_blend_m},
+                {"target_policy_v3",config.target_policy_v3},
+                {"velocity_augmented_rows",config.velocity_augmented_rows},
                 {"velocity_augmented_rows",config.velocity_augmented_rows},
                 {"row_slack_epsilon_m",config.row_slack_epsilon_m},
                 {"acceleration_half_box",config.acceleration_half_box},

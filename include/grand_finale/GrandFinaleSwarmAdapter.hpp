@@ -128,6 +128,12 @@ struct GrandFinaleSwarmAdapterConfig {
     // speed-tracking nominal.  All parameters are read from config; the
     // default path (flag off) is byte-identical to the classic policy.
     bool target_policy_v2 = false;
+    // Task 13 Phase B0-a v3 (researcher-approved): CBF2026 leader-CVT
+    // design restored - leader target = centroid of the uncovered CVT
+    // share (nearest cell only as the near-empty closing degradation),
+    // follower ladder retained, target-lock contract on leaders and
+    // followers, low-frequency/event-driven partition recompute.
+    bool target_policy_v3 = false;
     double demand_recompute_interval_s = 5.0;
     double target_lock_epsilon_m = 30.0;
     std::size_t target_lock_dwell_cycles = 100;

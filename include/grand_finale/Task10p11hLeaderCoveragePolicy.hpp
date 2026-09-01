@@ -13,6 +13,9 @@ struct LeaderCoverageBranchSpec {
     Eigen::Vector2d coverage_origin=Eigen::Vector2d::Zero();
     double rotation_rad=0.0;
     std::vector<NodeId> preferred_fixed_roots;
+    // Task 13 B0-a v3 forward compatibility: ladder segment count
+    // parameterized for B1's component-wise CVT / lattice-band layouts.
+    int ladder_segments=4;
 };
 
 inline std::vector<LeaderCoverageBranchSpec>
@@ -27,6 +30,10 @@ struct LeaderCoverageRequest {
     std::vector<FrontierCell> domain_cells;
     std::vector<LeaderCoverageBranchSpec> branches=
         task10p11hLeaderCoverageSpec();
+    // Task 13 B0-a v3: leader target = centroid of the uncovered CVT
+    // share (nearest cell only as the near-empty closing degradation).
+    bool leader_centroid_primary=false;
+    int leader_centroid_near_empty_cells=2;
 };
 
 struct LeaderCoverageResult {
@@ -156,13 +163,25 @@ inline LeaderCoverageResult allocateLeaderCoverageTargets(
     for (const auto& leader : leaders) {
         auto& candidates=uncovered[leader.id];
         if (!candidates.empty()) {
-            std::sort(candidates.begin(),candidates.end(),
-                [&](const auto& lhs,const auto& rhs) {
-                    const double dl=(lhs.center-leader.position).squaredNorm();
-                    const double dr=(rhs.center-leader.position).squaredNorm();
-                    return dl<dr || (dl==dr && lhs.id()<rhs.id());
-                });
-            result.leader_targets[leader.id]=candidates.front();
+            if (request.leader_centroid_primary &&
+                static_cast<int>(candidates.size())>
+                    request.leader_centroid_near_empty_cells) {
+                // Task 13 B0-a v3: centroid of the uncovered CVT share is
+                // the primary target; the nearest cell only degrades in
+                // for near-empty shares.
+                Eigen::Vector2d centroid=Eigen::Vector2d::Zero();
+                for (const auto& cell : candidates) centroid+=cell.center;
+                centroid/=static_cast<double>(candidates.size());
+                result.leader_targets[leader.id]={-leader.id,-1,centroid};
+            } else {
+                std::sort(candidates.begin(),candidates.end(),
+                    [&](const auto& lhs,const auto& rhs) {
+                        const double dl=(lhs.center-leader.position).squaredNorm();
+                        const double dr=(rhs.center-leader.position).squaredNorm();
+                        return dl<dr || (dl==dr && lhs.id()<rhs.id());
+                    });
+                result.leader_targets[leader.id]=candidates.front();
+            }
         } else {
             Eigen::Vector2d centroid=Eigen::Vector2d::Zero();
             for (const auto& cell : domain[leader.id]) centroid+=cell.center;
@@ -175,7 +194,8 @@ inline LeaderCoverageResult allocateLeaderCoverageTargets(
     for (const auto& branch : branches) {
         const auto leader_target=result.leader_targets.at(branch.leader);
         const Eigen::Vector2d section=
-            (leader_target.center-branch.coverage_origin)/4.0;
+            (leader_target.center-branch.coverage_origin)/
+                static_cast<double>(branch.ladder_segments);
         const Eigen::Rotation2Dd rotate(branch.rotation_rad);
         for (std::size_t index=0;index<branch.members.size();++index) {
             const int local=static_cast<int>(index)+1;
