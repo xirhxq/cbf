@@ -157,7 +157,14 @@ int main(int argc,char** argv) {
         const double tau=argc>=6?std::stod(argv[5]):22.0;
         const std::string policy=argc>=8?argv[7]:"classic";
         const bool policy_v2=policy=="v2";
-        const bool policy_v3=policy=="v3";
+        // v3 and v4 share the target_policy_v3 flag: v3 was the centroid-
+        // primary form (rejected), v4 is the frontier-pacing +
+        // centroid-direction-scoring form (three-strikes round).
+        const bool policy_v3=policy=="v3"||policy=="v4";
+        if (policy=="v4") {
+            std::cout<<"policy v4 (frontier pacing + centroid direction "
+                "scoring)\n";
+        }
         if (policy_v2&&policy_v3) {
             std::cerr<<"policies v2 and v3 are mutually exclusive\n";
             return 2;

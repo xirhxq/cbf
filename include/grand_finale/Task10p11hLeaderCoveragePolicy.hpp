@@ -166,13 +166,42 @@ inline LeaderCoverageResult allocateLeaderCoverageTargets(
             if (request.leader_centroid_primary &&
                 static_cast<int>(candidates.size())>
                     request.leader_centroid_near_empty_cells) {
-                // Task 13 B0-a v3: centroid of the uncovered CVT share is
-                // the primary target; the nearest cell only degrades in
-                // for near-empty shares.
+                // Task 13 B0-a v4 (three-strikes round): nearest-cell
+                // frontier pacing + centroid direction-preference scoring.
+                // The classic nearest-cell walk is an implicit
+                // reachability pacer (v3 showed pure centroid targets
+                // burn the ladder budget at 28.8 s); the scoring adds a
+                // centroid-direction bias without abandoning pacing:
+                //   score = dist * (1 + w_dir*(1 - cos(theta)))
+                // with theta the angle between (cell-leader) and the
+                // share centroid direction, w_dir = 0.5 frozen.
                 Eigen::Vector2d centroid=Eigen::Vector2d::Zero();
                 for (const auto& cell : candidates) centroid+=cell.center;
                 centroid/=static_cast<double>(candidates.size());
-                result.leader_targets[leader.id]={-leader.id,-1,centroid};
+                const Eigen::Vector2d centroid_dir=
+                    centroid-leader.position;
+                const double centroid_norm=centroid_dir.norm();
+                std::vector<std::pair<double,const FrontierCell*>> scored;
+                scored.reserve(candidates.size());
+                for (const auto& cell : candidates) {
+                    const Eigen::Vector2d delta=cell.center-leader.position;
+                    const double dist=delta.norm();
+                    double score=dist;
+                    if (dist>1e-9 && centroid_norm>1e-9) {
+                        const double cos_theta=std::clamp(
+                            delta.dot(centroid_dir)/(dist*centroid_norm),
+                            -1.0,1.0);
+                        score=dist*(1.0+0.5*(1.0-cos_theta));
+                    }
+                    scored.emplace_back(score,&cell);
+                }
+                std::sort(scored.begin(),scored.end(),
+                    [](const auto& lhs,const auto& rhs) {
+                        return lhs.first<rhs.first ||
+                            (lhs.first==rhs.first &&
+                             lhs.second->id()<rhs.second->id());
+                    });
+                result.leader_targets[leader.id]=*scored.front().second;
             } else {
                 std::sort(candidates.begin(),candidates.end(),
                     [&](const auto& lhs,const auto& rhs) {
