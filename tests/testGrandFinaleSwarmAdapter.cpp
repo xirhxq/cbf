@@ -4,6 +4,7 @@
 #include "grand_finale/GrandFinaleSwarmAdapter.hpp"
 
 #include <fstream>
+#include <cstring>
 
 namespace {
 
@@ -41,6 +42,33 @@ gf::GrandFinaleSwarmAdapterConfig adapterConfig(gf::SolverProfile profile) {
 }
 
 }  // namespace
+
+TEST_CASE("Counter-based range field is reproducible and edge-order invariant") {
+    const auto edge=gf::UndirectedEdge::canonical(2,101);
+    const auto same=gf::range_noise_detail::sample(40009,37,edge,0.02);
+    const auto repeated=gf::range_noise_detail::sample(40009,37,edge,0.02);
+    const auto reversed=gf::range_noise_detail::sample(
+        40009,37,gf::UndirectedEdge::canonical(101,2),0.02);
+    CHECK(same.dropped==repeated.dropped);
+    CHECK(std::memcmp(&same.standard_normal,&repeated.standard_normal,
+        sizeof(double))==0);
+    CHECK(same.dropped==reversed.dropped);
+    CHECK(std::memcmp(&same.standard_normal,&reversed.standard_normal,
+        sizeof(double))==0);
+    const auto other_seed=gf::range_noise_detail::sample(
+        40013,37,edge,0.02);
+    CHECK(std::memcmp(&same.standard_normal,&other_seed.standard_normal,
+        sizeof(double))!=0);
+}
+
+TEST_CASE("Counter-based range field preserves the initial no-dropout contract") {
+    const auto edge=gf::UndirectedEdge::canonical(2,101);
+    CHECK_FALSE(gf::range_noise_detail::sample(40009,0,edge,1.0).dropped);
+    CHECK(gf::range_noise_detail::sample(40009,1,edge,1.0).dropped);
+    const auto finite=gf::range_noise_detail::sample(40009,1,edge,0.0);
+    CHECK_FALSE(finite.dropped);
+    CHECK(std::isfinite(finite.standard_normal));
+}
 
 TEST_CASE("GrandFinale adapter rejects an omitted formal collision distance") {
     json settings=settings4p2();

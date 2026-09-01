@@ -117,7 +117,9 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     const PhaseATemplate& def,double tau,bool policy_v2,
     bool velocity_augmented_rows,bool policy_v3,bool policy_v6,
     bool leader_reachability_filter,bool policy_h2,
-    gf::GammaFeedbackSelectionMode selection,double service_standoff_m) {
+    gf::GammaFeedbackSelectionMode selection,double service_standoff_m,
+    double range_noise_std_m,double range_dropout_probability,
+    unsigned int range_random_seed) {
     auto scenario=gf::task10p11rFixedBaselineScenario();
     scenario.mobile_positions=def.positions;
     scenario.initial_topology=def.topology;
@@ -135,7 +137,8 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
         false,false,false,false,false,false,
         false,false,false,false,false,true,policy_v2,
         velocity_augmented_rows,policy_v3,policy_v6,
-        leader_reachability_filter,policy_h2,service_standoff_m);
+        leader_reachability_filter,policy_h2,service_standoff_m,
+        range_noise_std_m,range_dropout_probability,range_random_seed);
 }
 
 }  // namespace
@@ -144,9 +147,10 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
 // invocation, 500 s window with T100 latch, rung-B'' 14-row speed domain,
 // per-tick telemetry and cumulative compute profile (profiler deliverable).
 int main(int argc,char** argv) {
-    if (argc<5||argc>9) {
+    if (argc<5||argc>12) {
         std::cerr<<"usage: GrandFinaleTask13PhaseARun TEMPLATE OUTPUT_JSON "
-            "PROGRESS_DIR TELEMETRY_JSONL [TAU] [WINDOW_S] [POLICY] [ROWS]\n";
+            "PROGRESS_DIR TELEMETRY_JSONL [TAU] [WINDOW_S] [POLICY] [ROWS] "
+            "[RANGE_NOISE_STD_M] [DROPOUT_PROBABILITY] [RANGE_SEED]\n";
         return 2;
     }
     const auto started=std::chrono::steady_clock::now();
@@ -185,13 +189,19 @@ int main(int argc,char** argv) {
             std::cerr<<"policies v2 and v3 are mutually exclusive\n";
             return 2;
         }
-        const std::string rows_mode=argc==9?argv[8]:"classic";
+        const std::string rows_mode=argc>=9?argv[8]:"classic";
         const bool velocity_augmented_rows=rows_mode=="vaug";
+        const double range_noise_std_m=argc>=10?std::stod(argv[9]):0.0;
+        const double range_dropout_probability=argc>=11?
+            std::stod(argv[10]):0.0;
+        const unsigned int range_random_seed=argc>=12?
+            static_cast<unsigned int>(std::stoul(argv[11])):2027U;
         const auto def=makeTemplate(template_id);
         auto fixture=makeFixture(def,tau,policy_v2,
             velocity_augmented_rows,policy_v3,policy_v6,
             leader_reachability_filter,policy_h2,gamma_selection,
-            service_standoff_m);
+            service_standoff_m,range_noise_std_m,
+            range_dropout_probability,range_random_seed);
         if (!fixture->adapter.initializeStageZero().initialized) {
             // Qualification-gate boundary point: recorded, not run.
             json boundary={{"protocol","task13-phase-a-run-v1"},
@@ -236,6 +246,11 @@ int main(int argc,char** argv) {
                 fixture->adapter.config().gamma_feedback_selection)},
             {"rows_mode",rows_mode},
             {"window_s",window_s},
+            {"noise_profile",{{"range_noise_std_m",range_noise_std_m},
+                {"range_dropout_probability",range_dropout_probability},
+                {"range_random_seed",range_random_seed},
+                {"field","counter_based_f_seed_tick_edge"},
+                {"maximum_range_aoi_s",config.maximum_range_aoi_s}}},
             {"identity_t0",{{"topology_matches_template",
                 fixture->topologyFrozen()}}},
             {"template_topology",std::move(topology_json)},
@@ -264,6 +279,11 @@ int main(int argc,char** argv) {
                 {"speed_initial_set_truth_gate",
                 config.speed_initial_set_truth_gate},
                 {"speed_cbf_gain",config.speed_cbf_gain},
+                {"range_noise_std_m",config.range_noise_std_m},
+                {"range_dropout_probability",
+                config.range_dropout_probability},
+                {"range_random_seed",config.range_random_seed},
+                {"maximum_range_aoi_s",config.maximum_range_aoi_s},
                 {"target_policy_v2",config.target_policy_v2},
                 {"demand_recompute_interval_s",
                 config.demand_recompute_interval_s},

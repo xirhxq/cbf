@@ -416,6 +416,52 @@ struct AcceptedRangeUpdateAudit {
     double innovation_variance=0.0;
 };
 
+namespace range_noise_detail {
+
+inline std::uint64_t splitmix64(std::uint64_t value) {
+    value += 0x9e3779b97f4a7c15ULL;
+    value = (value ^ (value >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+    value = (value ^ (value >> 27U)) * 0x94d049bb133111ebULL;
+    return value ^ (value >> 31U);
+}
+
+inline std::uint64_t keyedBits(
+    unsigned int seed,std::size_t tick,UndirectedEdge edge,
+    std::uint64_t lane) {
+    edge=UndirectedEdge::canonical(edge.first,edge.second);
+    std::uint64_t key=splitmix64(static_cast<std::uint64_t>(seed));
+    key=splitmix64(key^static_cast<std::uint64_t>(tick));
+    key=splitmix64(key^static_cast<std::uint64_t>(edge.first));
+    key=splitmix64(key^static_cast<std::uint64_t>(edge.second));
+    return splitmix64(key^lane);
+}
+
+inline double openUnit(std::uint64_t bits) {
+    constexpr double inverse_two_pow_53=1.0/9007199254740992.0;
+    return (static_cast<double>(bits>>11U)+0.5)*inverse_two_pow_53;
+}
+
+struct RangeFieldSample {
+    bool dropped=false;
+    double standard_normal=0.0;
+};
+
+inline RangeFieldSample sample(
+    unsigned int seed,std::size_t tick,UndirectedEdge edge,
+    double dropout_probability) {
+    const double dropout_uniform=openUnit(keyedBits(
+        seed,tick,edge,0x6a09e667f3bcc909ULL));
+    const double normal_u1=openUnit(keyedBits(
+        seed,tick,edge,0xbb67ae8584caa73bULL));
+    const double normal_u2=openUnit(keyedBits(
+        seed,tick,edge,0x3c6ef372fe94f82bULL));
+    return {tick>0&&dropout_uniform<dropout_probability,
+        std::sqrt(-2.0*std::log(normal_u1))*
+            std::cos(2.0*M_PI*normal_u2)};
+}
+
+}  // namespace range_noise_detail
+
 class GrandFinaleSwarmAdapter {
 public:
     GrandFinaleSwarmAdapter(
@@ -434,8 +480,7 @@ public:
               swarm.gridWorldGroundTruth.xNum,
               swarm.gridWorldGroundTruth.yLim,
               swarm.gridWorldGroundTruth.yNum),
-          supervisor_({config_.minimum_dwell_s, 0.05, 0.1}),
-          range_rng_(config_.range_random_seed) {
+          supervisor_({config_.minimum_dwell_s, 0.05, 0.1}) {
         if (mobile_ids_.size() != swarm_.robots.size())
             throw std::invalid_argument("mobile ids must match Swarm robots");
         for (std::size_t index = 0; index < mobile_ids_.size(); ++index) {
@@ -2114,14 +2159,16 @@ private:
         }
         for (const RangeMeasurement& measurement :
              canonicalizeRangeBatch(std::move(measurements))) {
-            if (range_batch_count_ > 0 && range_uniform_(range_rng_) <
-                config_.range_dropout_probability) {
+            const auto field=range_noise_detail::sample(
+                config_.range_random_seed,range_batch_count_,
+                measurement.edge,config_.range_dropout_probability);
+            if (field.dropped) {
                 continue;
             }
             RangeMeasurement accepted = measurement;
             if (config_.range_noise_std_m > 0.0) {
                 accepted.range_m += config_.range_noise_std_m *
-                    range_normal_(range_rng_);
+                    field.standard_normal;
                 accepted.variance_m2 = std::max(
                     accepted.variance_m2,
                     config_.range_noise_std_m * config_.range_noise_std_m);
@@ -2179,9 +2226,6 @@ private:
     std::vector<AcceptedRangeUpdateAudit> last_accepted_range_batch_audit_;
     std::optional<std::map<NodeId, Eigen::Vector2d>> nominal_override_;
     std::optional<Swarm::CertifiedYawRateBatch> yaw_rate_override_;
-    std::mt19937 range_rng_;
-    std::uniform_real_distribution<double> range_uniform_{0.0, 1.0};
-    std::normal_distribution<double> range_normal_{0.0, 1.0};
     std::size_t range_batch_count_ = 0;
 };
 
