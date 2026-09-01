@@ -34,19 +34,12 @@ struct LeaderCoverageRequest {
     // share (nearest cell only as the near-empty closing degradation).
     bool leader_centroid_primary=false;
     int leader_centroid_near_empty_cells=2;
-    // Task 13 B0-a v5: hard reachability filter - a leader candidate must
-    // lie within R_eff of EVERY branch reference (disk-intersection
-    // convexity => the root->leader segment inherits reachability).  An
-    // empty filtered set is the topology-health signal (B1 trigger) and
-    // degrades to the nearest cell.
-    bool leader_reachability_filter=false;
-    std::map<NodeId,std::vector<std::pair<Eigen::Vector2d,double>>>
-        leader_reference_disks;
-    // Corrected (sensing) semantics: hard bound on the distance to the
-    // NEAREST reference; the per-reference R_eff radii in the disks act
-    // only as the sorting weight.
-    double leader_reachability_sensing_bound_m = 0.0;
-    double leader_reachability_weight = 0.25;
+    // Task 13 B0-a v7: pure nearest-cell pacing; the centroid direction
+    // acts only as a tie-break between candidates whose distances differ
+    // by less than this tolerance (the R_eff filter is removed - its
+    // safety role is the vaug rows' and its pacing role is the
+    // nearest-cell ordering).
+    double leader_tie_break_tolerance_m = 25.0;
 };
 
 struct LeaderCoverageResult {
@@ -179,103 +172,62 @@ inline LeaderCoverageResult allocateLeaderCoverageTargets(
     for (const auto& leader : leaders) {
         auto& candidates=uncovered[leader.id];
         if (!candidates.empty()) {
-            if (request.leader_centroid_primary &&
-                static_cast<int>(candidates.size())>
-                    request.leader_centroid_near_empty_cells) {
-                // Task 13 B0-a v5: hard reachability filter - a candidate
-                // must lie within R_eff of every branch reference (disk
-                // intersection is convex, so the root->leader segment
-                // inherits reachability).  An empty filtered set is the
-                // topology-health signal and degrades to the nearest
-                // cell.
-                std::vector<FrontierCell> reachable;
-                const auto disk_it=
-                    request.leader_reference_disks.find(leader.id);
-                if (!request.leader_reachability_filter ||
-                    disk_it==request.leader_reference_disks.end() ||
-                    disk_it->second.empty() ||
-                    request.leader_reachability_sensing_bound_m<=0.0) {
-                    reachable=candidates;
-                } else {
-                    // Corrected (sensing) semantics: only the distance to
-                    // the NEAREST reference is bounded; the per-reference
-                    // R_eff radii act solely as the sorting weight.
-                    for (const auto& cell : candidates) {
-                        double d_min=std::numeric_limits<double>::infinity();
-                        for (const auto& disk : disk_it->second)
-                            d_min=std::min(d_min,
-                                (cell.center-disk.first).norm());
-                        if (d_min<=request.
-                                leader_reachability_sensing_bound_m)
-                            reachable.push_back(cell);
-                    }
-                    if (reachable.empty())
-                        result.leader_reachability_fallback_leaders.insert(
-                            leader.id);
-                }
-                auto& scored_set=reachable.empty()?candidates:reachable;
-                const bool degraded=reachable.empty();
-                if (degraded) {
-                    std::sort(scored_set.begin(),scored_set.end(),
-                        [&](const auto& lhs,const auto& rhs) {
-                            const double dl=(lhs.center-leader.position).squaredNorm();
-                            const double dr=(rhs.center-leader.position).squaredNorm();
-                            return dl<dr || (dl==dr && lhs.id()<rhs.id());
-                        });
-                    result.leader_targets[leader.id]=scored_set.front();
-                } else {
-                // Task 13 B0-a v4 (three-strikes round): nearest-cell
-                // frontier pacing + centroid direction-preference scoring.
-                // The classic nearest-cell walk is an implicit
-                // reachability pacer (v3 showed pure centroid targets
-                // burn the ladder budget at 28.8 s); the scoring adds a
-                // centroid-direction bias without abandoning pacing:
-                //   score = dist * (1 + w_dir*(1 - cos(theta)))
-                // with theta the angle between (cell-leader) and the
-                // share centroid direction, w_dir = 0.5 frozen.
+            if (request.leader_centroid_primary) {
+                // Task 13 B0-a v7: pure nearest-cell pacing with a
+                // centroid-direction tie-break.  The candidates are sorted
+                // by distance; within the leading group whose distances
+                // differ from the best by less than
+                // leader_tie_break_tolerance_m, the most centroid-aligned
+                // cell wins.
+                std::sort(candidates.begin(),candidates.end(),
+                    [&](const auto& lhs,const auto& rhs) {
+                        const double dl=(lhs.center-leader.position).squaredNorm();
+                        const double dr=(rhs.center-leader.position).squaredNorm();
+                        return dl<dr || (dl==dr && lhs.id()<rhs.id());
+                    });
+                const double best_distance=std::sqrt(
+                    (candidates.front().center-leader.position).squaredNorm());
                 Eigen::Vector2d centroid=Eigen::Vector2d::Zero();
-                for (const auto& cell : scored_set) centroid+=cell.center;
-                centroid/=static_cast<double>(scored_set.size());
+                for (const auto& cell : candidates) centroid+=cell.center;
+                centroid/=static_cast<double>(candidates.size());
                 const Eigen::Vector2d centroid_dir=
                     centroid-leader.position;
                 const double centroid_norm=centroid_dir.norm();
-                std::vector<std::pair<double,const FrontierCell*>> scored;
-                scored.reserve(scored_set.size());
-                for (const auto& cell : scored_set) {
+                const FrontierCell* best=&candidates.front();
+                double best_alignment=-2.0;
+                for (const auto& cell : candidates) {
                     const Eigen::Vector2d delta=cell.center-leader.position;
                     const double dist=delta.norm();
-                    double score=dist;
-                    if (dist>1e-9 && centroid_norm>1e-9) {
-                        const double cos_theta=std::clamp(
+                    if (dist>best_distance+
+                            request.leader_tie_break_tolerance_m)
+                        break;  // distance-sorted: the tail is farther
+                    double alignment=-2.0;
+                    if (dist>1e-9 && centroid_norm>1e-9)
+                        alignment=std::clamp(
                             delta.dot(centroid_dir)/(dist*centroid_norm),
                             -1.0,1.0);
-                        score=dist*(1.0+0.5*(1.0-cos_theta));
+                    if (alignment>best_alignment) {
+                        best_alignment=alignment;
+                        best=&cell;
                     }
-                    if (request.leader_reachability_weight>0.0) {
-                        double d_min=std::numeric_limits<double>::infinity();
-                        for (const auto& disk : disk_it->second)
-                            d_min=std::min(d_min,
-                                (cell.center-disk.first).norm());
-                        score+=request.leader_reachability_weight*d_min;
-                    }
-                    scored.emplace_back(score,&cell);
                 }
-                std::sort(scored.begin(),scored.end(),
-                    [](const auto& lhs,const auto& rhs) {
-                        return lhs.first<rhs.first ||
-                            (lhs.first==rhs.first &&
-                             lhs.second->id()<rhs.second->id());
-                    });
-                result.leader_targets[leader.id]=*scored.front().second;
-                }
+                result.leader_targets[leader.id]=*best;
             } else {
+                std::sort(candidates.begin(),candidates.end(),
+                    [&](const auto& lhs,const auto& rhs) {
+                        const double dl=(lhs.center-leader.position).squaredNorm();
+                        const double dr=(rhs.center-leader.position).squaredNorm();
+                        return dl<dr || (dl==dr && lhs.id()<rhs.id());
+                    });
+                result.leader_targets[leader.id]=candidates.front();
+            }
+        } else {
             Eigen::Vector2d centroid=Eigen::Vector2d::Zero();
             for (const auto& cell : domain[leader.id]) centroid+=cell.center;
             centroid/=static_cast<double>(domain[leader.id].size());
             result.leader_targets[leader.id]={-leader.id,-1,centroid};
             result.centroid_fallback_leaders.insert(leader.id);
         }
-    }
     }
 
     for (const auto& branch : branches) {

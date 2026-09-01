@@ -134,15 +134,10 @@ struct GrandFinaleSwarmAdapterConfig {
     // follower ladder retained, target-lock contract on leaders and
     // followers, low-frequency/event-driven partition recompute.
     bool target_policy_v3 = false;
-    // Task 13 Phase B0-a v5 (corrected semantics, researcher directive):
-    // the hard bound is the distance to the NEAREST reference
-    // (reference_distance_m + sensor_outer_radius_m = sensing semantics,
-    // ~1250 m); R_eff survives only as a sorting weight (nearer-to-
-    // reference preferred).  The vaug rows are the sole safety
-    // containment.
-    bool leader_reachability_filter = false;
-    double sensor_outer_radius_m = 400.0;
-    double leader_reachability_weight = 0.25;
+    // Task 13 Phase B0-a v7 (researcher directive): the R_eff filter is
+    // removed (safety = vaug rows, pacing = nearest-cell ordering); the
+    // centroid direction only breaks ties between near-equal candidates.
+    double leader_tie_break_tolerance_m = 25.0;
     // Task 13 Phase B0-a v6 (researcher-approved restoration): per-drone
     // chase-cell targeting for leaders AND followers - target = nearest
     // uncovered cell within the neighborhood radius of the drone's

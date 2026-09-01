@@ -106,7 +106,7 @@ inline GrandFinaleSwarmAdapterConfig task10p11rFixtureAdapterConfig(
     bool s1_v4_bare=false,bool s1_rung_b_prime=false,
     bool s1_rung_b2=false,bool target_policy_v2=false,
     bool velocity_augmented_rows=false,bool target_policy_v3=false,
-    bool leader_reachability_filter=false,bool target_policy_v6=false) {
+    bool target_policy_v6=false) {
     auto config=task10p11rFixedAdapterConfig(selection,predictive_tau_mps2);
     config.speed_row_nominal=speed_row_nominal;
     config.tau_margin_gate_enabled=tau_margin_gate;
@@ -164,11 +164,7 @@ inline GrandFinaleSwarmAdapterConfig task10p11rFixtureAdapterConfig(
     }
     if (target_policy_v2) config.target_policy_v2=true;
     if (target_policy_v3) config.target_policy_v3=true;
-    if (leader_reachability_filter) config.leader_reachability_filter=true;
-    if (target_policy_v6) {
-        config.target_policy_v6=true;
-        config.leader_reachability_filter=false;  // v6: filter -> tie-breaker retired
-    }
+    if (target_policy_v6) config.target_policy_v6=true;
     if (velocity_augmented_rows) {
         config.velocity_augmented_rows=true;
         config.row_slack_epsilon_m=0.5;
@@ -210,8 +206,7 @@ struct Task10p11rFixedBaselineFixture {
     bool s1_rung_b=false,bool s1_v4_prime=false,bool s1_v4_bare=false,
     bool s1_rung_b_prime=false,bool s1_rung_b2=false,
     bool target_policy_v2=false,bool velocity_augmented_rows=false,
-    bool target_policy_v3=false,bool leader_reachability_filter=false,
-    bool target_policy_v6=false)
+    bool target_policy_v3=false,bool target_policy_v6=false)
         : scenario(std::move(scenario_value)),settings(std::move(settings_value)),
           swarm(settings),
           adapter(swarm,scenario.mobile_ids,scenario.fixed_positions,
@@ -222,8 +217,7 @@ struct Task10p11rFixedBaselineFixture {
                   nominal_throttle,throttle_v2,speed_rows_removed,
                   s1_rung_b,s1_v4_prime,s1_v4_bare,s1_rung_b_prime,
                   s1_rung_b2,target_policy_v2,velocity_augmented_rows,
-                  target_policy_v3,leader_reachability_filter,
-                  target_policy_v6)),
+                  target_policy_v3,target_policy_v6)),
           controller(swarm,adapter,{}, {},task10p11rAuthorityContract().branches),
           frozen_topology(scenario.initial_topology),
           initial_topology_version(adapter.supervisor().topologyVersion()) {}
