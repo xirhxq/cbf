@@ -265,7 +265,14 @@ inline LeaderCoverageResult allocateLeaderCoverageTargets(
     }
 
     for (const auto& branch : branches) {
-        const auto leader_target=result.leader_targets.at(branch.leader);
+        // map::at robustness (microfix v5 crash fix): a missing leader
+        // entry degrades to the branch coverage origin instead of
+        // throwing.
+        const auto leader_it=result.leader_targets.find(branch.leader);
+        const FrontierCell leader_target=
+            leader_it!=result.leader_targets.end()
+                ?leader_it->second
+                :FrontierCell{-branch.leader,-1,branch.coverage_origin};
         const Eigen::Vector2d section=
             (leader_target.center-branch.coverage_origin)/
                 static_cast<double>(branch.ladder_segments);

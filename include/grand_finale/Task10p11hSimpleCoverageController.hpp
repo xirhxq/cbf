@@ -147,6 +147,7 @@ public:
         for (const auto& cell : cells) uncovered.insert(cell.id());
         bool target_completed=false;
         bool cvt_target_present=false;
+        const bool policy_v6=adapter_.config().target_policy_v6;
         for (const auto& target_entry : targets_) {
             const NodeId owner=target_entry.first;
             const FrontierCell& target=target_entry.second;
@@ -154,7 +155,7 @@ public:
                 branches_.begin(),branches_.end(),[&](const auto& branch) {
                     return branch.leader==owner;
                 });
-            if (!leader) continue;
+            if (!policy_v6 && !leader) continue;
             if (!denominator_ids_.count(target.id())) {
                 cvt_target_present=true;
             } else if (!uncovered.count(target.id())) {
@@ -199,6 +200,8 @@ public:
                         Eigen::Vector2d(grid.xLim.first,grid.yLim.first),
                         Eigen::Vector2d(grid.xLim.second,grid.yLim.second));
             }
+            if (policy_v6)
+                v6ChaseOverride(result.allocation.targets,cells,runtime);
             targets_=result.allocation.targets;
             ++target_epoch_;
             consecutive_failures_=0;
@@ -479,6 +482,57 @@ public:
     }
 
 private:
+    // ---- Task 13 Phase B0-a v6: per-drone chase-cell targeting --------
+    // CBF2026 restoration: EVERY drone (leader and follower) targets the
+    // nearest uncovered cell within its neighborhood radius around its
+    // ladder position, restricted to its branch share (the leader-CVT
+    // two-share partition is unchanged).  Covered targets auto-switch at
+    // the next allocation epoch via the all-owner completion check.
+    void v6ChaseOverride(
+        std::map<NodeId,FrontierCell>& allocation_targets,
+        const std::vector<FrontierCell>& uncovered_cells,
+        const GrandFinaleRuntimeSnapshot& runtime) {
+        const auto& config=adapter_.config();
+        const double radius=config.v6_neighborhood_radius_m;
+        std::map<NodeId,Eigen::Vector2d> leader_positions;
+        for (const auto& branch:branches_)
+            leader_positions[branch.leader]=
+                v2Position(runtime,branch.leader);
+        for (auto& [owner,ladder_point] : allocation_targets) {
+            const auto branch_it=std::find_if(
+                branches_.begin(),branches_.end(),
+                [&](const auto& branch) {
+                    return std::find(branch.members.begin(),
+                        branch.members.end(),owner)!=branch.members.end();
+                });
+            if (branch_it==branches_.end()) continue;
+            const NodeId share_leader=branch_it->leader;
+            const FrontierCell* best=nullptr;
+            double best_distance=std::numeric_limits<double>::infinity();
+            for (const auto& cell : uncovered_cells) {
+                NodeId nearest=share_leader;
+                double nearest_distance=std::numeric_limits<
+                    double>::infinity();
+                for (const auto& [leader,position]:leader_positions) {
+                    const double d=(cell.center-position).norm();
+                    if (d<nearest_distance) {nearest_distance=d;nearest=leader;}
+                }
+                if (nearest!=share_leader) continue;
+                const double distance=
+                    (cell.center-ladder_point.center).norm();
+                if (distance<=radius && distance<best_distance) {
+                    best_distance=distance;
+                    best=&cell;
+                }
+            }
+            if (best!=nullptr)
+                allocation_targets[owner]=*best;
+            // Neighborhood exhausted: the ladder point remains the
+            // structure target; the next epoch re-chases as coverage
+            // grows.  No synthetic targets are emitted under v6.
+        }
+    }
+
     // ---- Task 13 Phase B0-a v3: leader-CVT centroid-primary targeting
     // with the lock contract and low-frequency/event-driven recompute.
     void advanceV3Targets(

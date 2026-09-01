@@ -138,6 +138,13 @@ struct GrandFinaleSwarmAdapterConfig {
     // against every branch reference (empty filtered set = topology
     // health signal, nearest-cell degradation).
     bool leader_reachability_filter = false;
+    // Task 13 Phase B0-a v6 (researcher-approved restoration): per-drone
+    // chase-cell targeting for leaders AND followers - target = nearest
+    // uncovered cell within the neighborhood radius of the drone's
+    // ladder position (branch-share restricted); covered targets auto-
+    // switch.  The ladder degrades to formation structure.
+    bool target_policy_v6 = false;
+    double v6_neighborhood_radius_m = 450.0;
     double demand_recompute_interval_s = 5.0;
     double target_lock_epsilon_m = 30.0;
     std::size_t target_lock_dwell_cycles = 100;

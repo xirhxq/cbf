@@ -116,7 +116,7 @@ PhaseATemplate makeTemplate(const std::string& id) {
 std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     const PhaseATemplate& def,double tau,bool policy_v2,
     bool velocity_augmented_rows,bool policy_v3,
-    bool leader_reachability_filter) {
+    bool leader_reachability_filter,bool policy_v6) {
     auto scenario=gf::task10p11rFixedBaselineScenario();
     scenario.mobile_positions=def.positions;
     scenario.initial_topology=def.topology;
@@ -133,7 +133,8 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
         gf::GammaFeedbackSelectionMode::LeastIntervention,tau,true,
         false,false,false,false,false,false,
         false,false,false,false,false,true,policy_v2,
-        velocity_augmented_rows,policy_v3,leader_reachability_filter);
+        velocity_augmented_rows,policy_v3,leader_reachability_filter,
+        policy_v6);
 }
 
 }  // namespace
@@ -163,6 +164,11 @@ int main(int argc,char** argv) {
         // centroid-direction-scoring form (three-strikes round).
         const bool policy_v3=policy=="v3"||policy=="v4"||policy=="v5";
         const bool leader_reachability_filter=policy=="v5";
+        const bool policy_v6=policy=="v6";
+        if (policy_v2&&policy_v6) {
+            std::cerr<<"policies v2 and v6 are mutually exclusive\n";
+            return 2;
+        }
         if (policy=="v4") {
             std::cout<<"policy v4 (frontier pacing + centroid direction "
                 "scoring)\n";
@@ -176,7 +182,7 @@ int main(int argc,char** argv) {
         const auto def=makeTemplate(template_id);
         auto fixture=makeFixture(def,tau,policy_v2,
             velocity_augmented_rows,policy_v3,
-            leader_reachability_filter);
+            leader_reachability_filter,policy_v6);
         if (!fixture->adapter.initializeStageZero().initialized) {
             // Qualification-gate boundary point: recorded, not run.
             json boundary={{"protocol","task13-phase-a-run-v1"},
@@ -260,6 +266,8 @@ int main(int argc,char** argv) {
                 {"target_policy_v3",config.target_policy_v3},
                 {"leader_reachability_filter",
                 config.leader_reachability_filter},
+                {"target_policy_v6",config.target_policy_v6},
+                {"v6_neighborhood_radius_m",config.v6_neighborhood_radius_m},
                 {"velocity_augmented_rows",config.velocity_augmented_rows},
                 {"velocity_augmented_rows",config.velocity_augmented_rows},
                 {"row_slack_epsilon_m",config.row_slack_epsilon_m},
