@@ -114,7 +114,7 @@ PhaseATemplate makeTemplate(const std::string& id) {
 }
 
 std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
-    const PhaseATemplate& def,double tau) {
+    const PhaseATemplate& def,double tau,bool policy_v2) {
     auto scenario=gf::task10p11rFixedBaselineScenario();
     scenario.mobile_positions=def.positions;
     scenario.initial_topology=def.topology;
@@ -124,12 +124,12 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     // saturation, preflight demoted (31 m/s fuse), truth initial-set gate.
     // Bool order: srnm, margin, family, analytic, demoted, throttle,
     // throttle_v2, rows_removed, rung_b, v4_prime, bare, rung_b_prime,
-    // rung_b2.
+    // rung_b2, target_policy_v2.
     return std::make_unique<gf::Task10p11rFixedBaselineFixture>(
         std::move(scenario),std::move(settings),
         gf::GammaFeedbackSelectionMode::LeastIntervention,tau,true,
         false,false,false,false,false,false,
-        false,false,false,false,false,true);
+        false,false,false,false,false,true,policy_v2);
 }
 
 }  // namespace
@@ -138,9 +138,9 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
 // invocation, 500 s window with T100 latch, rung-B'' 14-row speed domain,
 // per-tick telemetry and cumulative compute profile (profiler deliverable).
 int main(int argc,char** argv) {
-    if (argc!=5&&argc!=6&&argc!=7) {
+    if (argc!=5&&argc!=6&&argc!=7&&argc!=8) {
         std::cerr<<"usage: GrandFinaleTask13PhaseARun TEMPLATE OUTPUT_JSON "
-            "PROGRESS_DIR TELEMETRY_JSONL [TAU] [WINDOW_S]\n";
+            "PROGRESS_DIR TELEMETRY_JSONL [TAU] [WINDOW_S] [POLICY]\n";
         return 2;
     }
     const auto started=std::chrono::steady_clock::now();
@@ -150,10 +150,12 @@ int main(int argc,char** argv) {
     };
     try {
         const std::string template_id=argv[1];
-        const double window_s=argc==7?std::stod(argv[6]):500.0;
+        const double window_s=argc>=7?std::stod(argv[6]):500.0;
         const double tau=argc>=6?std::stod(argv[5]):22.0;
+        const std::string policy=argc==8?argv[7]:"classic";
+        const bool policy_v2=policy=="v2";
         const auto def=makeTemplate(template_id);
-        auto fixture=makeFixture(def,tau);
+        auto fixture=makeFixture(def,tau,policy_v2);
         if (!fixture->adapter.initializeStageZero().initialized) {
             // Qualification-gate boundary point: recorded, not run.
             json boundary={{"protocol","task13-phase-a-run-v1"},
@@ -191,6 +193,7 @@ int main(int argc,char** argv) {
             {"preregistration","task-13-phase-a-launch-2026-09-01"},
             {"template",template_id},{"description",def.description},
             {"tau_mps2",tau},{"qualified",true},
+            {"policy",policy},
             {"window_s",window_s},
             {"identity_t0",{{"topology_matches_template",
                 fixture->topologyFrozen()}}},
@@ -220,6 +223,18 @@ int main(int argc,char** argv) {
                 {"speed_initial_set_truth_gate",
                 config.speed_initial_set_truth_gate},
                 {"speed_cbf_gain",config.speed_cbf_gain},
+                {"target_policy_v2",config.target_policy_v2},
+                {"demand_recompute_interval_s",
+                config.demand_recompute_interval_s},
+                {"target_lock_epsilon_m",config.target_lock_epsilon_m},
+                {"target_lock_dwell_cycles",config.target_lock_dwell_cycles},
+                {"target_lock_progress_epsilon_m",
+                config.target_lock_progress_epsilon_m},
+                {"reachability_hysteresis_m",
+                config.reachability_hysteresis_m},
+                {"projection_passes",config.projection_passes},
+                {"speed_tracking_gain",config.speed_tracking_gain},
+                {"speed_tracking_blend_m",config.speed_tracking_blend_m},
                 {"acceleration_half_box",config.acceleration_half_box},
                 {"residual_tolerance",config.residual_tolerance},
                 {"dt_s",config.dt_s},
@@ -269,6 +284,13 @@ int main(int argc,char** argv) {
                     break;
                 }
             }
+            // Interval-audit fix (B0-a code round): capture the PRE-advance
+            // truth velocity; the retired form paired post-advance velocity
+            // with the same tick's control (a two-tick projection).
+            std::map<gf::NodeId,Eigen::Vector2d> pre_velocities;
+            for (const auto& robot:fixture->swarm.robots)
+                pre_velocities[static_cast<gf::NodeId>(robot->id)]=
+                    Eigen::Vector2d(robot->model->getVelocity().head<2>());
             last_step=fixture->controller.advance();
             profiler.merge(last_step.compute_profile);
             const double fraction=
@@ -286,7 +308,8 @@ int main(int argc,char** argv) {
                     const double truth_speed=truth_velocity.head<2>().norm();
                     truth_max=std::max(truth_max,truth_speed-30.0);
                     const auto audit=gf::auditPlantSpeedExactZoh(
-                        truth_velocity.head<2>(),u,0.1,30.0,1.0e-9);
+                        pre_velocities.at(static_cast<gf::NodeId>(
+                            robot->id)),u,0.1,30.0,1.0e-9);
                     interval_max=std::max(interval_max,
                         audit.maximum_interval_speed_mps-30.0);
                 }
@@ -435,8 +458,8 @@ int main(int argc,char** argv) {
             {"fuse_limit_mps",config.speed_preflight_fuse_mps},
             {"fuse_tripped",max_interval_overspeed>1.0}};
         record["profiler"]={{"note",
-            "cumulative over run; runner interval telemetry is two-tick "
-            "defective (known defect), adapter preflight authoritative"},
+            "cumulative over run; interval telemetry audits the pre-advance "
+            "truth velocity (two-tick defect fixed in this code round)"},
             {"profiled_total_s",gf::task10p11w_detail::number(
                 profiled_total)},
             {"phases",std::move(profiler_json)}};

@@ -209,6 +209,12 @@ int main(int argc,char** argv) {
                     break;
                 }
             }
+            // Interval-audit fix (B0-a code round): audit the PRE-advance
+            // truth velocity (the retired form projected two ticks).
+            std::map<gf::NodeId,Eigen::Vector2d> pre_velocities;
+            for (const auto& robot:fixture->swarm.robots)
+                pre_velocities[static_cast<gf::NodeId>(robot->id)]=
+                    Eigen::Vector2d(robot->model->getVelocity().head<2>());
             last_step=fixture->controller.advance();
             const double fraction=
                 fixture->adapter.coverage().truthFraction();
@@ -225,7 +231,8 @@ int main(int argc,char** argv) {
                     const double truth_speed=truth_velocity.head<2>().norm();
                     truth_max=std::max(truth_max,truth_speed-30.0);
                     const auto audit=gf::auditPlantSpeedExactZoh(
-                        truth_velocity.head<2>(),u,0.1,30.0,1.0e-9);
+                        pre_velocities.at(static_cast<gf::NodeId>(
+                            robot->id)),u,0.1,30.0,1.0e-9);
                     interval_max=std::max(interval_max,
                         audit.maximum_interval_speed_mps-30.0);
                 }

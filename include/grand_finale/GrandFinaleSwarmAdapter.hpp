@@ -117,11 +117,25 @@ struct GrandFinaleSwarmAdapterConfig {
     bool speed_rows_removed = false;
     double nominal_speed_saturation_mps = 0.0;  // opt-in (S1-v4: 29.9)
     // Task 11b rung B' (researcher-approved, post-adjudication): keep the
-    // single nominal row at the full 30 m/s limit with an unsaturated
+    // single nominal speed row at the full 30 m/s limit with an unsaturated
     // nominal; the QP-side estimate SpeedLimit initial-set precheck is
     // bypassed (it trips on boundary numerics) and the initial-set
     // judgment is carried by truth telemetry in the runner.
     bool speed_initial_set_truth_gate = false;
+    // Task 13 Phase B0-a (researcher-approved): target policy v2 -
+    // Voronoi demand field with low-frequency/event-driven recompute,
+    // per-owner reachability projection, target-lock contract, and the
+    // speed-tracking nominal.  All parameters are read from config; the
+    // default path (flag off) is byte-identical to the classic policy.
+    bool target_policy_v2 = false;
+    double demand_recompute_interval_s = 5.0;
+    double target_lock_epsilon_m = 30.0;
+    std::size_t target_lock_dwell_cycles = 100;
+    double target_lock_progress_epsilon_m = 5.0;
+    double reachability_hysteresis_m = 25.0;
+    int projection_passes = 2;
+    double speed_tracking_gain = 1.0;
+    double speed_tracking_blend_m = 60.0;
     double maximum_yaw_rate_radps = 0.0;
     double position_gain = 0.4;
     double velocity_gain = 0.8;

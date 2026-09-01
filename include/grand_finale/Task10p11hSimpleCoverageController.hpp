@@ -130,6 +130,12 @@ public:
 
         const auto target_started=std::chrono::steady_clock::now();
 
+        const bool policy_v2=adapter_.config().target_policy_v2;
+        if (policy_v2) {
+            // Task 13 Phase B0-a: demand field (low-frequency/event-driven
+            // recompute) + reachability projection + target-lock contract.
+            advanceV2Targets(runtime,result);
+        } else {
         const auto cells=currentUncoveredCells();
         std::set<std::string> uncovered;
         for (const auto& cell : cells) uncovered.insert(cell.id());
@@ -191,18 +197,24 @@ public:
             ++target_epoch_;
             consecutive_failures_=0;
         }
+        }
 
         std::map<NodeId,Eigen::Vector2d> nominal;
         std::map<NodeId,double> yaw_rates;
-        auto model=task10p11gFrozenModel();
-        model.acceleration_half_box_mps2=adapter_.config().acceleration_half_box;
-        model.position_gain=adapter_.config().position_gain;
-        model.velocity_gain=adapter_.config().velocity_gain;
-        model.maximum_yaw_rate_radps=adapter_.config().maximum_yaw_rate_radps;
         for (std::size_t index=0;
              index<runtime.estimate.mobile_ids.size();++index) {
             const NodeId owner=runtime.estimate.mobile_ids[index];
             const Eigen::Vector4d state=runtime.estimate.mean.segment<4>(4*index);
+            if (policy_v2) {
+                nominal[owner]=v2SpeedTrackingNominal(owner,state,runtime);
+                yaw_rates[owner]=0.0;
+                continue;
+            }
+            auto model=task10p11gFrozenModel();
+            model.acceleration_half_box_mps2=adapter_.config().acceleration_half_box;
+            model.position_gain=adapter_.config().position_gain;
+            model.velocity_gain=adapter_.config().velocity_gain;
+            model.maximum_yaw_rate_radps=adapter_.config().maximum_yaw_rate_radps;
             const auto found=targets_.find(owner);
             std::optional<Eigen::Vector2d> soft_target=
                 found==targets_.end()?std::optional<Eigen::Vector2d>{}:
@@ -461,6 +473,165 @@ public:
     }
 
 private:
+    // ---- Task 13 Phase B0-a: target policy v2 -------------------------
+    void advanceV2Targets(
+        const GrandFinaleRuntimeSnapshot& runtime,
+        SimpleCoverageControlStep& result) {
+        const auto& config=adapter_.config();
+        const double now=runtime.runtime_s;
+        const bool interval=now-last_demand_recompute_s_>=
+            config.demand_recompute_interval_s;
+        if (targets_.empty()||interval||v2_demand_cells_.empty()) {
+            v2_demand_cells_=currentUncoveredCells();
+            last_demand_recompute_s_=now;
+            for (NodeId owner:runtime.estimate.mobile_ids)
+                if (!targets_.count(owner))
+                    v2RecomputeOwnerDemand(owner,runtime);
+            ++target_epoch_;
+        }
+        for (NodeId owner:runtime.estimate.mobile_ids) {
+            const auto found=targets_.find(owner);
+            if (found==targets_.end()) {
+                v2RecomputeOwnerDemand(owner,runtime);
+                continue;
+            }
+            const Eigen::Vector2d position=v2Position(runtime,owner);
+            const double distance=(position-found->second.center).norm();
+            const bool arrived=distance<=config.target_lock_epsilon_m;
+            const bool covered=std::none_of(
+                v2_demand_cells_.begin(),v2_demand_cells_.end(),
+                [&](const FrontierCell& cell){
+                    return cell.id()==found->second.id();});
+            const std::size_t dwell=++v2_dwell_cycles_[owner];
+            if (dwell==1) v2_dwell_start_distance_[owner]=distance;
+            bool stalled=false;
+            if (dwell>=config.target_lock_dwell_cycles) {
+                const double progress=
+                    v2_dwell_start_distance_[owner]-distance;
+                if (progress>=config.target_lock_progress_epsilon_m) {
+                    v2_dwell_cycles_[owner]=0;
+                    v2_dwell_start_distance_[owner]=distance;
+                } else {
+                    stalled=true;
+                }
+            }
+            if (arrived||covered||stalled) {
+                v2RecomputeOwnerDemand(owner,runtime);
+                continue;
+            }
+            // Out-of-feasible escape: an empty projected feasible set
+            // triggers an event-driven demand recompute (B1 will reuse
+            // this signal as the topology-health escape trigger).
+            if (!v2Project(owner,found->second.center,runtime).has_value()) {
+                ++v2_escape_count_;
+                v2RecomputeOwnerDemand(owner,runtime);
+            }
+        }
+        result.target_epoch=target_epoch_;
+    }
+
+    void v2RecomputeOwnerDemand(
+        NodeId owner,const GrandFinaleRuntimeSnapshot& runtime) {
+        if (v2_demand_cells_.empty()) return;
+        const Eigen::Vector2d position=v2Position(runtime,owner);
+        Eigen::Vector2d sum=Eigen::Vector2d::Zero();
+        std::size_t count=0;
+        for (const auto& cell:v2_demand_cells_) {
+            NodeId nearest=owner;
+            double best=std::numeric_limits<double>::infinity();
+            for (NodeId other:runtime.estimate.mobile_ids) {
+                const double d=(cell.center-v2Position(runtime,other)).norm();
+                if (d<best) {best=d;nearest=other;}
+            }
+            if (nearest==owner) {sum+=cell.center;++count;}
+        }
+        if (count==0) return;
+        targets_[owner]=FrontierCell{-1,-1,sum/count};
+        v2_dwell_cycles_[owner]=0;
+        v2_dwell_start_distance_[owner]=
+            (position-targets_[owner].center).norm();
+        ++target_epoch_;
+    }
+
+    std::optional<Eigen::Vector2d> v2Project(
+        NodeId owner,const Eigen::Vector2d& demand,
+        const GrandFinaleRuntimeSnapshot& runtime) const {
+        const auto& config=adapter_.config();
+        std::vector<std::pair<Eigen::Vector2d,double>> disks;
+        disks.emplace_back(v2Position(runtime,owner),
+            v2ReachableRadius(owner,runtime));
+        for (const auto& edge:runtime.topology)
+            if (edge.owner==owner)
+                disks.emplace_back(v2Position(runtime,edge.reference),
+                    v2ReachableRadius(edge.reference,runtime));
+        Eigen::Vector2d q=demand;
+        for (int pass=0;pass<config.projection_passes;++pass) {
+            bool feasible=true;
+            for (const auto& [center,radius]:disks) {
+                const Eigen::Vector2d delta=q-center;
+                const double d=delta.norm();
+                if (d>radius) {
+                    feasible=false;
+                    q=d>1e-9?center+delta*(radius/d):center;
+                }
+            }
+            if (feasible) return q;
+        }
+        for (const auto& [center,radius]:disks)
+            if ((q-center).norm()>radius+1e-9) return std::nullopt;
+        return q;
+    }
+
+    double v2ReachableRadius(
+        NodeId node,const GrandFinaleRuntimeSnapshot& runtime) const {
+        const auto& config=adapter_.config();
+        const Eigen::Index off=4*static_cast<Eigen::Index>(
+            std::distance(runtime.estimate.mobile_ids.begin(),
+                std::find(runtime.estimate.mobile_ids.begin(),
+                    runtime.estimate.mobile_ids.end(),node)));
+        const double speed=runtime.estimate.mean.segment<2>(off+2).norm();
+        const double tube=config.uncertainty_sigma*std::sqrt(std::max(
+            0.0,detail::maximumPositionEigenvalue(runtime.estimate,node)))+
+            config.certified_shadow_single_position_support_m;
+        return config.reference_distance_m-
+            speed*speed/(2.0*config.acceleration_half_box)-tube-
+            config.reachability_hysteresis_m;
+    }
+
+    Eigen::Vector2d v2SpeedTrackingNominal(
+        NodeId owner,const Eigen::Vector4d& state,
+        const GrandFinaleRuntimeSnapshot& runtime) const {
+        const auto& config=adapter_.config();
+        const auto found=targets_.find(owner);
+        if (found==targets_.end()) return Eigen::Vector2d::Zero();
+        const auto projected=v2Project(owner,found->second.center,runtime);
+        const Eigen::Vector2d aim=projected.value_or(found->second.center);
+        const Eigen::Vector2d delta=aim-state.head<2>();
+        const double distance=delta.norm();
+        const double cap=config.speed_row_nominal
+            ?config.speed_row_nominal_limit_mps:config.speed_limit_mps;
+        const double desired_speed=
+            cap*distance/(distance+config.speed_tracking_blend_m);
+        const Eigen::Vector2d v_des=distance>1e-9?
+            delta*(desired_speed/distance):
+            Eigen::Vector2d(Eigen::Vector2d::Zero());
+        Eigen::Vector2d acceleration=
+            config.speed_tracking_gain*(v_des-state.tail<2>());
+        const double bound=config.acceleration_half_box;
+        for (int axis=0;axis<2;++axis)
+            acceleration(axis)=std::clamp(acceleration(axis),-bound,bound);
+        return acceleration;
+    }
+
+    static Eigen::Vector2d v2Position(
+        const GrandFinaleRuntimeSnapshot& runtime,NodeId node) {
+        const Eigen::Index off=4*static_cast<Eigen::Index>(
+            std::distance(runtime.estimate.mobile_ids.begin(),
+                std::find(runtime.estimate.mobile_ids.begin(),
+                    runtime.estimate.mobile_ids.end(),node)));
+        return runtime.estimate.mean.segment<2>(off);
+    }
+
     bool observeT100Boundary() {
         if (!t100_coverage_s_.has_value() &&
             adapter_.coverage().truthFraction()>=1.0-1e-12) {
@@ -584,6 +755,12 @@ private:
     std::optional<double> t100_coverage_s_;
     std::size_t settling_dwell_cycles_=0;
     std::map<NodeId,Eigen::Vector2d> last_nominal_controls_;
+    // Task 13 Phase B0-a (target policy v2) state.
+    double last_demand_recompute_s_=-1.0e9;
+    std::vector<FrontierCell> v2_demand_cells_;
+    std::map<NodeId,std::size_t> v2_dwell_cycles_;
+    std::map<NodeId,double> v2_dwell_start_distance_;
+    std::size_t v2_escape_count_=0;
     std::optional<std::string> dynamic_pair_override_;
     std::optional<DevelopmentControlOverride> development_control_override_;
     BoundaryExcursionAudit boundary_excursion_;
