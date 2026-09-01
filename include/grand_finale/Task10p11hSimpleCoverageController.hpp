@@ -521,6 +521,25 @@ private:
         request.domain_cells=denominator_cells_;
         request.branches=branches_;
         request.leader_centroid_primary=true;
+        if (config.leader_reachability_filter) {
+            // Task 13 B0-a v5: per-branch reference disks (center + R_eff)
+            // from the live topology - a leader candidate must lie within
+            // R_eff of every branch reference.
+            for (const auto& branch:branches_) {
+                std::vector<std::pair<Eigen::Vector2d,double>> disks;
+                std::set<NodeId> seen;
+                for (NodeId member:branch.members)
+                    for (const auto& edge:runtime.topology)
+                        if (edge.owner==member &&
+                            seen.insert(edge.reference).second)
+                            disks.emplace_back(
+                                v2Position(runtime,edge.reference),
+                                v2ReachableRadius(edge.reference,runtime));
+                request.leader_reference_disks[branch.leader]=
+                    std::move(disks);
+            }
+            request.leader_reachability_filter=true;
+        }
         for (std::size_t index=0;
              index<runtime.estimate.mobile_ids.size();++index)
             request.agents.push_back({runtime.estimate.mobile_ids[index],

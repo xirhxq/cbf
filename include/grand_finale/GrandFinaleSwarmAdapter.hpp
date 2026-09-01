@@ -134,6 +134,10 @@ struct GrandFinaleSwarmAdapterConfig {
     // follower ladder retained, target-lock contract on leaders and
     // followers, low-frequency/event-driven partition recompute.
     bool target_policy_v3 = false;
+    // Task 13 Phase B0-a v5: hard leader-candidate reachability filter
+    // against every branch reference (empty filtered set = topology
+    // health signal, nearest-cell degradation).
+    bool leader_reachability_filter = false;
     double demand_recompute_interval_s = 5.0;
     double target_lock_epsilon_m = 30.0;
     std::size_t target_lock_dwell_cycles = 100;

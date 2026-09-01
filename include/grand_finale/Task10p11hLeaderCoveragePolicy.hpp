@@ -34,6 +34,14 @@ struct LeaderCoverageRequest {
     // share (nearest cell only as the near-empty closing degradation).
     bool leader_centroid_primary=false;
     int leader_centroid_near_empty_cells=2;
+    // Task 13 B0-a v5: hard reachability filter - a leader candidate must
+    // lie within R_eff of EVERY branch reference (disk-intersection
+    // convexity => the root->leader segment inherits reachability).  An
+    // empty filtered set is the topology-health signal (B1 trigger) and
+    // degrades to the nearest cell.
+    bool leader_reachability_filter=false;
+    std::map<NodeId,std::vector<std::pair<Eigen::Vector2d,double>>>
+        leader_reference_disks;
 };
 
 struct LeaderCoverageResult {
@@ -43,6 +51,9 @@ struct LeaderCoverageResult {
     std::map<NodeId,FrontierCell> targets;
     std::map<std::string,NodeId> voronoi_owner;
     std::set<NodeId> centroid_fallback_leaders;
+    // Task 13 B0-a v5: leaders whose reachable-candidate set was empty -
+    // the topology-health signal wired to the B1 trigger.
+    std::set<NodeId> leader_reachability_fallback_leaders;
     std::uint64_t request_digest=0;
 };
 
@@ -166,6 +177,46 @@ inline LeaderCoverageResult allocateLeaderCoverageTargets(
             if (request.leader_centroid_primary &&
                 static_cast<int>(candidates.size())>
                     request.leader_centroid_near_empty_cells) {
+                // Task 13 B0-a v5: hard reachability filter - a candidate
+                // must lie within R_eff of every branch reference (disk
+                // intersection is convex, so the root->leader segment
+                // inherits reachability).  An empty filtered set is the
+                // topology-health signal and degrades to the nearest
+                // cell.
+                std::vector<FrontierCell> reachable;
+                const auto disk_it=
+                    request.leader_reference_disks.find(leader.id);
+                if (!request.leader_reachability_filter ||
+                    disk_it==request.leader_reference_disks.end() ||
+                    disk_it->second.empty()) {
+                    reachable=candidates;
+                } else {
+                    for (const auto& cell : candidates) {
+                        bool ok=true;
+                        for (const auto& disk : disk_it->second) {
+                            if ((cell.center-disk.first).norm()>
+                                    disk.second) {
+                                ok=false;
+                                break;
+                            }
+                        }
+                        if (ok) reachable.push_back(cell);
+                    }
+                    if (reachable.empty())
+                        result.leader_reachability_fallback_leaders.insert(
+                            leader.id);
+                }
+                auto& scored_set=reachable.empty()?candidates:reachable;
+                const bool degraded=reachable.empty();
+                if (degraded) {
+                    std::sort(scored_set.begin(),scored_set.end(),
+                        [&](const auto& lhs,const auto& rhs) {
+                            const double dl=(lhs.center-leader.position).squaredNorm();
+                            const double dr=(rhs.center-leader.position).squaredNorm();
+                            return dl<dr || (dl==dr && lhs.id()<rhs.id());
+                        });
+                    result.leader_targets[leader.id]=scored_set.front();
+                } else {
                 // Task 13 B0-a v4 (three-strikes round): nearest-cell
                 // frontier pacing + centroid direction-preference scoring.
                 // The classic nearest-cell walk is an implicit
@@ -176,14 +227,14 @@ inline LeaderCoverageResult allocateLeaderCoverageTargets(
                 // with theta the angle between (cell-leader) and the
                 // share centroid direction, w_dir = 0.5 frozen.
                 Eigen::Vector2d centroid=Eigen::Vector2d::Zero();
-                for (const auto& cell : candidates) centroid+=cell.center;
-                centroid/=static_cast<double>(candidates.size());
+                for (const auto& cell : scored_set) centroid+=cell.center;
+                centroid/=static_cast<double>(scored_set.size());
                 const Eigen::Vector2d centroid_dir=
                     centroid-leader.position;
                 const double centroid_norm=centroid_dir.norm();
                 std::vector<std::pair<double,const FrontierCell*>> scored;
-                scored.reserve(candidates.size());
-                for (const auto& cell : candidates) {
+                scored.reserve(scored_set.size());
+                for (const auto& cell : scored_set) {
                     const Eigen::Vector2d delta=cell.center-leader.position;
                     const double dist=delta.norm();
                     double score=dist;
@@ -202,22 +253,15 @@ inline LeaderCoverageResult allocateLeaderCoverageTargets(
                              lhs.second->id()<rhs.second->id());
                     });
                 result.leader_targets[leader.id]=*scored.front().second;
+                }
             } else {
-                std::sort(candidates.begin(),candidates.end(),
-                    [&](const auto& lhs,const auto& rhs) {
-                        const double dl=(lhs.center-leader.position).squaredNorm();
-                        const double dr=(rhs.center-leader.position).squaredNorm();
-                        return dl<dr || (dl==dr && lhs.id()<rhs.id());
-                    });
-                result.leader_targets[leader.id]=candidates.front();
-            }
-        } else {
             Eigen::Vector2d centroid=Eigen::Vector2d::Zero();
             for (const auto& cell : domain[leader.id]) centroid+=cell.center;
             centroid/=static_cast<double>(domain[leader.id].size());
             result.leader_targets[leader.id]={-leader.id,-1,centroid};
             result.centroid_fallback_leaders.insert(leader.id);
         }
+    }
     }
 
     for (const auto& branch : branches) {

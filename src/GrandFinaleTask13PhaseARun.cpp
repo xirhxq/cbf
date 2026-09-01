@@ -115,7 +115,8 @@ PhaseATemplate makeTemplate(const std::string& id) {
 
 std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     const PhaseATemplate& def,double tau,bool policy_v2,
-    bool velocity_augmented_rows,bool policy_v3) {
+    bool velocity_augmented_rows,bool policy_v3,
+    bool leader_reachability_filter) {
     auto scenario=gf::task10p11rFixedBaselineScenario();
     scenario.mobile_positions=def.positions;
     scenario.initial_topology=def.topology;
@@ -132,7 +133,7 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
         gf::GammaFeedbackSelectionMode::LeastIntervention,tau,true,
         false,false,false,false,false,false,
         false,false,false,false,false,true,policy_v2,
-        velocity_augmented_rows,policy_v3);
+        velocity_augmented_rows,policy_v3,leader_reachability_filter);
 }
 
 }  // namespace
@@ -160,7 +161,8 @@ int main(int argc,char** argv) {
         // v3 and v4 share the target_policy_v3 flag: v3 was the centroid-
         // primary form (rejected), v4 is the frontier-pacing +
         // centroid-direction-scoring form (three-strikes round).
-        const bool policy_v3=policy=="v3"||policy=="v4";
+        const bool policy_v3=policy=="v3"||policy=="v4"||policy=="v5";
+        const bool leader_reachability_filter=policy=="v5";
         if (policy=="v4") {
             std::cout<<"policy v4 (frontier pacing + centroid direction "
                 "scoring)\n";
@@ -173,7 +175,8 @@ int main(int argc,char** argv) {
         const bool velocity_augmented_rows=rows_mode=="vaug";
         const auto def=makeTemplate(template_id);
         auto fixture=makeFixture(def,tau,policy_v2,
-            velocity_augmented_rows,policy_v3);
+            velocity_augmented_rows,policy_v3,
+            leader_reachability_filter);
         if (!fixture->adapter.initializeStageZero().initialized) {
             // Qualification-gate boundary point: recorded, not run.
             json boundary={{"protocol","task13-phase-a-run-v1"},
@@ -255,6 +258,8 @@ int main(int argc,char** argv) {
                 {"speed_tracking_gain",config.speed_tracking_gain},
                 {"speed_tracking_blend_m",config.speed_tracking_blend_m},
                 {"target_policy_v3",config.target_policy_v3},
+                {"leader_reachability_filter",
+                config.leader_reachability_filter},
                 {"velocity_augmented_rows",config.velocity_augmented_rows},
                 {"velocity_augmented_rows",config.velocity_augmented_rows},
                 {"row_slack_epsilon_m",config.row_slack_epsilon_m},
