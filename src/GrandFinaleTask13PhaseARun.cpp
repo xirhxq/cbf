@@ -89,6 +89,27 @@ PhaseATemplate makeTemplate(const std::string& id) {
             "(acyclic, indegree preserved)",
             launch,topology};
     }
+    if (id=="microfix") {
+        // Causal micro-experiment (researcher-approved 2026-09-01):
+        // origin graph with exactly two edge changes - owner 2
+        // re-referenced 101->100 and owner 9 re-referenced 101->102 -
+        // aligning each owner's anchor with its target side (the
+        // bias-inversion finding: branch A targets 76-83% on the 100
+        // side, branch B 85-92% on the 102 side, while owners 2/9 anchor
+        // at center anchor 101 and historically hit the reference gate
+        // there).
+        std::vector<gf::DirectedEdge> topology;
+        for (const auto& edge:origin) {
+            if (edge==gf::DirectedEdge(101,2)) topology.emplace_back(100,2);
+            else if (edge==gf::DirectedEdge(101,9))
+                topology.emplace_back(102,9);
+            else topology.push_back(edge);
+        }
+        return {"microfix",
+            "origin graph + two edge changes (101->2 becomes 100->2, "
+            "101->9 becomes 102->9); all else frozen",
+            launch,topology};
+    }
     throw std::runtime_error("unknown template:"+id);
 }
 
@@ -117,9 +138,9 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
 // invocation, 500 s window with T100 latch, rung-B'' 14-row speed domain,
 // per-tick telemetry and cumulative compute profile (profiler deliverable).
 int main(int argc,char** argv) {
-    if (argc!=5&&argc!=6) {
+    if (argc!=5&&argc!=6&&argc!=7) {
         std::cerr<<"usage: GrandFinaleTask13PhaseARun TEMPLATE OUTPUT_JSON "
-            "PROGRESS_DIR TELEMETRY_JSONL [TAU]\n";
+            "PROGRESS_DIR TELEMETRY_JSONL [TAU] [WINDOW_S]\n";
         return 2;
     }
     const auto started=std::chrono::steady_clock::now();
@@ -129,8 +150,8 @@ int main(int argc,char** argv) {
     };
     try {
         const std::string template_id=argv[1];
-        const double window_s=500.0;
-        const double tau=argc==6?std::stod(argv[5]):22.0;
+        const double window_s=argc==7?std::stod(argv[6]):500.0;
+        const double tau=argc>=6?std::stod(argv[5]):22.0;
         const auto def=makeTemplate(template_id);
         auto fixture=makeFixture(def,tau);
         if (!fixture->adapter.initializeStageZero().initialized) {
