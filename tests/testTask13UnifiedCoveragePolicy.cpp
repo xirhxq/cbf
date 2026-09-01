@@ -180,6 +180,13 @@ TEST_CASE("Unified H2 fixture flag is an independent production policy path") {
     CHECK(config.unified_h2_minimum_half_width_m==doctest::Approx(7.0));
     CHECK(config.unified_h2_fan_ratio==doctest::Approx(0.0075));
     CHECK(config.unified_h2_service_standoff_m==doctest::Approx(350.0));
+
+    const auto exact_center=gf::task10p11rFixtureAdapterConfig(
+        gf::GammaFeedbackSelectionMode::LeastIntervention,14.0,
+        true,false,false,false,false,false,false,false,false,false,false,
+        false,true,false,true,false,false,false,true,0.0);
+    CHECK(exact_center.target_policy_unified_h2);
+    CHECK(exact_center.unified_h2_service_standoff_m==doctest::Approx(0.0));
 }
 
 TEST_CASE("Production H2 path is certified-event driven across 2, 1, and 0 tasks") {

@@ -117,7 +117,7 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     const PhaseATemplate& def,double tau,bool policy_v2,
     bool velocity_augmented_rows,bool policy_v3,bool policy_v6,
     bool leader_reachability_filter,bool policy_h2,
-    gf::GammaFeedbackSelectionMode selection) {
+    gf::GammaFeedbackSelectionMode selection,double service_standoff_m) {
     auto scenario=gf::task10p11rFixedBaselineScenario();
     scenario.mobile_positions=def.positions;
     scenario.initial_topology=def.topology;
@@ -135,7 +135,7 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
         false,false,false,false,false,false,
         false,false,false,false,false,true,policy_v2,
         velocity_augmented_rows,policy_v3,policy_v6,
-        leader_reachability_filter,policy_h2);
+        leader_reachability_filter,policy_h2,service_standoff_m);
 }
 
 }  // namespace
@@ -167,7 +167,9 @@ int main(int argc,char** argv) {
             policy=="v7";
         const bool leader_reachability_filter=policy=="v5";
         const bool policy_v6=policy=="v6";
-        const bool policy_h2=policy=="h2"||policy=="h2diag";
+        const bool policy_h2=policy=="h2"||policy=="h2diag"||
+            policy=="h2center";
+        const double service_standoff_m=policy=="h2center"?0.0:350.0;
         const auto gamma_selection=policy=="h2diag"
             ?gf::GammaFeedbackSelectionMode::DiagnosticsOnly
             :gf::GammaFeedbackSelectionMode::LeastIntervention;
@@ -188,7 +190,8 @@ int main(int argc,char** argv) {
         const auto def=makeTemplate(template_id);
         auto fixture=makeFixture(def,tau,policy_v2,
             velocity_augmented_rows,policy_v3,policy_v6,
-            leader_reachability_filter,policy_h2,gamma_selection);
+            leader_reachability_filter,policy_h2,gamma_selection,
+            service_standoff_m);
         if (!fixture->adapter.initializeStageZero().initialized) {
             // Qualification-gate boundary point: recorded, not run.
             json boundary={{"protocol","task13-phase-a-run-v1"},

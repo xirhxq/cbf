@@ -107,7 +107,8 @@ inline GrandFinaleSwarmAdapterConfig task10p11rFixtureAdapterConfig(
     bool s1_rung_b2=false,bool target_policy_v2=false,
     bool velocity_augmented_rows=false,bool target_policy_v3=false,
     bool target_policy_v6=false,bool leader_reachability_filter=false,
-    bool target_policy_unified_h2=false) {
+    bool target_policy_unified_h2=false,
+    double unified_h2_service_standoff_m=350.0) {
     auto config=task10p11rFixedAdapterConfig(selection,predictive_tau_mps2);
     config.speed_row_nominal=speed_row_nominal;
     config.tau_margin_gate_enabled=tau_margin_gate;
@@ -168,6 +169,8 @@ inline GrandFinaleSwarmAdapterConfig task10p11rFixtureAdapterConfig(
     if (target_policy_v6) config.target_policy_v6=true;
     if (target_policy_unified_h2) {
         config.target_policy_unified_h2=true;
+        config.unified_h2_service_standoff_m=
+            unified_h2_service_standoff_m;
         // The campaign's hard plant limit is 30 m/s, not the historical
         // 30.01 m/s adjudication tolerance.  Keep the certified speed row
         // and add nominal headroom; this does not relax any safety gate.
@@ -218,7 +221,8 @@ struct Task10p11rFixedBaselineFixture {
     bool target_policy_v2=false,bool velocity_augmented_rows=false,
     bool target_policy_v3=false,bool target_policy_v6=false,
     bool leader_reachability_filter=false,
-    bool target_policy_unified_h2=false)
+    bool target_policy_unified_h2=false,
+    double unified_h2_service_standoff_m=350.0)
         : scenario(std::move(scenario_value)),settings(std::move(settings_value)),
           swarm(settings),
           adapter(swarm,scenario.mobile_ids,scenario.fixed_positions,
@@ -230,7 +234,8 @@ struct Task10p11rFixedBaselineFixture {
                   s1_rung_b,s1_v4_prime,s1_v4_bare,s1_rung_b_prime,
                   s1_rung_b2,target_policy_v2,velocity_augmented_rows,
                   target_policy_v3,target_policy_v6,
-                  leader_reachability_filter,target_policy_unified_h2)),
+                  leader_reachability_filter,target_policy_unified_h2,
+                  unified_h2_service_standoff_m)),
           controller(swarm,adapter,{}, {},task10p11rAuthorityContract().branches),
           frozen_topology(scenario.initial_topology),
           initial_topology_version(adapter.supervisor().topologyVersion()) {}

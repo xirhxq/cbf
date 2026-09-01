@@ -31,11 +31,11 @@ struct FocusedCase {
 
 std::pair<gf::Task13UnifiedCoverageWitness,
           gf::Task13UnifiedCoverageWitness> pairFor(
-    const FocusedCase& test) {
+    const FocusedCase& test,double service_standoff_m) {
     const auto squads=gf::task13UnifiedCoverageSquads();
     const auto fixed=gf::task10p11pStandardCoastalAnchors();
     gf::Task13UnifiedCoverageConfig config;
-    config.certified_service_standoff_m=350.0;
+    config.certified_service_standoff_m=service_standoff_m;
     for (gf::NodeId ma:squads[0].members) {
         if (test.forced_old_a_member!=0&&ma!=test.forced_old_a_member)
             continue;
@@ -59,7 +59,7 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> fixtureFor(
     const FocusedCase& test,
     const gf::Task13UnifiedCoverageWitness& a,
     const gf::Task13UnifiedCoverageWitness& b,double tau_mps2,
-    gf::GammaFeedbackSelectionMode selection) {
+    gf::GammaFeedbackSelectionMode selection,double service_standoff_m) {
     auto scenario=gf::task10p11rFixedBaselineScenario();
     for (const auto& [member,target]:a.targets)
         scenario.mobile_positions.at(member-1)=target;
@@ -72,13 +72,15 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> fixtureFor(
         std::move(scenario),std::move(settings),
         selection,tau_mps2,
         true,false,false,false,false,false,false,false,false,false,false,
-        false,true,false,true,false,false,false,true);
+        false,true,false,true,false,false,false,true,service_standoff_m);
 }
 
 json runCase(const FocusedCase& test,double tau_mps2,
-             gf::GammaFeedbackSelectionMode selection) {
-    const auto pair=pairFor(test);
-    auto fixture=fixtureFor(test,pair.first,pair.second,tau_mps2,selection);
+             gf::GammaFeedbackSelectionMode selection,
+             double service_standoff_m) {
+    const auto pair=pairFor(test,service_standoff_m);
+    auto fixture=fixtureFor(test,pair.first,pair.second,tau_mps2,selection,
+        service_standoff_m);
     const auto initialized=fixture->adapter.initializeStageZero();
     json result={{"id",test.id},{"initialized",initialized.initialized},
         {"old_a",test.old_a.id()},{"old_b",test.old_b.id()},
@@ -243,7 +245,8 @@ json runCase(const FocusedCase& test,double tau_mps2,
     double final_responsible_distance_m=
         std::numeric_limits<double>::infinity();
     gf::NodeId final_responsible_member=0;
-    const Eigen::Vector2d task_service_pose=servicePose(test.task);
+    const Eigen::Vector2d task_service_pose=
+        servicePose(test.task,service_standoff_m);
     for (const auto& [member,target]:fixture->controller.committedTargets())
         if (target.id()==test.task.id()&&
             (target.center-task_service_pose).norm()<=1e-8) {
@@ -283,9 +286,9 @@ json runCase(const FocusedCase& test,double tau_mps2,
 }  // namespace
 
 int main(int argc,char** argv) {
-    if (argc<2||argc>5) {
+    if (argc<2||argc>6) {
         std::cerr<<"usage: GrandFinaleTask13H2FocusedRun OUTPUT_JSON "
-            "[CASE] [TAU] [least|diagnostics]\n";
+            "[CASE] [TAU] [least|diagnostics] [SERVICE_STANDOFF_M]\n";
         return 2;
     }
     try {
@@ -294,6 +297,7 @@ int main(int argc,char** argv) {
         const auto selection=mode=="diagnostics"
             ?gf::GammaFeedbackSelectionMode::DiagnosticsOnly
             :gf::GammaFeedbackSelectionMode::LeastIntervention;
+        const double service_standoff_m=argc==6?std::stod(argv[5]):350.0;
         const std::vector<FocusedCase> cases={
             {"top_left_short_probe",cell(0,289),cell(36,222),
                 cell(0,299),7,0,90.0,1,false},
@@ -313,7 +317,8 @@ int main(int argc,char** argv) {
         bool complete=true;
         for (const auto& test:cases) {
             if (argc>=3&&test.id!=argv[2]) continue;
-            auto record=runCase(test,tau_mps2,selection);
+            auto record=runCase(test,tau_mps2,selection,
+                service_standoff_m);
             complete=complete&&record.at("passed").get<bool>();
             records.push_back(std::move(record));
         }
@@ -321,6 +326,7 @@ int main(int argc,char** argv) {
             {"formula","H2 tapered lifting"},{"w",7.0},
             {"alpha",0.0075},{"tau_mps2",tau_mps2},
             {"gamma_selection",mode},
+            {"service_standoff_m",service_standoff_m},
             {"rows","velocity_augmented"},{"complete",complete},
             {"case_filter",argc>=3?json(argv[2]):json(nullptr)},
             {"cases",records}};
