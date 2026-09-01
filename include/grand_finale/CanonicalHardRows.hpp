@@ -213,28 +213,32 @@ inline CanonicalHardRow robustPhysicalRow(
     return row;
 }
 
-// Task 13 B0-b: velocity-augmented braking-slack row.  n_out is the
-// outward unit for THIS owner (away from the pair/reference); the
-// dangerous velocity component is n_out*v (outward for reference upper
-// bounds, inward for collision lower bounds up to sign of n_out per
-// owner).  Row (QP form: constant + coefficient*u > 0):
-//   collision:  +dt*n_out*u + (bound + n_out*v) > 0
-//               -> inward speed strictly below bound
-//   reference:  -dt*n_out*u + (bound - n_out*v) > 0
-//               -> outward speed strictly below bound
-// with bound = sqrt(2*share*a*(max(h,0)+eps)) - velocity tube.  share
-// encodes the responsibility split (0.5 for mobile-mobile pairs, 1.0
-// for mobile-fixed).
+// Task 13 B0-b v2 (relative-closing form, researcher-approved
+// 2026-09-01): the row bounds the owner's velocity RELATIVE to its peer
+// along the pair axis,
+//   n_out*(v_own - v_other + dt*u_own) <= bound   (reference upper)
+//   n_out*(v_own - v_other + dt*u_own) >= -bound  (collision lower)
+// with bound = sqrt(2*share*a*(max(h,0)+eps)) - velocity tube and the
+// peer velocity as a tick constant.  Cooperation-semantics boundary
+// (preregistered): the pairwise guarantee holds when BOTH owners honor
+// the mirror rows; a non-honoring (adversarial) peer is out of scope,
+// as is the classic half-row form.  With both mirror rows honored the
+// relative closing speed stays below sqrt(2*share*a*(h+eps)) while the
+// pair can shed relative speed at 2a (share=0.5, both braking), giving
+// stop distance (2 share a h)/(4a) = share*h/2 <= h.  The 1/2-1/2
+// correspondence: each owner carries the mirror responsibility for its
+// own velocity; neither row conditions on the peer's control.
 inline CanonicalHardRow slackPhysicalRow(
     const std::string& id,CanonicalHardRowKind kind,NodeId owner,
     NodeId reference,const Eigen::Vector2d& n_out,
-    const PairwiseSecondOrderState2D& own_state,double h_robust_m,
+    const PairwiseSecondOrderState2D& own_state,
+    const Eigen::Vector2d& other_velocity,double h_robust_m,
     double tube_velocity_mps,double acceleration_half_box,double share,
     double slack_epsilon_m,double dt_s) {
     const double h=std::max(h_robust_m,0.0)+slack_epsilon_m;
     const double bound=std::max(0.0,std::sqrt(2.0*share*
         acceleration_half_box*h)-tube_velocity_mps);
-    const double closing=n_out.dot(own_state.velocity);
+    const double closing=n_out.dot(own_state.velocity-other_velocity);
     const bool collision=kind==CanonicalHardRowKind::Collision;
     const Eigen::Vector2d coefficient=collision
         ?(dt_s*n_out):(-dt_s*n_out);
@@ -262,24 +266,26 @@ inline void appendRobustSharedPairRows(
     const auto robust = buildSnapshotRobustPairRow(
         first_state, second_state, spec, tube, acceleration_half_box);
     if (velocity_augmented) {
-        // Task 13 B0-b: velocity-augmented braking-slack rows.  Derivation
-        // (preregistered): a mobile-mobile pair braking at a each removes
-        // closing speed at relative rate 2a, so the admissible closing
-        // speed is 2*sqrt(a*h); the 1/2-1/2 split bounds EACH owner's
-        // outward-closing velocity component by sqrt(a*(h+eps)) - i.e.
-        // sqrt(2*(share*a)*(h+eps)) with share=0.5.  Rows stay affine in
-        // the owner's own control.
+        // Task 13 B0-b v2: relative-closing braking-slack rows (peer
+        // velocity as a tick constant).  Derivation preregistered: with
+        // both mirror rows honored the pair closing speed stays below
+        // sqrt(2*share*a*(h+eps)) while the pair sheds relative speed at
+        // 2*share*a, giving stop distance share*h/2 <= h; the 1/2-1/2
+        // correspondence assigns each owner the mirror responsibility for
+        // its own velocity.  Rows stay affine in the owner's own control.
         const double share=0.5;
         rows.push_back(slackPhysicalRow(
             prefix + ":owner:" + std::to_string(first), kind,
             first, second, robust.nominal_normal,
-            first_state, robust.barrier_h_lower,
+            first_state, second_state.velocity,
+            robust.barrier_h_lower,
             robust.velocity_uncertainty_reserve_mps,
             acceleration_half_box, share, slack_epsilon_m, dt_s));
         rows.push_back(slackPhysicalRow(
             prefix + ":owner:" + std::to_string(second), kind,
             second, first, -robust.nominal_normal,
-            second_state, robust.barrier_h_lower,
+            second_state, first_state.velocity,
+            robust.barrier_h_lower,
             robust.velocity_uncertainty_reserve_mps,
             acceleration_half_box, share, slack_epsilon_m, dt_s));
         return;
@@ -314,12 +320,14 @@ inline void appendRobustFixedPairRow(
     const auto robust = buildSnapshotRobustPairRow(
         mobile_state, fixed_state, spec, tube, acceleration_half_box);
     if (velocity_augmented) {
-        // Fixed pairs: the reference cannot brake, so the mobile carries
-        // the full braking-slack bound sqrt(2*a*(h+eps)) (share=1.0).
+        // Fixed pairs: the reference cannot move (peer velocity zero), so
+        // the relative form degenerates to the full-responsibility
+        // absolute bound sqrt(2*a*(h+eps)) (share=1.0).
         rows.push_back(slackPhysicalRow(
             prefix + ":owner:" + std::to_string(mobile), kind,
             mobile, fixed, robust.nominal_normal,
-            mobile_state, robust.barrier_h_lower,
+            mobile_state, Eigen::Vector2d::Zero(),
+            robust.barrier_h_lower,
             robust.velocity_uncertainty_reserve_mps,
             acceleration_half_box, 1.0, slack_epsilon_m, dt_s));
         return;
