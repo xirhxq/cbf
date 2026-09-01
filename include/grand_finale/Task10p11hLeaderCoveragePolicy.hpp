@@ -34,6 +34,12 @@ struct LeaderCoverageRequest {
     // share (nearest cell only as the near-empty closing degradation).
     bool leader_centroid_primary=false;
     int leader_centroid_near_empty_cells=2;
+    // Task 13 B0-a v5: keep the original hard candidate filter available
+    // as an explicit policy mode.  V7 leaves this false and uses the
+    // near-distance direction tie-break below.
+    bool leader_reachability_filter=false;
+    std::map<NodeId,std::vector<std::pair<Eigen::Vector2d,double>>>
+        leader_reference_disks;
     // Task 13 B0-a v7: pure nearest-cell pacing; the centroid direction
     // acts only as a tie-break between candidates whose distances differ
     // by less than this tolerance (the R_eff filter is removed - its
@@ -81,6 +87,46 @@ inline const FrontierAgentState& leaderState(
     if (found==agents.end())
         throw std::invalid_argument("missing coverage leader");
     return *found;
+}
+
+inline FrontierCell nearestRealCell(
+    std::vector<FrontierCell> candidates,
+    const FrontierAgentState& leader) {
+    std::sort(candidates.begin(),candidates.end(),
+        [&](const auto& lhs,const auto& rhs) {
+            const double dl=(lhs.center-leader.position).squaredNorm();
+            const double dr=(rhs.center-leader.position).squaredNorm();
+            return dl<dr || (dl==dr && lhs.id()<rhs.id());
+        });
+    return candidates.front();
+}
+
+inline FrontierCell directionScoredCell(
+    const std::vector<FrontierCell>& candidates,
+    const FrontierAgentState& leader) {
+    Eigen::Vector2d centroid=Eigen::Vector2d::Zero();
+    for (const auto& cell:candidates) centroid+=cell.center;
+    centroid/=static_cast<double>(candidates.size());
+    const Eigen::Vector2d centroid_dir=centroid-leader.position;
+    const double centroid_norm=centroid_dir.norm();
+    std::vector<std::pair<double,const FrontierCell*>> scored;
+    scored.reserve(candidates.size());
+    for (const auto& cell:candidates) {
+        const Eigen::Vector2d delta=cell.center-leader.position;
+        const double dist=delta.norm();
+        double score=dist;
+        if (dist>1e-9 && centroid_norm>1e-9) {
+            const double cos_theta=std::clamp(
+                delta.dot(centroid_dir)/(dist*centroid_norm),-1.0,1.0);
+            score=dist*(1.0+0.5*(1.0-cos_theta));
+        }
+        scored.emplace_back(score,&cell);
+    }
+    std::sort(scored.begin(),scored.end(),[](const auto& lhs,const auto& rhs) {
+        return lhs.first<rhs.first ||
+            (lhs.first==rhs.first && lhs.second->id()<rhs.second->id());
+    });
+    return *scored.front().second;
 }
 
 }  // namespace leader_coverage_detail
@@ -171,8 +217,50 @@ inline LeaderCoverageResult allocateLeaderCoverageTargets(
 
     for (const auto& leader : leaders) {
         auto& candidates=uncovered[leader.id];
-        if (!candidates.empty()) {
-            if (request.leader_centroid_primary) {
+        if (candidates.empty()) {
+            Eigen::Vector2d centroid=Eigen::Vector2d::Zero();
+            for (const auto& cell : domain[leader.id]) centroid+=cell.center;
+            centroid/=static_cast<double>(domain[leader.id].size());
+            result.leader_targets[leader.id]={-leader.id,-1,centroid};
+            result.centroid_fallback_leaders.insert(leader.id);
+        } else if (static_cast<int>(candidates.size())<=
+                request.leader_centroid_near_empty_cells) {
+            // Tail contract: a non-empty near-empty share always keeps a
+            // real uncovered-cell identity.  The synthetic centroid is
+            // reserved exclusively for the zero-candidate case.
+            result.leader_targets[leader.id]=
+                leader_coverage_detail::nearestRealCell(candidates,leader);
+        } else if (request.leader_centroid_primary) {
+            if (request.leader_reachability_filter) {
+                std::vector<FrontierCell> reachable;
+                const auto disk_it=
+                    request.leader_reference_disks.find(leader.id);
+                if (disk_it==request.leader_reference_disks.end() ||
+                    disk_it->second.empty()) {
+                    reachable=candidates;
+                } else {
+                    for (const auto& cell:candidates) {
+                        bool within_every_disk=true;
+                        for (const auto& disk:disk_it->second)
+                            if ((cell.center-disk.first).norm()>disk.second) {
+                                within_every_disk=false;
+                                break;
+                            }
+                        if (within_every_disk) reachable.push_back(cell);
+                    }
+                }
+                if (reachable.empty()) {
+                    result.leader_reachability_fallback_leaders.insert(
+                        leader.id);
+                    result.leader_targets[leader.id]=
+                        leader_coverage_detail::nearestRealCell(
+                            candidates,leader);
+                } else {
+                    result.leader_targets[leader.id]=
+                        leader_coverage_detail::directionScoredCell(
+                            reachable,leader);
+                }
+            } else {
                 // Task 13 B0-a v7: pure nearest-cell pacing with a
                 // centroid-direction tie-break.  The candidates are sorted
                 // by distance; within the leading group whose distances
@@ -212,21 +300,10 @@ inline LeaderCoverageResult allocateLeaderCoverageTargets(
                     }
                 }
                 result.leader_targets[leader.id]=*best;
-            } else {
-                std::sort(candidates.begin(),candidates.end(),
-                    [&](const auto& lhs,const auto& rhs) {
-                        const double dl=(lhs.center-leader.position).squaredNorm();
-                        const double dr=(rhs.center-leader.position).squaredNorm();
-                        return dl<dr || (dl==dr && lhs.id()<rhs.id());
-                    });
-                result.leader_targets[leader.id]=candidates.front();
             }
         } else {
-            Eigen::Vector2d centroid=Eigen::Vector2d::Zero();
-            for (const auto& cell : domain[leader.id]) centroid+=cell.center;
-            centroid/=static_cast<double>(domain[leader.id].size());
-            result.leader_targets[leader.id]={-leader.id,-1,centroid};
-            result.centroid_fallback_leaders.insert(leader.id);
+            result.leader_targets[leader.id]=
+                leader_coverage_detail::nearestRealCell(candidates,leader);
         }
     }
 

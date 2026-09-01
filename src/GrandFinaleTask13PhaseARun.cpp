@@ -115,7 +115,8 @@ PhaseATemplate makeTemplate(const std::string& id) {
 
 std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     const PhaseATemplate& def,double tau,bool policy_v2,
-    bool velocity_augmented_rows,bool policy_v3,bool policy_v6) {
+    bool velocity_augmented_rows,bool policy_v3,bool policy_v6,
+    bool leader_reachability_filter) {
     auto scenario=gf::task10p11rFixedBaselineScenario();
     scenario.mobile_positions=def.positions;
     scenario.initial_topology=def.topology;
@@ -132,7 +133,8 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
         gf::GammaFeedbackSelectionMode::LeastIntervention,tau,true,
         false,false,false,false,false,false,
         false,false,false,false,false,true,policy_v2,
-        velocity_augmented_rows,policy_v3,policy_v6);
+        velocity_augmented_rows,policy_v3,policy_v6,
+        leader_reachability_filter);
 }
 
 }  // namespace
@@ -162,7 +164,7 @@ int main(int argc,char** argv) {
         // centroid-direction-scoring form (three-strikes round).
         const bool policy_v3=policy=="v3"||policy=="v4"||policy=="v5"||
             policy=="v7";
-        const bool leader_reachability_filter=false;
+        const bool leader_reachability_filter=policy=="v5";
         const bool policy_v6=policy=="v6";
         if (policy_v2&&policy_v6) {
             std::cerr<<"policies v2 and v6 are mutually exclusive\n";
@@ -180,7 +182,8 @@ int main(int argc,char** argv) {
         const bool velocity_augmented_rows=rows_mode=="vaug";
         const auto def=makeTemplate(template_id);
         auto fixture=makeFixture(def,tau,policy_v2,
-            velocity_augmented_rows,policy_v3,policy_v6);
+            velocity_augmented_rows,policy_v3,policy_v6,
+            leader_reachability_filter);
         if (!fixture->adapter.initializeStageZero().initialized) {
             // Qualification-gate boundary point: recorded, not run.
             json boundary={{"protocol","task13-phase-a-run-v1"},
@@ -264,6 +267,8 @@ int main(int argc,char** argv) {
                 {"target_policy_v3",config.target_policy_v3},
                 {"leader_tie_break_tolerance_m",
                 config.leader_tie_break_tolerance_m},
+                {"leader_reachability_filter",
+                config.leader_reachability_filter},
                 {"target_policy_v6",config.target_policy_v6},
                 {"v6_neighborhood_radius_m",config.v6_neighborhood_radius_m},
                 {"velocity_augmented_rows",config.velocity_augmented_rows},

@@ -134,6 +134,10 @@ struct GrandFinaleSwarmAdapterConfig {
     // follower ladder retained, target-lock contract on leaders and
     // followers, low-frequency/event-driven partition recompute.
     bool target_policy_v3 = false;
+    // Task 13 B0-a v5: original hard candidate reachability filter and
+    // direction score.  Kept separate from v7 so replaying policy="v5"
+    // cannot silently execute the later v7 selector.
+    bool leader_reachability_filter = false;
     // Task 13 Phase B0-a v7 (researcher directive): the R_eff filter is
     // removed (safety = vaug rows, pacing = nearest-cell ordering); the
     // centroid direction only breaks ties between near-equal candidates.

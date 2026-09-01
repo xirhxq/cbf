@@ -21,6 +21,26 @@ gf::LeaderCoverageRequest request() {
     return value;
 }
 
+gf::LeaderCoverageRequest v5RequestWithLeftCandidates(int candidate_count) {
+    auto value=request();
+    value.agents.clear();
+    for (int id=1;id<=14;++id) {
+        const double x=id<=7?0.0:1000.0;
+        value.agents.push_back({static_cast<gf::NodeId>(id),
+            {x,0.0},Eigen::Vector2d::Zero()});
+    }
+    const std::vector<gf::FrontierCell> left={
+        cell(0,0,10.0,0.0),cell(1,0,20.0,0.0),cell(2,0,30.0,0.0)};
+    value.domain_cells=left;
+    value.domain_cells.push_back(cell(100,0,1000.0,0.0));
+    value.uncovered_cells.assign(left.begin(),left.begin()+candidate_count);
+    value.leader_centroid_primary=true;
+    value.leader_reachability_filter=true;
+    value.leader_reference_disks[7]={
+        {Eigen::Vector2d(30.0,0.0),5.0}};
+    return value;
+}
+
 }
 
 TEST_CASE("Authoritative leader and branch identity is immutable") {
@@ -114,6 +134,37 @@ TEST_CASE("Leader without uncovered cells returns its own density centroid") {
     CHECK(result.leader_targets.at(14).center.isApprox(
         Eigen::Vector2d(375.0,200.0)));
     CHECK(result.centroid_fallback_leaders==std::set<gf::NodeId>{14});
+}
+
+TEST_CASE("V5 zero-candidate branch returns its region centroid identity") {
+    const auto result=gf::allocateLeaderCoverageTargets(
+        v5RequestWithLeftCandidates(0));
+    REQUIRE(result.valid);
+    CHECK(result.leader_targets.at(7).id()=="-7:-1");
+    CHECK(result.leader_targets.at(7).center.isApprox(
+        Eigen::Vector2d(20.0,0.0)));
+}
+
+TEST_CASE("V5 one-candidate branch preserves the real nearest target ID") {
+    const auto result=gf::allocateLeaderCoverageTargets(
+        v5RequestWithLeftCandidates(1));
+    REQUIRE(result.valid);
+    CHECK(result.leader_targets.at(7).id()=="0:0");
+}
+
+TEST_CASE("V5 two-candidate branch preserves the real nearest target ID") {
+    const auto result=gf::allocateLeaderCoverageTargets(
+        v5RequestWithLeftCandidates(2));
+    REQUIRE(result.valid);
+    CHECK(result.leader_targets.at(7).id()=="0:0");
+}
+
+TEST_CASE("V5 three-candidate branch retains reachability filtering") {
+    const auto result=gf::allocateLeaderCoverageTargets(
+        v5RequestWithLeftCandidates(3));
+    REQUIRE(result.valid);
+    CHECK(result.leader_targets.at(7).id()=="2:0");
+    CHECK(result.leader_reachability_fallback_leaders.empty());
 }
 
 TEST_CASE("Input order cannot change the target ledger or digest") {
