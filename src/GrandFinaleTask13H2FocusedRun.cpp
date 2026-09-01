@@ -123,6 +123,8 @@ json runCase(const FocusedCase& test,double tau_mps2,
     double min_gamma=std::numeric_limits<double>::infinity();
     double min_residual=std::numeric_limits<double>::infinity();
     double max_speed=0.0,max_axis_control=0.0;
+    double minimum_world_coordinate_m=std::numeric_limits<double>::infinity();
+    double maximum_world_coordinate_m=-std::numeric_limits<double>::infinity();
     double max_raw_nominal=0.0;
     std::size_t advanced_ticks=0,target_events=0,interventions=0;
     double first_transition_maximum_displacement_m=0.0;
@@ -155,6 +157,10 @@ json runCase(const FocusedCase& test,double tau_mps2,
             const gf::NodeId id=static_cast<gf::NodeId>(robot->id);
             actual[id]={robot->model->getStateVariable("x"),
                 robot->model->getStateVariable("y")};
+            minimum_world_coordinate_m=std::min(
+                minimum_world_coordinate_m,actual[id].minCoeff());
+            maximum_world_coordinate_m=std::max(
+                maximum_world_coordinate_m,actual[id].maxCoeff());
             max_speed=std::max(max_speed,
                 robot->model->getVelocity().head<2>().norm());
         }
@@ -229,7 +235,9 @@ json runCase(const FocusedCase& test,double tau_mps2,
             max_target_reference<850.0-1e-9&&
             min_actual_separation>=10.0-1e-9&&
             min_target_separation>10.0+1e-9&&max_speed<=30.0+1e-9&&
-            max_axis_control<=4.0+1e-9&&min_residual>=-1e-7;
+            max_axis_control<=4.0+1e-9&&min_residual>=-1e-7&&
+            minimum_world_coordinate_m>=1.5-1e-9&&
+            maximum_world_coordinate_m<=2998.5+1e-9;
         if (!safe) {
             hard_failure=true;
             reason="focused_hard_gate_violation";
@@ -258,23 +266,30 @@ json runCase(const FocusedCase& test,double tau_mps2,
                         robot->model->getStateVariable("y"))-
                         test.task.center).norm();
         }
+    const auto finite=[](double value) {
+        return std::isfinite(value)?json(value):json(nullptr);
+    };
     result.update({{"passed",passed},{"reason",reason},
         {"serviced",serviced},{"advanced_ticks",advanced_ticks},
         {"target_events",target_events},
         {"first_transition_maximum_displacement_m",
             first_transition_maximum_displacement_m},
         {"final_responsible_member",final_responsible_member},
-        {"final_responsible_distance_m",final_responsible_distance_m},
+        {"final_responsible_distance_m",finite(
+            final_responsible_distance_m)},
         {"maximum_actual_reference_m",max_actual_reference},
         {"maximum_target_reference_m",max_target_reference},
-        {"minimum_actual_separation_m",min_actual_separation},
-        {"minimum_target_separation_m",min_target_separation},
-        {"minimum_robust_fim",min_robust_fim},
+        {"minimum_actual_separation_m",finite(min_actual_separation)},
+        {"minimum_target_separation_m",finite(min_target_separation)},
+        {"minimum_robust_fim",finite(min_robust_fim)},
         {"maximum_posterior_m2",max_posterior},
-        {"minimum_aoi_margin_s",min_aoi},{"minimum_gamma",min_gamma},
-        {"minimum_qp_residual",min_residual},
+        {"minimum_aoi_margin_s",finite(min_aoi)},
+        {"minimum_gamma",finite(min_gamma)},
+        {"minimum_qp_residual",finite(min_residual)},
         {"maximum_speed_mps",max_speed},
         {"maximum_axis_control_mps2",max_axis_control},
+        {"minimum_world_coordinate_m",finite(minimum_world_coordinate_m)},
+        {"maximum_world_coordinate_m",finite(maximum_world_coordinate_m)},
         {"maximum_raw_nominal_axis_mps2",max_raw_nominal},
         {"intervention_owner_ticks",interventions},
         {"first_tick_controls",first_tick_controls},
@@ -311,12 +326,15 @@ int main(int argc,char** argv) {
                 cell(149,299),0,0,90.0,600,true},
             {"base_near_reverse_approach",cell(150,90),cell(180,90),
                 cell(150,50),0,0,-90.0,600,true},
-            {"large_target_change_viability",cell(299,0),cell(0,0),
-                cell(0,299),0,0,90.0,100,false}};
+            {"bottom_left_boundary_shield",cell(120,100),cell(180,100),
+                cell(0,0),7,14,-90.0,1000,true},
+            {"large_target_change_viability",cell(120,100),cell(180,100),
+                cell(0,299),7,14,90.0,100,false}};
         json records=json::array();
         bool complete=true;
         for (const auto& test:cases) {
-            if (argc>=3&&test.id!=argv[2]) continue;
+            if (argc>=3&&std::string(argv[2])!="all"&&test.id!=argv[2])
+                continue;
             auto record=runCase(test,tau_mps2,selection,
                 service_standoff_m);
             complete=complete&&record.at("passed").get<bool>();

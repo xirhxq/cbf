@@ -147,10 +147,11 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
 // invocation, 500 s window with T100 latch, rung-B'' 14-row speed domain,
 // per-tick telemetry and cumulative compute profile (profiler deliverable).
 int main(int argc,char** argv) {
-    if (argc<5||argc>12) {
+    if (argc<5||argc>13) {
         std::cerr<<"usage: GrandFinaleTask13PhaseARun TEMPLATE OUTPUT_JSON "
             "PROGRESS_DIR TELEMETRY_JSONL [TAU] [WINDOW_S] [POLICY] [ROWS] "
-            "[RANGE_NOISE_STD_M] [DROPOUT_PROBABILITY] [RANGE_SEED]\n";
+            "[RANGE_NOISE_STD_M] [DROPOUT_PROBABILITY] [RANGE_SEED] "
+            "[SERVICE_STANDOFF_M]\n";
         return 2;
     }
     const auto started=std::chrono::steady_clock::now();
@@ -173,7 +174,8 @@ int main(int argc,char** argv) {
         const bool policy_v6=policy=="v6";
         const bool policy_h2=policy=="h2"||policy=="h2diag"||
             policy=="h2center";
-        const double service_standoff_m=policy=="h2center"?0.0:350.0;
+        const double service_standoff_m=argc>=13?std::stod(argv[12]):
+            (policy=="h2center"?0.0:350.0);
         const auto gamma_selection=policy=="h2diag"
             ?gf::GammaFeedbackSelectionMode::DiagnosticsOnly
             :gf::GammaFeedbackSelectionMode::LeastIntervention;
@@ -226,13 +228,15 @@ int main(int argc,char** argv) {
         for (std::size_t index=0;index<def.positions.size();++index)
             positions_json.push_back({index+1,
                 def.positions[index].x(),def.positions[index].y()});
-        std::size_t speed_limit_rows=0,plant_facet_rows=0;
+        std::size_t speed_limit_rows=0,plant_facet_rows=0,workspace_rows=0;
         for (const auto& row:rows0) {
             if (row.kind==gf::CanonicalHardRowKind::SpeedLimit)
                 ++speed_limit_rows;
             if (row.kind==
                 gf::CanonicalHardRowKind::PlantSpeedAppliedControl)
                 ++plant_facet_rows;
+            if (row.kind==gf::CanonicalHardRowKind::Workspace)
+                ++workspace_rows;
         }
         const auto& config=fixture->adapter.config();
         json record={{"protocol","task13-phase-a-run-v1"},
@@ -263,6 +267,7 @@ int main(int argc,char** argv) {
                 return edges; }()},
             {"row_counts",{{"speed_limit_rows",speed_limit_rows},
                 {"plant_facet_rows",plant_facet_rows},
+                {"workspace_rows",workspace_rows},
                 {"total",rows0.size()}}},
             {"config_digest",{{"speed_row_nominal",
                 config.speed_row_nominal},
@@ -284,6 +289,10 @@ int main(int argc,char** argv) {
                 config.range_dropout_probability},
                 {"range_random_seed",config.range_random_seed},
                 {"maximum_range_aoi_s",config.maximum_range_aoi_s},
+                {"boundary_policy",
+                static_cast<int>(config.boundary.policy)},
+                {"flight_polygon_source",
+                static_cast<int>(config.boundary.flight_polygon_source)},
                 {"target_policy_v2",config.target_policy_v2},
                 {"demand_recompute_interval_s",
                 config.demand_recompute_interval_s},

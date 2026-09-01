@@ -206,6 +206,14 @@ TEST_CASE("Unified H2 fixture flag is an independent production policy path") {
     CHECK(config.unified_h2_minimum_half_width_m==doctest::Approx(7.0));
     CHECK(config.unified_h2_fan_ratio==doctest::Approx(0.0075));
     CHECK(config.unified_h2_service_standoff_m==doctest::Approx(350.0));
+    CHECK(config.boundary.policy==gf::BoundaryPolicy::HardFlightBoundary);
+    CHECK(config.boundary.flight_polygon_source==
+        gf::FlightPolygonSource::ExplicitPolygon);
+    REQUIRE(config.boundary.explicit_flight_polygon.size()==4);
+    CHECK(config.boundary.explicit_flight_polygon.front().x()==
+        doctest::Approx(1.5));
+    CHECK(config.boundary.explicit_flight_polygon.front().y()==
+        doctest::Approx(1.5));
 
     const auto exact_center=gf::task10p11rFixtureAdapterConfig(
         gf::GammaFeedbackSelectionMode::LeastIntervention,14.0,
@@ -213,6 +221,8 @@ TEST_CASE("Unified H2 fixture flag is an independent production policy path") {
         false,true,false,true,false,false,false,true,0.0);
     CHECK(exact_center.target_policy_unified_h2);
     CHECK(exact_center.unified_h2_service_standoff_m==doctest::Approx(0.0));
+    CHECK(exact_center.boundary.policy==
+        gf::BoundaryPolicy::HardFlightBoundary);
 }
 
 TEST_CASE("Production H2 path is certified-event driven across 2, 1, and 0 tasks") {

@@ -174,6 +174,16 @@ inline GrandFinaleSwarmAdapterConfig task10p11rFixtureAdapterConfig(
         config.target_policy_unified_h2=true;
         config.unified_h2_service_standoff_m=
             unified_h2_service_standoff_m;
+        // H2 can generate uniform virtual goals beyond the search polygon for
+        // edge cells.  The formal plant must nevertheless remain inside the
+        // 3000 m flight domain; make the existing robust workspace rows part
+        // of this policy's hard safety contract instead of relying on the
+        // legacy Robot exception after an excursion has already occurred.
+        config.boundary.policy=BoundaryPolicy::HardFlightBoundary;
+        config.boundary.flight_polygon_source=
+            FlightPolygonSource::ExplicitPolygon;
+        config.boundary.explicit_flight_polygon={
+            {1.5,1.5},{2998.5,1.5},{2998.5,2998.5},{1.5,2998.5}};
         // The campaign's hard plant limit is 30 m/s, not the historical
         // 30.01 m/s adjudication tolerance.  Keep the certified speed row
         // and add nominal headroom; this does not relax any safety gate.
