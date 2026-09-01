@@ -136,6 +136,12 @@ struct GrandFinaleSwarmAdapterConfig {
     int projection_passes = 2;
     double speed_tracking_gain = 1.0;
     double speed_tracking_blend_m = 60.0;
+    // Task 13 Phase B0-b (researcher-approved): velocity-augmented
+    // braking-slack reference/collision rows
+    // sqrt(2*share*a*(max(h,0)+eps)) - v_closing >= 0, affine in u,
+    // gamma* machinery untouched.
+    bool velocity_augmented_rows = false;
+    double row_slack_epsilon_m = 0.5;
     double maximum_yaw_rate_radps = 0.0;
     double position_gain = 0.4;
     double velocity_gain = 0.8;
@@ -1792,6 +1798,8 @@ private:
                 ?config_.plant_speed_facet_count:0;
         request.plant_speed_dt_s = config_.dt_s;
         request.require_snapshot_robust_rows = true;
+        request.velocity_augmented_rows = config_.velocity_augmented_rows;
+        request.row_slack_epsilon_m = config_.row_slack_epsilon_m;
         if (config_.speed_limit_mps > 0.0 && config_.speed_row_nominal &&
             !config_.speed_rows_removed) {
             for (NodeId id : mobile_ids_) {

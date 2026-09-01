@@ -114,7 +114,8 @@ PhaseATemplate makeTemplate(const std::string& id) {
 }
 
 std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
-    const PhaseATemplate& def,double tau,bool policy_v2) {
+    const PhaseATemplate& def,double tau,bool policy_v2,
+    bool velocity_augmented_rows) {
     auto scenario=gf::task10p11rFixedBaselineScenario();
     scenario.mobile_positions=def.positions;
     scenario.initial_topology=def.topology;
@@ -124,12 +125,13 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     // saturation, preflight demoted (31 m/s fuse), truth initial-set gate.
     // Bool order: srnm, margin, family, analytic, demoted, throttle,
     // throttle_v2, rows_removed, rung_b, v4_prime, bare, rung_b_prime,
-    // rung_b2, target_policy_v2.
+    // rung_b2, target_policy_v2, velocity_augmented_rows.
     return std::make_unique<gf::Task10p11rFixedBaselineFixture>(
         std::move(scenario),std::move(settings),
         gf::GammaFeedbackSelectionMode::LeastIntervention,tau,true,
         false,false,false,false,false,false,
-        false,false,false,false,false,true,policy_v2);
+        false,false,false,false,false,true,policy_v2,
+        velocity_augmented_rows);
 }
 
 }  // namespace
@@ -138,9 +140,9 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
 // invocation, 500 s window with T100 latch, rung-B'' 14-row speed domain,
 // per-tick telemetry and cumulative compute profile (profiler deliverable).
 int main(int argc,char** argv) {
-    if (argc!=5&&argc!=6&&argc!=7&&argc!=8) {
+    if (argc<5||argc>9) {
         std::cerr<<"usage: GrandFinaleTask13PhaseARun TEMPLATE OUTPUT_JSON "
-            "PROGRESS_DIR TELEMETRY_JSONL [TAU] [WINDOW_S] [POLICY]\n";
+            "PROGRESS_DIR TELEMETRY_JSONL [TAU] [WINDOW_S] [POLICY] [ROWS]\n";
         return 2;
     }
     const auto started=std::chrono::steady_clock::now();
@@ -152,10 +154,13 @@ int main(int argc,char** argv) {
         const std::string template_id=argv[1];
         const double window_s=argc>=7?std::stod(argv[6]):500.0;
         const double tau=argc>=6?std::stod(argv[5]):22.0;
-        const std::string policy=argc==8?argv[7]:"classic";
+        const std::string policy=argc>=8?argv[7]:"classic";
         const bool policy_v2=policy=="v2";
+        const std::string rows_mode=argc==9?argv[8]:"classic";
+        const bool velocity_augmented_rows=rows_mode=="vaug";
         const auto def=makeTemplate(template_id);
-        auto fixture=makeFixture(def,tau,policy_v2);
+        auto fixture=makeFixture(def,tau,policy_v2,
+            velocity_augmented_rows);
         if (!fixture->adapter.initializeStageZero().initialized) {
             // Qualification-gate boundary point: recorded, not run.
             json boundary={{"protocol","task13-phase-a-run-v1"},
@@ -194,6 +199,7 @@ int main(int argc,char** argv) {
             {"template",template_id},{"description",def.description},
             {"tau_mps2",tau},{"qualified",true},
             {"policy",policy},
+            {"rows_mode",rows_mode},
             {"window_s",window_s},
             {"identity_t0",{{"topology_matches_template",
                 fixture->topologyFrozen()}}},
@@ -235,6 +241,8 @@ int main(int argc,char** argv) {
                 {"projection_passes",config.projection_passes},
                 {"speed_tracking_gain",config.speed_tracking_gain},
                 {"speed_tracking_blend_m",config.speed_tracking_blend_m},
+                {"velocity_augmented_rows",config.velocity_augmented_rows},
+                {"row_slack_epsilon_m",config.row_slack_epsilon_m},
                 {"acceleration_half_box",config.acceleration_half_box},
                 {"residual_tolerance",config.residual_tolerance},
                 {"dt_s",config.dt_s},
