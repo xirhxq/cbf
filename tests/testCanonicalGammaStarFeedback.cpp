@@ -323,3 +323,34 @@ TEST_CASE("Predictive tau is an explicit nonnegative reserve threshold") {
             {row("x",{1.0,0.0},1.0)},1,Eigen::Vector2d::Zero(),config),
         std::invalid_argument);
 }
+
+TEST_CASE("Nominal speed saturation reads velocity rather than world position") {
+    auto snapshot=batchSnapshot();
+    snapshot.mean.segment<2>(0)<<1000.0,1000.0;
+    snapshot.mean.segment<2>(4)<<1010.0,1000.0;
+    snapshot.mean.segment<2>(2).setZero();
+    snapshot.mean.segment<2>(6).setZero();
+    const std::map<gf::NodeId,Eigen::Vector2d> nominal{
+        {1,{0.4,0.1}},{2,{-0.4,-0.1}}};
+    gf::CanonicalGammaFeedbackConfig config;
+    config.acceleration_half_box=0.4;
+    config.homotopy_segments=2;
+    config.selection_mode=gf::GammaFeedbackSelectionMode::DiagnosticsOnly;
+    config.nominal_speed_saturation_mps=29.9;
+    gf::CanonicalGammaFeedbackEvaluationContext context;
+    const auto batch=gf::evaluateCanonicalGammaFeedbackBatch(
+        snapshot,nominal,config,0.1,0.0,
+        [](const auto& value) {
+            auto request=batchRequest(value);
+            request.workspace_facets={
+                {"x-upper",{1.0,0.0},2000.0},
+                {"x-lower",{-1.0,0.0},0.0},
+                {"y-upper",{0.0,1.0},2000.0},
+                {"y-lower",{0.0,-1.0},0.0}};
+            return request;
+        },context);
+    CAPTURE(batch.reason);
+    REQUIRE(batch.valid);
+    CHECK(batch.stages.at(1).task_projection.isApprox(nominal.at(1),1e-12));
+    CHECK(batch.stages.at(2).task_projection.isApprox(nominal.at(2),1e-12));
+}

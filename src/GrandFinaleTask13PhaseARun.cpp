@@ -116,7 +116,8 @@ PhaseATemplate makeTemplate(const std::string& id) {
 std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     const PhaseATemplate& def,double tau,bool policy_v2,
     bool velocity_augmented_rows,bool policy_v3,bool policy_v6,
-    bool leader_reachability_filter) {
+    bool leader_reachability_filter,bool policy_h2,
+    gf::GammaFeedbackSelectionMode selection) {
     auto scenario=gf::task10p11rFixedBaselineScenario();
     scenario.mobile_positions=def.positions;
     scenario.initial_topology=def.topology;
@@ -130,11 +131,11 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     // target_policy_v3.
     return std::make_unique<gf::Task10p11rFixedBaselineFixture>(
         std::move(scenario),std::move(settings),
-        gf::GammaFeedbackSelectionMode::LeastIntervention,tau,true,
+        selection,tau,true,
         false,false,false,false,false,false,
         false,false,false,false,false,true,policy_v2,
         velocity_augmented_rows,policy_v3,policy_v6,
-        leader_reachability_filter);
+        leader_reachability_filter,policy_h2);
 }
 
 }  // namespace
@@ -166,6 +167,10 @@ int main(int argc,char** argv) {
             policy=="v7";
         const bool leader_reachability_filter=policy=="v5";
         const bool policy_v6=policy=="v6";
+        const bool policy_h2=policy=="h2"||policy=="h2diag";
+        const auto gamma_selection=policy=="h2diag"
+            ?gf::GammaFeedbackSelectionMode::DiagnosticsOnly
+            :gf::GammaFeedbackSelectionMode::LeastIntervention;
         if (policy_v2&&policy_v6) {
             std::cerr<<"policies v2 and v6 are mutually exclusive\n";
             return 2;
@@ -183,7 +188,7 @@ int main(int argc,char** argv) {
         const auto def=makeTemplate(template_id);
         auto fixture=makeFixture(def,tau,policy_v2,
             velocity_augmented_rows,policy_v3,policy_v6,
-            leader_reachability_filter);
+            leader_reachability_filter,policy_h2,gamma_selection);
         if (!fixture->adapter.initializeStageZero().initialized) {
             // Qualification-gate boundary point: recorded, not run.
             json boundary={{"protocol","task13-phase-a-run-v1"},
@@ -222,6 +227,10 @@ int main(int argc,char** argv) {
             {"template",template_id},{"description",def.description},
             {"tau_mps2",tau},{"qualified",true},
             {"policy",policy},
+            {"gamma_selection",policy=="h2diag"
+                ?"diagnostics_only":"least_intervention"},
+            {"gamma_selection_code",static_cast<int>(
+                fixture->adapter.config().gamma_feedback_selection)},
             {"rows_mode",rows_mode},
             {"window_s",window_s},
             {"identity_t0",{{"topology_matches_template",
@@ -271,13 +280,22 @@ int main(int argc,char** argv) {
                 config.leader_reachability_filter},
                 {"target_policy_v6",config.target_policy_v6},
                 {"v6_neighborhood_radius_m",config.v6_neighborhood_radius_m},
+                {"target_policy_unified_h2",
+                config.target_policy_unified_h2},
+                {"unified_h2_minimum_half_width_m",
+                config.unified_h2_minimum_half_width_m},
+                {"unified_h2_fan_ratio",config.unified_h2_fan_ratio},
+                {"unified_h2_shortlist_per_squad",
+                config.unified_h2_shortlist_per_squad},
+                {"unified_h2_service_standoff_m",
+                config.unified_h2_service_standoff_m},
                 {"velocity_augmented_rows",config.velocity_augmented_rows},
                 {"velocity_augmented_rows",config.velocity_augmented_rows},
                 {"row_slack_epsilon_m",config.row_slack_epsilon_m},
                 {"acceleration_half_box",config.acceleration_half_box},
                 {"residual_tolerance",config.residual_tolerance},
                 {"dt_s",config.dt_s},
-                {"truth_initial_set_gate_mps",30.01}}},
+                {"truth_initial_set_gate_mps",policy_h2?30.0:30.01}}},
             {"s3_stop_rule","terminate_at_t100_latch"},
             {"evaluations",json::array()},
             {"complete",false}};
@@ -293,7 +311,27 @@ int main(int argc,char** argv) {
         std::size_t tick=0;
         bool hard_stop=false;
         bool truth_gate_violation=false;
+        bool runtime_safety_violation=false;
+        std::string runtime_safety_reason;
         double truth_gate_max_speed=0.0;
+        double maximum_actual_reference_m=0.0;
+        double maximum_target_reference_m=0.0;
+        double minimum_actual_separation_m=
+            std::numeric_limits<double>::infinity();
+        double minimum_target_separation_m=
+            std::numeric_limits<double>::infinity();
+        double minimum_robust_fim=
+            std::numeric_limits<double>::infinity();
+        double maximum_posterior_m2=0.0;
+        double minimum_aoi_margin_s=
+            std::numeric_limits<double>::infinity();
+        double minimum_gamma=std::numeric_limits<double>::infinity();
+        double minimum_qp_residual=std::numeric_limits<double>::infinity();
+        double maximum_speed_mps=0.0;
+        double maximum_axis_control_mps2=0.0;
+        std::size_t intervention_owner_ticks=0,total_owner_ticks=0;
+        std::size_t target_switches=0,last_target_epoch=0;
+        std::size_t active_squad_ticks=0,current_active_squads=0;
         gf::SimpleCoverageControlStep last_step;
         gf::Task10p11ComputeProfile profiler;
         const auto mobile_ids=
@@ -311,14 +349,17 @@ int main(int argc,char** argv) {
                     truth_gate_max_speed=std::max(truth_gate_max_speed,
                         tv.head<2>().norm());
                 }
-                if (truth_gate_max_speed>30.01) {
+                const double hard_speed_limit=policy_h2?30.0:30.01;
+                if (truth_gate_max_speed>hard_speed_limit+1e-9) {
                     truth_gate_violation=true;
                     hard_stop=true;
                     record["evaluations"].push_back({{"tick",tick},
                         {"advanced",false},
                         {"reason","speed_initial_set_truth_violated"},
                         {"coverage_fraction",
-                        fixture->adapter.coverage().truthFraction()},
+                        policy_h2
+                            ?fixture->adapter.coverage().certifiedFraction()
+                            :fixture->adapter.coverage().truthFraction()},
                         {"minimum_hard_residual",json(nullptr)}});
                     break;
                 }
@@ -332,8 +373,12 @@ int main(int argc,char** argv) {
                     Eigen::Vector2d(robot->model->getVelocity().head<2>());
             last_step=fixture->controller.advance();
             profiler.merge(last_step.compute_profile);
-            const double fraction=
+            const double certified_fraction=
+                fixture->adapter.coverage().certifiedFraction();
+            const double truth_fraction=
                 fixture->adapter.coverage().truthFraction();
+            const double fraction=policy_h2
+                ?certified_fraction:truth_fraction;
             if (!t95_tick.has_value()&&fraction>=0.95) t95_tick=tick;
             if (!t100_tick.has_value()&&fraction>=1.0-1e-12) t100_tick=tick;
             if (last_step.step.advanced) {
@@ -357,6 +402,11 @@ int main(int argc,char** argv) {
                     interval_max);
                 if (truth_max>0.0) ++truth_overspeed_ticks;
                 if (interval_max>0.0) ++interval_overspeed_ticks;
+                if (policy_h2 && (truth_max>1e-9||interval_max>1e-9)) {
+                    runtime_safety_violation=true;
+                    runtime_safety_reason="hard_speed_limit_violated";
+                    hard_stop=true;
+                }
             } else {
                 hard_stop=true;
             }
@@ -364,6 +414,96 @@ int main(int argc,char** argv) {
             const auto raw_nominals=
                 fixture->controller.lastNominalControls();
             const auto throttle=fixture->adapter.lastThrottleTelemetry();
+            if (last_step.unified_allocation_evaluated&&
+                last_step.unified_allocation.valid)
+                current_active_squads=
+                    last_step.unified_allocation.active_squads;
+            active_squad_ticks+=current_active_squads;
+            if (last_step.target_epoch!=last_target_epoch) {
+                if (last_target_epoch!=0) ++target_switches;
+                last_target_epoch=last_step.target_epoch;
+            }
+            const auto information=fixture->adapter.currentReferenceAudit();
+            minimum_robust_fim=std::min(minimum_robust_fim,
+                information.minimum_robust_fim_cone_lower_bound);
+            maximum_posterior_m2=std::max(maximum_posterior_m2,
+                information.maximum_posterior_eigenvalue);
+            minimum_aoi_margin_s=std::min(minimum_aoi_margin_s,
+                information.minimum_range_aoi_margin_s);
+            minimum_qp_residual=std::min(minimum_qp_residual,
+                last_step.step.minimum_hard_residual);
+            std::map<gf::NodeId,Eigen::Vector2d> truth_positions;
+            for (const auto& robot:fixture->swarm.robots) {
+                const gf::NodeId id=static_cast<gf::NodeId>(robot->id);
+                truth_positions[id]={robot->model->getStateVariable("x"),
+                    robot->model->getStateVariable("y")};
+                maximum_speed_mps=std::max(maximum_speed_mps,
+                    robot->model->getVelocity().head<2>().norm());
+            }
+            const auto actual_position=[&](gf::NodeId id) {
+                const auto mobile=truth_positions.find(id);
+                if (mobile!=truth_positions.end()) return mobile->second;
+                return snapshot.estimate.fixed_positions.at(id);
+            };
+            const auto target_position=[&](gf::NodeId id) {
+                const auto mobile=last_step.committed_targets.find(id);
+                if (mobile!=last_step.committed_targets.end())
+                    return mobile->second.center;
+                return snapshot.estimate.fixed_positions.at(id);
+            };
+            double tick_actual_reference=0.0,tick_target_reference=0.0;
+            for (const auto& edge:snapshot.topology) {
+                tick_actual_reference=std::max(tick_actual_reference,
+                    (actual_position(edge.owner)-
+                     actual_position(edge.reference)).norm());
+                if (last_step.committed_targets.size()==14)
+                    tick_target_reference=std::max(tick_target_reference,
+                        (target_position(edge.owner)-
+                         target_position(edge.reference)).norm());
+            }
+            double tick_actual_separation=
+                std::numeric_limits<double>::infinity();
+            double tick_target_separation=
+                std::numeric_limits<double>::infinity();
+            for (std::size_t first=0;first<mobile_ids.size();++first) {
+                for (std::size_t second=first+1;second<mobile_ids.size();
+                     ++second) {
+                    tick_actual_separation=std::min(tick_actual_separation,
+                        (actual_position(mobile_ids[first])-
+                         actual_position(mobile_ids[second])).norm());
+                    if (last_step.committed_targets.size()==14)
+                        tick_target_separation=std::min(tick_target_separation,
+                            (target_position(mobile_ids[first])-
+                             target_position(mobile_ids[second])).norm());
+                }
+                for (const auto& [fixed_id,fixed_position]:
+                     snapshot.estimate.fixed_positions) {
+                    tick_actual_separation=std::min(tick_actual_separation,
+                        (actual_position(mobile_ids[first])-
+                         fixed_position).norm());
+                    if (last_step.committed_targets.size()==14)
+                        tick_target_separation=std::min(tick_target_separation,
+                            (target_position(mobile_ids[first])-
+                             fixed_position).norm());
+                    (void)fixed_id;
+                }
+            }
+            maximum_actual_reference_m=std::max(
+                maximum_actual_reference_m,tick_actual_reference);
+            maximum_target_reference_m=std::max(
+                maximum_target_reference_m,tick_target_reference);
+            minimum_actual_separation_m=std::min(
+                minimum_actual_separation_m,tick_actual_separation);
+            minimum_target_separation_m=std::min(
+                minimum_target_separation_m,tick_target_separation);
+            if (policy_h2 && (tick_actual_reference>850.0+1e-9 ||
+                    tick_actual_separation<10.0-1e-9 ||
+                    tick_target_reference>=850.0-1e-9 ||
+                    tick_target_separation<=10.0+1e-9)) {
+                runtime_safety_violation=true;
+                runtime_safety_reason="reference_or_separation_violated";
+                hard_stop=true;
+            }
             json owners=json::array();
             for (gf::NodeId owner:mobile_ids) {
                 const Eigen::Index off=4*static_cast<Eigen::Index>(
@@ -378,19 +518,33 @@ int main(int argc,char** argv) {
                 const auto diagnostic=
                     last_step.step.gamma_feedback.find(owner);
                 if (diagnostic!=last_step.step.gamma_feedback.end())
+                    {
+                    minimum_gamma=std::min(minimum_gamma,
+                        diagnostic->second.current_gamma);
+                    intervention_owner_ticks+=diagnostic->second.intervened;
+                    ++total_owner_ticks;
                     diagnostic_json={{"n_sel",{
                         diagnostic->second.selected_nominal.x(),
                         diagnostic->second.selected_nominal.y()}},
+                        {"n_projected",{
+                            diagnostic->second.current_hard_projection.x(),
+                            diagnostic->second.current_hard_projection.y()}},
                         {"gamma",gf::task10p11w_detail::number(
                             diagnostic->second.current_gamma)},
                         {"intervened",diagnostic->second.intervened},
                         {"fallback",diagnostic->second.fallback_reason},
                         {"dominant_row",diagnostic->second.dominant_row}};
+                    }
                 json applied_json=json(nullptr);
                 const auto applied=
                     last_step.step.applied_controls.find(owner);
                 if (applied!=last_step.step.applied_controls.end())
+                    {
+                    maximum_axis_control_mps2=std::max(
+                        maximum_axis_control_mps2,
+                        applied->second.cwiseAbs().maxCoeff());
                     applied_json={applied->second.x(),applied->second.y()};
+                    }
                 json raw_json=json(nullptr);
                 const auto raw=raw_nominals.find(owner);
                 if (raw!=raw_nominals.end())
@@ -417,6 +571,24 @@ int main(int argc,char** argv) {
             telemetry<<json({{"tick",tick},
                 {"runtime_s",snapshot.runtime_s},
                 {"coverage_fraction",fraction},
+                {"certified_coverage_fraction",certified_fraction},
+                {"truth_coverage_fraction",truth_fraction},
+                {"geometry",{{"maximum_actual_reference_m",
+                    tick_actual_reference},{"maximum_target_reference_m",
+                    tick_target_reference},{"minimum_actual_separation_m",
+                    tick_actual_separation},{"minimum_target_separation_m",
+                    tick_target_separation}}},
+                {"information",{{"minimum_robust_fim",
+                    gf::task10p11w_detail::number(
+                        information.minimum_robust_fim_cone_lower_bound)},
+                    {"maximum_posterior_m2",
+                    gf::task10p11w_detail::number(
+                        information.maximum_posterior_eigenvalue)},
+                    {"minimum_aoi_margin_s",gf::task10p11w_detail::number(
+                        information.minimum_range_aoi_margin_s)}}},
+                {"minimum_qp_residual",gf::task10p11w_detail::number(
+                    last_step.step.minimum_hard_residual)},
+                {"active_squads",current_active_squads},
                 {"advanced",last_step.step.advanced},
                 {"reason",last_step.step.reason},
                 {"target_epoch",last_step.target_epoch},
@@ -476,6 +648,11 @@ int main(int argc,char** argv) {
         record["t100_tick"]=(t100_tick.has_value()?json(*t100_tick):
             json(nullptr));
         record["final_coverage_fraction"]=
+            policy_h2?fixture->adapter.coverage().certifiedFraction():
+                fixture->adapter.coverage().truthFraction();
+        record["final_certified_coverage_fraction"]=
+            fixture->adapter.coverage().certifiedFraction();
+        record["final_truth_coverage_fraction"]=
             fixture->adapter.coverage().truthFraction();
         record["cycles"]=tick;
         record["hard_stop"]=hard_stop;
@@ -483,6 +660,7 @@ int main(int argc,char** argv) {
             {"advanced",truth_gate_violation?false:last_step.step.advanced},
             {"reason",truth_gate_violation?
                 json("speed_initial_set_truth_violated"):
+                runtime_safety_violation?json(runtime_safety_reason):
                 json(last_step.step.reason)},
             {"truth_gate_max_speed_mps",truth_gate_violation?
                 json(truth_gate_max_speed):json(nullptr)},
@@ -496,6 +674,31 @@ int main(int argc,char** argv) {
             {"interval_overspeed_ticks",interval_overspeed_ticks},
             {"fuse_limit_mps",config.speed_preflight_fuse_mps},
             {"fuse_tripped",max_interval_overspeed>1.0}};
+        record["safety_and_information"]={
+            {"maximum_actual_reference_m",maximum_actual_reference_m},
+            {"maximum_target_reference_m",maximum_target_reference_m},
+            {"minimum_actual_separation_m",minimum_actual_separation_m},
+            {"minimum_target_separation_m",minimum_target_separation_m},
+            {"minimum_robust_fim",gf::task10p11w_detail::number(
+                minimum_robust_fim)},
+            {"maximum_posterior_m2",maximum_posterior_m2},
+            {"minimum_aoi_margin_s",gf::task10p11w_detail::number(
+                minimum_aoi_margin_s)},
+            {"minimum_gamma",gf::task10p11w_detail::number(minimum_gamma)},
+            {"minimum_qp_residual",gf::task10p11w_detail::number(
+                minimum_qp_residual)},
+            {"maximum_speed_mps",maximum_speed_mps},
+            {"maximum_axis_control_mps2",maximum_axis_control_mps2},
+            {"intervention_owner_ticks",intervention_owner_ticks},
+            {"total_owner_ticks",total_owner_ticks},
+            {"intervention_fraction",total_owner_ticks==0?0.0:
+                static_cast<double>(intervention_owner_ticks)/
+                    total_owner_ticks},
+            {"target_switches",target_switches},
+            {"mean_active_squads",tick==0?0.0:
+                static_cast<double>(active_squad_ticks)/(tick+1)},
+            {"runtime_safety_violation",runtime_safety_violation},
+            {"runtime_safety_reason",runtime_safety_reason}};
         record["profiler"]={{"note",
             "cumulative over run; interval telemetry audits the pre-advance "
             "truth velocity (two-tick defect fixed in this code round)"},

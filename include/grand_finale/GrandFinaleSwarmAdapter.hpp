@@ -148,6 +148,15 @@ struct GrandFinaleSwarmAdapterConfig {
     // ladder position (branch-share restricted); covered targets auto-
     // switch.  The ladder degrades to formation structure.
     bool target_policy_v6 = false;
+    // Task 13 unified coverage campaign: fixed-topology, event-driven
+    // two-squad allocation using the closed-form tapered triangular lift.
+    // This is deliberately independent of the historical v2/v3/v5/v6
+    // policy flags so old evidence cannot silently execute the new path.
+    bool target_policy_unified_h2 = false;
+    double unified_h2_minimum_half_width_m = 7.0;
+    double unified_h2_fan_ratio = 0.0075;
+    std::size_t unified_h2_shortlist_per_squad = 64;
+    double unified_h2_service_standoff_m = 350.0;
     double v6_neighborhood_radius_m = 450.0;
     double demand_recompute_interval_s = 5.0;
     double target_lock_epsilon_m = 30.0;

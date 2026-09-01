@@ -722,7 +722,7 @@ CanonicalGammaFeedbackBatchResult evaluateCanonicalGammaFeedbackBatchOptimized(
                 std::distance(snapshot.mobile_ids.begin(),
                     std::find(snapshot.mobile_ids.begin(),
                         snapshot.mobile_ids.end(),owner)));
-            const Eigen::Vector2d v=snapshot.mean.segment<2>(off);
+            const Eigen::Vector2d v=snapshot.mean.segment<2>(off+2);
             const Eigen::Vector2d& n=nominal->second;
             const Eigen::Vector2d w=v+dt_s*n;
             const double wspeed=w.norm();

@@ -5,6 +5,7 @@
 #include "grand_finale/Task10p11hLeaderCoveragePolicy.hpp"
 #include "grand_finale/Task10p11hSimpleCoveragePolicy.hpp"
 #include "grand_finale/Task10p11tDynamicPairResponsibility.hpp"
+#include "grand_finale/Task13UnifiedCoveragePolicy.hpp"
 #include "grand_finale/TargetLiftTransitionPrototype.hpp"
 
 #include <functional>
@@ -49,6 +50,8 @@ struct BoundaryExcursionAudit {
 struct SimpleCoverageControlStep {
     bool allocation_evaluated=false;
     LeaderCoverageResult allocation;
+    bool unified_allocation_evaluated=false;
+    Task13UnifiedCoverageResult unified_allocation;
     GrandFinaleSwarmStep step;
     std::string reason;
     std::map<NodeId,FrontierCell> committed_targets;
@@ -132,7 +135,12 @@ public:
 
         const bool policy_v2=adapter_.config().target_policy_v2;
         const bool policy_v3=adapter_.config().target_policy_v3;
-        if (policy_v2) {
+        const bool policy_h2=adapter_.config().target_policy_unified_h2;
+        if (policy_h2) {
+            advanceUnifiedH2Targets(runtime,result);
+            if (result.unified_allocation_evaluated &&
+                !result.unified_allocation.valid) return result;
+        } else if (policy_v2) {
             // Task 13 Phase B0-a: demand field (low-frequency/event-driven
             // recompute) + reachability projection + target-lock contract.
             advanceV2Targets(runtime,result);
@@ -446,6 +454,8 @@ public:
         settling_dwell_cycles_=state.settling_dwell_cycles;
         last_nominal_controls_=state.last_nominal_controls;
         boundary_excursion_=state.boundary_excursion;
+        unified_h2_retained_.clear();
+        unified_h2_active_.clear();
     }
     SimpleCoverageControlStep advanceWithDynamicPairResponsibility(
         const std::string& pair_base_id) {
@@ -482,6 +492,112 @@ public:
     }
 
 private:
+    // ---- Task 13 unified H2: certified-event-driven global pool -------
+    void advanceUnifiedH2Targets(
+        const GrandFinaleRuntimeSnapshot& runtime,
+        SimpleCoverageControlStep& result) {
+        if (unified_h2_retained_.empty() && !targets_.empty())
+            reconstructUnifiedH2Retained(runtime);
+        bool event=targets_.empty() || unified_h2_retained_.size()!=2 ||
+            unified_h2_active_.size()!=2;
+        bool any_active=false;
+        for (const auto& [squad,witness]:unified_h2_retained_) {
+            const bool active=unified_h2_active_[squad];
+            any_active=any_active||active;
+            if (active&&!certifiedCellUncovered(witness.cell)) event=true;
+        }
+        if (!any_active&&!adapter_.coverage().reachedCertifiedT100())
+            event=true;
+        if (!event) return;
+
+        Task13UnifiedCoverageRequest request;
+        request.uncovered_cells=currentCertifiedUncoveredCells();
+        request.fixed_positions=runtime.estimate.fixed_positions;
+        request.retained=unified_h2_retained_;
+        request.config.minimum_half_width_m=
+            adapter_.config().unified_h2_minimum_half_width_m;
+        request.config.fan_ratio=adapter_.config().unified_h2_fan_ratio;
+        request.config.reference_limit_m=adapter_.config().reference_distance_m;
+        request.config.separation_limit_m=adapter_.config().collision_distance_m;
+        request.config.shortlist_per_squad=
+            adapter_.config().unified_h2_shortlist_per_squad;
+        request.config.certified_service_standoff_m=
+            adapter_.config().unified_h2_service_standoff_m;
+        request.config.compute_nominal_fim_proxy=false;
+        for (std::size_t index=0;
+             index<runtime.estimate.mobile_ids.size();++index) {
+            const NodeId owner=runtime.estimate.mobile_ids[index];
+            request.agents.push_back({owner,
+                runtime.estimate.mean.segment<2>(4*index),currentYaw(owner)});
+        }
+        result.unified_allocation_evaluated=true;
+        result.unified_allocation=allocateTask13UnifiedCoverage(
+            std::move(request));
+        if (!result.unified_allocation.valid) {
+            result.reason=result.unified_allocation.reason;
+            return;
+        }
+        targets_=result.unified_allocation.targets;
+        unified_h2_retained_.clear();
+        unified_h2_active_.clear();
+        for (const auto& [squad,assignment]:
+             result.unified_allocation.assignments) {
+            unified_h2_retained_[squad]=assignment.witness;
+            unified_h2_active_[squad]=assignment.active;
+        }
+        ++target_epoch_;
+        consecutive_failures_=0;
+    }
+
+    void reconstructUnifiedH2Retained(
+        const GrandFinaleRuntimeSnapshot& runtime) {
+        if (targets_.size()!=14) return;
+        const auto squads=task13UnifiedCoverageSquads();
+        Task13UnifiedCoverageConfig config;
+        config.minimum_half_width_m=
+            adapter_.config().unified_h2_minimum_half_width_m;
+        config.fan_ratio=adapter_.config().unified_h2_fan_ratio;
+        config.reference_limit_m=adapter_.config().reference_distance_m;
+        config.separation_limit_m=adapter_.config().collision_distance_m;
+        config.certified_service_standoff_m=
+            adapter_.config().unified_h2_service_standoff_m;
+        std::map<std::string,Task13UnifiedCoverageWitness> rebuilt;
+        for (const auto& squad:squads) {
+            const auto first=targets_.find(squad.members.front());
+            if (first==targets_.end()) return;
+            const auto cell_it=std::find_if(denominator_cells_.begin(),
+                denominator_cells_.end(),[&](const FrontierCell& value) {
+                    return value.id()==first->second.id();
+                });
+            if (cell_it==denominator_cells_.end()) return;
+            bool found=false;
+            for (NodeId member:squad.members) {
+                const auto candidate=task13TaperedWitness(
+                    squad,member,*cell_it,runtime.estimate.fixed_positions,
+                    config);
+                if (!candidate.has_value()) continue;
+                bool equal=true;
+                for (NodeId owner:squad.members) {
+                    const auto target=targets_.find(owner);
+                    equal=equal&&target!=targets_.end()&&
+                        target->second.id()==cell_it->id()&&
+                        (target->second.center-
+                         candidate->targets.at(owner)).norm()<=1e-8;
+                }
+                if (equal) {
+                    rebuilt[squad.name]=*candidate;
+                    found=true;
+                    break;
+                }
+            }
+            if (!found) return;
+        }
+        unified_h2_retained_=std::move(rebuilt);
+        unified_h2_active_.clear();
+        for (const auto& [squad,witness]:unified_h2_retained_)
+            unified_h2_active_[squad]=certifiedCellUncovered(witness.cell);
+    }
+
     // ---- Task 13 Phase B0-a v6: per-drone chase-cell targeting --------
     // CBF2026 restoration: EVERY drone (leader and follower) targets the
     // nearest uncovered cell within its neighborhood radius around its
@@ -774,8 +890,10 @@ private:
     }
 
     bool observeT100Boundary() {
-        if (!t100_coverage_s_.has_value() &&
-            adapter_.coverage().truthFraction()>=1.0-1e-12) {
+        const bool complete=adapter_.config().target_policy_unified_h2
+            ?adapter_.coverage().reachedCertifiedT100()
+            :adapter_.coverage().truthFraction()>=1.0-1e-12;
+        if (!t100_coverage_s_.has_value() && complete) {
             t100_coverage_s_=swarm_.robots.front()->runtime;
             settling_dwell_cycles_=0;
             return true;
@@ -873,6 +991,25 @@ private:
                 {cell.center.x,cell.center.y}});
         return result;
     }
+    std::vector<FrontierCell> currentCertifiedUncoveredCells() const {
+        std::vector<FrontierCell> result;
+        const GridWorld& certified=adapter_.coverage().certifiedGrid();
+        for (const auto& cell:denominator_cells_) {
+            const std::size_t index=static_cast<std::size_t>(
+                certified.getIndex(cell.x_index,cell.y_index));
+            if (certified.valid[index]&&!certified.vis[index])
+                result.push_back(cell);
+        }
+        return result;
+    }
+    bool certifiedCellUncovered(const FrontierCell& cell) const {
+        if (cell.x_index<0||cell.y_index<0) return false;
+        const GridWorld& certified=adapter_.coverage().certifiedGrid();
+        const std::size_t index=static_cast<std::size_t>(
+            certified.getIndex(cell.x_index,cell.y_index));
+        return index<certified.vis.size()&&certified.valid[index]&&
+            !certified.vis[index];
+    }
     double currentYaw(NodeId owner) const {
         for (const auto& robot : swarm_.robots)
             if (robot->id==owner)
@@ -896,6 +1033,8 @@ private:
     std::optional<double> t100_coverage_s_;
     std::size_t settling_dwell_cycles_=0;
     std::map<NodeId,Eigen::Vector2d> last_nominal_controls_;
+    std::map<std::string,Task13UnifiedCoverageWitness> unified_h2_retained_;
+    std::map<std::string,bool> unified_h2_active_;
     // Task 13 Phase B0-a (target policy v2) state.
     double last_demand_recompute_s_=-1.0e9;
     std::vector<FrontierCell> v2_demand_cells_;
