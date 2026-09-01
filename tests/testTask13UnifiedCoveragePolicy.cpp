@@ -144,6 +144,32 @@ TEST_CASE("Unified allocator retains real IDs and re-embeds on compatibility eve
     }
 }
 
+TEST_CASE("Displacement priority applies only to same-cell re-embedding") {
+    const auto squad=gf::task13UnifiedCoverageSquads()[0];
+    const auto retained=gf::task13TaperedWitness(
+        squad,3,cell(0,0),fixed(),{});
+    const auto reembedded=gf::task13TaperedWitness(
+        squad,4,cell(0,0),fixed(),{});
+    const auto new_cell=gf::task13TaperedWitness(
+        squad,3,cell(1,0),fixed(),{});
+    REQUIRE(retained.has_value());
+    REQUIRE(reembedded.has_value());
+    REQUIRE(new_cell.has_value());
+    const auto value=request({cell(0,0),cell(1,0)});
+    const auto same=gf::task13_unified_detail::makeChoice(
+        *reembedded,true,"persistent_same_real_id",retained,value);
+    const auto next=gf::task13_unified_detail::makeChoice(
+        *new_cell,true,"new_real_cell",retained,value);
+    CHECK(same.maximum_displacement_m>0.0);
+    CHECK(same.reembedding_maximum_displacement_m==
+        doctest::Approx(same.maximum_displacement_m));
+    CHECK(same.reembedding_sum_displacement_m==
+        doctest::Approx(same.sum_displacement_m));
+    CHECK(next.maximum_displacement_m>0.0);
+    CHECK(next.reembedding_maximum_displacement_m==0.0);
+    CHECK(next.reembedding_sum_displacement_m==0.0);
+}
+
 TEST_CASE("Zero tasks retains exact configurations and adjacent tasks do not violate strict separation") {
     auto retained=compatiblePair(cell(7,299),cell(274,299));
     auto zero=request({});

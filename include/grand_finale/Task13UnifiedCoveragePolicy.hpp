@@ -181,6 +181,8 @@ struct Choice {
     std::string reason;
     double maximum_displacement_m=0.0;
     double sum_displacement_m=0.0;
+    double reembedding_maximum_displacement_m=0.0;
+    double reembedding_sum_displacement_m=0.0;
     double forward_cost_m=0.0;
 };
 
@@ -197,9 +199,11 @@ inline std::pair<double,double> displacement(
 }
 
 inline bool choiceLess(const Choice& lhs,const Choice& rhs) {
-    return std::tuple(lhs.maximum_displacement_m,lhs.sum_displacement_m,
+    return std::tuple(lhs.reembedding_maximum_displacement_m,
+                      lhs.reembedding_sum_displacement_m,
                       lhs.forward_cost_m,identity(lhs.witness))<
-           std::tuple(rhs.maximum_displacement_m,rhs.sum_displacement_m,
+           std::tuple(rhs.reembedding_maximum_displacement_m,
+                      rhs.reembedding_sum_displacement_m,
                       rhs.forward_cost_m,identity(rhs.witness));
 }
 
@@ -232,6 +236,10 @@ inline Choice makeChoice(
         const auto burden=displacement(*retained,value.witness);
         value.maximum_displacement_m=burden.first;
         value.sum_displacement_m=burden.second;
+        if (retained->cell.id()==value.witness.cell.id()) {
+            value.reembedding_maximum_displacement_m=burden.first;
+            value.reembedding_sum_displacement_m=burden.second;
+        }
     }
     if (active) value.forward_cost_m=forwardCost(
         value.witness,request.agents,request.config.forward_focus_distance_m);
@@ -357,6 +365,8 @@ struct FastChoice {
     std::string reason;
     double maximum_displacement_m=0.0;
     double sum_displacement_m=0.0;
+    double reembedding_maximum_displacement_m=0.0;
+    double reembedding_sum_displacement_m=0.0;
     double forward_cost_m=0.0;
 };
 
@@ -366,10 +376,12 @@ inline auto fastChoiceIdentity(const FastChoice& value) {
 }
 
 inline bool fastChoiceLess(const FastChoice& lhs,const FastChoice& rhs) {
-    return std::tuple(lhs.maximum_displacement_m,lhs.sum_displacement_m,
-        lhs.forward_cost_m,fastChoiceIdentity(lhs))<
-        std::tuple(rhs.maximum_displacement_m,rhs.sum_displacement_m,
-        rhs.forward_cost_m,fastChoiceIdentity(rhs));
+    return std::tuple(lhs.reembedding_maximum_displacement_m,
+        lhs.reembedding_sum_displacement_m,lhs.forward_cost_m,
+        fastChoiceIdentity(lhs))<
+        std::tuple(rhs.reembedding_maximum_displacement_m,
+        rhs.reembedding_sum_displacement_m,rhs.forward_cost_m,
+        fastChoiceIdentity(rhs));
 }
 
 inline void insertFastShortlist(
@@ -461,6 +473,12 @@ inline Task13UnifiedCoverageResult allocateTask13UnifiedCoverage(
                             choice.maximum_displacement_m,displacement);
                         choice.sum_displacement_m+=displacement;
                     }
+                    if (retained->cell.id()==cell.id()) {
+                        choice.reembedding_maximum_displacement_m=
+                            choice.maximum_displacement_m;
+                        choice.reembedding_sum_displacement_m=
+                            choice.sum_displacement_m;
+                    }
                 }
                 const auto agent=std::find_if(request.agents.begin(),
                     request.agents.end(),[&](const auto& value) {
@@ -497,6 +515,10 @@ inline Task13UnifiedCoverageResult allocateTask13UnifiedCoverage(
             choice.reason=value.reason;
             choice.maximum_displacement_m=value.maximum_displacement_m;
             choice.sum_displacement_m=value.sum_displacement_m;
+            choice.reembedding_maximum_displacement_m=
+                value.reembedding_maximum_displacement_m;
+            choice.reembedding_sum_displacement_m=
+                value.reembedding_sum_displacement_m;
             choice.forward_cost_m=value.forward_cost_m;
             active.push_back(std::move(choice));
         }
@@ -512,15 +534,18 @@ inline Task13UnifiedCoverageResult allocateTask13UnifiedCoverage(
         Choice a,b;
         std::size_t active=0;
         double cross=0.0,max_displacement=0.0,sum_displacement=0.0,
-            forward=0.0;
+            reembedding_max_displacement=0.0,
+            reembedding_sum_displacement=0.0,forward=0.0;
     };
     std::optional<Joint> best;
     const auto joint_less=[](const Joint& lhs,const Joint& rhs) {
         return std::tuple(-static_cast<long long>(lhs.active),
-            lhs.max_displacement,lhs.sum_displacement,lhs.forward,
+            lhs.reembedding_max_displacement,
+            lhs.reembedding_sum_displacement,lhs.forward,
             identity(lhs.a.witness),identity(lhs.b.witness))<
             std::tuple(-static_cast<long long>(rhs.active),
-            rhs.max_displacement,rhs.sum_displacement,rhs.forward,
+            rhs.reembedding_max_displacement,
+            rhs.reembedding_sum_displacement,rhs.forward,
             identity(rhs.a.witness),identity(rhs.b.witness));
     };
     for (const auto& a:choices["A"]) for (const auto& b:choices["B"]) {
@@ -533,6 +558,10 @@ inline Task13UnifiedCoverageResult allocateTask13UnifiedCoverage(
         Joint candidate{a,b,static_cast<std::size_t>(a.active)+b.active,cross,
             std::max(a.maximum_displacement_m,b.maximum_displacement_m),
             a.sum_displacement_m+b.sum_displacement_m,
+            std::max(a.reembedding_maximum_displacement_m,
+                b.reembedding_maximum_displacement_m),
+            a.reembedding_sum_displacement_m+
+                b.reembedding_sum_displacement_m,
             a.forward_cost_m+b.forward_cost_m};
         if (!best.has_value()||joint_less(candidate,*best))
             best=std::move(candidate);
