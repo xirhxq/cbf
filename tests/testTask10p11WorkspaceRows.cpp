@@ -65,3 +65,31 @@ TEST_CASE("Task 10.11 workspace row exposes equality and input conflict") {
     CHECK_FALSE(exact.polytope_nonempty);
     CHECK(exact.reason == "hard_polytope_empty");
 }
+
+TEST_CASE("Task 14 workspace linear class-K gains are explicit") {
+    auto request=requestAt({8.0,0.0},{0.3,0.0});
+    request.workspace_class_k=gf::WorkspaceClassK::Linear;
+    request.workspace_alpha1_gain=0.5;
+    request.workspace_alpha2_gain=2.0;
+    const auto row=workspaceRow(gf::buildCanonicalHardRows(request));
+    // h=1.5, hdot=-0.5: k1*hdot+k2*(hdot+k1*h)=0.25.
+    CHECK(row.barrier_psi1==doctest::Approx(0.25));
+    CHECK(row.constant==doctest::Approx(0.25));
+}
+
+TEST_CASE("Task 14 regularized braking class-K is zero at the boundary") {
+    CHECK(gf::workspaceBrakingAlpha1(0.0,4.0,1.0)==
+        doctest::Approx(0.0));
+    auto request=requestAt({8.0,0.0},{0.3,0.0});
+    request.workspace_class_k=gf::WorkspaceClassK::RegularizedBraking;
+    request.workspace_braking_acceleration_mps2=4.0;
+    request.workspace_braking_regularization_m=1.0;
+    request.workspace_alpha2_gain=1.5;
+    const auto row=workspaceRow(gf::buildCanonicalHardRows(request));
+    const double alpha1=std::sqrt(2.0*4.0*(1.5+1.0))-
+        std::sqrt(2.0*4.0*1.0);
+    const double derivative=4.0/std::sqrt(2.0*4.0*(1.5+1.0));
+    CHECK(row.barrier_psi1==doctest::Approx(-0.5+alpha1));
+    CHECK(row.constant==doctest::Approx(
+        derivative*(-0.5)+1.5*(-0.5+alpha1)));
+}

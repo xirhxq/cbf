@@ -19,6 +19,10 @@ struct Task13UnifiedCoverageConfig {
     std::size_t shortlist_per_squad=64;
     bool compute_nominal_fim_proxy=true;
     double certified_service_standoff_m=0.0;
+    // Task 14 route D: inverse of the four-section CBF2026 branch formula.
+    // Nominal references are virtual goals, so this research mode records
+    // but does not reject >850 m target edges; actual robust rows remain hard.
+    bool cbf2026_wide_virtual_formation=false;
 };
 
 struct Task13UnifiedCoverageSquad {
@@ -335,6 +339,78 @@ inline std::optional<FastWitnessGeometry> fastTaperedGeometry(
     return value;
 }
 
+inline std::optional<FastWitnessGeometry> fastCbf2026WideGeometry(
+    const Task13UnifiedCoverageSquad& squad,NodeId responsible_member,
+    const FrontierCell& cell,
+    const std::map<NodeId,Eigen::Vector2d>& fixed_positions,
+    const Task13UnifiedCoverageConfig& config) {
+    if (cell.x_index<0 || cell.y_index<0 || !cell.center.allFinite() ||
+        config.separation_limit_m<=0.0) return std::nullopt;
+    const auto base_it=fixed_positions.find(101);
+    if (base_it==fixed_positions.end()) return std::nullopt;
+    const std::size_t responsible=localIndex(squad,responsible_member);
+    static constexpr std::array<double,7> axial{1,1,2,2,3,3,4};
+    static constexpr std::array<double,7> triangular{0,1,0,1,0,1,0};
+    const double angle=squad.mirror_sign*M_PI/3.0;
+    const Eigen::Rotation2Dd rotate(angle);
+    Eigen::Vector2d responsible_target=cell.center;
+    if (config.certified_service_standoff_m>0.0) {
+        const Eigen::Vector2d radial=
+            cell.center-Eigen::Vector2d(1500.0,1500.0);
+        responsible_target-=config.certified_service_standoff_m*radial/
+            std::max(radial.norm(),config.certified_service_standoff_m);
+    }
+    const Eigen::Matrix2d lifting=axial[responsible]*
+        Eigen::Matrix2d::Identity()+triangular[responsible]*rotate.toRotationMatrix();
+    if (std::abs(lifting.determinant())<=1e-12) return std::nullopt;
+    const Eigen::Vector2d section=
+        lifting.inverse()*(responsible_target-base_it->second);
+    FastWitnessGeometry value;
+    value.cell=cell;
+    value.responsible_member=responsible_member;
+    for (std::size_t local=0;local<squad.members.size();++local)
+        value.targets[local]=base_it->second+axial[local]*section+
+            triangular[local]*(rotate*section);
+    if ((value.targets[responsible]-responsible_target).norm()>1e-8)
+        return std::nullopt;
+    for (const auto& edge:squad.edges) {
+        const Eigen::Vector2d owner=value.targets[localIndex(squad,edge.owner)];
+        const auto fixed=fixed_positions.find(edge.reference);
+        const Eigen::Vector2d reference=fixed!=fixed_positions.end()
+            ?fixed->second:value.targets[localIndex(squad,edge.reference)];
+        value.maximum_reference_edge_m=std::max(
+            value.maximum_reference_edge_m,(owner-reference).norm());
+    }
+    for (std::size_t first=0;first<squad.members.size();++first) {
+        for (std::size_t second=first+1;second<squad.members.size();++second)
+            value.minimum_target_separation_m=std::min(
+                value.minimum_target_separation_m,
+                (value.targets[first]-value.targets[second]).norm());
+        for (const auto& [fixed_id,position]:fixed_positions) {
+            (void)fixed_id;
+            value.minimum_target_separation_m=std::min(
+                value.minimum_target_separation_m,
+                (value.targets[first]-position).norm());
+        }
+    }
+    if (!(value.minimum_target_separation_m>
+            config.separation_limit_m+config.comparison_epsilon_m))
+        return std::nullopt;
+    return value;
+}
+
+inline std::optional<FastWitnessGeometry> fastUnifiedGeometry(
+    const Task13UnifiedCoverageSquad& squad,NodeId responsible_member,
+    const FrontierCell& cell,
+    const std::map<NodeId,Eigen::Vector2d>& fixed_positions,
+    const Task13UnifiedCoverageConfig& config) {
+    return config.cbf2026_wide_virtual_formation
+        ?fastCbf2026WideGeometry(
+            squad,responsible_member,cell,fixed_positions,config)
+        :fastTaperedGeometry(
+            squad,responsible_member,cell,fixed_positions,config);
+}
+
 inline Task13UnifiedCoverageWitness materializeWitness(
     const Task13UnifiedCoverageSquad& squad,
     const FastWitnessGeometry& geometry,
@@ -408,6 +484,18 @@ inline std::optional<Task13UnifiedCoverageWitness> task13TaperedWitness(
         squad,*geometry,fixed_positions,config);
 }
 
+inline std::optional<Task13UnifiedCoverageWitness> task13UnifiedWitness(
+    const Task13UnifiedCoverageSquad& squad,NodeId responsible_member,
+    const FrontierCell& cell,
+    const std::map<NodeId,Eigen::Vector2d>& fixed_positions,
+    const Task13UnifiedCoverageConfig& config={}) {
+    const auto geometry=task13_unified_detail::fastUnifiedGeometry(
+        squad,responsible_member,cell,fixed_positions,config);
+    if (!geometry.has_value()) return std::nullopt;
+    return task13_unified_detail::materializeWitness(
+        squad,*geometry,fixed_positions,config);
+}
+
 inline double task13CrossMinimum(
     const Task13UnifiedCoverageWitness& first,
     const Task13UnifiedCoverageWitness& second) {
@@ -457,7 +545,7 @@ inline Task13UnifiedCoverageResult allocateTask13UnifiedCoverage(
         const auto append_cell=[&](const FrontierCell& cell,
                                    const std::string& reason) {
             for (NodeId member:squad.members) {
-                auto geometry=fastTaperedGeometry(squad,member,cell,
+                auto geometry=fastUnifiedGeometry(squad,member,cell,
                     request.fixed_positions,request.config);
                 if (!geometry.has_value()) continue;
                 FastChoice choice;
@@ -500,7 +588,7 @@ inline Task13UnifiedCoverageResult allocateTask13UnifiedCoverage(
                 append_cell(cell,"new_real_cell");
             if (retained.has_value())
                 for (NodeId member:squad.members) {
-                    auto witness=task13TaperedWitness(squad,member,
+                    auto witness=task13UnifiedWitness(squad,member,
                         retained->cell,request.fixed_positions,request.config);
                     if (!witness.has_value()) continue;
                     insertShortlist(idle,makeChoice(std::move(*witness),false,

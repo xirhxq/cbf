@@ -34,6 +34,23 @@ struct WorkspaceFacet2D {
     double offset_m = 0.0;
 };
 
+enum class WorkspaceClassK {
+    Linear,
+    RegularizedBraking
+};
+
+inline double workspaceBrakingAlpha1(
+    double h,double braking_acceleration_mps2,double regularization_m) {
+    if (!std::isfinite(h) || !std::isfinite(braking_acceleration_mps2) ||
+        !std::isfinite(regularization_m) ||
+        braking_acceleration_mps2<=0.0 || regularization_m<=0.0)
+        throw std::invalid_argument("invalid workspace braking class-K");
+    const double nonnegative_h=std::max(0.0,h);
+    return std::sqrt(2.0*braking_acceleration_mps2*
+               (nonnegative_h+regularization_m))-
+           std::sqrt(2.0*braking_acceleration_mps2*regularization_m);
+}
+
 struct SingleSnapshotTube2D {
     double position_radius_m = 0.0;
     double velocity_radius_mps = 0.0;
@@ -89,6 +106,11 @@ struct CanonicalHardRowRequest {
     std::map<NodeId, SingleSnapshotTube2D> workspace_snapshot_tubes;
     std::map<NodeId, SingleSnapshotTube2D> speed_snapshot_tubes;
     std::map<NodeId, SingleSnapshotTube2D> plant_speed_snapshot_tubes;
+    WorkspaceClassK workspace_class_k=WorkspaceClassK::Linear;
+    double workspace_alpha1_gain=1.0;
+    double workspace_alpha2_gain=1.0;
+    double workspace_braking_acceleration_mps2=4.0;
+    double workspace_braking_regularization_m=1.0;
     // Task 13 B0-b: replace the second-order lambda-form reference/
     // collision rows with velocity-augmented braking-slack rows
     // sqrt(2*share*a*(max(h,0)+eps)) - v_closing >= 0 (researcher-
@@ -357,6 +379,15 @@ inline std::vector<CanonicalHardRow> buildCanonicalHardRows(
         request.speed_cbf_gain <= 0.0) {
         throw std::invalid_argument("speed CBF parameters must be finite");
     }
+    if (!std::isfinite(request.workspace_alpha1_gain) ||
+        request.workspace_alpha1_gain<=0.0 ||
+        !std::isfinite(request.workspace_alpha2_gain) ||
+        request.workspace_alpha2_gain<=0.0 ||
+        !std::isfinite(request.workspace_braking_acceleration_mps2) ||
+        request.workspace_braking_acceleration_mps2<=0.0 ||
+        !std::isfinite(request.workspace_braking_regularization_m) ||
+        request.workspace_braking_regularization_m<=0.0)
+        throw std::invalid_argument("invalid workspace class-K parameters");
     if (request.plant_speed_facet_count>0 &&
         (request.plant_speed_facet_count!=64 ||
          !std::isfinite(request.plant_speed_dt_s) ||
@@ -423,10 +454,28 @@ inline std::vector<CanonicalHardRow> buildCanonicalHardRows(
                 tube.position_radius_m;
             const double hdot = -normal.dot(state.velocity)-
                 tube.velocity_radius_mps;
+            double alpha1=0.0,alpha1_derivative=0.0;
+            if (request.workspace_class_k==WorkspaceClassK::Linear) {
+                alpha1=request.workspace_alpha1_gain*h;
+                alpha1_derivative=request.workspace_alpha1_gain;
+            } else {
+                alpha1=workspaceBrakingAlpha1(h,
+                    request.workspace_braking_acceleration_mps2,
+                    request.workspace_braking_regularization_m);
+                alpha1_derivative=
+                    request.workspace_braking_acceleration_mps2/
+                    std::sqrt(2.0*
+                        request.workspace_braking_acceleration_mps2*
+                        (std::max(0.0,h)+
+                         request.workspace_braking_regularization_m));
+            }
+            const double psi1=hdot+alpha1;
+            const double class_k_constant=alpha1_derivative*hdot+
+                request.workspace_alpha2_gain*psi1;
             CanonicalHardRow row{
                 "workspace:"+std::to_string(owner)+":"+raw_facet.id,
                 CanonicalHardRowKind::Workspace,owner,std::nullopt,
-                -normal,-normal,h+2.0*hdot,1.0,true,h,h+hdot,hdot};
+                -normal,-normal,class_k_constant,1.0,true,h,psi1,hdot};
             row.tube_provenance = tube.provenance;
             row.position_uncertainty_reserve_m = tube.position_radius_m;
             row.velocity_uncertainty_reserve_mps = tube.velocity_radius_mps;

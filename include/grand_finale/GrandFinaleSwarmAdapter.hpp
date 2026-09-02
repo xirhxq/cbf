@@ -157,6 +157,7 @@ struct GrandFinaleSwarmAdapterConfig {
     double unified_h2_fan_ratio = 0.0075;
     std::size_t unified_h2_shortlist_per_squad = 64;
     double unified_h2_service_standoff_m = 350.0;
+    bool unified_h2_cbf2026_wide_virtual_formation = false;
     double v6_neighborhood_radius_m = 450.0;
     double demand_recompute_interval_s = 5.0;
     double target_lock_epsilon_m = 30.0;
@@ -172,6 +173,19 @@ struct GrandFinaleSwarmAdapterConfig {
     // gamma* machinery untouched.
     bool velocity_augmented_rows = false;
     double row_slack_epsilon_m = 0.5;
+    // Task 14 experimental workspace-only class-K family.  Defaults retain
+    // the historical alpha1(h)=h, alpha2(psi1)=psi1 exactly.
+    WorkspaceClassK workspace_class_k=WorkspaceClassK::Linear;
+    double workspace_alpha1_gain=1.0;
+    double workspace_alpha2_gain=1.0;
+    double workspace_braking_acceleration_mps2=4.0;
+    double workspace_braking_regularization_m=1.0;
+    // Task 14 research-only nominal target homotopy.  Disabled by default;
+    // hard rows and committed target identities are unchanged.
+    bool target_homotopy_enabled=false;
+    double target_homotopy_braking_acceleration_mps2=4.0;
+    double target_homotopy_rate_gain=1.0;
+    double target_homotopy_workspace_guard_m=1.5;
     double maximum_yaw_rate_radps = 0.0;
     double position_gain = 0.4;
     double velocity_gain = 0.8;
@@ -513,6 +527,22 @@ public:
             config_.collision_lambda1 <= 0.0 ||
             !std::isfinite(config_.collision_lambda2) ||
             config_.collision_lambda2 <= 0.0 ||
+            !std::isfinite(config_.workspace_alpha1_gain) ||
+            config_.workspace_alpha1_gain<=0.0 ||
+            !std::isfinite(config_.workspace_alpha2_gain) ||
+            config_.workspace_alpha2_gain<=0.0 ||
+            !std::isfinite(
+                config_.workspace_braking_acceleration_mps2) ||
+            config_.workspace_braking_acceleration_mps2<=0.0 ||
+            !std::isfinite(config_.workspace_braking_regularization_m) ||
+            config_.workspace_braking_regularization_m<=0.0 ||
+            !std::isfinite(
+                config_.target_homotopy_braking_acceleration_mps2) ||
+            config_.target_homotopy_braking_acceleration_mps2<=0.0 ||
+            !std::isfinite(config_.target_homotopy_rate_gain) ||
+            config_.target_homotopy_rate_gain<=0.0 ||
+            !std::isfinite(config_.target_homotopy_workspace_guard_m) ||
+            config_.target_homotopy_workspace_guard_m<0.0 ||
             !std::isfinite(config_.residual_tolerance) ||
             config_.residual_tolerance < 0.0 ||
             !std::isfinite(config_.qp_oracle_tolerance) ||
@@ -1875,6 +1905,13 @@ private:
         request.require_snapshot_robust_rows = true;
         request.velocity_augmented_rows = config_.velocity_augmented_rows;
         request.row_slack_epsilon_m = config_.row_slack_epsilon_m;
+        request.workspace_class_k=config_.workspace_class_k;
+        request.workspace_alpha1_gain=config_.workspace_alpha1_gain;
+        request.workspace_alpha2_gain=config_.workspace_alpha2_gain;
+        request.workspace_braking_acceleration_mps2=
+            config_.workspace_braking_acceleration_mps2;
+        request.workspace_braking_regularization_m=
+            config_.workspace_braking_regularization_m;
         if (config_.speed_limit_mps > 0.0 && config_.speed_row_nominal &&
             !config_.speed_rows_removed) {
             for (NodeId id : mobile_ids_) {

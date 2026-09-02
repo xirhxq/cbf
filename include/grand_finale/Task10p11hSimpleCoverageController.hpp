@@ -6,6 +6,7 @@
 #include "grand_finale/Task10p11hSimpleCoveragePolicy.hpp"
 #include "grand_finale/Task10p11tDynamicPairResponsibility.hpp"
 #include "grand_finale/Task13UnifiedCoveragePolicy.hpp"
+#include "grand_finale/Task14TargetGovernor.hpp"
 #include "grand_finale/TargetLiftTransitionPrototype.hpp"
 
 #include <functional>
@@ -65,6 +66,10 @@ struct SimpleCoverageControlStep {
     BoundaryExcursionAudit boundary_excursion;
     std::uint64_t applied_target_digest=0;
     Task10p11ComputeProfile compute_profile;
+    bool target_governor_evaluated=false;
+    double target_governor_common_fraction=1.0;
+    double target_governor_minimum_stopping_margin_m=
+        std::numeric_limits<double>::infinity();
 };
 
 struct SimpleCoverageControllerRestartState {
@@ -218,6 +223,47 @@ public:
 
         std::map<NodeId,Eigen::Vector2d> nominal;
         std::map<NodeId,double> yaw_rates;
+        std::map<NodeId,Eigen::Vector2d> nominal_targets;
+        for (const auto& [owner,target]:targets_)
+            nominal_targets[owner]=target.center;
+        if (adapter_.config().target_homotopy_enabled &&
+            nominal_targets.size()==runtime.estimate.mobile_ids.size()) {
+            if (governed_targets_.size()!=nominal_targets.size()) {
+                governed_targets_.clear();
+                for (std::size_t index=0;
+                     index<runtime.estimate.mobile_ids.size();++index)
+                    governed_targets_[runtime.estimate.mobile_ids[index]]=
+                        runtime.estimate.mean.segment<2>(4*index);
+            }
+            std::map<NodeId,Task14TargetGovernorState> states;
+            for (std::size_t index=0;
+                 index<runtime.estimate.mobile_ids.size();++index) {
+                const NodeId owner=runtime.estimate.mobile_ids[index];
+                states[owner]={runtime.estimate.mean.segment<2>(4*index),
+                    runtime.estimate.mean.segment<2>(4*index+2)};
+            }
+            const auto boundary=buildBoundaryBlueprint(
+                adapter_.config().boundary,
+                adapter_.config().boundary.explicit_flight_polygon,
+                adapter_.config().boundary.explicit_flight_polygon);
+            const auto governed=task14AdvanceTargetGovernor(
+                states,governed_targets_,nominal_targets,
+                boundary.hard_facets,{0.1,
+                    adapter_.config().
+                        target_homotopy_braking_acceleration_mps2,
+                    adapter_.config().target_homotopy_rate_gain,
+                    adapter_.config().target_homotopy_workspace_guard_m});
+            result.target_governor_evaluated=true;
+            if (!governed.valid) {
+                result.reason=governed.reason;
+                return result;
+            }
+            governed_targets_=governed.targets;
+            nominal_targets=governed.targets;
+            result.target_governor_common_fraction=governed.common_fraction;
+            result.target_governor_minimum_stopping_margin_m=
+                governed.minimum_stopping_margin_m;
+        }
         for (std::size_t index=0;
              index<runtime.estimate.mobile_ids.size();++index) {
             const NodeId owner=runtime.estimate.mobile_ids[index];
@@ -232,10 +278,10 @@ public:
             model.position_gain=adapter_.config().position_gain;
             model.velocity_gain=adapter_.config().velocity_gain;
             model.maximum_yaw_rate_radps=adapter_.config().maximum_yaw_rate_radps;
-            const auto found=targets_.find(owner);
+            const auto found=nominal_targets.find(owner);
             std::optional<Eigen::Vector2d> soft_target=
-                found==targets_.end()?std::optional<Eigen::Vector2d>{}:
-                    std::optional<Eigen::Vector2d>{found->second.center};
+                found==nominal_targets.end()?std::optional<Eigen::Vector2d>{}:
+                    std::optional<Eigen::Vector2d>{found->second};
             const auto soft=task10p11gSoftTask({state.head<2>(),state.tail<2>(),
                 currentYaw(owner),soft_target,
                 runtime.mode},model);
@@ -456,6 +502,7 @@ public:
         boundary_excursion_=state.boundary_excursion;
         unified_h2_retained_.clear();
         unified_h2_active_.clear();
+        governed_targets_.clear();
     }
     SimpleCoverageControlStep advanceWithDynamicPairResponsibility(
         const std::string& pair_base_id) {
@@ -523,6 +570,8 @@ private:
             adapter_.config().unified_h2_shortlist_per_squad;
         request.config.certified_service_standoff_m=
             adapter_.config().unified_h2_service_standoff_m;
+        request.config.cbf2026_wide_virtual_formation=
+            adapter_.config().unified_h2_cbf2026_wide_virtual_formation;
         request.config.compute_nominal_fim_proxy=false;
         for (std::size_t index=0;
              index<runtime.estimate.mobile_ids.size();++index) {
@@ -561,6 +610,8 @@ private:
         config.separation_limit_m=adapter_.config().collision_distance_m;
         config.certified_service_standoff_m=
             adapter_.config().unified_h2_service_standoff_m;
+        config.cbf2026_wide_virtual_formation=
+            adapter_.config().unified_h2_cbf2026_wide_virtual_formation;
         std::map<std::string,Task13UnifiedCoverageWitness> rebuilt;
         for (const auto& squad:squads) {
             const auto first=targets_.find(squad.members.front());
@@ -572,7 +623,7 @@ private:
             if (cell_it==denominator_cells_.end()) return;
             bool found=false;
             for (NodeId member:squad.members) {
-                const auto candidate=task13TaperedWitness(
+                const auto candidate=task13UnifiedWitness(
                     squad,member,*cell_it,runtime.estimate.fixed_positions,
                     config);
                 if (!candidate.has_value()) continue;
@@ -1025,6 +1076,7 @@ private:
     std::set<std::string> denominator_ids_;
     std::vector<FrontierCell> denominator_cells_;
     std::map<NodeId,FrontierCell> targets_;
+    std::map<NodeId,Eigen::Vector2d> governed_targets_;
     std::size_t target_epoch_=0;
     std::size_t consecutive_failures_=0;
     std::size_t successful_control_cycles_=0;

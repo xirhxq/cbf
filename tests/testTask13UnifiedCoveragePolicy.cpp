@@ -223,6 +223,27 @@ TEST_CASE("Unified H2 fixture flag is an independent production policy path") {
     CHECK(exact_center.unified_h2_service_standoff_m==doctest::Approx(0.0));
     CHECK(exact_center.boundary.policy==
         gf::BoundaryPolicy::HardFlightBoundary);
+
+    const auto experimental_input=gf::task10p11rFixtureAdapterConfig(
+        gf::GammaFeedbackSelectionMode::LeastIntervention,13.0,
+        true,false,false,false,false,false,false,false,false,false,false,
+        false,true,false,true,false,false,false,true,350.0,0.0,0.0,2027,
+        5.5);
+    CHECK(experimental_input.acceleration_half_box==doctest::Approx(5.5));
+    CHECK(experimental_input.target_policy_unified_h2);
+    CHECK(experimental_input.boundary.policy==
+        gf::BoundaryPolicy::HardFlightBoundary);
+
+    const auto braking_workspace=gf::task10p11rFixtureAdapterConfig(
+        gf::GammaFeedbackSelectionMode::LeastIntervention,13.0,
+        true,false,false,false,false,false,false,false,false,false,false,
+        false,true,false,true,false,false,false,true,350.0,0.0,0.0,2027,
+        4.0,gf::WorkspaceClassK::RegularizedBraking,1.0,1.5,4.0,2.0);
+    CHECK(braking_workspace.workspace_class_k==
+        gf::WorkspaceClassK::RegularizedBraking);
+    CHECK(braking_workspace.workspace_alpha2_gain==doctest::Approx(1.5));
+    CHECK(braking_workspace.workspace_braking_regularization_m==
+        doctest::Approx(2.0));
 }
 
 TEST_CASE("Production H2 path is certified-event driven across 2, 1, and 0 tasks") {
@@ -266,4 +287,32 @@ TEST_CASE("Production H2 path is certified-event driven across 2, 1, and 0 tasks
     CHECK(zero.t100_event_latched);
     CHECK(zero.t100_coverage_s.has_value());
     CHECK(zero.committed_targets==one.committed_targets);
+}
+
+TEST_CASE("Task 14 CBF2026-wide inverse reproduces the four-section branch") {
+    auto config=gf::Task13UnifiedCoverageConfig{};
+    config.cbf2026_wide_virtual_formation=true;
+    const auto squad=gf::task13UnifiedCoverageSquads()[0];
+    const auto witness=gf::task13UnifiedWitness(
+        squad,7,cell(190,35),fixed(),config);
+    REQUIRE(witness.has_value());
+    const Eigen::Vector2d origin(1500.0,-50.0);
+    const Eigen::Vector2d section=(cell(190,35).center-origin)/4.0;
+    CHECK(witness->targets.at(7).isApprox(cell(190,35).center,1e-9));
+    CHECK(witness->targets.at(1).isApprox(origin+section,1e-9));
+    const Eigen::Rotation2Dd rotate(-M_PI/3.0);
+    CHECK(witness->targets.at(2).isApprox(
+        origin+section+rotate*section,1e-9));
+    CHECK((witness->targets.at(2)-witness->targets.at(1)).norm()>100.0);
+}
+
+TEST_CASE("Task 14 wide virtual witness records rather than rejects 850 exceedance") {
+    auto config=gf::Task13UnifiedCoverageConfig{};
+    config.cbf2026_wide_virtual_formation=true;
+    const auto witness=gf::task13UnifiedWitness(
+        gf::task13UnifiedCoverageSquads()[0],7,cell(0,299),fixed(),config);
+    REQUIRE(witness.has_value());
+    CHECK(witness->maximum_reference_edge_m>850.0);
+    CHECK(witness->targets.at(7).isApprox(cell(0,299).center,1e-9));
+    CHECK(witness->minimum_target_separation_m>10.0);
 }

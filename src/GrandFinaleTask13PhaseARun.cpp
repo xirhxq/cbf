@@ -119,7 +119,12 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     bool leader_reachability_filter,bool policy_h2,
     gf::GammaFeedbackSelectionMode selection,double service_standoff_m,
     double range_noise_std_m,double range_dropout_probability,
-    unsigned int range_random_seed) {
+    unsigned int range_random_seed,double acceleration_half_box_mps2,
+    gf::WorkspaceClassK workspace_class_k,double workspace_alpha1_gain,
+    double workspace_alpha2_gain,double workspace_braking_acceleration_mps2,
+    double workspace_braking_regularization_m,bool target_homotopy_enabled,
+    double target_homotopy_rate_gain,double target_homotopy_workspace_guard_m,
+    bool unified_h2_cbf2026_wide_virtual_formation) {
     auto scenario=gf::task10p11rFixedBaselineScenario();
     scenario.mobile_positions=def.positions;
     scenario.initial_topology=def.topology;
@@ -138,7 +143,14 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
         false,false,false,false,false,true,policy_v2,
         velocity_augmented_rows,policy_v3,policy_v6,
         leader_reachability_filter,policy_h2,service_standoff_m,
-        range_noise_std_m,range_dropout_probability,range_random_seed);
+        range_noise_std_m,range_dropout_probability,range_random_seed,
+        acceleration_half_box_mps2,workspace_class_k,
+        workspace_alpha1_gain,workspace_alpha2_gain,
+        workspace_braking_acceleration_mps2,
+        workspace_braking_regularization_m,target_homotopy_enabled,
+        acceleration_half_box_mps2,target_homotopy_rate_gain,
+        target_homotopy_workspace_guard_m,
+        unified_h2_cbf2026_wide_virtual_formation);
 }
 
 }  // namespace
@@ -147,11 +159,14 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
 // invocation, 500 s window with T100 latch, rung-B'' 14-row speed domain,
 // per-tick telemetry and cumulative compute profile (profiler deliverable).
 int main(int argc,char** argv) {
-    if (argc<5||argc>13) {
+    if (argc<5||argc>22) {
         std::cerr<<"usage: GrandFinaleTask13PhaseARun TEMPLATE OUTPUT_JSON "
             "PROGRESS_DIR TELEMETRY_JSONL [TAU] [WINDOW_S] [POLICY] [ROWS] "
             "[RANGE_NOISE_STD_M] [DROPOUT_PROBABILITY] [RANGE_SEED] "
-            "[SERVICE_STANDOFF_M]\n";
+            "[SERVICE_STANDOFF_M] [ACCELERATION_HALF_BOX_MPS2] "
+            "[linear|braking] [WS_K1] [WS_K2] [WS_BRAKE_A] [WS_EPS] "
+            "[TARGET_HOMOTOPY_0_OR_1] [HOMOTOPY_RATE_GAIN] "
+            "[HOMOTOPY_GUARD_M]\n";
         return 2;
     }
     const auto started=std::chrono::steady_clock::now();
@@ -173,9 +188,28 @@ int main(int argc,char** argv) {
         const bool leader_reachability_filter=policy=="v5";
         const bool policy_v6=policy=="v6";
         const bool policy_h2=policy=="h2"||policy=="h2diag"||
-            policy=="h2center";
+            policy=="h2center"||policy=="h2wide";
+        const bool policy_h2wide=policy=="h2wide";
         const double service_standoff_m=argc>=13?std::stod(argv[12]):
             (policy=="h2center"?0.0:350.0);
+        const double acceleration_half_box_mps2=argc>=14?
+            std::stod(argv[13]):4.0;
+        const std::string workspace_class_k_name=argc>=15?argv[14]:"linear";
+        const auto workspace_class_k=workspace_class_k_name=="braking"
+            ?gf::WorkspaceClassK::RegularizedBraking:
+             gf::WorkspaceClassK::Linear;
+        const double workspace_alpha1_gain=argc>=16?std::stod(argv[15]):1.0;
+        const double workspace_alpha2_gain=argc>=17?std::stod(argv[16]):1.0;
+        const double workspace_braking_acceleration_mps2=argc>=18?
+            std::stod(argv[17]):4.0;
+        const double workspace_braking_regularization_m=argc>=19?
+            std::stod(argv[18]):1.0;
+        const bool target_homotopy_enabled=argc>=20?
+            std::stoi(argv[19])!=0:false;
+        const double target_homotopy_rate_gain=argc>=21?
+            std::stod(argv[20]):1.0;
+        const double target_homotopy_workspace_guard_m=argc>=22?
+            std::stod(argv[21]):1.5;
         const auto gamma_selection=policy=="h2diag"
             ?gf::GammaFeedbackSelectionMode::DiagnosticsOnly
             :gf::GammaFeedbackSelectionMode::LeastIntervention;
@@ -203,7 +237,13 @@ int main(int argc,char** argv) {
             velocity_augmented_rows,policy_v3,policy_v6,
             leader_reachability_filter,policy_h2,gamma_selection,
             service_standoff_m,range_noise_std_m,
-            range_dropout_probability,range_random_seed);
+            range_dropout_probability,range_random_seed,
+            acceleration_half_box_mps2,workspace_class_k,
+            workspace_alpha1_gain,workspace_alpha2_gain,
+            workspace_braking_acceleration_mps2,
+            workspace_braking_regularization_m,target_homotopy_enabled,
+            target_homotopy_rate_gain,
+            target_homotopy_workspace_guard_m,policy_h2wide);
         if (!fixture->adapter.initializeStageZero().initialized) {
             // Qualification-gate boundary point: recorded, not run.
             json boundary={{"protocol","task13-phase-a-run-v1"},
@@ -321,10 +361,27 @@ int main(int argc,char** argv) {
                 config.unified_h2_shortlist_per_squad},
                 {"unified_h2_service_standoff_m",
                 config.unified_h2_service_standoff_m},
+                {"unified_h2_cbf2026_wide_virtual_formation",
+                config.unified_h2_cbf2026_wide_virtual_formation},
                 {"velocity_augmented_rows",config.velocity_augmented_rows},
                 {"velocity_augmented_rows",config.velocity_augmented_rows},
                 {"row_slack_epsilon_m",config.row_slack_epsilon_m},
                 {"acceleration_half_box",config.acceleration_half_box},
+                {"workspace_class_k",workspace_class_k_name},
+                {"workspace_alpha1_gain",config.workspace_alpha1_gain},
+                {"workspace_alpha2_gain",config.workspace_alpha2_gain},
+                {"workspace_braking_acceleration_mps2",
+                    config.workspace_braking_acceleration_mps2},
+                {"workspace_braking_regularization_m",
+                    config.workspace_braking_regularization_m},
+                {"target_homotopy_enabled",
+                    config.target_homotopy_enabled},
+                {"target_homotopy_braking_acceleration_mps2",
+                    config.target_homotopy_braking_acceleration_mps2},
+                {"target_homotopy_rate_gain",
+                    config.target_homotopy_rate_gain},
+                {"target_homotopy_workspace_guard_m",
+                    config.target_homotopy_workspace_guard_m},
                 {"residual_tolerance",config.residual_tolerance},
                 {"dt_s",config.dt_s},
                 {"truth_initial_set_gate_mps",policy_h2?30.0:30.01}}},
@@ -361,9 +418,20 @@ int main(int argc,char** argv) {
         double minimum_qp_residual=std::numeric_limits<double>::infinity();
         double maximum_speed_mps=0.0;
         double maximum_axis_control_mps2=0.0;
+        double maximum_acceleration_norm_mps2=0.0;
+        double minimum_robust_reference_margin_m=
+            std::numeric_limits<double>::infinity();
+        double minimum_robust_separation_margin_m=
+            std::numeric_limits<double>::infinity();
+        double minimum_robust_workspace_margin_m=
+            std::numeric_limits<double>::infinity();
         std::size_t intervention_owner_ticks=0,total_owner_ticks=0;
         std::size_t target_switches=0,last_target_epoch=0;
         std::size_t active_squad_ticks=0,current_active_squads=0;
+        double minimum_target_governor_fraction=1.0;
+        double minimum_target_governor_stopping_margin_m=
+            std::numeric_limits<double>::infinity();
+        std::size_t target_governor_ticks=0;
         gf::SimpleCoverageControlStep last_step;
         gf::Task10p11ComputeProfile profiler;
         const auto mobile_ids=
@@ -404,6 +472,15 @@ int main(int argc,char** argv) {
                 pre_velocities[static_cast<gf::NodeId>(robot->id)]=
                     Eigen::Vector2d(robot->model->getVelocity().head<2>());
             last_step=fixture->controller.advance();
+            if (last_step.target_governor_evaluated) {
+                ++target_governor_ticks;
+                minimum_target_governor_fraction=std::min(
+                    minimum_target_governor_fraction,
+                    last_step.target_governor_common_fraction);
+                minimum_target_governor_stopping_margin_m=std::min(
+                    minimum_target_governor_stopping_margin_m,
+                    last_step.target_governor_minimum_stopping_margin_m);
+            }
             profiler.merge(last_step.compute_profile);
             const double certified_fraction=
                 fixture->adapter.coverage().certifiedFraction();
@@ -443,6 +520,18 @@ int main(int argc,char** argv) {
                 hard_stop=true;
             }
             const auto snapshot=fixture->adapter.runtimeSnapshot();
+            for (const auto& row:
+                 fixture->adapter.currentSnapshotHardRows(snapshot.topology)) {
+                if (row.kind==gf::CanonicalHardRowKind::ReferenceDistance)
+                    minimum_robust_reference_margin_m=std::min(
+                        minimum_robust_reference_margin_m,row.barrier_h);
+                else if (row.kind==gf::CanonicalHardRowKind::Collision)
+                    minimum_robust_separation_margin_m=std::min(
+                        minimum_robust_separation_margin_m,row.barrier_h);
+                else if (row.kind==gf::CanonicalHardRowKind::Workspace)
+                    minimum_robust_workspace_margin_m=std::min(
+                        minimum_robust_workspace_margin_m,row.barrier_h);
+            }
             const auto raw_nominals=
                 fixture->controller.lastNominalControls();
             const auto throttle=fixture->adapter.lastThrottleTelemetry();
@@ -530,8 +619,9 @@ int main(int argc,char** argv) {
                 minimum_target_separation_m,tick_target_separation);
             if (policy_h2 && (tick_actual_reference>850.0+1e-9 ||
                     tick_actual_separation<10.0-1e-9 ||
-                    tick_target_reference>=850.0-1e-9 ||
-                    tick_target_separation<=10.0+1e-9)) {
+                    (!policy_h2wide &&
+                        (tick_target_reference>=850.0-1e-9 ||
+                         tick_target_separation<=10.0+1e-9)))) {
                 runtime_safety_violation=true;
                 runtime_safety_reason="reference_or_separation_violated";
                 hard_stop=true;
@@ -575,6 +665,9 @@ int main(int argc,char** argv) {
                     maximum_axis_control_mps2=std::max(
                         maximum_axis_control_mps2,
                         applied->second.cwiseAbs().maxCoeff());
+                    maximum_acceleration_norm_mps2=std::max(
+                        maximum_acceleration_norm_mps2,
+                        applied->second.norm());
                     applied_json={applied->second.x(),applied->second.y()};
                     }
                 json raw_json=json(nullptr);
@@ -620,10 +713,24 @@ int main(int argc,char** argv) {
                         information.minimum_range_aoi_margin_s)}}},
                 {"minimum_qp_residual",gf::task10p11w_detail::number(
                     last_step.step.minimum_hard_residual)},
+                {"robust_margins",{{"reference_m",
+                    gf::task10p11w_detail::number(
+                        minimum_robust_reference_margin_m)},
+                    {"separation_m",gf::task10p11w_detail::number(
+                        minimum_robust_separation_margin_m)},
+                    {"workspace_m",gf::task10p11w_detail::number(
+                        minimum_robust_workspace_margin_m)}}},
                 {"active_squads",current_active_squads},
                 {"advanced",last_step.step.advanced},
                 {"reason",last_step.step.reason},
                 {"target_epoch",last_step.target_epoch},
+                {"target_governor",{{"evaluated",
+                    last_step.target_governor_evaluated},
+                    {"common_fraction",
+                    last_step.target_governor_common_fraction},
+                    {"minimum_stopping_margin_m",
+                    gf::task10p11w_detail::number(last_step.
+                        target_governor_minimum_stopping_margin_m)}}},
                 {"throttle",{{"active",throttle.active},
                     {"s",throttle.s}}},
                 {"owners",std::move(owners)}}).dump()<<'\n';
@@ -719,14 +826,37 @@ int main(int argc,char** argv) {
             {"minimum_gamma",gf::task10p11w_detail::number(minimum_gamma)},
             {"minimum_qp_residual",gf::task10p11w_detail::number(
                 minimum_qp_residual)},
+            {"minimum_robust_reference_margin_m",
+                gf::task10p11w_detail::number(
+                    minimum_robust_reference_margin_m)},
+            {"maximum_robust_reference_m",
+                gf::task10p11w_detail::number(
+                    850.0-minimum_robust_reference_margin_m)},
+            {"minimum_robust_separation_margin_m",
+                gf::task10p11w_detail::number(
+                    minimum_robust_separation_margin_m)},
+            {"minimum_robust_separation_m",
+                gf::task10p11w_detail::number(
+                    10.0+minimum_robust_separation_margin_m)},
+            {"minimum_robust_workspace_margin_m",
+                gf::task10p11w_detail::number(
+                    minimum_robust_workspace_margin_m)},
             {"maximum_speed_mps",maximum_speed_mps},
             {"maximum_axis_control_mps2",maximum_axis_control_mps2},
+            {"maximum_acceleration_norm_mps2",
+                maximum_acceleration_norm_mps2},
             {"intervention_owner_ticks",intervention_owner_ticks},
             {"total_owner_ticks",total_owner_ticks},
             {"intervention_fraction",total_owner_ticks==0?0.0:
                 static_cast<double>(intervention_owner_ticks)/
                     total_owner_ticks},
             {"target_switches",target_switches},
+            {"target_governor_ticks",target_governor_ticks},
+            {"minimum_target_governor_fraction",
+                minimum_target_governor_fraction},
+            {"minimum_target_governor_stopping_margin_m",
+                gf::task10p11w_detail::number(
+                    minimum_target_governor_stopping_margin_m)},
             {"mean_active_squads",tick==0?0.0:
                 static_cast<double>(active_squad_ticks)/(tick+1)},
             {"runtime_safety_violation",runtime_safety_violation},

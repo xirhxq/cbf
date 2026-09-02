@@ -80,3 +80,23 @@ TEST_CASE("Minimal capture fails closed when an owner or row is missing") {
     CHECK_FALSE(missing_row.complete);
     CHECK_FALSE(missing_row.rows_match);
 }
+
+TEST_CASE("Minimal capture preserves velocity-augmented row semantics") {
+    auto fixture=gf::makeTask10p11rFixedBaselineFixture();
+    REQUIRE(fixture->adapter.initializeStageZero().initialized);
+    const auto runtime=fixture->adapter.runtimeSnapshot();
+    auto request=fixture->adapter.snapshotHardRowRequest(
+        runtime.estimate,runtime.topology);
+    request.velocity_augmented_rows=true;
+    request.row_slack_epsilon_m=0.75;
+    const auto step=fixture->controller.advance();
+    REQUIRE(step.step.advanced);
+    const auto snapshot=gf::makeTask10p11sSnapshot(
+        runtime,request,fixture->controller.lastNominalControls(),
+        fixture->adapter.config());
+    const auto restored=gf::task10p11s_capture_detail::requestFromJson(
+        snapshot.at("canonical_request"));
+    CHECK(restored.velocity_augmented_rows);
+    CHECK(restored.row_slack_epsilon_m==doctest::Approx(0.75));
+    CHECK(gf::validateTask10p11sSnapshot(snapshot).complete);
+}

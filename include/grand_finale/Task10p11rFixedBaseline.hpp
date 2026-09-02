@@ -111,7 +111,18 @@ inline GrandFinaleSwarmAdapterConfig task10p11rFixtureAdapterConfig(
     double unified_h2_service_standoff_m=350.0,
     double range_noise_std_m=0.0,
     double range_dropout_probability=0.0,
-    unsigned int range_random_seed=2027) {
+    unsigned int range_random_seed=2027,
+    double experimental_acceleration_half_box_mps2=4.0,
+    WorkspaceClassK workspace_class_k=WorkspaceClassK::Linear,
+    double workspace_alpha1_gain=1.0,
+    double workspace_alpha2_gain=1.0,
+    double workspace_braking_acceleration_mps2=4.0,
+    double workspace_braking_regularization_m=1.0,
+    bool target_homotopy_enabled=false,
+    double target_homotopy_braking_acceleration_mps2=4.0,
+    double target_homotopy_rate_gain=1.0,
+    double target_homotopy_workspace_guard_m=1.5,
+    bool unified_h2_cbf2026_wide_virtual_formation=false) {
     auto config=task10p11rFixedAdapterConfig(selection,predictive_tau_mps2);
     config.speed_row_nominal=speed_row_nominal;
     config.tau_margin_gate_enabled=tau_margin_gate;
@@ -198,6 +209,26 @@ inline GrandFinaleSwarmAdapterConfig task10p11rFixtureAdapterConfig(
     config.range_noise_std_m=range_noise_std_m;
     config.range_dropout_probability=range_dropout_probability;
     config.range_random_seed=range_random_seed;
+    if (!std::isfinite(experimental_acceleration_half_box_mps2) ||
+        experimental_acceleration_half_box_mps2<=0.0)
+        throw std::invalid_argument(
+            "experimental acceleration half-box must be positive");
+    config.acceleration_half_box=experimental_acceleration_half_box_mps2;
+    config.workspace_class_k=workspace_class_k;
+    config.workspace_alpha1_gain=workspace_alpha1_gain;
+    config.workspace_alpha2_gain=workspace_alpha2_gain;
+    config.workspace_braking_acceleration_mps2=
+        workspace_braking_acceleration_mps2;
+    config.workspace_braking_regularization_m=
+        workspace_braking_regularization_m;
+    config.target_homotopy_enabled=target_homotopy_enabled;
+    config.target_homotopy_braking_acceleration_mps2=
+        target_homotopy_braking_acceleration_mps2;
+    config.target_homotopy_rate_gain=target_homotopy_rate_gain;
+    config.target_homotopy_workspace_guard_m=
+        target_homotopy_workspace_guard_m;
+    config.unified_h2_cbf2026_wide_virtual_formation=
+        unified_h2_cbf2026_wide_virtual_formation;
     return config;
 }
 
@@ -241,7 +272,18 @@ struct Task10p11rFixedBaselineFixture {
     double unified_h2_service_standoff_m=350.0,
     double range_noise_std_m=0.0,
     double range_dropout_probability=0.0,
-    unsigned int range_random_seed=2027)
+    unsigned int range_random_seed=2027,
+    double experimental_acceleration_half_box_mps2=4.0,
+    WorkspaceClassK workspace_class_k=WorkspaceClassK::Linear,
+    double workspace_alpha1_gain=1.0,
+    double workspace_alpha2_gain=1.0,
+    double workspace_braking_acceleration_mps2=4.0,
+    double workspace_braking_regularization_m=1.0,
+    bool target_homotopy_enabled=false,
+    double target_homotopy_braking_acceleration_mps2=4.0,
+    double target_homotopy_rate_gain=1.0,
+    double target_homotopy_workspace_guard_m=1.5,
+    bool unified_h2_cbf2026_wide_virtual_formation=false)
         : scenario(std::move(scenario_value)),settings(std::move(settings_value)),
           swarm(settings),
           adapter(swarm,scenario.mobile_ids,scenario.fixed_positions,
@@ -255,7 +297,17 @@ struct Task10p11rFixedBaselineFixture {
                   target_policy_v3,target_policy_v6,
                   leader_reachability_filter,target_policy_unified_h2,
                   unified_h2_service_standoff_m,range_noise_std_m,
-                  range_dropout_probability,range_random_seed)),
+                  range_dropout_probability,range_random_seed,
+                  experimental_acceleration_half_box_mps2,
+                  workspace_class_k,workspace_alpha1_gain,
+                  workspace_alpha2_gain,
+                  workspace_braking_acceleration_mps2,
+                  workspace_braking_regularization_m,
+                  target_homotopy_enabled,
+                  target_homotopy_braking_acceleration_mps2,
+                  target_homotopy_rate_gain,
+                  target_homotopy_workspace_guard_m,
+                  unified_h2_cbf2026_wide_virtual_formation)),
           controller(swarm,adapter,{}, {},task10p11rAuthorityContract().branches),
           frozen_topology(scenario.initial_topology),
           initial_topology_version(adapter.supervisor().topologyVersion()) {}

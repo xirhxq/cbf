@@ -201,6 +201,15 @@ inline nlohmann::json requestJson(const CanonicalHardRowRequest& request) {
         {"speed_cbf_gain",request.speed_cbf_gain},
         {"plant_speed_facet_count",request.plant_speed_facet_count},
         {"plant_speed_dt_s",request.plant_speed_dt_s},
+        {"velocity_augmented_rows",request.velocity_augmented_rows},
+        {"row_slack_epsilon_m",request.row_slack_epsilon_m},
+        {"workspace_class_k",static_cast<int>(request.workspace_class_k)},
+        {"workspace_alpha1_gain",request.workspace_alpha1_gain},
+        {"workspace_alpha2_gain",request.workspace_alpha2_gain},
+        {"workspace_braking_acceleration_mps2",
+            request.workspace_braking_acceleration_mps2},
+        {"workspace_braking_regularization_m",
+            request.workspace_braking_regularization_m},
         {"require_snapshot_robust_rows",request.require_snapshot_robust_rows},
         {"states",nlohmann::json::object()},
         {"reference_snapshot_tubes",nlohmann::json::object()},
@@ -258,6 +267,17 @@ inline CanonicalHardRowRequest requestFromJson(const nlohmann::json& value) {
     result.plant_speed_facet_count=
         value.at("plant_speed_facet_count").get<std::size_t>();
     result.plant_speed_dt_s=value.at("plant_speed_dt_s").get<double>();
+    result.velocity_augmented_rows=value.value(
+        "velocity_augmented_rows",false);
+    result.row_slack_epsilon_m=value.value("row_slack_epsilon_m",0.5);
+    result.workspace_class_k=static_cast<WorkspaceClassK>(
+        value.value("workspace_class_k",0));
+    result.workspace_alpha1_gain=value.value("workspace_alpha1_gain",1.0);
+    result.workspace_alpha2_gain=value.value("workspace_alpha2_gain",1.0);
+    result.workspace_braking_acceleration_mps2=value.value(
+        "workspace_braking_acceleration_mps2",4.0);
+    result.workspace_braking_regularization_m=value.value(
+        "workspace_braking_regularization_m",1.0);
     result.require_snapshot_robust_rows=
         value.at("require_snapshot_robust_rows").get<bool>();
     const auto read_tubes=[&](const char* key,

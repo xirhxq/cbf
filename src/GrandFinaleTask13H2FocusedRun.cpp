@@ -1,5 +1,6 @@
 #include "grand_finale/Task10p11rFixedBaseline.hpp"
 #include "grand_finale/Task10p11vRestartCheckpoint.hpp"
+#include "grand_finale/Task10p11yEvidence.hpp"
 
 #include <filesystem>
 #include <iostream>
@@ -59,7 +60,13 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> fixtureFor(
     const FocusedCase& test,
     const gf::Task13UnifiedCoverageWitness& a,
     const gf::Task13UnifiedCoverageWitness& b,double tau_mps2,
-    gf::GammaFeedbackSelectionMode selection,double service_standoff_m) {
+    gf::GammaFeedbackSelectionMode selection,double service_standoff_m,
+    double acceleration_half_box_mps2,gf::WorkspaceClassK workspace_class_k,
+    double workspace_alpha1_gain,double workspace_alpha2_gain,
+    double workspace_braking_acceleration_mps2,
+    double workspace_braking_regularization_m,bool target_homotopy_enabled,
+    double target_homotopy_rate_gain,double target_homotopy_workspace_guard_m,
+    bool unified_h2_cbf2026_wide_virtual_formation) {
     auto scenario=gf::task10p11rFixedBaselineScenario();
     for (const auto& [member,target]:a.targets)
         scenario.mobile_positions.at(member-1)=target;
@@ -72,15 +79,36 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> fixtureFor(
         std::move(scenario),std::move(settings),
         selection,tau_mps2,
         true,false,false,false,false,false,false,false,false,false,false,
-        false,true,false,true,false,false,false,true,service_standoff_m);
+        false,true,false,true,false,false,false,true,service_standoff_m,
+        0.0,0.0,2027,acceleration_half_box_mps2,workspace_class_k,
+        workspace_alpha1_gain,workspace_alpha2_gain,
+        workspace_braking_acceleration_mps2,
+        workspace_braking_regularization_m,target_homotopy_enabled,
+        acceleration_half_box_mps2,target_homotopy_rate_gain,
+        target_homotopy_workspace_guard_m,
+        unified_h2_cbf2026_wide_virtual_formation);
 }
 
 json runCase(const FocusedCase& test,double tau_mps2,
              gf::GammaFeedbackSelectionMode selection,
-             double service_standoff_m) {
+             double service_standoff_m,double acceleration_half_box_mps2,
+             const std::optional<std::filesystem::path>& snapshot_path,
+             const std::string& snapshot_event,
+             gf::WorkspaceClassK workspace_class_k,
+             double workspace_alpha1_gain,double workspace_alpha2_gain,
+             double workspace_braking_acceleration_mps2,
+             double workspace_braking_regularization_m,
+             bool target_homotopy_enabled,double target_homotopy_rate_gain,
+             double target_homotopy_workspace_guard_m,
+             bool unified_h2_cbf2026_wide_virtual_formation) {
     const auto pair=pairFor(test,service_standoff_m);
     auto fixture=fixtureFor(test,pair.first,pair.second,tau_mps2,selection,
-        service_standoff_m);
+        service_standoff_m,acceleration_half_box_mps2,workspace_class_k,
+        workspace_alpha1_gain,workspace_alpha2_gain,
+        workspace_braking_acceleration_mps2,
+        workspace_braking_regularization_m,target_homotopy_enabled,
+        target_homotopy_rate_gain,target_homotopy_workspace_guard_m,
+        unified_h2_cbf2026_wide_virtual_formation);
     const auto initialized=fixture->adapter.initializeStageZero();
     json result={{"id",test.id},{"initialized",initialized.initialized},
         {"old_a",test.old_a.id()},{"old_b",test.old_b.id()},
@@ -141,9 +169,34 @@ json runCase(const FocusedCase& test,double tau_mps2,
         if (!step.step.advanced) {
             hard_failure=true;
             reason=step.reason.empty()?step.step.reason:step.reason;
+            if (snapshot_path.has_value()&&snapshot_event=="failure") {
+                auto snapshot=gf::makeTask10p11yCurrentPackedCheckpoint(
+                    *fixture,"task14_focused_current_qp_failure");
+                snapshot["task14"]={{"case",test.id},
+                    {"task",test.task.id()},
+                    {"service_standoff_m",service_standoff_m},
+                    {"acceleration_half_box_mps2",
+                        acceleration_half_box_mps2},
+                    {"failure_reason",reason},
+                    {"advanced_ticks",advanced_ticks}};
+                gf::writeTask10p11vJson(*snapshot_path,
+                    std::move(snapshot));
+            }
             break;
         }
         ++advanced_ticks;
+        if (snapshot_path.has_value()&&snapshot_event=="first_successor"&&
+            advanced_ticks==1) {
+            auto snapshot=gf::makeTask10p11yCurrentPackedCheckpoint(
+                *fixture,"task14_focused_first_transition_successor");
+            snapshot["task14"]={{"case",test.id},
+                {"task",test.task.id()},
+                {"service_standoff_m",service_standoff_m},
+                {"acceleration_half_box_mps2",
+                    acceleration_half_box_mps2},
+                {"advanced_ticks",advanced_ticks}};
+            gf::writeTask10p11vJson(*snapshot_path,std::move(snapshot));
+        }
         min_residual=std::min(min_residual,step.step.minimum_hard_residual);
         const auto runtime=fixture->adapter.runtimeSnapshot();
         const auto information=fixture->adapter.currentReferenceAudit();
@@ -235,7 +288,8 @@ json runCase(const FocusedCase& test,double tau_mps2,
             max_target_reference<850.0-1e-9&&
             min_actual_separation>=10.0-1e-9&&
             min_target_separation>10.0+1e-9&&max_speed<=30.0+1e-9&&
-            max_axis_control<=4.0+1e-9&&min_residual>=-1e-7&&
+            max_axis_control<=acceleration_half_box_mps2+1e-9&&
+            min_residual>=-1e-7&&
             minimum_world_coordinate_m>=1.5-1e-9&&
             maximum_world_coordinate_m<=2998.5+1e-9;
         if (!safe) {
@@ -301,18 +355,47 @@ json runCase(const FocusedCase& test,double tau_mps2,
 }  // namespace
 
 int main(int argc,char** argv) {
-    if (argc<2||argc>6) {
+    if (argc<2||argc>18) {
         std::cerr<<"usage: GrandFinaleTask13H2FocusedRun OUTPUT_JSON "
-            "[CASE] [TAU] [least|diagnostics] [SERVICE_STANDOFF_M]\n";
+            "[CASE] [TAU] [least|diagnostics] [SERVICE_STANDOFF_M] "
+            "[ACCELERATION_HALF_BOX_MPS2] [SNAPSHOT_JSON] "
+            "[failure|first_successor] [linear|braking] [WS_K1] [WS_K2] "
+            "[WS_BRAKE_A] [WS_EPS] [TARGET_HOMOTOPY_0_OR_1] "
+            "[HOMOTOPY_RATE_GAIN] [HOMOTOPY_GUARD_M] [WIDE_0_OR_1]\n";
         return 2;
     }
     try {
         const double tau_mps2=argc>=4?std::stod(argv[3]):22.0;
-        const std::string mode=argc==5?argv[4]:"least";
+        const std::string mode=argc>=5?argv[4]:"least";
         const auto selection=mode=="diagnostics"
             ?gf::GammaFeedbackSelectionMode::DiagnosticsOnly
             :gf::GammaFeedbackSelectionMode::LeastIntervention;
-        const double service_standoff_m=argc==6?std::stod(argv[5]):350.0;
+        const double service_standoff_m=argc>=6?std::stod(argv[5]):350.0;
+        const double acceleration_half_box_mps2=argc>=7?
+            std::stod(argv[6]):4.0;
+        const std::optional<std::filesystem::path> snapshot_path=argc>=8
+            ?std::optional<std::filesystem::path>{argv[7]}:std::nullopt;
+        const std::string snapshot_event=argc>=9?argv[8]:"failure";
+        if (snapshot_event!="failure"&&snapshot_event!="first_successor")
+            throw std::invalid_argument("unknown snapshot event");
+        const std::string workspace_class_k_name=argc>=10?argv[9]:"linear";
+        const auto workspace_class_k=workspace_class_k_name=="braking"
+            ?gf::WorkspaceClassK::RegularizedBraking:
+             gf::WorkspaceClassK::Linear;
+        const double workspace_alpha1_gain=argc>=11?std::stod(argv[10]):1.0;
+        const double workspace_alpha2_gain=argc>=12?std::stod(argv[11]):1.0;
+        const double workspace_braking_acceleration_mps2=argc>=13?
+            std::stod(argv[12]):4.0;
+        const double workspace_braking_regularization_m=argc>=14?
+            std::stod(argv[13]):1.0;
+        const bool target_homotopy_enabled=argc>=15?
+            std::stoi(argv[14])!=0:false;
+        const double target_homotopy_rate_gain=argc>=16?
+            std::stod(argv[15]):1.0;
+        const double target_homotopy_workspace_guard_m=argc>=17?
+            std::stod(argv[16]):1.5;
+        const bool unified_h2_cbf2026_wide_virtual_formation=argc>=18?
+            std::stoi(argv[17])!=0:false;
         const std::vector<FocusedCase> cases={
             {"top_left_short_probe",cell(0,289),cell(36,222),
                 cell(0,299),7,0,90.0,1,false},
@@ -338,7 +421,14 @@ int main(int argc,char** argv) {
             if (argc>=3&&std::string(argv[2])!="all"&&test.id!=argv[2])
                 continue;
             auto record=runCase(test,tau_mps2,selection,
-                service_standoff_m);
+                service_standoff_m,acceleration_half_box_mps2,
+                snapshot_path,snapshot_event,workspace_class_k,
+                workspace_alpha1_gain,workspace_alpha2_gain,
+                workspace_braking_acceleration_mps2,
+                workspace_braking_regularization_m,
+                target_homotopy_enabled,target_homotopy_rate_gain,
+                target_homotopy_workspace_guard_m,
+                unified_h2_cbf2026_wide_virtual_formation);
             complete=complete&&record.at("passed").get<bool>();
             records.push_back(std::move(record));
         }
@@ -347,6 +437,20 @@ int main(int argc,char** argv) {
             {"alpha",0.0075},{"tau_mps2",tau_mps2},
             {"gamma_selection",mode},
             {"service_standoff_m",service_standoff_m},
+            {"acceleration_half_box_mps2",acceleration_half_box_mps2},
+            {"workspace_class_k",workspace_class_k_name},
+            {"workspace_alpha1_gain",workspace_alpha1_gain},
+            {"workspace_alpha2_gain",workspace_alpha2_gain},
+            {"workspace_braking_acceleration_mps2",
+                workspace_braking_acceleration_mps2},
+            {"workspace_braking_regularization_m",
+                workspace_braking_regularization_m},
+            {"target_homotopy_enabled",target_homotopy_enabled},
+            {"target_homotopy_rate_gain",target_homotopy_rate_gain},
+            {"target_homotopy_workspace_guard_m",
+                target_homotopy_workspace_guard_m},
+            {"unified_h2_cbf2026_wide_virtual_formation",
+                unified_h2_cbf2026_wide_virtual_formation},
             {"rows","velocity_augmented"},{"complete",complete},
             {"case_filter",argc>=3?json(argv[2]):json(nullptr)},
             {"cases",records}};
