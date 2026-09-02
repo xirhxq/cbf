@@ -66,7 +66,8 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> fixtureFor(
     double workspace_braking_acceleration_mps2,
     double workspace_braking_regularization_m,bool target_homotopy_enabled,
     double target_homotopy_rate_gain,double target_homotopy_workspace_guard_m,
-    bool unified_h2_cbf2026_wide_virtual_formation) {
+    bool unified_h2_cbf2026_wide_virtual_formation,
+    bool target_policy_task15_forward) {
     auto scenario=gf::task10p11rFixedBaselineScenario();
     for (const auto& [member,target]:a.targets)
         scenario.mobile_positions.at(member-1)=target;
@@ -86,7 +87,8 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> fixtureFor(
         workspace_braking_regularization_m,target_homotopy_enabled,
         acceleration_half_box_mps2,target_homotopy_rate_gain,
         target_homotopy_workspace_guard_m,
-        unified_h2_cbf2026_wide_virtual_formation);
+        unified_h2_cbf2026_wide_virtual_formation,
+        target_policy_task15_forward);
 }
 
 json runCase(const FocusedCase& test,double tau_mps2,
@@ -100,7 +102,8 @@ json runCase(const FocusedCase& test,double tau_mps2,
              double workspace_braking_regularization_m,
              bool target_homotopy_enabled,double target_homotopy_rate_gain,
              double target_homotopy_workspace_guard_m,
-             bool unified_h2_cbf2026_wide_virtual_formation) {
+             bool unified_h2_cbf2026_wide_virtual_formation,
+             bool target_policy_task15_forward) {
     const auto pair=pairFor(test,service_standoff_m);
     auto fixture=fixtureFor(test,pair.first,pair.second,tau_mps2,selection,
         service_standoff_m,acceleration_half_box_mps2,workspace_class_k,
@@ -108,7 +111,8 @@ json runCase(const FocusedCase& test,double tau_mps2,
         workspace_braking_acceleration_mps2,
         workspace_braking_regularization_m,target_homotopy_enabled,
         target_homotopy_rate_gain,target_homotopy_workspace_guard_m,
-        unified_h2_cbf2026_wide_virtual_formation);
+        unified_h2_cbf2026_wide_virtual_formation,
+        target_policy_task15_forward);
     const auto initialized=fixture->adapter.initializeStageZero();
     json result={{"id",test.id},{"initialized",initialized.initialized},
         {"old_a",test.old_a.id()},{"old_b",test.old_b.id()},
@@ -161,7 +165,8 @@ json runCase(const FocusedCase& test,double tau_mps2,
     json first_tick_controls=json::array();
     for (std::size_t tick=0;tick<test.maximum_ticks;++tick) {
         const auto step=fixture->controller.advance();
-        target_events+=step.unified_allocation_evaluated;
+        target_events+=step.unified_allocation_evaluated ||
+            step.task15_allocation_evaluated;
         if (step.unified_allocation_evaluated&&
             step.unified_allocation.valid&&target_events==1)
             first_transition_maximum_displacement_m=
@@ -285,9 +290,11 @@ json runCase(const FocusedCase& test,double tau_mps2,
         const GridWorld& grid=fixture->adapter.coverage().certifiedGrid();
         serviced=grid.vis.at(task_index);
         const bool safe=max_actual_reference<=850.0+1e-9&&
-            max_target_reference<850.0-1e-9&&
+            (target_policy_task15_forward ||
+             max_target_reference<850.0-1e-9)&&
             min_actual_separation>=10.0-1e-9&&
-            min_target_separation>10.0+1e-9&&max_speed<=30.0+1e-9&&
+            (target_policy_task15_forward ||
+             min_target_separation>10.0+1e-9)&&max_speed<=30.0+1e-9&&
             max_axis_control<=acceleration_half_box_mps2+1e-9&&
             min_residual>=-1e-7&&
             minimum_world_coordinate_m>=1.5-1e-9&&
@@ -355,13 +362,14 @@ json runCase(const FocusedCase& test,double tau_mps2,
 }  // namespace
 
 int main(int argc,char** argv) {
-    if (argc<2||argc>18) {
+    if (argc<2||argc>19) {
         std::cerr<<"usage: GrandFinaleTask13H2FocusedRun OUTPUT_JSON "
             "[CASE] [TAU] [least|diagnostics] [SERVICE_STANDOFF_M] "
             "[ACCELERATION_HALF_BOX_MPS2] [SNAPSHOT_JSON] "
             "[failure|first_successor] [linear|braking] [WS_K1] [WS_K2] "
             "[WS_BRAKE_A] [WS_EPS] [TARGET_HOMOTOPY_0_OR_1] "
-            "[HOMOTOPY_RATE_GAIN] [HOMOTOPY_GUARD_M] [WIDE_0_OR_1]\n";
+            "[HOMOTOPY_RATE_GAIN] [HOMOTOPY_GUARD_M] [WIDE_0_OR_1] "
+            "[TASK15_0_OR_1]\n";
         return 2;
     }
     try {
@@ -373,7 +381,8 @@ int main(int argc,char** argv) {
         const double service_standoff_m=argc>=6?std::stod(argv[5]):350.0;
         const double acceleration_half_box_mps2=argc>=7?
             std::stod(argv[6]):4.0;
-        const std::optional<std::filesystem::path> snapshot_path=argc>=8
+        const std::optional<std::filesystem::path> snapshot_path=
+            argc>=8&&std::string(argv[7])!="-"
             ?std::optional<std::filesystem::path>{argv[7]}:std::nullopt;
         const std::string snapshot_event=argc>=9?argv[8]:"failure";
         if (snapshot_event!="failure"&&snapshot_event!="first_successor")
@@ -396,6 +405,8 @@ int main(int argc,char** argv) {
             std::stod(argv[16]):1.5;
         const bool unified_h2_cbf2026_wide_virtual_formation=argc>=18?
             std::stoi(argv[17])!=0:false;
+        const bool target_policy_task15_forward=argc>=19?
+            std::stoi(argv[18])!=0:false;
         const std::vector<FocusedCase> cases={
             {"top_left_short_probe",cell(0,289),cell(36,222),
                 cell(0,299),7,0,90.0,1,false},
@@ -428,12 +439,15 @@ int main(int argc,char** argv) {
                 workspace_braking_regularization_m,
                 target_homotopy_enabled,target_homotopy_rate_gain,
                 target_homotopy_workspace_guard_m,
-                unified_h2_cbf2026_wide_virtual_formation);
+                unified_h2_cbf2026_wide_virtual_formation,
+                target_policy_task15_forward);
             complete=complete&&record.at("passed").get<bool>();
             records.push_back(std::move(record));
         }
         const json output={{"protocol","task13-h2-focused-v1"},
-            {"formula","H2 tapered lifting"},{"w",7.0},
+            {"formula",target_policy_task15_forward
+                ?"Task15 CBF2026 forward endpoint lifting"
+                :"H2 tapered lifting"},{"w",7.0},
             {"alpha",0.0075},{"tau_mps2",tau_mps2},
             {"gamma_selection",mode},
             {"service_standoff_m",service_standoff_m},
@@ -451,6 +465,8 @@ int main(int argc,char** argv) {
                 target_homotopy_workspace_guard_m},
             {"unified_h2_cbf2026_wide_virtual_formation",
                 unified_h2_cbf2026_wide_virtual_formation},
+            {"target_policy_task15_forward",
+                target_policy_task15_forward},
             {"rows","velocity_augmented"},{"complete",complete},
             {"case_filter",argc>=3?json(argv[2]):json(nullptr)},
             {"cases",records}};

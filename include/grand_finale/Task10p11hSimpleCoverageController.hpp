@@ -7,6 +7,8 @@
 #include "grand_finale/Task10p11tDynamicPairResponsibility.hpp"
 #include "grand_finale/Task13UnifiedCoveragePolicy.hpp"
 #include "grand_finale/Task14TargetGovernor.hpp"
+#include "grand_finale/Task15ForwardCoveragePolicy.hpp"
+#include "grand_finale/Task15ReferenceGovernor.hpp"
 #include "grand_finale/TargetLiftTransitionPrototype.hpp"
 
 #include <functional>
@@ -53,9 +55,12 @@ struct SimpleCoverageControlStep {
     LeaderCoverageResult allocation;
     bool unified_allocation_evaluated=false;
     Task13UnifiedCoverageResult unified_allocation;
+    bool task15_allocation_evaluated=false;
+    Task15ForwardCoverageResult task15_allocation;
     GrandFinaleSwarmStep step;
     std::string reason;
     std::map<NodeId,FrontierCell> committed_targets;
+    std::map<NodeId,Eigen::Vector2d> applied_target_centers;
     std::size_t target_epoch=0;
     std::size_t consecutive_certification_failures=0;
     SimpleCoveragePhase phase=SimpleCoveragePhase::CoverageSearch;
@@ -70,6 +75,8 @@ struct SimpleCoverageControlStep {
     double target_governor_common_fraction=1.0;
     double target_governor_minimum_stopping_margin_m=
         std::numeric_limits<double>::infinity();
+    bool target_governor_reselect_required=false;
+    std::size_t target_governor_feasibility_evaluations=0;
 };
 
 struct SimpleCoverageControllerRestartState {
@@ -141,7 +148,16 @@ public:
         const bool policy_v2=adapter_.config().target_policy_v2;
         const bool policy_v3=adapter_.config().target_policy_v3;
         const bool policy_h2=adapter_.config().target_policy_unified_h2;
-        if (policy_h2) {
+        const bool policy_task15=
+            adapter_.config().target_policy_task15_forward;
+        if (policy_task15) {
+            advanceTask15Targets(runtime,result);
+            if (result.task15_allocation_evaluated &&
+                !result.task15_allocation.valid) {
+                result.step.reason=result.reason;
+                return result;
+            }
+        } else if (policy_h2) {
             advanceUnifiedH2Targets(runtime,result);
             if (result.unified_allocation_evaluated &&
                 !result.unified_allocation.valid) return result;
@@ -226,7 +242,33 @@ public:
         std::map<NodeId,Eigen::Vector2d> nominal_targets;
         for (const auto& [owner,target]:targets_)
             nominal_targets[owner]=target.center;
-        if (adapter_.config().target_homotopy_enabled &&
+        if (policy_task15 &&
+            nominal_targets.size()==runtime.estimate.mobile_ids.size()) {
+            Task15ForwardCoverageConfig task15_config;
+            task15_config.shortlist_capacity=
+                adapter_.config().task15_forward_shortlist_capacity;
+            const std::size_t attempt_limit=
+                task15ReselectionAttemptLimit(task15_config);
+            for (std::size_t attempt=0;attempt<attempt_limit;++attempt) {
+                advanceTask15ReferenceGovernor(
+                    runtime,nominal_targets,result);
+                if (!result.target_governor_reselect_required) break;
+                advanceTask15Targets(runtime,result);
+                if (!result.task15_allocation.valid) {
+                    result.step.reason=result.reason;
+                    return result;
+                }
+                nominal_targets.clear();
+                for (const auto& [owner,target]:targets_)
+                    nominal_targets[owner]=target.center;
+            }
+            if (result.target_governor_reselect_required) {
+                result.reason="task15_allocator_no_reference_safe_direction";
+                result.step.reason=result.reason;
+                return result;
+            }
+            nominal_targets=governed_targets_;
+        } else if (adapter_.config().target_homotopy_enabled &&
             nominal_targets.size()==runtime.estimate.mobile_ids.size()) {
             if (governed_targets_.size()!=nominal_targets.size()) {
                 governed_targets_.clear();
@@ -264,6 +306,7 @@ public:
             result.target_governor_minimum_stopping_margin_m=
                 governed.minimum_stopping_margin_m;
         }
+        result.applied_target_centers=nominal_targets;
         for (std::size_t index=0;
              index<runtime.estimate.mobile_ids.size();++index) {
             const NodeId owner=runtime.estimate.mobile_ids[index];
@@ -503,6 +546,11 @@ public:
         unified_h2_retained_.clear();
         unified_h2_active_.clear();
         governed_targets_.clear();
+        task15_retained_.clear();
+        task15_blocked_task_ids_.clear();
+        task15_force_reselect_=false;
+        task15_last_update_cycle_=0;
+        task15_last_certified_count_=-1;
     }
     SimpleCoverageControlStep advanceWithDynamicPairResponsibility(
         const std::string& pair_base_id) {
@@ -539,6 +587,220 @@ public:
     }
 
 private:
+    // ---- Task 15: forward endpoint formation + certified union utility ----
+    void advanceTask15Targets(
+        const GrandFinaleRuntimeSnapshot& runtime,
+        SimpleCoverageControlStep& result) {
+        if (task15_retained_.empty() && targets_.size()==14) {
+            for (const auto& squad:task13UnifiedCoverageSquads()) {
+                const auto first=targets_.find(squad.members.front());
+                if (first==targets_.end()) continue;
+                Task15ForwardCoverageCandidate retained;
+                retained.squad=squad.name;
+                retained.task=first->second;
+                retained.endpoint=first->second;
+                retained.level_a=true;
+                for (NodeId member:squad.members) {
+                    const auto target=targets_.find(member);
+                    if (target==targets_.end() ||
+                        target->second.id()!=retained.task.id()) {
+                        retained.targets.clear();
+                        break;
+                    }
+                    retained.targets[member]=target->second.center;
+                    retained.target_ids[member]=retained.task.id();
+                }
+                if (retained.targets.size()==7)
+                    task15_retained_[squad.name]=std::move(retained);
+            }
+        }
+        const int certified_count=adapter_.coverage().certifiedCoveredCount();
+        if (task15_last_certified_count_>=0 &&
+            certified_count!=task15_last_certified_count_)
+            task15_blocked_task_ids_.clear();
+        bool task_completed=false;
+        for (const auto& [squad,candidate]:task15_retained_) {
+            (void)squad;
+            if (!certifiedCellUncovered(candidate.task)) task_completed=true;
+        }
+        const bool periodic=control_boundaries_>=task15_last_update_cycle_+
+            adapter_.config().task15_forward_update_period_cycles;
+        const bool event=targets_.empty() || task15_retained_.size()!=2 ||
+            task15_force_reselect_ || task_completed || periodic;
+        if (!event) return;
+
+        Task15ForwardCoverageRequest request;
+        request.domain_cells=denominator_cells_;
+        request.fixed_positions=runtime.estimate.fixed_positions;
+        request.retained=task15_retained_;
+        request.config.shortlist_capacity=
+            adapter_.config().task15_forward_shortlist_capacity;
+        request.config.endpoint_standoff_m=
+            adapter_.config().task15_forward_endpoint_standoff_m;
+        request.config.sensor_inner_radius_m=
+            adapter_.config().coverage_inner_radius_m;
+        request.config.sensor_outer_radius_m=adapter_.config().sensor_radius_m;
+        request.config.sensor_half_angle_rad=
+            adapter_.config().coverage_half_angle_rad;
+        request.config.reference_limit_m=
+            adapter_.config().reference_distance_m;
+        request.config.target_separation_m=
+            adapter_.config().collision_distance_m;
+        request.config.nominal_speed_mps=adapter_.config().speed_limit_mps;
+        request.config.braking_acceleration_mps2=
+            adapter_.config().acceleration_half_box;
+        for (const auto& cell:currentCertifiedUncoveredCells())
+            if (!task15_blocked_task_ids_.count(cell.id()))
+                request.uncovered_cells.push_back(cell);
+        for (std::size_t index=0;
+             index<runtime.estimate.mobile_ids.size();++index) {
+            const NodeId owner=runtime.estimate.mobile_ids[index];
+            const double error=std::max(
+                adapter_.config().certified_shadow_single_position_support_m,
+                std::max(adapter_.config().certified_error_bound_m,
+                    adapter_.config().uncertainty_sigma*std::sqrt(std::max(
+                        0.0,detail::maximumPositionEigenvalue(
+                            runtime.estimate,owner)))));
+            request.agents.push_back({owner,
+                runtime.estimate.mean.segment<2>(4*index),
+                runtime.estimate.mean.segment<2>(4*index+2),
+                currentYaw(owner),error});
+        }
+        result.task15_allocation_evaluated=true;
+        result.task15_allocation=allocateTask15ForwardCoverage(
+            std::move(request));
+        if (!result.task15_allocation.valid) {
+            result.reason=result.task15_allocation.reason;
+            return;
+        }
+        targets_=result.task15_allocation.targets;
+        task15_retained_.clear();
+        for (const auto& [squad,assignment]:
+             result.task15_allocation.assignments)
+            task15_retained_[squad]=assignment.candidate;
+        task15_force_reselect_=false;
+        task15_last_update_cycle_=control_boundaries_;
+        task15_last_certified_count_=certified_count;
+        ++target_epoch_;
+        consecutive_failures_=0;
+    }
+
+    void advanceTask15ReferenceGovernor(
+        const GrandFinaleRuntimeSnapshot& runtime,
+        const std::map<NodeId,Eigen::Vector2d>& nominal_targets,
+        SimpleCoverageControlStep& result) {
+        std::map<NodeId,Eigen::Vector2d> current_position_ledger;
+        for (std::size_t index=0;
+             index<runtime.estimate.mobile_ids.size();++index)
+            current_position_ledger[runtime.estimate.mobile_ids[index]]=
+                runtime.estimate.mean.segment<2>(4*index);
+        const auto feasible=[&](
+            const std::map<NodeId,Eigen::Vector2d>& candidate,double) {
+            if (!(task15TargetLedgerMinimumSeparation(candidate,
+                    runtime.estimate.fixed_positions)>
+                  adapter_.config().collision_distance_m+1e-9))
+                return false;
+            std::map<NodeId,Eigen::Vector2d> task_nominals;
+            auto model=task10p11gFrozenModel();
+            model.acceleration_half_box_mps2=
+                adapter_.config().acceleration_half_box;
+            model.position_gain=adapter_.config().position_gain;
+            model.velocity_gain=adapter_.config().velocity_gain;
+            model.maximum_yaw_rate_radps=
+                adapter_.config().maximum_yaw_rate_radps;
+            for (std::size_t index=0;
+                 index<runtime.estimate.mobile_ids.size();++index) {
+                const NodeId owner=runtime.estimate.mobile_ids[index];
+                const Eigen::Vector4d state=
+                    runtime.estimate.mean.segment<4>(4*index);
+                task_nominals[owner]=task10p11gSoftTask({state.head<2>(),
+                    state.tail<2>(),currentYaw(owner),candidate.at(owner),
+                    runtime.mode},model).acceleration;
+            }
+            const auto& config=adapter_.config();
+            const CanonicalGammaFeedbackConfig feedback_config{
+                config.acceleration_half_box,
+                config.gamma_feedback_homotopy_segments,
+                config.gamma_feedback_selection,
+                config.predictive_gamma_tau_mps2,
+                config.gamma_feedback_tolerance,
+                config.tau_margin_gate_enabled,1.0,nullptr,
+                config.tau_analytic_first_order,
+                config.nominal_throttle_enabled,
+                config.throttle_gamma_th_mps2,
+                config.throttle_gamma_floor_mps2,
+                config.nominal_speed_saturation_mps,
+                config.throttle_v2_enabled,
+                config.throttle_v2_endpoint_family};
+            CanonicalGammaFeedbackEvaluationContext context;
+            const auto batch=evaluateCanonicalGammaFeedbackBatch(
+                runtime.estimate,task_nominals,feedback_config,config.dt_s,
+                config.estimator_acceleration_variance,
+                [&](const JointEstimateSnapshot& snapshot) {
+                    return adapter_.snapshotHardRowRequest(
+                        snapshot,runtime.topology);
+                },context);
+            if (!batch.valid) return false;
+            std::map<NodeId,Eigen::Vector2d> projected_controls;
+            for (NodeId owner:runtime.estimate.mobile_ids) {
+                const auto stage=batch.stages.find(owner);
+                const auto selected=batch.selections.find(owner);
+                if (stage==batch.stages.end() ||
+                    selected==batch.selections.end() ||
+                    stage->second.current_gamma<-
+                        config.gamma_feedback_tolerance ||
+                    selected->second.selected_predicted_gamma<-
+                        config.gamma_feedback_tolerance) return false;
+                const auto qp=task15_governor_qp_.solve({
+                    config.solver_profile,owner,runtime.estimator_token,
+                    runtime.topology_token,runtime.mode,
+                    batch.selected_controls.at(owner),
+                    config.acceleration_half_box,batch.current_rows,
+                    config.residual_tolerance,
+                    config.speed_initial_set_truth_gate});
+                if (!controlMayBeApplied(qp,runtime.estimator_token,
+                        runtime.topology_token,runtime.mode) ||
+                    qp.exact_oracle_error>config.qp_oracle_tolerance)
+                    return false;
+                projected_controls[owner]=qp.control;
+            }
+            const auto successor=predictNoMeasurementSnapshot(
+                runtime.estimate,projected_controls,config.dt_s,
+                config.estimator_acceleration_variance);
+            for (std::size_t index=0;
+                 index<successor.mobile_ids.size();++index)
+                if (successor.mean.segment<2>(4*index+2).norm()>
+                    config.speed_limit_mps+1e-12) return false;
+            const auto successor_rows=buildCanonicalHardRows(
+                adapter_.snapshotHardRowRequest(successor,runtime.topology));
+            for (NodeId owner:runtime.estimate.mobile_ids) {
+                const auto gamma=solveCanonicalGammaStar(
+                    successor_rows,owner,config.acceleration_half_box);
+                if (!gamma.valid || gamma.gamma<-
+                    config.gamma_feedback_tolerance) return false;
+            }
+            return true;
+        };
+        const auto governed=task15AdvanceReferenceGovernor(
+            current_position_ledger,nominal_targets,feasible);
+        result.target_governor_evaluated=true;
+        result.target_governor_common_fraction=governed.common_fraction;
+        result.target_governor_reselect_required=governed.reselect_required;
+        result.target_governor_feasibility_evaluations=
+            governed.feasibility_evaluations;
+        if (governed.valid) {
+            governed_targets_=governed.targets;
+            return;
+        }
+        task15_force_reselect_=true;
+        for (const auto& [squad,candidate]:task15_retained_) {
+            (void)squad;
+            task15_blocked_task_ids_.insert(candidate.task.id());
+        }
+        // The caller consumes this event in the same sample and exhausts the
+        // bounded real-task shortlist before failing closed.
+    }
+
     // ---- Task 13 unified H2: certified-event-driven global pool -------
     void advanceUnifiedH2Targets(
         const GrandFinaleRuntimeSnapshot& runtime,
@@ -941,7 +1203,8 @@ private:
     }
 
     bool observeT100Boundary() {
-        const bool complete=adapter_.config().target_policy_unified_h2
+        const bool complete=(adapter_.config().target_policy_unified_h2 ||
+            adapter_.config().target_policy_task15_forward)
             ?adapter_.coverage().reachedCertifiedT100()
             :adapter_.coverage().truthFraction()>=1.0-1e-12;
         if (!t100_coverage_s_.has_value() && complete) {
@@ -1087,6 +1350,12 @@ private:
     std::map<NodeId,Eigen::Vector2d> last_nominal_controls_;
     std::map<std::string,Task13UnifiedCoverageWitness> unified_h2_retained_;
     std::map<std::string,bool> unified_h2_active_;
+    std::map<std::string,Task15ForwardCoverageCandidate> task15_retained_;
+    std::set<std::string> task15_blocked_task_ids_;
+    bool task15_force_reselect_=false;
+    std::size_t task15_last_update_cycle_=0;
+    int task15_last_certified_count_=-1;
+    CanonicalHocbfQpController task15_governor_qp_;
     // Task 13 Phase B0-a (target policy v2) state.
     double last_demand_recompute_s_=-1.0e9;
     std::vector<FrontierCell> v2_demand_cells_;

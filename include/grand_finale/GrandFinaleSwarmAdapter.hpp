@@ -158,6 +158,12 @@ struct GrandFinaleSwarmAdapterConfig {
     std::size_t unified_h2_shortlist_per_squad = 64;
     double unified_h2_service_standoff_m = 350.0;
     bool unified_h2_cbf2026_wide_virtual_formation = false;
+    // Task 15 research-only forward CBF2026 endpoint policy.  It remains
+    // independent from Task 13/14 and disabled unless a runner opts in.
+    bool target_policy_task15_forward = false;
+    std::size_t task15_forward_shortlist_capacity = 32;
+    std::size_t task15_forward_update_period_cycles = 10;
+    double task15_forward_endpoint_standoff_m = 250.0;
     double v6_neighborhood_radius_m = 450.0;
     double demand_recompute_interval_s = 5.0;
     double target_lock_epsilon_m = 30.0;
@@ -543,6 +549,10 @@ public:
             config_.target_homotopy_rate_gain<=0.0 ||
             !std::isfinite(config_.target_homotopy_workspace_guard_m) ||
             config_.target_homotopy_workspace_guard_m<0.0 ||
+            config_.task15_forward_shortlist_capacity==0 ||
+            config_.task15_forward_update_period_cycles==0 ||
+            !std::isfinite(config_.task15_forward_endpoint_standoff_m) ||
+            config_.task15_forward_endpoint_standoff_m<0.0 ||
             !std::isfinite(config_.residual_tolerance) ||
             config_.residual_tolerance < 0.0 ||
             !std::isfinite(config_.qp_oracle_tolerance) ||

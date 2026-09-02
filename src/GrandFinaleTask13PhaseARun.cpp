@@ -124,7 +124,8 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     double workspace_alpha2_gain,double workspace_braking_acceleration_mps2,
     double workspace_braking_regularization_m,bool target_homotopy_enabled,
     double target_homotopy_rate_gain,double target_homotopy_workspace_guard_m,
-    bool unified_h2_cbf2026_wide_virtual_formation) {
+    bool unified_h2_cbf2026_wide_virtual_formation,
+    bool target_policy_task15_forward) {
     auto scenario=gf::task10p11rFixedBaselineScenario();
     scenario.mobile_positions=def.positions;
     scenario.initial_topology=def.topology;
@@ -150,7 +151,8 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
         workspace_braking_regularization_m,target_homotopy_enabled,
         acceleration_half_box_mps2,target_homotopy_rate_gain,
         target_homotopy_workspace_guard_m,
-        unified_h2_cbf2026_wide_virtual_formation);
+        unified_h2_cbf2026_wide_virtual_formation,
+        target_policy_task15_forward);
 }
 
 }  // namespace
@@ -190,6 +192,7 @@ int main(int argc,char** argv) {
         const bool policy_h2=policy=="h2"||policy=="h2diag"||
             policy=="h2center"||policy=="h2wide";
         const bool policy_h2wide=policy=="h2wide";
+        const bool policy_task15=policy=="task15";
         const double service_standoff_m=argc>=13?std::stod(argv[12]):
             (policy=="h2center"?0.0:350.0);
         const double acceleration_half_box_mps2=argc>=14?
@@ -243,7 +246,8 @@ int main(int argc,char** argv) {
             workspace_braking_acceleration_mps2,
             workspace_braking_regularization_m,target_homotopy_enabled,
             target_homotopy_rate_gain,
-            target_homotopy_workspace_guard_m,policy_h2wide);
+            target_homotopy_workspace_guard_m,policy_h2wide,
+            policy_task15);
         if (!fixture->adapter.initializeStageZero().initialized) {
             // Qualification-gate boundary point: recorded, not run.
             json boundary={{"protocol","task13-phase-a-run-v1"},
@@ -363,6 +367,14 @@ int main(int argc,char** argv) {
                 config.unified_h2_service_standoff_m},
                 {"unified_h2_cbf2026_wide_virtual_formation",
                 config.unified_h2_cbf2026_wide_virtual_formation},
+                {"target_policy_task15_forward",
+                config.target_policy_task15_forward},
+                {"task15_forward_shortlist_capacity",
+                config.task15_forward_shortlist_capacity},
+                {"task15_forward_update_period_cycles",
+                config.task15_forward_update_period_cycles},
+                {"task15_forward_endpoint_standoff_m",
+                config.task15_forward_endpoint_standoff_m},
                 {"velocity_augmented_rows",config.velocity_augmented_rows},
                 {"velocity_augmented_rows",config.velocity_augmented_rows},
                 {"row_slack_epsilon_m",config.row_slack_epsilon_m},
@@ -384,7 +396,8 @@ int main(int argc,char** argv) {
                     config.target_homotopy_workspace_guard_m},
                 {"residual_tolerance",config.residual_tolerance},
                 {"dt_s",config.dt_s},
-                {"truth_initial_set_gate_mps",policy_h2?30.0:30.01}}},
+                {"truth_initial_set_gate_mps",
+                (policy_h2||policy_task15)?30.0:30.01}}},
             {"s3_stop_rule","terminate_at_t100_latch"},
             {"evaluations",json::array()},
             {"complete",false}};
@@ -449,7 +462,8 @@ int main(int argc,char** argv) {
                     truth_gate_max_speed=std::max(truth_gate_max_speed,
                         tv.head<2>().norm());
                 }
-                const double hard_speed_limit=policy_h2?30.0:30.01;
+                const double hard_speed_limit=
+                    (policy_h2||policy_task15)?30.0:30.01;
                 if (truth_gate_max_speed>hard_speed_limit+1e-9) {
                     truth_gate_violation=true;
                     hard_stop=true;
@@ -457,7 +471,7 @@ int main(int argc,char** argv) {
                         {"advanced",false},
                         {"reason","speed_initial_set_truth_violated"},
                         {"coverage_fraction",
-                        policy_h2
+                        (policy_h2||policy_task15)
                             ?fixture->adapter.coverage().certifiedFraction()
                             :fixture->adapter.coverage().truthFraction()},
                         {"minimum_hard_residual",json(nullptr)}});
@@ -486,7 +500,7 @@ int main(int argc,char** argv) {
                 fixture->adapter.coverage().certifiedFraction();
             const double truth_fraction=
                 fixture->adapter.coverage().truthFraction();
-            const double fraction=policy_h2
+            const double fraction=(policy_h2||policy_task15)
                 ?certified_fraction:truth_fraction;
             if (!t95_tick.has_value()&&fraction>=0.95) t95_tick=tick;
             if (!t100_tick.has_value()&&fraction>=1.0-1e-12) t100_tick=tick;
@@ -511,7 +525,8 @@ int main(int argc,char** argv) {
                     interval_max);
                 if (truth_max>0.0) ++truth_overspeed_ticks;
                 if (interval_max>0.0) ++interval_overspeed_ticks;
-                if (policy_h2 && (truth_max>1e-9||interval_max>1e-9)) {
+                if ((policy_h2||policy_task15) &&
+                    (truth_max>1e-9||interval_max>1e-9)) {
                     runtime_safety_violation=true;
                     runtime_safety_reason="hard_speed_limit_violated";
                     hard_stop=true;
@@ -539,6 +554,10 @@ int main(int argc,char** argv) {
                 last_step.unified_allocation.valid)
                 current_active_squads=
                     last_step.unified_allocation.active_squads;
+            if (last_step.task15_allocation_evaluated&&
+                last_step.task15_allocation.valid)
+                current_active_squads=
+                    last_step.task15_allocation.active_squads;
             active_squad_ticks+=current_active_squads;
             if (last_step.target_epoch!=last_target_epoch) {
                 if (last_target_epoch!=0) ++target_switches;
@@ -567,9 +586,9 @@ int main(int argc,char** argv) {
                 return snapshot.estimate.fixed_positions.at(id);
             };
             const auto target_position=[&](gf::NodeId id) {
-                const auto mobile=last_step.committed_targets.find(id);
-                if (mobile!=last_step.committed_targets.end())
-                    return mobile->second.center;
+                const auto applied=last_step.applied_target_centers.find(id);
+                if (applied!=last_step.applied_target_centers.end())
+                    return applied->second;
                 return snapshot.estimate.fixed_positions.at(id);
             };
             double tick_actual_reference=0.0,tick_target_reference=0.0;
@@ -617,9 +636,10 @@ int main(int argc,char** argv) {
                 minimum_actual_separation_m,tick_actual_separation);
             minimum_target_separation_m=std::min(
                 minimum_target_separation_m,tick_target_separation);
-            if (policy_h2 && (tick_actual_reference>850.0+1e-9 ||
+            if ((policy_h2||policy_task15) &&
+                (tick_actual_reference>850.0+1e-9 ||
                     tick_actual_separation<10.0-1e-9 ||
-                    (!policy_h2wide &&
+                    (policy_h2 && !policy_h2wide &&
                         (tick_target_reference>=850.0-1e-9 ||
                          tick_target_separation<=10.0+1e-9)))) {
                 runtime_safety_violation=true;
@@ -678,8 +698,15 @@ int main(int argc,char** argv) {
                 const auto committed=last_step.committed_targets.find(owner);
                 if (committed!=last_step.committed_targets.end())
                     target={{"id",committed->second.id()},
-                        {"center",{committed->second.center.x(),
-                            committed->second.center.y()}}};
+                        {"nominal_center",{committed->second.center.x(),
+                            committed->second.center.y()}},
+                        {"applied_center",[&]() {
+                            const auto applied_target=
+                                last_step.applied_target_centers.find(owner);
+                            return applied_target==
+                                last_step.applied_target_centers.end()
+                                ?json(nullptr):json({applied_target->second.x(),
+                                    applied_target->second.y()}); }()}};
                 const Robot& robot=robot_by_id(owner);
                 owners.push_back({{"id",owner},
                     {"est",{estimate_position.x(),estimate_position.y(),
@@ -730,7 +757,11 @@ int main(int argc,char** argv) {
                     last_step.target_governor_common_fraction},
                     {"minimum_stopping_margin_m",
                     gf::task10p11w_detail::number(last_step.
-                        target_governor_minimum_stopping_margin_m)}}},
+                        target_governor_minimum_stopping_margin_m)},
+                    {"reselect_required",
+                    last_step.target_governor_reselect_required},
+                    {"feasibility_evaluations",
+                    last_step.target_governor_feasibility_evaluations}}},
                 {"throttle",{{"active",throttle.active},
                     {"s",throttle.s}}},
                 {"owners",std::move(owners)}}).dump()<<'\n';
@@ -787,7 +818,8 @@ int main(int argc,char** argv) {
         record["t100_tick"]=(t100_tick.has_value()?json(*t100_tick):
             json(nullptr));
         record["final_coverage_fraction"]=
-            policy_h2?fixture->adapter.coverage().certifiedFraction():
+            (policy_h2||policy_task15)
+                ?fixture->adapter.coverage().certifiedFraction():
                 fixture->adapter.coverage().truthFraction();
         record["final_certified_coverage_fraction"]=
             fixture->adapter.coverage().certifiedFraction();

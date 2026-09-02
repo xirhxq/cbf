@@ -122,7 +122,8 @@ inline GrandFinaleSwarmAdapterConfig task10p11rFixtureAdapterConfig(
     double target_homotopy_braking_acceleration_mps2=4.0,
     double target_homotopy_rate_gain=1.0,
     double target_homotopy_workspace_guard_m=1.5,
-    bool unified_h2_cbf2026_wide_virtual_formation=false) {
+    bool unified_h2_cbf2026_wide_virtual_formation=false,
+    bool target_policy_task15_forward=false) {
     auto config=task10p11rFixedAdapterConfig(selection,predictive_tau_mps2);
     config.speed_row_nominal=speed_row_nominal;
     config.tau_margin_gate_enabled=tau_margin_gate;
@@ -229,6 +230,14 @@ inline GrandFinaleSwarmAdapterConfig task10p11rFixtureAdapterConfig(
         target_homotopy_workspace_guard_m;
     config.unified_h2_cbf2026_wide_virtual_formation=
         unified_h2_cbf2026_wide_virtual_formation;
+    config.target_policy_task15_forward=target_policy_task15_forward;
+    if (target_policy_task15_forward) {
+        config.boundary.policy=BoundaryPolicy::HardFlightBoundary;
+        config.boundary.flight_polygon_source=
+            FlightPolygonSource::ExplicitPolygon;
+        config.boundary.explicit_flight_polygon={
+            {1.5,1.5},{2998.5,1.5},{2998.5,2998.5},{1.5,2998.5}};
+    }
     return config;
 }
 
@@ -283,7 +292,8 @@ struct Task10p11rFixedBaselineFixture {
     double target_homotopy_braking_acceleration_mps2=4.0,
     double target_homotopy_rate_gain=1.0,
     double target_homotopy_workspace_guard_m=1.5,
-    bool unified_h2_cbf2026_wide_virtual_formation=false)
+    bool unified_h2_cbf2026_wide_virtual_formation=false,
+    bool target_policy_task15_forward=false)
         : scenario(std::move(scenario_value)),settings(std::move(settings_value)),
           swarm(settings),
           adapter(swarm,scenario.mobile_ids,scenario.fixed_positions,
@@ -307,7 +317,8 @@ struct Task10p11rFixedBaselineFixture {
                   target_homotopy_braking_acceleration_mps2,
                   target_homotopy_rate_gain,
                   target_homotopy_workspace_guard_m,
-                  unified_h2_cbf2026_wide_virtual_formation)),
+                  unified_h2_cbf2026_wide_virtual_formation,
+                  target_policy_task15_forward)),
           controller(swarm,adapter,{}, {},task10p11rAuthorityContract().branches),
           frozen_topology(scenario.initial_topology),
           initial_topology_version(adapter.supervisor().topologyVersion()) {}
