@@ -28,6 +28,14 @@
 
 namespace gf {
 
+enum class Task18YawObjective {
+    IndividualFormationTarget,
+    SharedTask,
+    ActualVelocity,
+    VelocityTaskCone,
+    LegacyCvtSoftCbf
+};
+
 inline bool referenceEdgeInitialSetAudited(
     const std::vector<CanonicalHardRow>& rows,
     const DirectedEdge& edge,
@@ -183,6 +191,14 @@ struct GrandFinaleSwarmAdapterConfig {
     bool task17_reference_compatible_formation = false;
     bool task17_member_aware_wide_formation = false;
     bool task17_coherent_service_wide_formation = false;
+    // Task 18 research-only primary-source CBF2026 outer loop.  It is
+    // independent and default-off so older evidence cannot dispatch here.
+    bool target_policy_task18_cbf2026_outer = false;
+    bool task18_collision_only_vaug = false;
+    std::size_t task18_update_period_cycles = 5;
+    bool task18_common_governor_enabled = false;
+    Task18YawObjective task18_yaw_objective =
+        Task18YawObjective::IndividualFormationTarget;
     double v6_neighborhood_radius_m = 450.0;
     double demand_recompute_interval_s = 5.0;
     double target_lock_epsilon_m = 30.0;
@@ -572,6 +588,7 @@ public:
             config_.task15_forward_update_period_cycles==0 ||
             config_.task16_cvt_update_period_cycles==0 ||
             config_.task17_update_period_cycles==0 ||
+            config_.task18_update_period_cycles==0 ||
             !std::isfinite(
                 config_.task16_reference_damping_reserve_multiples) ||
             config_.task16_reference_damping_reserve_multiples<=0.0 ||
@@ -1945,6 +1962,9 @@ private:
         request.plant_speed_dt_s = config_.dt_s;
         request.require_snapshot_robust_rows = true;
         request.velocity_augmented_rows = config_.velocity_augmented_rows;
+        request.velocity_augmented_reference_rows =
+            !config_.task18_collision_only_vaug;
+        request.velocity_augmented_collision_rows = true;
         request.row_slack_epsilon_m = config_.row_slack_epsilon_m;
         request.workspace_class_k=config_.workspace_class_k;
         request.workspace_alpha1_gain=config_.workspace_alpha1_gain;

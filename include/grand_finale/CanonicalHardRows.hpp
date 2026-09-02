@@ -116,6 +116,10 @@ struct CanonicalHardRowRequest {
     // sqrt(2*share*a*(max(h,0)+eps)) - v_closing >= 0 (researcher-
     // approved; rows stay affine in u, gamma* machinery untouched).
     bool velocity_augmented_rows = false;
+    // Task 18 causal split.  These gates only refine the master switch above;
+    // both default true so every pre-Task18 caller retains identical rows.
+    bool velocity_augmented_reference_rows = true;
+    bool velocity_augmented_collision_rows = true;
     double row_slack_epsilon_m = 0.5;
 };
 
@@ -506,7 +510,8 @@ inline std::vector<CanonicalHardRow> buildCanonicalHardRows(
                     edge.owner, edge.reference, request.states.at(edge.owner),
                     request.states.at(edge.reference), request.reference_spec,
                     tube->second, request.acceleration_half_box,
-                    request.velocity_augmented_rows,
+                    request.velocity_augmented_rows&&
+                        request.velocity_augmented_reference_rows,
                     request.row_slack_epsilon_m, request.plant_speed_dt_s);
             } else {
                 appendSharedPairRows(
@@ -521,7 +526,8 @@ inline std::vector<CanonicalHardRow> buildCanonicalHardRows(
                     edge.owner, edge.reference, request.states.at(edge.owner),
                     request.states.at(edge.reference), request.reference_spec,
                     tube->second, request.acceleration_half_box,
-                    request.velocity_augmented_rows,
+                    request.velocity_augmented_rows&&
+                        request.velocity_augmented_reference_rows,
                     request.row_slack_epsilon_m, request.plant_speed_dt_s);
             } else {
                 appendFixedPairRow(
@@ -558,7 +564,8 @@ inline std::vector<CanonicalHardRow> buildCanonicalHardRows(
                     edge.first, edge.second, request.states.at(edge.first),
                     request.states.at(edge.second), request.collision_spec,
                     tube->second, request.acceleration_half_box,
-                    request.velocity_augmented_rows,
+                    request.velocity_augmented_rows&&
+                        request.velocity_augmented_collision_rows,
                     request.row_slack_epsilon_m, request.plant_speed_dt_s);
             } else {
                 appendSharedPairRows(
@@ -575,7 +582,8 @@ inline std::vector<CanonicalHardRow> buildCanonicalHardRows(
                     mobile, anchor, request.states.at(mobile),
                     request.states.at(anchor), request.collision_spec,
                     tube->second, request.acceleration_half_box,
-                    request.velocity_augmented_rows,
+                    request.velocity_augmented_rows&&
+                        request.velocity_augmented_collision_rows,
                     request.row_slack_epsilon_m, request.plant_speed_dt_s);
             } else {
                 appendFixedPairRow(

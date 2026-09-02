@@ -139,7 +139,12 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     bool task17_reference_compatible_formation,
     bool task17_member_aware_wide_formation,
     bool task17_coherent_service_wide_formation,
-    std::size_t task17_update_period_cycles) {
+    std::size_t task17_update_period_cycles,
+    bool target_policy_task18_cbf2026_outer,
+    bool task18_common_governor_enabled,
+    bool task18_collision_only_vaug,
+    gf::Task18YawObjective task18_yaw_objective,
+    std::size_t task18_update_period_cycles) {
     auto scenario=gf::task10p11rFixedBaselineScenario();
     scenario.mobile_positions=def.positions;
     scenario.initial_topology=def.topology;
@@ -176,7 +181,12 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
         task17_reference_compatible_formation,
         task17_member_aware_wide_formation,
         task17_coherent_service_wide_formation,
-        task17_update_period_cycles);
+        task17_update_period_cycles,
+        target_policy_task18_cbf2026_outer,
+        task18_common_governor_enabled,
+        task18_collision_only_vaug,
+        task18_yaw_objective,
+        task18_update_period_cycles);
 }
 
 }  // namespace
@@ -222,6 +232,7 @@ int main(int argc,char** argv) {
         const bool policy_task17=policy.rfind("task17b",0)==0||
             policy.rfind("task17c",0)==0||
             policy.rfind("task17simple",0)==0;
+        const bool policy_task18=policy.rfind("task18",0)==0;
         const auto task16_arm=policy=="task16c"
             ?gf::Task16CoverageArm::FormationAware:
             policy=="task16b"?gf::Task16CoverageArm::BoundaryDecoupled:
@@ -241,6 +252,20 @@ int main(int argc,char** argv) {
             policy.find("-servicewide")!=std::string::npos;
         const std::size_t task17_update_period_cycles=
             gf::task17UpdatePeriodCycles(policy);
+        const bool task18_common_governor_enabled=
+            policy.find("-lambda")!=std::string::npos;
+        const bool task18_collision_only_vaug=
+            policy.find("-collisionvaug")!=std::string::npos;
+        const auto task18_yaw_objective=
+            policy.find("-legacyyaw")!=std::string::npos
+                ?gf::Task18YawObjective::LegacyCvtSoftCbf:
+            policy.find("-taskyaw")!=std::string::npos
+                ?gf::Task18YawObjective::SharedTask:
+            policy.find("-coneyaw")!=std::string::npos
+                ?gf::Task18YawObjective::VelocityTaskCone:
+            policy.find("-velyaw")!=std::string::npos
+                ?gf::Task18YawObjective::ActualVelocity:
+                 gf::Task18YawObjective::IndividualFormationTarget;
         const double service_standoff_m=argc>=13?std::stod(argv[12]):
             (policy=="h2center"?0.0:350.0);
         const double acceleration_half_box_mps2=argc>=14?
@@ -261,9 +286,12 @@ int main(int argc,char** argv) {
             std::stod(argv[20]):1.0;
         const double target_homotopy_workspace_guard_m=argc>=22?
             std::stod(argv[21]):1.5;
-        const auto gamma_selection=policy=="h2diag"
+        const auto gamma_selection=policy=="h2diag"||
+            policy.find("-projection")!=std::string::npos
             ?gf::GammaFeedbackSelectionMode::DiagnosticsOnly
-            :gf::GammaFeedbackSelectionMode::LeastIntervention;
+            :policy.find("-maxmargin")!=std::string::npos
+                ?gf::GammaFeedbackSelectionMode::MaximumPredictedMargin
+                :gf::GammaFeedbackSelectionMode::LeastIntervention;
         if (policy_v2&&policy_v6) {
             std::cerr<<"policies v2 and v6 are mutually exclusive\n";
             return 2;
@@ -287,7 +315,7 @@ int main(int argc,char** argv) {
             (rows_mode=="vaug-rate10"||rows_mode=="vaug-envelope"||
              rows_mode=="vaug-facets")?4.0:1.0;
         const double task16_speed_row_limit_mps=
-            rows_mode=="vaug-speed29p9"?29.9:0.0;
+            rows_mode.find("speed29p9")!=std::string::npos?29.9:0.0;
         const double range_noise_std_m=argc>=10?std::stod(argv[9]):0.0;
         const double range_dropout_probability=argc>=11?
             std::stod(argv[10]):0.0;
@@ -314,7 +342,10 @@ int main(int argc,char** argv) {
             task17_reference_compatible_formation,
             task17_member_aware_wide_formation,
             task17_coherent_service_wide_formation,
-            task17_update_period_cycles);
+            task17_update_period_cycles,
+            policy_task18,task18_common_governor_enabled,
+            task18_collision_only_vaug,
+            task18_yaw_objective,gf::task17UpdatePeriodCycles(policy));
         if (!fixture->adapter.initializeStageZero().initialized) {
             // Qualification-gate boundary point: recorded, not run.
             json boundary={{"protocol","task13-phase-a-run-v1"},
@@ -350,16 +381,22 @@ int main(int argc,char** argv) {
                 ++workspace_rows;
         }
         const auto& config=fixture->adapter.config();
-        json record={{"protocol",policy_task17
-                ?"task17-periodic-run-v1":"task13-phase-a-run-v1"},
-            {"preregistration",policy_task17
-                ?"task17-periodic-campaign-2026-09-02"
-                :"task-13-phase-a-launch-2026-09-01"},
+        json record={{"protocol",policy_task18
+                ?"task18-cbf2026-behavioral-recovery-v1":
+                policy_task17?"task17-periodic-run-v1":
+                "task13-phase-a-run-v1"},
+            {"preregistration",policy_task18
+                ?"task18-cbf2026-behavioral-recovery-2026-09-03":
+                policy_task17?"task17-periodic-campaign-2026-09-02":
+                "task-13-phase-a-launch-2026-09-01"},
             {"template",template_id},{"description",def.description},
             {"tau_mps2",tau},{"qualified",true},
             {"policy",policy},
-            {"gamma_selection",policy=="h2diag"
-                ?"diagnostics_only":"least_intervention"},
+            {"gamma_selection",gamma_selection==
+                gf::GammaFeedbackSelectionMode::DiagnosticsOnly
+                    ?"diagnostics_only":gamma_selection==
+                gf::GammaFeedbackSelectionMode::MaximumPredictedMargin
+                    ?"maximum_predicted_margin":"least_intervention"},
             {"gamma_selection_code",static_cast<int>(
                 fixture->adapter.config().gamma_feedback_selection)},
             {"rows_mode",rows_mode},
@@ -480,6 +517,16 @@ int main(int argc,char** argv) {
                     config.task17_member_aware_wide_formation},
                 {"task17_coherent_service_wide_formation",
                     config.task17_coherent_service_wide_formation},
+                {"target_policy_task18_cbf2026_outer",
+                    config.target_policy_task18_cbf2026_outer},
+                {"task18_update_period_cycles",
+                    config.task18_update_period_cycles},
+                {"task18_common_governor_enabled",
+                    config.task18_common_governor_enabled},
+                {"task18_collision_only_vaug",
+                    config.task18_collision_only_vaug},
+                {"task18_yaw_objective",
+                    static_cast<int>(config.task18_yaw_objective)},
                 {"task15_forward_shortlist_capacity",
                 config.task15_forward_shortlist_capacity},
                 {"task15_forward_update_period_cycles",
@@ -508,7 +555,8 @@ int main(int argc,char** argv) {
                 {"residual_tolerance",config.residual_tolerance},
                 {"dt_s",config.dt_s},
                 {"truth_initial_set_gate_mps",
-                (policy_h2||policy_task15||policy_task16||policy_task17)
+                (policy_h2||policy_task15||policy_task16||policy_task17||
+                    policy_task18)
                     ?30.0:30.01}}},
             {"s3_stop_rule","terminate_at_t100_latch"},
             {"evaluations",json::array()},
@@ -612,7 +660,8 @@ int main(int argc,char** argv) {
                         tv.head<2>().norm());
                 }
                 const double hard_speed_limit=
-                    (policy_h2||policy_task15||policy_task16||policy_task17)
+                    (policy_h2||policy_task15||policy_task16||policy_task17||
+                        policy_task18)
                         ?30.0:30.01;
                 if (truth_gate_max_speed>hard_speed_limit+1e-9) {
                     truth_gate_violation=true;
@@ -621,7 +670,8 @@ int main(int argc,char** argv) {
                         {"advanced",false},
                         {"reason","speed_initial_set_truth_violated"},
                         {"coverage_fraction",
-                        (policy_h2||policy_task15||policy_task16||policy_task17)
+                        (policy_h2||policy_task15||policy_task16||
+                            policy_task17||policy_task18)
                             ?fixture->adapter.coverage().certifiedFraction()
                             :fixture->adapter.coverage().truthFraction()},
                         {"minimum_hard_residual",json(nullptr)}});
@@ -650,6 +700,10 @@ int main(int argc,char** argv) {
                 last_step.task17_allocation.valid)
                 task16_allocation_wall_s.push_back(
                     last_step.task17_allocation.allocation_wall_s);
+            if (last_step.task18_allocation_evaluated&&
+                last_step.task18_allocation.valid)
+                task16_allocation_wall_s.push_back(
+                    last_step.task18_allocation.allocation_wall_s);
             if (last_step.target_governor_evaluated) {
                 ++target_governor_ticks;
                 minimum_target_governor_fraction=std::min(
@@ -679,7 +733,7 @@ int main(int argc,char** argv) {
             previous_certified=current_certified;
             previous_truth=current_truth;
             const double fraction=(policy_h2||policy_task15||policy_task16||
-                policy_task17)
+                policy_task17||policy_task18)
                 ?certified_fraction:truth_fraction;
             if (!t95_tick.has_value()&&fraction>=0.95) t95_tick=tick;
             if (!t100_tick.has_value()&&fraction>=1.0-1e-12) t100_tick=tick;
@@ -704,7 +758,8 @@ int main(int argc,char** argv) {
                     interval_max);
                 if (truth_max>0.0) ++truth_overspeed_ticks;
                 if (interval_max>0.0) ++interval_overspeed_ticks;
-                if ((policy_h2||policy_task15||policy_task16||policy_task17) &&
+                if ((policy_h2||policy_task15||policy_task16||policy_task17||
+                    policy_task18) &&
                     (truth_max>1e-9||interval_max>1e-9)) {
                     runtime_safety_violation=true;
                     runtime_safety_reason="hard_speed_limit_violated";
@@ -745,6 +800,10 @@ int main(int argc,char** argv) {
                 last_step.task17_allocation.valid)
                 current_active_squads=
                     last_step.task17_allocation.active_squads;
+            if (last_step.task18_allocation_evaluated&&
+                last_step.task18_allocation.valid)
+                current_active_squads=
+                    last_step.task18_allocation.active_squads;
             active_squad_ticks+=current_active_squads;
             if (last_step.target_epoch!=last_target_epoch) {
                 if (last_target_epoch!=0) ++target_switches;
@@ -851,7 +910,8 @@ int main(int argc,char** argv) {
                 applied_target_min=applied_target_min.cwiseMin(target);
                 applied_target_max=applied_target_max.cwiseMax(target);
             }
-            if ((policy_h2||policy_task15||policy_task16||policy_task17) &&
+            if ((policy_h2||policy_task15||policy_task16||policy_task17||
+                policy_task18) &&
                 (tick_actual_reference>850.0+1e-9 ||
                     tick_actual_separation<10.0-1e-9 ||
                     (policy_h2 && !policy_h2wide &&
@@ -923,6 +983,22 @@ int main(int argc,char** argv) {
                                 ?json(nullptr):json({applied_target->second.x(),
                                     applied_target->second.y()}); }()}};
                 const Robot& robot=robot_by_id(owner);
+                const double actual_yaw=
+                    robot.model->getStateVariable("yawRad");
+                const Eigen::Vector2d actual_velocity{
+                    robot.model->getStateVariable("vx"),
+                    robot.model->getStateVariable("vy")};
+                const json velocity_heading=actual_velocity.norm()>1.0e-9
+                    ?json(std::atan2(actual_velocity.y(),actual_velocity.x()))
+                    :json(nullptr);
+                const json yaw_velocity_error=actual_velocity.norm()>1.0e-9
+                    ?json(std::abs(gf::wrapYawRad(actual_yaw-
+                        std::atan2(actual_velocity.y(),actual_velocity.x()))))
+                    :json(nullptr);
+                const auto desired=last_step.desired_yaw_rad.find(owner);
+                const auto task_bearing=last_step.task_bearing_rad.find(owner);
+                const auto applied_yaw_rate=
+                    last_step.step.applied_yaw_rates_radps.find(owner);
                 owners.push_back({{"id",owner},
                     {"est",{estimate_position.x(),estimate_position.y(),
                         estimate_velocity.x(),estimate_velocity.y()}},
@@ -933,6 +1009,18 @@ int main(int argc,char** argv) {
                     {"u_applied",std::move(applied_json)},
                     {"n_raw",std::move(raw_json)},
                     {"n_sel_gamma",std::move(diagnostic_json)},
+                    {"yaw",{{"actual_rad",actual_yaw},
+                        {"desired_rad",desired==
+                            last_step.desired_yaw_rad.end()?json(nullptr):
+                            json(desired->second)},
+                        {"rate_radps",applied_yaw_rate==
+                            last_step.step.applied_yaw_rates_radps.end()
+                            ?json(nullptr):json(applied_yaw_rate->second)},
+                        {"velocity_heading_rad",velocity_heading},
+                        {"yaw_velocity_abs_error_rad",yaw_velocity_error},
+                        {"task_bearing_rad",task_bearing==
+                            last_step.task_bearing_rad.end()?json(nullptr):
+                            json(task_bearing->second)}}},
                     {"target",std::move(target)}});
             }
             telemetry<<json({{"tick",tick},
@@ -1002,6 +1090,13 @@ int main(int argc,char** argv) {
                     {"duplicate_task_count",
                     last_step.task17_allocation.duplicate_task_count},
                     {"common_fraction",last_step.task17_common_fraction}}},
+                {"task18",{{"allocation_evaluated",
+                    last_step.task18_allocation_evaluated},
+                    {"allocation_wall_s",
+                    last_step.task18_allocation_evaluated
+                        ?json(last_step.task18_allocation.allocation_wall_s)
+                        :json(nullptr)},
+                    {"common_fraction",last_step.task18_common_fraction}}},
                 {"throttle",{{"active",throttle.active},
                     {"s",throttle.s}}},
                 {"owners",std::move(owners)}}).dump()<<'\n';
@@ -1071,7 +1166,8 @@ int main(int argc,char** argv) {
         record["t100_tick"]=(t100_tick.has_value()?json(*t100_tick):
             json(nullptr));
         record["final_coverage_fraction"]=
-            (policy_h2||policy_task15||policy_task16||policy_task17)
+            (policy_h2||policy_task15||policy_task16||policy_task17||
+                policy_task18)
                 ?fixture->adapter.coverage().certifiedFraction():
                 fixture->adapter.coverage().truthFraction();
         record["final_certified_coverage_fraction"]=

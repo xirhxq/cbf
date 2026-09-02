@@ -55,6 +55,9 @@ struct Task16CoverageRequest {
     Eigen::Vector2d search_min=Eigen::Vector2d::Zero();
     Eigen::Vector2d search_max=Eigen::Vector2d::Zero();
     Task16CoverageConfig config;
+    // Task 18 uses Voronoi as a preferred partition, not hard ownership: an
+    // empty share must not erase a real ledger while global work remains.
+    bool global_pool_fallback_for_empty_share=false;
 };
 
 struct Task16CoverageResult {
@@ -212,7 +215,26 @@ inline Task16CoverageResult allocateTask16Cbf2026Coverage(
     const Eigen::Vector2d base=request.fixed_positions.at(101);
     for (const auto& squad:squads) {
         const auto share=shares.find(squad.name);
-        if (share==shares.end() || share->second.empty()) continue;
+        std::vector<const FrontierCell*> fallback;
+        const std::vector<const FrontierCell*>* candidates=nullptr;
+        if (share!=shares.end()&&!share->second.empty()) {
+            candidates=&share->second;
+        } else if (request.global_pool_fallback_for_empty_share) {
+            for (const auto& cell:request.uncovered_cells) {
+                const bool already_assigned=std::any_of(
+                    result.assignments.begin(),result.assignments.end(),
+                    [&](const auto& item) {
+                        return item.second.task.id()==cell.id();
+                    });
+                if (!already_assigned) fallback.push_back(&cell);
+            }
+            if (fallback.empty())
+                for (const auto& cell:request.uncovered_cells)
+                    fallback.push_back(&cell);
+            candidates=&fallback;
+        } else {
+            continue;
+        }
         const auto& leader=task16_coverage_detail::agent(
             request.agents,squad.leader);
         const Eigen::Vector2d focus=leader.position+
@@ -220,7 +242,7 @@ inline Task16CoverageResult allocateTask16Cbf2026Coverage(
             Eigen::Vector2d(std::cos(leader.yaw_rad),
                             std::sin(leader.yaw_rad));
         const auto& task=task16_coverage_detail::nearestToFocus(
-            share->second,focus,request.config.comparison_epsilon);
+            *candidates,focus,request.config.comparison_epsilon);
         Task16CoverageAssignment assignment;
         assignment.squad=squad.name;
         assignment.task=task;

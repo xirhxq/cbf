@@ -17,6 +17,33 @@
 
 namespace gf {
 
+inline double task18VelocityTaskConeDesiredYaw(
+    double velocity_heading_rad,double task_bearing_rad,
+    double sensor_half_angle_rad=M_PI/3.0) {
+    if (!std::isfinite(velocity_heading_rad) ||
+        !std::isfinite(task_bearing_rad) ||
+        !std::isfinite(sensor_half_angle_rad) ||
+        sensor_half_angle_rad<=0.0 || sensor_half_angle_rad>M_PI)
+        throw std::invalid_argument("invalid Task 18 velocity-task cone yaw");
+    const double task_offset=wrapYawRad(
+        task_bearing_rad-velocity_heading_rad);
+    return wrapYawRad(velocity_heading_rad+std::clamp(task_offset,
+        -sensor_half_angle_rad,sensor_half_angle_rad));
+}
+
+inline double task18LegacyCvtYawRate(
+    double current_yaw_rad,double target_bearing_rad,double maximum_rate_radps) {
+    if (!std::isfinite(current_yaw_rad) ||
+        !std::isfinite(target_bearing_rad) ||
+        !std::isfinite(maximum_rate_radps) || maximum_rate_radps<0.0)
+        throw std::invalid_argument("invalid Task 18 legacy CVT yaw input");
+    // CBF2026 used h=-(1-cos(e))/2 and alpha(h)=h.  On its active,
+    // zero-slack scalar yaw row, 0.5*sin(e)*yaw_rate+h=0, hence tan(e/2).
+    const double error=wrapYawRad(target_bearing_rad-current_yaw_rad);
+    return std::clamp(std::tan(0.5*error),
+        -maximum_rate_radps,maximum_rate_radps);
+}
+
 enum class SimpleCoveragePhase {
     CoverageSearch
 };
@@ -63,6 +90,8 @@ struct SimpleCoverageControlStep {
     Task16CoverageResult task16_allocation;
     bool task17_allocation_evaluated=false;
     Task17PeriodicCoverageResult task17_allocation;
+    bool task18_allocation_evaluated=false;
+    Task16CoverageResult task18_allocation;
     GrandFinaleSwarmStep step;
     std::string reason;
     std::map<NodeId,FrontierCell> committed_targets;
@@ -88,6 +117,9 @@ struct SimpleCoverageControlStep {
     std::size_t task16_stalled_squads=0;
     std::map<std::string,std::size_t> task16_governor_rejections;
     std::map<std::string,double> task17_common_fraction;
+    std::map<std::string,double> task18_common_fraction;
+    std::map<NodeId,double> desired_yaw_rad;
+    std::map<NodeId,double> task_bearing_rad;
 };
 
 struct SimpleCoverageControllerRestartState {
@@ -165,7 +197,16 @@ public:
             adapter_.config().target_policy_task16_cbf2026;
         const bool policy_task17=
             adapter_.config().target_policy_task17_periodic;
-        if (policy_task17) {
+        const bool policy_task18=
+            adapter_.config().target_policy_task18_cbf2026_outer;
+        if (policy_task18) {
+            advanceTask18Targets(runtime,result);
+            if (result.task18_allocation_evaluated&&
+                !result.task18_allocation.valid) {
+                result.step.reason=result.reason;
+                return result;
+            }
+        } else if (policy_task17) {
             advanceTask17Targets(runtime,result);
             if (result.task17_allocation_evaluated&&
                 !result.task17_allocation.valid) {
@@ -251,7 +292,7 @@ public:
             }
             if (config_.target_projection==
                 TargetProjection::LegacySearchPolygonClippingAblation) {
-                const GridWorld& grid=swarm_.robots.front()->gridWorld;
+                GridWorld& grid=swarm_.robots.front()->gridWorld;
                 result.allocation=
                     legacyProjectLeaderCoverageTargetsToSearchPolygon(
                         result.allocation,
@@ -271,13 +312,17 @@ public:
         std::map<NodeId,Eigen::Vector2d> nominal_targets;
         for (const auto& [owner,target]:targets_)
             nominal_targets[owner]=target.center;
-        if ((policy_task16||policy_task17) &&
+        if ((policy_task16||policy_task17||policy_task18) &&
             nominal_targets.size()==runtime.estimate.mobile_ids.size()) {
             if (policy_task16&&adapter_.config().task16_coverage_arm==
                     Task16CoverageArm::HistoricalClipped) {
                 task16_applied_targets_=nominal_targets;
             } else if (policy_task17&&
                 !adapter_.config().task17_common_governor_enabled) {
+                task16_applied_targets_=nominal_targets;
+                result.applied_target_centers=nominal_targets;
+            } else if (policy_task18&&
+                !adapter_.config().task18_common_governor_enabled) {
                 task16_applied_targets_=nominal_targets;
                 result.applied_target_centers=nominal_targets;
             } else {
@@ -294,6 +339,9 @@ public:
                 nominal_targets=result.applied_target_centers;
                 if (policy_task17)
                     result.task17_common_fraction=
+                        result.task16_common_fraction;
+                if (policy_task18)
+                    result.task18_common_fraction=
                         result.task16_common_fraction;
             }
         } else if (policy_task15 &&
@@ -383,7 +431,46 @@ public:
                 currentYaw(owner),soft_target,
                 runtime.mode},model);
             nominal[owner]=soft.acceleration;
-            yaw_rates[owner]=soft.yaw_rate_radps;
+            double desired_yaw=soft.desired_yaw_rad;
+            const auto committed=targets_.find(owner);
+            if (committed!=targets_.end()&&committed->second.x_index>=0) {
+                GridWorld& grid=swarm_.robots.front()->gridWorld;
+                const Eigen::Vector2d task_center{
+                    grid.getCellCenterX(committed->second.x_index),
+                    grid.getCellCenterY(committed->second.y_index)};
+                const Eigen::Vector2d to_task=task_center-state.head<2>();
+                result.task_bearing_rad[owner]=to_task.norm()>1.0e-12
+                    ?std::atan2(to_task.y(),to_task.x()):currentYaw(owner);
+            }
+            if (policy_task18) {
+                const auto objective=
+                    adapter_.config().task18_yaw_objective;
+                if (objective==Task18YawObjective::SharedTask) {
+                    desired_yaw=result.task_bearing_rad.at(owner);
+                } else if (objective==Task18YawObjective::ActualVelocity) {
+                    desired_yaw=state.tail<2>().norm()>1.0e-9
+                        ?std::atan2(state(3),state(2)):currentYaw(owner);
+                } else if (objective==Task18YawObjective::VelocityTaskCone) {
+                    if (state.tail<2>().norm()>1.0e-9)
+                        desired_yaw=task18VelocityTaskConeDesiredYaw(
+                            std::atan2(state(3),state(2)),
+                            result.task_bearing_rad.at(owner));
+                    else desired_yaw=currentYaw(owner);
+                }
+            }
+            result.desired_yaw_rad[owner]=desired_yaw;
+            if (policy_task18&&adapter_.config().task18_yaw_objective==
+                    Task18YawObjective::LegacyCvtSoftCbf) {
+                yaw_rates[owner]=task18LegacyCvtYawRate(
+                    currentYaw(owner),desired_yaw,
+                    model.maximum_yaw_rate_radps);
+            } else {
+                yaw_rates[owner]=std::clamp(
+                    model.yaw_gain_per_s*wrapYawRad(
+                        desired_yaw-currentYaw(owner)),
+                    -model.maximum_yaw_rate_radps,
+                     model.maximum_yaw_rate_radps);
+            }
         }
         last_nominal_controls_=nominal;
         result.compute_profile.record(
@@ -446,7 +533,7 @@ public:
         else {
             consecutive_failures_=0;
             ++successful_control_cycles_;
-            if (policy_task16||policy_task17) {
+            if (policy_task16||policy_task17||policy_task18) {
                 task16_last_applied_controls_=result.step.applied_controls;
                 task16_last_applied_yaw_rates_=
                     result.step.applied_yaw_rates_radps;
@@ -652,6 +739,60 @@ public:
     }
 
 private:
+    // ---- Task 18: primary-source CBF2026 outer-loop recovery ----
+    void advanceTask18Targets(
+        const GrandFinaleRuntimeSnapshot& runtime,
+        SimpleCoverageControlStep& result) {
+        const auto& config=adapter_.config();
+        const bool periodic=targets_.empty()||
+            control_boundaries_>=task18_last_allocation_cycle_+
+                config.task18_update_period_cycles;
+        if (!periodic) return;
+        const auto uncovered=currentCertifiedUncoveredCells();
+        // After certified T100, retain the final real ledger.
+        if (uncovered.empty()&&!targets_.empty()) return;
+        Task16CoverageRequest request;
+        request.arm=Task16CoverageArm::BoundaryDecoupled;
+        request.uncovered_cells=uncovered;
+        request.fixed_positions=runtime.estimate.fixed_positions;
+        const GridWorld& grid=swarm_.robots.front()->gridWorld;
+        request.search_min={grid.xLim.first,grid.yLim.first};
+        request.search_max={grid.xLim.second,grid.yLim.second};
+        request.config.forward_focus_distance_m=400.0;
+        request.config.sensor_inner_radius_m=config.coverage_inner_radius_m;
+        request.config.sensor_outer_radius_m=config.sensor_radius_m;
+        request.config.sensor_half_angle_rad=config.coverage_half_angle_rad;
+        request.config.cell_half_diagonal_m=5.0*std::sqrt(2.0);
+        request.config.nominal_speed_mps=config.speed_limit_mps;
+        request.config.successor_dt_s=config.dt_s;
+        request.global_pool_fallback_for_empty_share=true;
+        for (std::size_t index=0;
+             index<runtime.estimate.mobile_ids.size();++index) {
+            const NodeId owner=runtime.estimate.mobile_ids[index];
+            const double error=std::max(
+                config.certified_shadow_single_position_support_m,
+                std::max(config.certified_error_bound_m,
+                    config.uncertainty_sigma*std::sqrt(std::max(
+                        0.0,detail::maximumPositionEigenvalue(
+                            runtime.estimate,owner)))));
+            request.agents.push_back({owner,
+                runtime.estimate.mean.segment<2>(4*index),
+                runtime.estimate.mean.segment<2>(4*index+2),
+                currentYaw(owner),error});
+        }
+        result.task18_allocation_evaluated=true;
+        result.task18_allocation=allocateTask16Cbf2026Coverage(
+            std::move(request));
+        if (!result.task18_allocation.valid) {
+            result.reason=result.task18_allocation.reason;
+            return;
+        }
+        targets_=result.task18_allocation.targets;
+        task18_last_allocation_cycle_=control_boundaries_;
+        ++target_epoch_;
+        consecutive_failures_=0;
+    }
+
     // ---- Task 17: uniform periodic rolling task semantics ----
     void advanceTask17Targets(
         const GrandFinaleRuntimeSnapshot& runtime,
@@ -1773,6 +1914,7 @@ private:
     std::map<NodeId,double> task16_last_applied_yaw_rates_;
     std::size_t task16_last_allocation_cycle_=0;
     std::size_t task17_last_allocation_cycle_=0;
+    std::size_t task18_last_allocation_cycle_=0;
     CanonicalHocbfQpController task16_governor_qp_;
     // Task 13 Phase B0-a (target policy v2) state.
     double last_demand_recompute_s_=-1.0e9;
