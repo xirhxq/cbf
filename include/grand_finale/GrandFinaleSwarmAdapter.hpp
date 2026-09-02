@@ -12,6 +12,7 @@
 #include "grand_finale/GurobiTopologySolver.hpp"
 #include "grand_finale/HighsTopologySolver.hpp"
 #include "grand_finale/InformationGateDiagnostic.hpp"
+#include "grand_finale/Task16CoverageTypes.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -164,6 +165,14 @@ struct GrandFinaleSwarmAdapterConfig {
     std::size_t task15_forward_shortlist_capacity = 32;
     std::size_t task15_forward_update_period_cycles = 10;
     double task15_forward_endpoint_standoff_m = 250.0;
+    // Task 16 research-only CBF2026 second-order comparison.  Disabled by
+    // default so no historical or production path silently changes policy.
+    bool target_policy_task16_cbf2026 = false;
+    Task16CoverageArm task16_coverage_arm =
+        Task16CoverageArm::HistoricalClipped;
+    std::size_t task16_cvt_update_period_cycles = 5;
+    double task16_reference_damping_reserve_multiples = 1.0;
+    bool task16_tracking_envelope_enabled = false;
     double v6_neighborhood_radius_m = 450.0;
     double demand_recompute_interval_s = 5.0;
     double target_lock_epsilon_m = 30.0;
@@ -551,6 +560,10 @@ public:
             config_.target_homotopy_workspace_guard_m<0.0 ||
             config_.task15_forward_shortlist_capacity==0 ||
             config_.task15_forward_update_period_cycles==0 ||
+            config_.task16_cvt_update_period_cycles==0 ||
+            !std::isfinite(
+                config_.task16_reference_damping_reserve_multiples) ||
+            config_.task16_reference_damping_reserve_multiples<=0.0 ||
             !std::isfinite(config_.task15_forward_endpoint_standoff_m) ||
             config_.task15_forward_endpoint_standoff_m<0.0 ||
             !std::isfinite(config_.residual_tolerance) ||
@@ -1908,8 +1921,10 @@ private:
                 :config_.speed_limit_mps);
         request.speed_cbf_gain = config_.speed_cbf_gain;
         request.plant_speed_facet_count =
-            config_.speed_limit_mps>0.0&&!config_.speed_row_nominal&&
-            !config_.speed_rows_removed
+            config_.speed_limit_mps>0.0&&!config_.speed_rows_removed&&
+            (!config_.speed_row_nominal||
+             (config_.target_policy_task16_cbf2026&&
+              config_.plant_speed_facet_count!=0))
                 ?config_.plant_speed_facet_count:0;
         request.plant_speed_dt_s = config_.dt_s;
         request.require_snapshot_robust_rows = true;

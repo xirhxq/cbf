@@ -125,7 +125,13 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     double workspace_braking_regularization_m,bool target_homotopy_enabled,
     double target_homotopy_rate_gain,double target_homotopy_workspace_guard_m,
     bool unified_h2_cbf2026_wide_virtual_formation,
-    bool target_policy_task15_forward) {
+    bool target_policy_task15_forward,
+    bool target_policy_task16_cbf2026,
+    gf::Task16CoverageArm task16_coverage_arm,
+    bool task16_tracking_envelope_enabled,
+    std::size_t task16_plant_speed_facet_count,
+    double task16_reference_damping_reserve_multiples,
+    double task16_speed_row_limit_mps) {
     auto scenario=gf::task10p11rFixedBaselineScenario();
     scenario.mobile_positions=def.positions;
     scenario.initial_topology=def.topology;
@@ -152,7 +158,11 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
         acceleration_half_box_mps2,target_homotopy_rate_gain,
         target_homotopy_workspace_guard_m,
         unified_h2_cbf2026_wide_virtual_formation,
-        target_policy_task15_forward);
+        target_policy_task15_forward,target_policy_task16_cbf2026,
+        task16_coverage_arm,task16_tracking_envelope_enabled,
+        task16_plant_speed_facet_count,
+        task16_reference_damping_reserve_multiples,
+        task16_speed_row_limit_mps);
 }
 
 }  // namespace
@@ -193,6 +203,12 @@ int main(int argc,char** argv) {
             policy=="h2center"||policy=="h2wide";
         const bool policy_h2wide=policy=="h2wide";
         const bool policy_task15=policy=="task15";
+        const bool policy_task16=policy=="task16a"||policy=="task16b"||
+            policy=="task16c";
+        const auto task16_arm=policy=="task16c"
+            ?gf::Task16CoverageArm::FormationAware:
+            policy=="task16b"?gf::Task16CoverageArm::BoundaryDecoupled:
+            gf::Task16CoverageArm::HistoricalClipped;
         const double service_standoff_m=argc>=13?std::stod(argv[12]):
             (policy=="h2center"?0.0:350.0);
         const double acceleration_half_box_mps2=argc>=14?
@@ -229,7 +245,17 @@ int main(int argc,char** argv) {
             return 2;
         }
         const std::string rows_mode=argc>=9?argv[8]:"classic";
-        const bool velocity_augmented_rows=rows_mode=="vaug";
+        const bool velocity_augmented_rows=
+            rows_mode.rfind("vaug",0)==0;
+        const bool task16_tracking_envelope_enabled=
+            rows_mode=="vaug-envelope";
+        const std::size_t task16_plant_speed_facet_count=
+            rows_mode=="vaug-facets"?64:0;
+        const double task16_reference_damping_reserve_multiples=
+            (rows_mode=="vaug-rate10"||rows_mode=="vaug-envelope"||
+             rows_mode=="vaug-facets")?4.0:1.0;
+        const double task16_speed_row_limit_mps=
+            rows_mode=="vaug-speed29p9"?29.9:0.0;
         const double range_noise_std_m=argc>=10?std::stod(argv[9]):0.0;
         const double range_dropout_probability=argc>=11?
             std::stod(argv[10]):0.0;
@@ -247,7 +273,11 @@ int main(int argc,char** argv) {
             workspace_braking_regularization_m,target_homotopy_enabled,
             target_homotopy_rate_gain,
             target_homotopy_workspace_guard_m,policy_h2wide,
-            policy_task15);
+            policy_task15,policy_task16,task16_arm,
+            task16_tracking_envelope_enabled,
+            task16_plant_speed_facet_count,
+            task16_reference_damping_reserve_multiples,
+            task16_speed_row_limit_mps);
         if (!fixture->adapter.initializeStageZero().initialized) {
             // Qualification-gate boundary point: recorded, not run.
             json boundary={{"protocol","task13-phase-a-run-v1"},
@@ -369,6 +399,33 @@ int main(int argc,char** argv) {
                 config.unified_h2_cbf2026_wide_virtual_formation},
                 {"target_policy_task15_forward",
                 config.target_policy_task15_forward},
+                {"target_policy_task16_cbf2026",
+                config.target_policy_task16_cbf2026},
+                {"task16_coverage_arm",
+                static_cast<int>(config.task16_coverage_arm)},
+                {"task16_cbf2026_source_commit",
+                gf::task16Cbf2026SourceCommit()},
+                {"task16_reference_speed_mps",policy_task16
+                    ?json(gf::task16AnalyticReferenceSpeedMps(
+                        config.speed_limit_mps,config.acceleration_half_box,
+                        config.velocity_gain,config.
+                            task16_reference_damping_reserve_multiples))
+                    :json(nullptr)},
+                {"task16_reference_damping_reserve_multiples",
+                    config.task16_reference_damping_reserve_multiples},
+                {"task16_tracking_envelope_m",policy_task16
+                    ?json(gf::task16AnalyticTrackingEnvelopeM(
+                        gf::task16AnalyticReferenceSpeedMps(
+                            config.speed_limit_mps,
+                            config.acceleration_half_box,
+                            config.velocity_gain,config.
+                                task16_reference_damping_reserve_multiples),
+                        config.velocity_gain,config.position_gain,
+                        config.speed_limit_mps,
+                        config.acceleration_half_box))
+                    :json(nullptr)},
+                {"task16_tracking_envelope_enabled",
+                    config.task16_tracking_envelope_enabled},
                 {"task15_forward_shortlist_capacity",
                 config.task15_forward_shortlist_capacity},
                 {"task15_forward_update_period_cycles",
@@ -397,7 +454,7 @@ int main(int argc,char** argv) {
                 {"residual_tolerance",config.residual_tolerance},
                 {"dt_s",config.dt_s},
                 {"truth_initial_set_gate_mps",
-                (policy_h2||policy_task15)?30.0:30.01}}},
+                (policy_h2||policy_task15||policy_task16)?30.0:30.01}}},
             {"s3_stop_rule","terminate_at_t100_latch"},
             {"evaluations",json::array()},
             {"complete",false}};
@@ -445,6 +502,18 @@ int main(int argc,char** argv) {
         double minimum_target_governor_stopping_margin_m=
             std::numeric_limits<double>::infinity();
         std::size_t target_governor_ticks=0;
+        int highest_selected_task_row=-1;
+        Eigen::Vector2d nominal_target_min=Eigen::Vector2d::Constant(
+            std::numeric_limits<double>::infinity());
+        Eigen::Vector2d nominal_target_max=Eigen::Vector2d::Constant(
+            -std::numeric_limits<double>::infinity());
+        Eigen::Vector2d applied_target_min=nominal_target_min;
+        Eigen::Vector2d applied_target_max=nominal_target_max;
+        Eigen::Vector2d actual_position_min=nominal_target_min;
+        Eigen::Vector2d actual_position_max=nominal_target_max;
+        double total_distance_m=0.0;
+        double maximum_outside_distance_m=0.0;
+        std::vector<double> task16_allocation_wall_s;
         gf::SimpleCoverageControlStep last_step;
         gf::Task10p11ComputeProfile profiler;
         const auto mobile_ids=
@@ -463,7 +532,7 @@ int main(int argc,char** argv) {
                         tv.head<2>().norm());
                 }
                 const double hard_speed_limit=
-                    (policy_h2||policy_task15)?30.0:30.01;
+                    (policy_h2||policy_task15||policy_task16)?30.0:30.01;
                 if (truth_gate_max_speed>hard_speed_limit+1e-9) {
                     truth_gate_violation=true;
                     hard_stop=true;
@@ -471,7 +540,7 @@ int main(int argc,char** argv) {
                         {"advanced",false},
                         {"reason","speed_initial_set_truth_violated"},
                         {"coverage_fraction",
-                        (policy_h2||policy_task15)
+                        (policy_h2||policy_task15||policy_task16)
                             ?fixture->adapter.coverage().certifiedFraction()
                             :fixture->adapter.coverage().truthFraction()},
                         {"minimum_hard_residual",json(nullptr)}});
@@ -482,10 +551,20 @@ int main(int argc,char** argv) {
             // truth velocity; the retired form paired post-advance velocity
             // with the same tick's control (a two-tick projection).
             std::map<gf::NodeId,Eigen::Vector2d> pre_velocities;
+            std::map<gf::NodeId,Eigen::Vector2d> pre_positions;
             for (const auto& robot:fixture->swarm.robots)
-                pre_velocities[static_cast<gf::NodeId>(robot->id)]=
-                    Eigen::Vector2d(robot->model->getVelocity().head<2>());
+                {
+                const auto id=static_cast<gf::NodeId>(robot->id);
+                pre_velocities[id]=Eigen::Vector2d(
+                    robot->model->getVelocity().head<2>());
+                pre_positions[id]={robot->model->getStateVariable("x"),
+                    robot->model->getStateVariable("y")};
+                }
             last_step=fixture->controller.advance();
+            if (last_step.task16_allocation_evaluated&&
+                last_step.task16_allocation.valid)
+                task16_allocation_wall_s.push_back(
+                    last_step.task16_allocation.allocation_wall_s);
             if (last_step.target_governor_evaluated) {
                 ++target_governor_ticks;
                 minimum_target_governor_fraction=std::min(
@@ -500,7 +579,7 @@ int main(int argc,char** argv) {
                 fixture->adapter.coverage().certifiedFraction();
             const double truth_fraction=
                 fixture->adapter.coverage().truthFraction();
-            const double fraction=(policy_h2||policy_task15)
+            const double fraction=(policy_h2||policy_task15||policy_task16)
                 ?certified_fraction:truth_fraction;
             if (!t95_tick.has_value()&&fraction>=0.95) t95_tick=tick;
             if (!t100_tick.has_value()&&fraction>=1.0-1e-12) t100_tick=tick;
@@ -525,7 +604,7 @@ int main(int argc,char** argv) {
                     interval_max);
                 if (truth_max>0.0) ++truth_overspeed_ticks;
                 if (interval_max>0.0) ++interval_overspeed_ticks;
-                if ((policy_h2||policy_task15) &&
+                if ((policy_h2||policy_task15||policy_task16) &&
                     (truth_max>1e-9||interval_max>1e-9)) {
                     runtime_safety_violation=true;
                     runtime_safety_reason="hard_speed_limit_violated";
@@ -558,6 +637,10 @@ int main(int argc,char** argv) {
                 last_step.task15_allocation.valid)
                 current_active_squads=
                     last_step.task15_allocation.active_squads;
+            if (last_step.task16_allocation_evaluated&&
+                last_step.task16_allocation.valid)
+                current_active_squads=
+                    last_step.task16_allocation.active_squads;
             active_squad_ticks+=current_active_squads;
             if (last_step.target_epoch!=last_target_epoch) {
                 if (last_target_epoch!=0) ++target_switches;
@@ -577,6 +660,18 @@ int main(int argc,char** argv) {
                 const gf::NodeId id=static_cast<gf::NodeId>(robot->id);
                 truth_positions[id]={robot->model->getStateVariable("x"),
                     robot->model->getStateVariable("y")};
+                actual_position_min=actual_position_min.cwiseMin(
+                    truth_positions[id]);
+                actual_position_max=actual_position_max.cwiseMax(
+                    truth_positions[id]);
+                const double dx=std::max({0.0,-truth_positions[id].x(),
+                    truth_positions[id].x()-3000.0});
+                const double dy=std::max({0.0,-truth_positions[id].y(),
+                    truth_positions[id].y()-3000.0});
+                maximum_outside_distance_m=std::max(
+                    maximum_outside_distance_m,std::hypot(dx,dy));
+                total_distance_m+=(truth_positions[id]-
+                    pre_positions.at(id)).norm();
                 maximum_speed_mps=std::max(maximum_speed_mps,
                     robot->model->getVelocity().head<2>().norm());
             }
@@ -589,6 +684,9 @@ int main(int argc,char** argv) {
                 const auto applied=last_step.applied_target_centers.find(id);
                 if (applied!=last_step.applied_target_centers.end())
                     return applied->second;
+                const auto committed=last_step.committed_targets.find(id);
+                if (committed!=last_step.committed_targets.end())
+                    return committed->second.center;
                 return snapshot.estimate.fixed_positions.at(id);
             };
             double tick_actual_reference=0.0,tick_target_reference=0.0;
@@ -636,7 +734,20 @@ int main(int argc,char** argv) {
                 minimum_actual_separation_m,tick_actual_separation);
             minimum_target_separation_m=std::min(
                 minimum_target_separation_m,tick_target_separation);
-            if ((policy_h2||policy_task15) &&
+            for (const auto& [owner,target]:last_step.committed_targets) {
+                (void)owner;
+                highest_selected_task_row=std::max(
+                    highest_selected_task_row,target.y_index);
+                nominal_target_min=nominal_target_min.cwiseMin(target.center);
+                nominal_target_max=nominal_target_max.cwiseMax(target.center);
+            }
+            for (const auto& [owner,target]:
+                 last_step.applied_target_centers) {
+                (void)owner;
+                applied_target_min=applied_target_min.cwiseMin(target);
+                applied_target_max=applied_target_max.cwiseMax(target);
+            }
+            if ((policy_h2||policy_task15||policy_task16) &&
                 (tick_actual_reference>850.0+1e-9 ||
                     tick_actual_separation<10.0-1e-9 ||
                     (policy_h2 && !policy_h2wide &&
@@ -762,6 +873,20 @@ int main(int argc,char** argv) {
                     last_step.target_governor_reselect_required},
                     {"feasibility_evaluations",
                     last_step.target_governor_feasibility_evaluations}}},
+                {"task16",{{"allocation_evaluated",
+                    last_step.task16_allocation_evaluated},
+                    {"allocation_wall_s",
+                    last_step.task16_allocation_evaluated
+                        ?json(last_step.task16_allocation.allocation_wall_s)
+                        :json(nullptr)},
+                    {"scanned_member_cell_pairs",
+                    last_step.task16_allocation.scanned_member_cell_pairs},
+                    {"governor_evaluated",
+                    last_step.task16_governor_evaluated},
+                    {"common_fraction",last_step.task16_common_fraction},
+                    {"stalled_squads",last_step.task16_stalled_squads}}},
+                {"task16_governor_rejections",
+                    last_step.task16_governor_rejections},
                 {"throttle",{{"active",throttle.active},
                     {"s",throttle.s}}},
                 {"owners",std::move(owners)}}).dump()<<'\n';
@@ -818,7 +943,7 @@ int main(int argc,char** argv) {
         record["t100_tick"]=(t100_tick.has_value()?json(*t100_tick):
             json(nullptr));
         record["final_coverage_fraction"]=
-            (policy_h2||policy_task15)
+            (policy_h2||policy_task15||policy_task16)
                 ?fixture->adapter.coverage().certifiedFraction():
                 fixture->adapter.coverage().truthFraction();
         record["final_certified_coverage_fraction"]=
@@ -845,6 +970,32 @@ int main(int argc,char** argv) {
             {"interval_overspeed_ticks",interval_overspeed_ticks},
             {"fuse_limit_mps",config.speed_preflight_fuse_mps},
             {"fuse_tripped",max_interval_overspeed>1.0}};
+        const auto task16_percentile=[&](double q)->json {
+            if (task16_allocation_wall_s.empty()) return nullptr;
+            auto values=task16_allocation_wall_s;
+            std::sort(values.begin(),values.end());
+            const std::size_t index=static_cast<std::size_t>(std::floor(
+                q*static_cast<double>(values.size()-1)));
+            return values[index];
+        };
+        record["task16_trajectory"]={
+            {"highest_selected_task_row",highest_selected_task_row},
+            {"nominal_target_coordinate_range",{
+                {"minimum",{nominal_target_min.x(),nominal_target_min.y()}},
+                {"maximum",{nominal_target_max.x(),nominal_target_max.y()}}}},
+            {"applied_target_coordinate_range",{
+                {"minimum",{applied_target_min.x(),applied_target_min.y()}},
+                {"maximum",{applied_target_max.x(),applied_target_max.y()}}}},
+            {"actual_coordinate_range",{
+                {"minimum",{actual_position_min.x(),actual_position_min.y()}},
+                {"maximum",{actual_position_max.x(),actual_position_max.y()}}}},
+            {"maximum_outside_distance_m",
+                maximum_outside_distance_m},
+            {"total_distance_m",total_distance_m},
+            {"allocator_calls",task16_allocation_wall_s.size()},
+            {"allocator_wall_p50_s",task16_percentile(0.50)},
+            {"allocator_wall_p95_s",task16_percentile(0.95)},
+            {"allocator_wall_max_s",task16_percentile(1.00)}};
         record["safety_and_information"]={
             {"maximum_actual_reference_m",maximum_actual_reference_m},
             {"maximum_target_reference_m",maximum_target_reference_m},

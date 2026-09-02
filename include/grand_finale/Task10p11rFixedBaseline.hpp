@@ -123,7 +123,14 @@ inline GrandFinaleSwarmAdapterConfig task10p11rFixtureAdapterConfig(
     double target_homotopy_rate_gain=1.0,
     double target_homotopy_workspace_guard_m=1.5,
     bool unified_h2_cbf2026_wide_virtual_formation=false,
-    bool target_policy_task15_forward=false) {
+    bool target_policy_task15_forward=false,
+    bool target_policy_task16_cbf2026=false,
+    Task16CoverageArm task16_coverage_arm=
+        Task16CoverageArm::HistoricalClipped,
+    bool task16_tracking_envelope_enabled=false,
+    std::size_t task16_plant_speed_facet_count=0,
+    double task16_reference_damping_reserve_multiples=1.0,
+    double task16_speed_row_limit_mps=0.0) {
     auto config=task10p11rFixedAdapterConfig(selection,predictive_tau_mps2);
     config.speed_row_nominal=speed_row_nominal;
     config.tau_margin_gate_enabled=tau_margin_gate;
@@ -238,6 +245,18 @@ inline GrandFinaleSwarmAdapterConfig task10p11rFixtureAdapterConfig(
         config.boundary.explicit_flight_polygon={
             {1.5,1.5},{2998.5,1.5},{2998.5,2998.5},{1.5,2998.5}};
     }
+    config.target_policy_task16_cbf2026=target_policy_task16_cbf2026;
+    config.task16_coverage_arm=task16_coverage_arm;
+    if (target_policy_task16_cbf2026)
+        config.boundary.policy=BoundaryPolicy::None;
+    config.task16_tracking_envelope_enabled=
+        task16_tracking_envelope_enabled;
+    config.task16_reference_damping_reserve_multiples=
+        task16_reference_damping_reserve_multiples;
+    if (target_policy_task16_cbf2026&&task16_plant_speed_facet_count!=0)
+        config.plant_speed_facet_count=task16_plant_speed_facet_count;
+    if (target_policy_task16_cbf2026&&task16_speed_row_limit_mps>0.0)
+        config.speed_row_nominal_limit_mps=task16_speed_row_limit_mps;
     return config;
 }
 
@@ -293,7 +312,14 @@ struct Task10p11rFixedBaselineFixture {
     double target_homotopy_rate_gain=1.0,
     double target_homotopy_workspace_guard_m=1.5,
     bool unified_h2_cbf2026_wide_virtual_formation=false,
-    bool target_policy_task15_forward=false)
+    bool target_policy_task15_forward=false,
+    bool target_policy_task16_cbf2026=false,
+    Task16CoverageArm task16_coverage_arm=
+        Task16CoverageArm::HistoricalClipped,
+    bool task16_tracking_envelope_enabled=false,
+    std::size_t task16_plant_speed_facet_count=0,
+    double task16_reference_damping_reserve_multiples=1.0,
+    double task16_speed_row_limit_mps=0.0)
         : scenario(std::move(scenario_value)),settings(std::move(settings_value)),
           swarm(settings),
           adapter(swarm,scenario.mobile_ids,scenario.fixed_positions,
@@ -318,7 +344,12 @@ struct Task10p11rFixedBaselineFixture {
                   target_homotopy_rate_gain,
                   target_homotopy_workspace_guard_m,
                   unified_h2_cbf2026_wide_virtual_formation,
-                  target_policy_task15_forward)),
+                  target_policy_task15_forward,
+                  target_policy_task16_cbf2026,
+                  task16_coverage_arm,task16_tracking_envelope_enabled,
+                  task16_plant_speed_facet_count,
+                  task16_reference_damping_reserve_multiples,
+                  task16_speed_row_limit_mps)),
           controller(swarm,adapter,{}, {},task10p11rAuthorityContract().branches),
           frozen_topology(scenario.initial_topology),
           initial_topology_version(adapter.supervisor().topologyVersion()) {}
