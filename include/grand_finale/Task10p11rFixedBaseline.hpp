@@ -130,7 +130,14 @@ inline GrandFinaleSwarmAdapterConfig task10p11rFixtureAdapterConfig(
     bool task16_tracking_envelope_enabled=false,
     std::size_t task16_plant_speed_facet_count=0,
     double task16_reference_damping_reserve_multiples=1.0,
-    double task16_speed_row_limit_mps=0.0) {
+    double task16_speed_row_limit_mps=0.0,
+    bool target_policy_task17_periodic=false,
+    Task17PeriodicArm task17_periodic_arm=Task17PeriodicArm::Voronoi,
+    bool task17_common_governor_enabled=true,
+    bool task17_reference_compatible_formation=false,
+    bool task17_member_aware_wide_formation=false,
+    bool task17_coherent_service_wide_formation=false,
+    std::size_t task17_update_period_cycles=5) {
     auto config=task10p11rFixedAdapterConfig(selection,predictive_tau_mps2);
     config.speed_row_nominal=speed_row_nominal;
     config.tau_margin_gate_enabled=tau_margin_gate;
@@ -253,10 +260,24 @@ inline GrandFinaleSwarmAdapterConfig task10p11rFixtureAdapterConfig(
         task16_tracking_envelope_enabled;
     config.task16_reference_damping_reserve_multiples=
         task16_reference_damping_reserve_multiples;
-    if (target_policy_task16_cbf2026&&task16_plant_speed_facet_count!=0)
+    if ((target_policy_task16_cbf2026||target_policy_task17_periodic)&&
+        task16_plant_speed_facet_count!=0)
         config.plant_speed_facet_count=task16_plant_speed_facet_count;
-    if (target_policy_task16_cbf2026&&task16_speed_row_limit_mps>0.0)
+    if ((target_policy_task16_cbf2026||target_policy_task17_periodic)&&
+        task16_speed_row_limit_mps>0.0)
         config.speed_row_nominal_limit_mps=task16_speed_row_limit_mps;
+    config.target_policy_task17_periodic=target_policy_task17_periodic;
+    config.task17_periodic_arm=task17_periodic_arm;
+    config.task17_common_governor_enabled=task17_common_governor_enabled;
+    config.task17_reference_compatible_formation=
+        task17_reference_compatible_formation;
+    config.task17_member_aware_wide_formation=
+        task17_member_aware_wide_formation;
+    config.task17_coherent_service_wide_formation=
+        task17_coherent_service_wide_formation;
+    config.task17_update_period_cycles=task17_update_period_cycles;
+    if (target_policy_task17_periodic)
+        config.boundary.policy=BoundaryPolicy::None;
     return config;
 }
 
@@ -319,7 +340,14 @@ struct Task10p11rFixedBaselineFixture {
     bool task16_tracking_envelope_enabled=false,
     std::size_t task16_plant_speed_facet_count=0,
     double task16_reference_damping_reserve_multiples=1.0,
-    double task16_speed_row_limit_mps=0.0)
+    double task16_speed_row_limit_mps=0.0,
+    bool target_policy_task17_periodic=false,
+    Task17PeriodicArm task17_periodic_arm=Task17PeriodicArm::Voronoi,
+    bool task17_common_governor_enabled=true,
+    bool task17_reference_compatible_formation=false,
+    bool task17_member_aware_wide_formation=false,
+    bool task17_coherent_service_wide_formation=false,
+    std::size_t task17_update_period_cycles=5)
         : scenario(std::move(scenario_value)),settings(std::move(settings_value)),
           swarm(settings),
           adapter(swarm,scenario.mobile_ids,scenario.fixed_positions,
@@ -349,7 +377,13 @@ struct Task10p11rFixedBaselineFixture {
                   task16_coverage_arm,task16_tracking_envelope_enabled,
                   task16_plant_speed_facet_count,
                   task16_reference_damping_reserve_multiples,
-                  task16_speed_row_limit_mps)),
+                  task16_speed_row_limit_mps,
+                  target_policy_task17_periodic,task17_periodic_arm,
+                  task17_common_governor_enabled,
+                  task17_reference_compatible_formation,
+                  task17_member_aware_wide_formation,
+                  task17_coherent_service_wide_formation,
+                  task17_update_period_cycles)),
           controller(swarm,adapter,{}, {},task10p11rAuthorityContract().branches),
           frozen_topology(scenario.initial_topology),
           initial_topology_version(adapter.supervisor().topologyVersion()) {}

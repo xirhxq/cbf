@@ -1,5 +1,6 @@
 #include "grand_finale/Task11aDynamicTopologyCoordinator.hpp"
 #include "grand_finale/PlantSpeedAppliedControl.hpp"
+#include "grand_finale/Task17GridTelemetry.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -131,7 +132,14 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     bool task16_tracking_envelope_enabled,
     std::size_t task16_plant_speed_facet_count,
     double task16_reference_damping_reserve_multiples,
-    double task16_speed_row_limit_mps) {
+    double task16_speed_row_limit_mps,
+    bool target_policy_task17_periodic,
+    gf::Task17PeriodicArm task17_periodic_arm,
+    bool task17_common_governor_enabled,
+    bool task17_reference_compatible_formation,
+    bool task17_member_aware_wide_formation,
+    bool task17_coherent_service_wide_formation,
+    std::size_t task17_update_period_cycles) {
     auto scenario=gf::task10p11rFixedBaselineScenario();
     scenario.mobile_positions=def.positions;
     scenario.initial_topology=def.topology;
@@ -162,7 +170,13 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
         task16_coverage_arm,task16_tracking_envelope_enabled,
         task16_plant_speed_facet_count,
         task16_reference_damping_reserve_multiples,
-        task16_speed_row_limit_mps);
+        task16_speed_row_limit_mps,
+        target_policy_task17_periodic,task17_periodic_arm,
+        task17_common_governor_enabled,
+        task17_reference_compatible_formation,
+        task17_member_aware_wide_formation,
+        task17_coherent_service_wide_formation,
+        task17_update_period_cycles);
 }
 
 }  // namespace
@@ -205,10 +219,28 @@ int main(int argc,char** argv) {
         const bool policy_task15=policy=="task15";
         const bool policy_task16=policy=="task16a"||policy=="task16b"||
             policy=="task16c";
+        const bool policy_task17=policy.rfind("task17b",0)==0||
+            policy.rfind("task17c",0)==0||
+            policy.rfind("task17simple",0)==0;
         const auto task16_arm=policy=="task16c"
             ?gf::Task16CoverageArm::FormationAware:
             policy=="task16b"?gf::Task16CoverageArm::BoundaryDecoupled:
             gf::Task16CoverageArm::HistoricalClipped;
+        const auto task17_arm=policy.rfind("task17c",0)==0
+            ?gf::Task17PeriodicArm::SuccessorServiceTime:
+            policy.rfind("task17simple",0)==0
+                ?gf::Task17PeriodicArm::CurrentMemberDistance:
+                 gf::Task17PeriodicArm::Voronoi;
+        const bool task17_common_governor_enabled=
+            policy.find("-direct")==std::string::npos;
+        const bool task17_reference_compatible_formation=
+            policy.find("-refcompat")!=std::string::npos;
+        const bool task17_member_aware_wide_formation=
+            policy.find("-memberwide")!=std::string::npos;
+        const bool task17_coherent_service_wide_formation=
+            policy.find("-servicewide")!=std::string::npos;
+        const std::size_t task17_update_period_cycles=
+            gf::task17UpdatePeriodCycles(policy);
         const double service_standoff_m=argc>=13?std::stod(argv[12]):
             (policy=="h2center"?0.0:350.0);
         const double acceleration_half_box_mps2=argc>=14?
@@ -277,7 +309,12 @@ int main(int argc,char** argv) {
             task16_tracking_envelope_enabled,
             task16_plant_speed_facet_count,
             task16_reference_damping_reserve_multiples,
-            task16_speed_row_limit_mps);
+            task16_speed_row_limit_mps,
+            policy_task17,task17_arm,task17_common_governor_enabled,
+            task17_reference_compatible_formation,
+            task17_member_aware_wide_formation,
+            task17_coherent_service_wide_formation,
+            task17_update_period_cycles);
         if (!fixture->adapter.initializeStageZero().initialized) {
             // Qualification-gate boundary point: recorded, not run.
             json boundary={{"protocol","task13-phase-a-run-v1"},
@@ -313,8 +350,11 @@ int main(int argc,char** argv) {
                 ++workspace_rows;
         }
         const auto& config=fixture->adapter.config();
-        json record={{"protocol","task13-phase-a-run-v1"},
-            {"preregistration","task-13-phase-a-launch-2026-09-01"},
+        json record={{"protocol",policy_task17
+                ?"task17-periodic-run-v1":"task13-phase-a-run-v1"},
+            {"preregistration",policy_task17
+                ?"task17-periodic-campaign-2026-09-02"
+                :"task-13-phase-a-launch-2026-09-01"},
             {"template",template_id},{"description",def.description},
             {"tau_mps2",tau},{"qualified",true},
             {"policy",policy},
@@ -426,6 +466,20 @@ int main(int argc,char** argv) {
                     :json(nullptr)},
                 {"task16_tracking_envelope_enabled",
                     config.task16_tracking_envelope_enabled},
+                {"target_policy_task17_periodic",
+                    config.target_policy_task17_periodic},
+                {"task17_periodic_arm",
+                    static_cast<int>(config.task17_periodic_arm)},
+                {"task17_update_period_cycles",
+                    config.task17_update_period_cycles},
+                {"task17_common_governor_enabled",
+                    config.task17_common_governor_enabled},
+                {"task17_reference_compatible_formation",
+                    config.task17_reference_compatible_formation},
+                {"task17_member_aware_wide_formation",
+                    config.task17_member_aware_wide_formation},
+                {"task17_coherent_service_wide_formation",
+                    config.task17_coherent_service_wide_formation},
                 {"task15_forward_shortlist_capacity",
                 config.task15_forward_shortlist_capacity},
                 {"task15_forward_update_period_cycles",
@@ -454,7 +508,8 @@ int main(int argc,char** argv) {
                 {"residual_tolerance",config.residual_tolerance},
                 {"dt_s",config.dt_s},
                 {"truth_initial_set_gate_mps",
-                (policy_h2||policy_task15||policy_task16)?30.0:30.01}}},
+                (policy_h2||policy_task15||policy_task16||policy_task17)
+                    ?30.0:30.01}}},
             {"s3_stop_rule","terminate_at_t100_latch"},
             {"evaluations",json::array()},
             {"complete",false}};
@@ -464,6 +519,31 @@ int main(int argc,char** argv) {
         std::ofstream telemetry(argv[4]);
         if (!telemetry) throw std::runtime_error(
             "cannot open telemetry stream");
+        const std::filesystem::path grid_delta_path=
+            std::filesystem::path(argv[3])/"gridworld-delta.jsonl";
+        std::ofstream grid_delta(grid_delta_path);
+        if (!grid_delta) throw std::runtime_error(
+            "cannot open Task 17 GridWorld delta stream");
+        GridWorld previous_certified=
+            fixture->adapter.coverage().certifiedGrid();
+        GridWorld previous_truth=fixture->adapter.coverage().truthGrid();
+        const auto initial_grid=gf::task17GridSnapshot(
+            previous_certified,previous_truth);
+        grid_delta<<json({{"kind","initial"},
+            {"x_cells",initial_grid.x_cells},
+            {"y_cells",initial_grid.y_cells},
+            {"valid_count",initial_grid.valid_count},
+            {"x_limits",{previous_certified.xLim.first,
+                         previous_certified.xLim.second}},
+            {"y_limits",{previous_certified.yLim.first,
+                         previous_certified.yLim.second}},
+            {"valid_bits_hex",initial_grid.valid_bits_hex},
+            {"certified_bits_hex",initial_grid.certified_bits_hex},
+            {"truth_bits_hex",initial_grid.truth_bits_hex},
+            {"certified_count",initial_grid.certified_count},
+            {"truth_count",initial_grid.truth_count},
+            {"certified_hash",initial_grid.certified_hash},
+            {"truth_hash",initial_grid.truth_hash}}).dump()<<'\n';
         double max_truth_overspeed=0.0,max_interval_overspeed=0.0;
         std::size_t truth_overspeed_ticks=0,interval_overspeed_ticks=0;
         std::optional<std::size_t> t95_tick,t100_tick;
@@ -532,7 +612,8 @@ int main(int argc,char** argv) {
                         tv.head<2>().norm());
                 }
                 const double hard_speed_limit=
-                    (policy_h2||policy_task15||policy_task16)?30.0:30.01;
+                    (policy_h2||policy_task15||policy_task16||policy_task17)
+                        ?30.0:30.01;
                 if (truth_gate_max_speed>hard_speed_limit+1e-9) {
                     truth_gate_violation=true;
                     hard_stop=true;
@@ -540,7 +621,7 @@ int main(int argc,char** argv) {
                         {"advanced",false},
                         {"reason","speed_initial_set_truth_violated"},
                         {"coverage_fraction",
-                        (policy_h2||policy_task15||policy_task16)
+                        (policy_h2||policy_task15||policy_task16||policy_task17)
                             ?fixture->adapter.coverage().certifiedFraction()
                             :fixture->adapter.coverage().truthFraction()},
                         {"minimum_hard_residual",json(nullptr)}});
@@ -565,6 +646,10 @@ int main(int argc,char** argv) {
                 last_step.task16_allocation.valid)
                 task16_allocation_wall_s.push_back(
                     last_step.task16_allocation.allocation_wall_s);
+            if (last_step.task17_allocation_evaluated&&
+                last_step.task17_allocation.valid)
+                task16_allocation_wall_s.push_back(
+                    last_step.task17_allocation.allocation_wall_s);
             if (last_step.target_governor_evaluated) {
                 ++target_governor_ticks;
                 minimum_target_governor_fraction=std::min(
@@ -579,7 +664,22 @@ int main(int argc,char** argv) {
                 fixture->adapter.coverage().certifiedFraction();
             const double truth_fraction=
                 fixture->adapter.coverage().truthFraction();
-            const double fraction=(policy_h2||policy_task15||policy_task16)
+            const GridWorld& current_certified=
+                fixture->adapter.coverage().certifiedGrid();
+            const GridWorld& current_truth=
+                fixture->adapter.coverage().truthGrid();
+            const auto grid_tick=gf::task17GridDelta(previous_certified,
+                previous_truth,current_certified,current_truth);
+            grid_delta<<json({{"kind","delta"},{"tick",tick},
+                {"runtime_s",fixture->adapter.runtimeSnapshot().runtime_s},
+                {"certified_new_ids",grid_tick.certified_new_ids},
+                {"truth_new_ids",grid_tick.truth_new_ids},
+                {"certified_count",grid_tick.certified_count},
+                {"truth_count",grid_tick.truth_count}}).dump()<<'\n';
+            previous_certified=current_certified;
+            previous_truth=current_truth;
+            const double fraction=(policy_h2||policy_task15||policy_task16||
+                policy_task17)
                 ?certified_fraction:truth_fraction;
             if (!t95_tick.has_value()&&fraction>=0.95) t95_tick=tick;
             if (!t100_tick.has_value()&&fraction>=1.0-1e-12) t100_tick=tick;
@@ -604,7 +704,7 @@ int main(int argc,char** argv) {
                     interval_max);
                 if (truth_max>0.0) ++truth_overspeed_ticks;
                 if (interval_max>0.0) ++interval_overspeed_ticks;
-                if ((policy_h2||policy_task15||policy_task16) &&
+                if ((policy_h2||policy_task15||policy_task16||policy_task17) &&
                     (truth_max>1e-9||interval_max>1e-9)) {
                     runtime_safety_violation=true;
                     runtime_safety_reason="hard_speed_limit_violated";
@@ -641,6 +741,10 @@ int main(int argc,char** argv) {
                 last_step.task16_allocation.valid)
                 current_active_squads=
                     last_step.task16_allocation.active_squads;
+            if (last_step.task17_allocation_evaluated&&
+                last_step.task17_allocation.valid)
+                current_active_squads=
+                    last_step.task17_allocation.active_squads;
             active_squad_ticks+=current_active_squads;
             if (last_step.target_epoch!=last_target_epoch) {
                 if (last_target_epoch!=0) ++target_switches;
@@ -747,7 +851,7 @@ int main(int argc,char** argv) {
                 applied_target_min=applied_target_min.cwiseMin(target);
                 applied_target_max=applied_target_max.cwiseMax(target);
             }
-            if ((policy_h2||policy_task15||policy_task16) &&
+            if ((policy_h2||policy_task15||policy_task16||policy_task17) &&
                 (tick_actual_reference>850.0+1e-9 ||
                     tick_actual_separation<10.0-1e-9 ||
                     (policy_h2 && !policy_h2wide &&
@@ -887,6 +991,17 @@ int main(int argc,char** argv) {
                     {"stalled_squads",last_step.task16_stalled_squads}}},
                 {"task16_governor_rejections",
                     last_step.task16_governor_rejections},
+                {"task17",{{"allocation_evaluated",
+                    last_step.task17_allocation_evaluated},
+                    {"allocation_wall_s",
+                    last_step.task17_allocation_evaluated
+                        ?json(last_step.task17_allocation.allocation_wall_s)
+                        :json(nullptr)},
+                    {"scanned_member_cell_pairs",
+                    last_step.task17_allocation.scanned_member_cell_pairs},
+                    {"duplicate_task_count",
+                    last_step.task17_allocation.duplicate_task_count},
+                    {"common_fraction",last_step.task17_common_fraction}}},
                 {"throttle",{{"active",throttle.active},
                     {"s",throttle.s}}},
                 {"owners",std::move(owners)}}).dump()<<'\n';
@@ -902,6 +1017,19 @@ int main(int argc,char** argv) {
             if (t100_tick.has_value()) break;
         }
         telemetry.close();
+        const auto final_grid=gf::task17GridSnapshot(
+            fixture->adapter.coverage().certifiedGrid(),
+            fixture->adapter.coverage().truthGrid());
+        grid_delta<<json({{"kind","final"},{"tick",tick},
+            {"runtime_s",fixture->adapter.runtimeSnapshot().runtime_s},
+            {"valid_count",final_grid.valid_count},
+            {"certified_bits_hex",final_grid.certified_bits_hex},
+            {"truth_bits_hex",final_grid.truth_bits_hex},
+            {"certified_count",final_grid.certified_count},
+            {"truth_count",final_grid.truth_count},
+            {"certified_hash",final_grid.certified_hash},
+            {"truth_hash",final_grid.truth_hash}}).dump()<<'\n';
+        grid_delta.close();
         json profiler_json=json::array();
         static const std::vector<gf::Task10p11ComputePhase> phases={
             gf::Task10p11ComputePhase::CandidateBundleConstruction,
@@ -943,7 +1071,7 @@ int main(int argc,char** argv) {
         record["t100_tick"]=(t100_tick.has_value()?json(*t100_tick):
             json(nullptr));
         record["final_coverage_fraction"]=
-            (policy_h2||policy_task15||policy_task16)
+            (policy_h2||policy_task15||policy_task16||policy_task17)
                 ?fixture->adapter.coverage().certifiedFraction():
                 fixture->adapter.coverage().truthFraction();
         record["final_certified_coverage_fraction"]=
@@ -996,6 +1124,17 @@ int main(int argc,char** argv) {
             {"allocator_wall_p50_s",task16_percentile(0.50)},
             {"allocator_wall_p95_s",task16_percentile(0.95)},
             {"allocator_wall_max_s",task16_percentile(1.00)}};
+        if (policy_task17) {
+            record["task17_trajectory"]=record["task16_trajectory"];
+            record["task17_gridworld"]={{"delta_path",
+                grid_delta_path.string()},
+                {"initial_certified_count",initial_grid.certified_count},
+                {"initial_truth_count",initial_grid.truth_count},
+                {"final_certified_count",final_grid.certified_count},
+                {"final_truth_count",final_grid.truth_count},
+                {"final_certified_hash",final_grid.certified_hash},
+                {"final_truth_hash",final_grid.truth_hash}};
+        }
         record["safety_and_information"]={
             {"maximum_actual_reference_m",maximum_actual_reference_m},
             {"maximum_target_reference_m",maximum_target_reference_m},

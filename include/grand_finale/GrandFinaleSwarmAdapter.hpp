@@ -13,6 +13,7 @@
 #include "grand_finale/HighsTopologySolver.hpp"
 #include "grand_finale/InformationGateDiagnostic.hpp"
 #include "grand_finale/Task16CoverageTypes.hpp"
+#include "grand_finale/Task17PeriodicCoveragePolicy.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -173,6 +174,15 @@ struct GrandFinaleSwarmAdapterConfig {
     std::size_t task16_cvt_update_period_cycles = 5;
     double task16_reference_damping_reserve_multiples = 1.0;
     bool task16_tracking_envelope_enabled = false;
+    // Task 17 research-only periodic rolling planners.  Independent and
+    // default-off so production and Task 16 evidence keep their semantics.
+    bool target_policy_task17_periodic = false;
+    Task17PeriodicArm task17_periodic_arm = Task17PeriodicArm::Voronoi;
+    std::size_t task17_update_period_cycles = 5;
+    bool task17_common_governor_enabled = true;
+    bool task17_reference_compatible_formation = false;
+    bool task17_member_aware_wide_formation = false;
+    bool task17_coherent_service_wide_formation = false;
     double v6_neighborhood_radius_m = 450.0;
     double demand_recompute_interval_s = 5.0;
     double target_lock_epsilon_m = 30.0;
@@ -561,6 +571,7 @@ public:
             config_.task15_forward_shortlist_capacity==0 ||
             config_.task15_forward_update_period_cycles==0 ||
             config_.task16_cvt_update_period_cycles==0 ||
+            config_.task17_update_period_cycles==0 ||
             !std::isfinite(
                 config_.task16_reference_damping_reserve_multiples) ||
             config_.task16_reference_damping_reserve_multiples<=0.0 ||
@@ -645,7 +656,8 @@ public:
             result.reason = "stage_zero_already_initialized";
             return result;
         }
-        swarm_.prepareCertifiedControlStep();
+        swarm_.prepareCertifiedControlStep(
+            config_.boundary.policy!=BoundaryPolicy::None);
         applyDeterministicRangeBatch();
         const JointEstimateSnapshot snapshot = estimator_.reconstructForAudit();
         observeCoverageSnapshot(snapshot);
@@ -664,7 +676,8 @@ public:
         metrics.mode = supervisor_.mode();
         metrics.topology_version = supervisor_.topologyVersion();
         metrics.estimator_version_before = estimator_.version();
-        swarm_.prepareCertifiedControlStep();
+        swarm_.prepareCertifiedControlStep(
+            config_.boundary.policy!=BoundaryPolicy::None);
         const JointEstimateSnapshot snapshot = estimator_.reconstructForAudit();
         const std::uint64_t snapshot_version = estimator_.version();
         auto task_nominal = nominal_override_.has_value()
@@ -939,7 +952,8 @@ public:
             }
         }
 
-        swarm_.prepareCertifiedControlStep();
+        swarm_.prepareCertifiedControlStep(
+            config_.boundary.policy!=BoundaryPolicy::None);
         const JointEstimateSnapshot snapshot=estimator_.reconstructForAudit();
         const std::uint64_t snapshot_version=estimator_.version();
         std::vector<CanonicalHardRow> full_rows;
@@ -1105,7 +1119,8 @@ public:
             }
         }
 
-        swarm_.prepareCertifiedControlStep();
+        swarm_.prepareCertifiedControlStep(
+            config_.boundary.policy!=BoundaryPolicy::None);
         const JointEstimateSnapshot snapshot = estimator_.reconstructForAudit();
         const std::uint64_t snapshot_version = estimator_.version();
         if (snapshot_version != expected_estimator_version ||
@@ -1265,7 +1280,8 @@ public:
                 return metrics;
             }
         }
-        swarm_.prepareCertifiedControlStep();
+        swarm_.prepareCertifiedControlStep(
+            config_.boundary.policy!=BoundaryPolicy::None);
         const auto snapshot=estimator_.reconstructForAudit();
         const auto snapshot_version=estimator_.version();
         if (snapshot_version!=expected_estimator_version ||

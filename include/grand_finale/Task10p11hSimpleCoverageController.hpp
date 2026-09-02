@@ -61,6 +61,8 @@ struct SimpleCoverageControlStep {
     Task15ForwardCoverageResult task15_allocation;
     bool task16_allocation_evaluated=false;
     Task16CoverageResult task16_allocation;
+    bool task17_allocation_evaluated=false;
+    Task17PeriodicCoverageResult task17_allocation;
     GrandFinaleSwarmStep step;
     std::string reason;
     std::map<NodeId,FrontierCell> committed_targets;
@@ -85,6 +87,7 @@ struct SimpleCoverageControlStep {
     std::map<std::string,double> task16_common_fraction;
     std::size_t task16_stalled_squads=0;
     std::map<std::string,std::size_t> task16_governor_rejections;
+    std::map<std::string,double> task17_common_fraction;
 };
 
 struct SimpleCoverageControllerRestartState {
@@ -160,7 +163,16 @@ public:
             adapter_.config().target_policy_task15_forward;
         const bool policy_task16=
             adapter_.config().target_policy_task16_cbf2026;
-        if (policy_task16) {
+        const bool policy_task17=
+            adapter_.config().target_policy_task17_periodic;
+        if (policy_task17) {
+            advanceTask17Targets(runtime,result);
+            if (result.task17_allocation_evaluated&&
+                !result.task17_allocation.valid) {
+                result.step.reason=result.reason;
+                return result;
+            }
+        } else if (policy_task16) {
             advanceTask16Targets(runtime,result);
             if (result.task16_allocation_evaluated &&
                 !result.task16_allocation.valid) {
@@ -259,11 +271,15 @@ public:
         std::map<NodeId,Eigen::Vector2d> nominal_targets;
         for (const auto& [owner,target]:targets_)
             nominal_targets[owner]=target.center;
-        if (policy_task16 &&
+        if ((policy_task16||policy_task17) &&
             nominal_targets.size()==runtime.estimate.mobile_ids.size()) {
-            if (adapter_.config().task16_coverage_arm==
+            if (policy_task16&&adapter_.config().task16_coverage_arm==
                     Task16CoverageArm::HistoricalClipped) {
                 task16_applied_targets_=nominal_targets;
+            } else if (policy_task17&&
+                !adapter_.config().task17_common_governor_enabled) {
+                task16_applied_targets_=nominal_targets;
+                result.applied_target_centers=nominal_targets;
             } else {
                 advanceTask16FormationGovernor(
                     runtime,nominal_targets,result);
@@ -276,6 +292,9 @@ public:
                     return result;
                 }
                 nominal_targets=result.applied_target_centers;
+                if (policy_task17)
+                    result.task17_common_fraction=
+                        result.task16_common_fraction;
             }
         } else if (policy_task15 &&
             nominal_targets.size()==runtime.estimate.mobile_ids.size()) {
@@ -427,7 +446,7 @@ public:
         else {
             consecutive_failures_=0;
             ++successful_control_cycles_;
-            if (policy_task16) {
+            if (policy_task16||policy_task17) {
                 task16_last_applied_controls_=result.step.applied_controls;
                 task16_last_applied_yaw_rates_=
                     result.step.applied_yaw_rates_radps;
@@ -596,6 +615,7 @@ public:
         task16_last_applied_controls_.clear();
         task16_last_applied_yaw_rates_.clear();
         task16_last_allocation_cycle_=0;
+        task17_last_allocation_cycle_=0;
     }
     SimpleCoverageControlStep advanceWithDynamicPairResponsibility(
         const std::string& pair_base_id) {
@@ -632,6 +652,81 @@ public:
     }
 
 private:
+    // ---- Task 17: uniform periodic rolling task semantics ----
+    void advanceTask17Targets(
+        const GrandFinaleRuntimeSnapshot& runtime,
+        SimpleCoverageControlStep& result) {
+        const auto& config=adapter_.config();
+        const bool periodic=targets_.empty()||
+            control_boundaries_>=task17_last_allocation_cycle_+
+                config.task17_update_period_cycles;
+        if (!periodic) return;
+        const auto uncovered=currentCertifiedUncoveredCells();
+        // T100 is the sole state where the last real ledger is retained.
+        if (uncovered.empty()&&!targets_.empty()) return;
+        Task17PeriodicCoverageRequest request;
+        request.arm=config.task17_periodic_arm;
+        request.uncovered_cells=uncovered;
+        request.fixed_positions=runtime.estimate.fixed_positions;
+        const GridWorld& grid=swarm_.robots.front()->gridWorld;
+        request.search_min={grid.xLim.first,grid.yLim.first};
+        request.search_max={grid.xLim.second,grid.yLim.second};
+        request.config.forward_focus_distance_m=400.0;
+        request.config.sensor_inner_radius_m=config.coverage_inner_radius_m;
+        request.config.sensor_outer_radius_m=config.sensor_radius_m;
+        request.config.sensor_half_angle_rad=config.coverage_half_angle_rad;
+        request.config.cell_half_diagonal_m=5.0*std::sqrt(2.0);
+        request.config.nominal_speed_mps=config.speed_limit_mps;
+        request.config.successor_dt_s=config.dt_s;
+        request.reference_compatible_formation=
+            config.task17_reference_compatible_formation;
+        request.member_aware_wide_formation=
+            config.task17_member_aware_wide_formation;
+        request.coherent_service_wide_formation=
+            config.task17_coherent_service_wide_formation;
+        for (std::size_t index=0;
+             index<runtime.estimate.mobile_ids.size();++index) {
+            const NodeId owner=runtime.estimate.mobile_ids[index];
+            const double error=std::max(
+                config.certified_shadow_single_position_support_m,
+                std::max(config.certified_error_bound_m,
+                    config.uncertainty_sigma*std::sqrt(std::max(
+                        0.0,detail::maximumPositionEigenvalue(
+                            runtime.estimate,owner)))));
+            Task16CoverageAgentState current{owner,
+                runtime.estimate.mean.segment<2>(4*index),
+                runtime.estimate.mean.segment<2>(4*index+2),
+                currentYaw(owner),error};
+            request.agents.push_back(current);
+            if (request.arm==Task17PeriodicArm::SuccessorServiceTime) {
+                auto successor=current;
+                const auto control=task16_last_applied_controls_.find(owner);
+                const auto yaw_rate=
+                    task16_last_applied_yaw_rates_.find(owner);
+                if (control!=task16_last_applied_controls_.end()) {
+                    successor.position+=config.dt_s*current.velocity+
+                        0.5*config.dt_s*config.dt_s*control->second;
+                    successor.velocity+=config.dt_s*control->second;
+                }
+                if (yaw_rate!=task16_last_applied_yaw_rates_.end())
+                    successor.yaw_rad=wrapYawRad(current.yaw_rad+
+                        config.dt_s*yaw_rate->second);
+                request.approved_successor_agents.push_back(successor);
+            }
+        }
+        result.task17_allocation_evaluated=true;
+        result.task17_allocation=allocateTask17PeriodicCoverage(
+            std::move(request));
+        if (!result.task17_allocation.valid) {
+            result.reason=result.task17_allocation.reason;
+            return;
+        }
+        targets_=result.task17_allocation.targets;
+        task17_last_allocation_cycle_=control_boundaries_;
+        ++target_epoch_;
+        consecutive_failures_=0;
+    }
+
     // ---- Task 16: CBF2026 CVT lineage + squad-common target motion ----
     void advanceTask16Targets(
         const GrandFinaleRuntimeSnapshot& runtime,
@@ -1519,7 +1614,8 @@ private:
     bool observeT100Boundary() {
         const bool complete=(adapter_.config().target_policy_unified_h2 ||
             adapter_.config().target_policy_task15_forward ||
-            adapter_.config().target_policy_task16_cbf2026)
+            adapter_.config().target_policy_task16_cbf2026 ||
+            adapter_.config().target_policy_task17_periodic)
             ?adapter_.coverage().reachedCertifiedT100()
             :adapter_.coverage().truthFraction()>=1.0-1e-12;
         if (!t100_coverage_s_.has_value() && complete) {
@@ -1676,6 +1772,7 @@ private:
     std::map<NodeId,Eigen::Vector2d> task16_last_applied_controls_;
     std::map<NodeId,double> task16_last_applied_yaw_rates_;
     std::size_t task16_last_allocation_cycle_=0;
+    std::size_t task17_last_allocation_cycle_=0;
     CanonicalHocbfQpController task16_governor_qp_;
     // Task 13 Phase B0-a (target policy v2) state.
     double last_demand_recompute_s_=-1.0e9;

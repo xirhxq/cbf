@@ -30,10 +30,11 @@ public:
     using CertifiedControlHook = std::function<
         std::optional<CertifiedControlBatch>(Swarm&)>;
 
-    void prepareCertifiedControlStep() {
+    void prepareCertifiedControlStep(bool enforce_world_membership=true) {
         exchangeData();
         checkInformationExchange();
-        for (auto &robot : robots) robot->checkRobotsInsideWorld();
+        if (enforce_world_membership)
+            for (auto &robot : robots) robot->checkRobotsInsideWorld();
     }
 
     void observeGridWorldAtCurrentState() {
