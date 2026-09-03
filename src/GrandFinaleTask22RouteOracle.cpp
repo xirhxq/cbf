@@ -27,6 +27,24 @@ gf::Task20DagLatticeContract contractFor(const std::string& mode) {
     throw std::invalid_argument("unknown Task 22 DAG mode:"+mode);
 }
 
+// P10 standing rule (b): deflated-sector reachability -- cone 60-6 deg,
+// range [40, 352] m (delta 6 deg / 40 m from the diagnostics).  A cell
+// counts reachable only with a deflated witness; the no-hole union alone
+// is not sufficient.
+bool deflatedInSector(const Eigen::Vector2d& pose,double yaw,
+    const Eigen::Vector2d& center) {
+    constexpr double min_range=40.0;
+    constexpr double max_range=352.0;
+    constexpr double sin54=0.80901699437494742410;
+    const Eigen::Vector2d delta=center-pose;
+    const double d2=delta.squaredNorm();
+    if (d2<min_range*min_range||d2>max_range*max_range) return false;
+    const double d=std::sqrt(d2);
+    const double lateral=std::abs(-std::sin(yaw)*delta.x()+
+        std::cos(yaw)*delta.y());
+    return lateral<=sin54*d;
+}
+
 nlohmann::json point(const Eigen::Vector2d& value) {
     return nlohmann::json::array({value.x(),value.y()});
 }
@@ -243,6 +261,74 @@ ScanResult scan(double spacing,const gf::Task20DagLatticeContract& contract,
 
 }  // namespace
 
+struct DeflatedResult {
+    std::size_t missing_count=0;
+    std::vector<std::string> missing_sample;
+    std::map<std::string,double> effective_path_m;
+    // Global timing simulation: every unit advances its arclength at the
+    // reference cruise speed; a cell certifies at the earliest cross-unit
+    // deflated witness time.  This is the path pre-screen's T100 bound
+    // (per-lane max-path overstates it by ignoring cross-lane
+    // certification -- the P8 smoke vs first pre-screen discrepancy).
+    double predicted_t100_s=0.0;
+};
+
+DeflatedResult deflatedScan(const gf::Task20DagLatticeContract& contract,
+    const std::map<gf::NodeId,Eigen::Vector2d>& fixed,
+    const std::vector<gf::FrontierCell>& cells,
+    const std::vector<bool>& initial,
+    const gf::Task22SweepPlan& plan,double cruise_mps=17.5) {
+    DeflatedResult result;
+    std::vector<bool> covered(cells.size(),false);
+    std::vector<double> certify_time_s(cells.size(),
+        std::numeric_limits<double>::infinity());
+    std::map<std::string,const gf::Task20CoverageUnit*> unit_by_id;
+    for (const auto& unit:contract.coverage_units)
+        unit_by_id[unit.id]=&unit;
+    for (const auto& [unit_id,route]:plan.routes) {
+        const auto& unit=*unit_by_id.at(unit_id);
+        double last_growth_s=0.0;
+        for (const auto& sample:route.samples) {
+            std::map<std::string,Eigen::Vector2d> fronts;
+            for (const auto& other:contract.coverage_units)
+                fronts[other.id]=other.id==unit_id?sample.position:
+                    plan.routes.at(other.id).samples.front().position;
+            const auto lifted=gf::task20LiftTargets(contract,fixed,fronts);
+            if (!lifted.valid) continue;
+            const double yaw=std::atan2(sample.tangent.y(),
+                sample.tangent.x());
+            bool grew=false;
+            const double sample_time_s=sample.s/cruise_mps;
+            for (std::size_t index=0;index<cells.size();++index) {
+                if (initial[index]) continue;
+                if (covered[index]&&
+                    certify_time_s[index]<=sample_time_s) continue;
+                for (gf::NodeId member:unit.members)
+                    if (deflatedInSector(lifted.targets.at(member),yaw,
+                        cells[index].center)) {
+                        covered[index]=true;
+                        certify_time_s[index]=std::min(
+                            certify_time_s[index],sample_time_s);
+                        grew=true;
+                        break;
+                    }
+            }
+            if (grew) last_growth_s=sample.s;
+        }
+        result.effective_path_m[unit_id]=last_growth_s;
+    }
+    for (std::size_t index=0;index<cells.size();++index)
+        if (!initial[index]&&!covered[index]) {
+            ++result.missing_count;
+            if (result.missing_sample.size()<10)
+                result.missing_sample.push_back(cells[index].id());
+        }
+        else if (!initial[index])
+            result.predicted_t100_s=std::max(result.predicted_t100_s,
+                certify_time_s[index]);
+    return result;
+}
+
 int main(int argc,char** argv) {
     if (argc<3||argc>5) {
         std::cerr<<"usage: GrandFinaleTask22RouteOracle MODE OUTPUT_DIR "
@@ -288,7 +374,8 @@ int main(int argc,char** argv) {
             front/static_cast<double>(unit.front_members.size());
     }
     const std::vector<double> candidates{
-        800,700,650,600,550,500,450,400,350,300,250,220,200,190,
+        2900,2400,2000,1600,1400,1200,1000,900,800,700,650,600,550,
+        500,450,400,350,300,250,220,200,190,
         180,160,140,120,100,80,60,40,20,10};
     nlohmann::json sweep=nlohmann::json::array();
     std::optional<double> selected;
@@ -310,6 +397,22 @@ int main(int argc,char** argv) {
     if (!selected) selected=10.0;
     const auto final=scan(*selected,contract,scenario.fixed_positions,
         cells,initial,initial_fronts,true);
+    // Standing rules (a)+(b): rebuild the selected plan for the deflated
+    // reachability check and the per-unit effective-path pre-screen.
+    std::vector<std::string> unit_ids;
+    for (const auto& unit:contract.coverage_units) unit_ids.push_back(unit.id);
+    const auto field=gf::task21AffineCoordinateField({0.0,0.0},{0.0,1.0},
+        {1.0,0.0});
+    const auto plan=gf::task22BuildSweepPlan(cells,unit_ids,field,*selected,
+        1024,contract,scenario.fixed_positions,initial_fronts);
+    DeflatedResult deflated;
+    if (plan.valid)
+        deflated=deflatedScan(contract,scenario.fixed_positions,cells,
+            initial,plan);
+    double max_effective_path_m=0.0;
+    for (const auto& [unit,path]:deflated.effective_path_m)
+        max_effective_path_m=std::max(max_effective_path_m,path);
+    const double predicted_t100_s=deflated.predicted_t100_s;
     std::ofstream witnesses(output/"route-witnesses.jsonl");
     std::ofstream samples(output/"route-samples.jsonl");
     for (const auto& record:final.sample_records)
@@ -381,10 +484,18 @@ int main(int argc,char** argv) {
         {"sample_file","route-samples.jsonl"},
         {"pass_file","route-passes.jsonl"},
         {"bucket_file","route-buckets.jsonl"},
+        {"deflated_reachability_missing_count",deflated.missing_count},
+        {"deflated_reachability_missing_sample",deflated.missing_sample},
+        {"deflated_effective_path_m",deflated.effective_path_m},
+        {"path_prescreen_max_effective_path_m",max_effective_path_m},
+        {"path_prescreen_predicted_t100_s_parallel",predicted_t100_s},
+        {"path_prescreen_max_effective_path_m_per_lane",max_effective_path_m},
+        {"path_prescreen_pass",predicted_t100_s<=296.7},
         {"nominal_actual_boundary",
             "route oracle evaluates nominal target geometry only; >850 m "
             "is not an actual closed-loop reference violation"}};
     std::ofstream(output/"summary.json")<<summary.dump(2)<<'\n';
     std::cout<<summary.dump(2)<<'\n';
-    return final.no_service_count==0?0:3;
+    if (final.no_service_count!=0) return 3;
+    return deflated.missing_count==0?0:5;
 }

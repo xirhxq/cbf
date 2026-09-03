@@ -231,6 +231,8 @@ inline bool serviceAt(const UnitGeometry& geometry,double progress,
 
 }  // namespace task22_detail
 
+constexpr double request_order_epsilon=1.0e-9;
+
 inline Task22SweepPlan task22BuildSweepPlan(
     const std::vector<FrontierCell>& cells,
     const std::vector<std::string>& coverage_units,
@@ -287,6 +289,7 @@ inline Task22SweepPlan task22BuildSweepPlan(
         boundaries.push_back(0.5*(unique_cross[cut-1]+unique_cross[cut]));
     }
     boundaries.push_back(unique_cross.back()+1.0e-6);
+    std::vector<std::string> lane_order=units;
     double minimum_progress=1.0e18,maximum_progress=-1.0e18;
     for (const auto& cell:result.cells) {
         const double progress=field.coordinates(cell.center).x();
@@ -317,8 +320,8 @@ inline Task22SweepPlan task22BuildSweepPlan(
         return result;
     };
 
-    for (std::size_t unit_index=0;unit_index<units.size();++unit_index) {
-        const std::string& unit_id=units[unit_index];
+    for (std::size_t unit_index=0;unit_index<lane_order.size();++unit_index) {
+        const std::string& unit_id=lane_order[unit_index];
         const Task20CoverageUnit& unit=*unit_by_id.at(unit_id);
         Task21RibbonCorridor corridor{unit_id,boundaries[unit_index],
             boundaries[unit_index+1],0};
@@ -466,22 +469,29 @@ inline Task22SweepPlan task22BuildSweepPlan(
         const double initial_cross_value=0.5*
             (corridor.cross_min+corridor.cross_max);
         const auto initial_front=initial_front_positions.find(unit_id);
-        const double observed_cross=
-            initial_front==initial_front_positions.end()||
-            !initial_front->second.allFinite()
-            ?initial_cross_value
-            :field.coordinates(initial_front->second).y();
-        const int first_direction=
-            observed_cross<=initial_cross_value?1:-1;
+        // P11 phase lock: every unit's first pass travels toward +cross so
+        // adjacent lanes sweep in lockstep and the chain reference edges
+        // between neighbouring lanes stay within ~two corridor widths
+        // (per-unit initial-front directions made neighbours anti-phase and
+        // stretched runtime reference rows to ~3 km in the P8 formal).
+        const int first_direction=1;
 
         // Shared U-turn cross for the pair (pass, pass+1) at the side where
-        // `pass` ends: outward extreme of the two passes' own insets so
-        // neither pass loses unique coverage.
+        // `pass` ends.  P10 rule: at an INTERNAL corridor boundary the turn
+        // cross is the boundary itself, so both neighbours traverse the
+        // shared boundary column at full pass tangent (the P8 boundary
+        // stripes were coverable only inside a 17 m distance window at
+        // lateral = half the pass spacing).  At map edges the turn keeps
+        // the outward-max inset rule.
+        const double map_cross_min=unique_cross.front();
+        const double map_cross_max=unique_cross.back();
         const auto pair_turn_cross=[&](std::size_t pass) {
             const int side=pass%2==0?first_direction:-first_direction;
-            if (side>0)
-                return std::max(insets[pass].second,insets[pass+1].second);
-            return std::min(insets[pass].first,insets[pass+1].first);
+            if (side>0) return corridor.cross_max;
+            return corridor.cross_min;
+        };
+        const auto boundary_cross=[&](int side) {
+            return side>0?corridor.cross_max:corridor.cross_min;
         };
 
         std::vector<Task22SweepPass> passes;
@@ -493,12 +503,41 @@ inline Task22SweepPlan task22BuildSweepPlan(
             value.progress=pass_progress[pass];
             value.inset_low=insets[pass].first;
             value.inset_high=insets[pass].second;
-            const double begin=pass==0
-                ?(direction>0?insets[pass].first:insets[pass].second)
-                :pair_turn_cross(pass-1);
-            const double end=pass+1==pass_progress.size()
-                ?(direction>0?insets[pass].second:insets[pass].first)
-                :pair_turn_cross(pass);
+            const double own_begin=direction>0?insets[pass].first:
+                insets[pass].second;
+            const double own_end=direction>0?insets[pass].second:
+                insets[pass].first;
+            const auto side_boundary=[&](int side)->double {
+                const double value=boundary_cross(side);
+                return std::isfinite(value)?value:
+                    std::numeric_limits<double>::quiet_NaN();
+            };
+            double begin=pass==0?own_begin:pair_turn_cross(pass-1);
+            if (pass==0) {
+                // P11 partial first pass: enter at the initial front's
+                // cross clamped into the corridor, then sweep to the
+                // far boundary in the phase-locked (+cross) direction;
+                // the approach arc lands tangentially instead of
+                // wrapping around a full-boundary entry.
+                const auto entry=initial_front_positions.find(unit_id);
+                if (entry!=initial_front_positions.end()&&
+                    entry->second.allFinite()) {
+                    const double entry_cross=field.coordinates(
+                        entry->second).y();
+                    begin=std::min(std::max(entry_cross,
+                        corridor.cross_min),corridor.cross_max);
+                }
+            }
+            double end=pass+1==pass_progress.size()?own_end:
+                pair_turn_cross(pass);
+            if (pass==0) {
+                const double b=side_boundary(direction>0?-1:1);
+                if (std::isfinite(b)) begin=b;
+            }
+            if (pass+1==pass_progress.size()) {
+                const double e=side_boundary(direction>0?1:-1);
+                if (std::isfinite(e)) end=e;
+            }
             value.cross_begin=begin;
             value.cross_end=end;
             passes.push_back(value);
@@ -538,14 +577,13 @@ inline Task22SweepPlan task22BuildSweepPlan(
                     cross*field.cross_axis,tangent,pass.pass_index,false);
             }
         };
-        // Route-start convention: an approach arc from the unit's initial
-        // front to the first pass begin, tangent-continuous with the pass
-        // direction.  Radius comes from the closed-form circle through the
-        // initial front tangent to the pass line (no parameter); the
-        // approach poses service cells like any other route pose.
+        // Route-start convention: straight + quarter-fillet approach from
+        // the unit's initial front to the first pass entry (C1, bounded
+        // length ~ |offset| + (pi/2)R; the earlier single-circle approach
+        // exploded to multi-km radii for large lateral offsets).
         {
             const Task22SweepPass& first=passes.front();
-            const Eigen::Vector2d begin=field.origin+
+            const Eigen::Vector2d entry=field.origin+
                 first.progress*field.progress_axis+
                 first.cross_begin*field.cross_axis;
             const Eigen::Vector2d travel=static_cast<double>(
@@ -554,56 +592,73 @@ inline Task22SweepPlan task22BuildSweepPlan(
                 unit_id);
             if (initial_front_entry!=initial_front_positions.end()&&
                 initial_front_entry->second.allFinite()&&
-                (initial_front_entry->second-begin).norm()>pitch) {
+                (initial_front_entry->second-entry).norm()>pitch) {
                 const Eigen::Vector2d from=initial_front_entry->second;
-                const Eigen::Vector2d offset=from-begin;
-                const double along=offset.dot(travel);
-                const double across=offset.dot(field.progress_axis);
-                if (std::abs(across)<1.0e-9) {
-                    // On the pass line: straight approach along the pass.
-                    const std::size_t count=std::max<std::size_t>(2,
-                        static_cast<std::size_t>(
-                            std::ceil(std::abs(along)/pitch)));
-                    for (std::size_t index=0;index<count;++index) {
-                        const double fraction=static_cast<double>(index)/
-                            static_cast<double>(count);
-                        push(begin+fraction*offset,travel,
+                const double h=field.progress_axis.dot(from-entry);
+                const double along=travel.dot(from-entry);
+                constexpr double kappa_max=4.0/(30.0*30.0);
+                const double r=std::min(1.0/kappa_max,std::abs(h));
+                // Fillet centre on the front's side of the pass line; the
+                // straight segment runs from the front to the arc start.
+                const Eigen::Vector2d center=entry+
+                    (h>=0.0?1.0:-1.0)*r*field.progress_axis;
+                Eigen::Vector2d radial=from-center;
+                const double radial_len=radial.norm();
+                if (radial_len>r+1.0e-9) {
+                    const Eigen::Vector2d arc_start=center+
+                        (radial/radial_len)*r;
+                    const std::size_t straight_steps=std::max<std::size_t>(
+                        2,static_cast<std::size_t>(
+                            std::ceil((from-arc_start).norm()/pitch)));
+                    for (std::size_t step=0;step<straight_steps;++step) {
+                        const double fraction=static_cast<double>(step)/
+                            static_cast<double>(straight_steps);
+                        push(from+fraction*(arc_start-from),travel,
                             first.pass_index,true);
                     }
-                } else {
-                    const double radius=(along*along+across*across)/
-                        (2.0*across);
-                    const Eigen::Vector2d center=begin+
-                        radius*field.progress_axis;
-                    const double theta_begin=std::atan2(
-                        field.cross_axis.dot(from-center),
-                        field.progress_axis.dot(from-center));
                     const double theta_end=std::atan2(
-                        field.cross_axis.dot(begin-center),
-                        field.progress_axis.dot(begin-center));
-                    // Sweep from theta_begin to theta_end choosing the
-                    // direction whose tangent at begin matches travel.
-                    const int dtheta=travel.dot(field.cross_axis)>=0.0?1:-1;
-                    double delta=theta_end-theta_begin;
-                    while (delta> M_PI) delta-=2.0*M_PI;
-                    while (delta<-M_PI) delta+=2.0*M_PI;
-                    if (delta*dtheta<0.0) delta+=2.0*M_PI*dtheta;
+                        field.cross_axis.dot(entry-center),
+                        field.progress_axis.dot(entry-center));
+                    const double theta_start=std::atan2(
+                        field.cross_axis.dot(arc_start-center),
+                        field.progress_axis.dot(arc_start-center));
+                    // Sweep sign from tangent continuity at the entry.
+                    const int dsign=(travel.dot(field.cross_axis)>=0.0)
+                        ?1:-1;
+                    double delta=theta_end-theta_start;
+                    while (delta>2.0*M_PI) delta-=2.0*M_PI;
+                    while (delta<0.0) delta+=2.0*M_PI;
+                    if ((theta_end-theta_start)*dsign<0.0&&delta>M_PI)
+                        delta-=2.0*M_PI;
+                    if ((theta_end-theta_start)*dsign>0.0&&delta<0.0)
+                        delta+=2.0*M_PI;
                     const auto tangent_at=[&](double theta) {
-                        return static_cast<double>(dtheta)*
+                        return static_cast<double>(dsign)*
                             (-std::sin(theta)*field.progress_axis+
                              std::cos(theta)*field.cross_axis);
                     };
-                    const double arc=std::abs(delta)*std::abs(radius);
-                    const std::size_t steps=std::max<std::size_t>(2,
-                        static_cast<std::size_t>(std::ceil(arc/pitch)));
-                    for (std::size_t step=0;step<steps;++step) {
-                        const double theta=theta_begin+delta*
+                    const std::size_t steps=std::max<std::size_t>(4,
+                        static_cast<std::size_t>(
+                            std::ceil(std::abs(delta)*r/pitch))+1);
+                    for (std::size_t step=1;step<=steps;++step) {
+                        const double theta=theta_start+delta*
                             static_cast<double>(step)/
                             static_cast<double>(steps);
-                        push(center+std::abs(radius)*
-                            (std::cos(theta)*field.progress_axis+
-                             std::sin(theta)*field.cross_axis),
-                            tangent_at(theta),first.pass_index,true);
+                        push(center+r*(std::cos(theta)*
+                            field.progress_axis+std::sin(theta)*
+                            field.cross_axis),tangent_at(theta),
+                            first.pass_index,true);
+                    }
+                } else {
+                    // Front inside the fillet disc: straight to the entry.
+                    const std::size_t steps=std::max<std::size_t>(2,
+                        static_cast<std::size_t>(
+                            std::ceil((from-entry).norm()/pitch)));
+                    for (std::size_t step=0;step<steps;++step) {
+                        const double fraction=static_cast<double>(step)/
+                            static_cast<double>(steps);
+                        push(from+fraction*(entry-from),travel,
+                            first.pass_index,true);
                     }
                 }
             }
@@ -934,6 +989,11 @@ inline Task22AllocationResult allocateTask22Sweep(
                 }
             }
             front_s=route.samples[best_index].s;
+            // Off-route protection (P8 analysis finding): when the front
+            // is farther than the forward focus from every route sample
+            // in the bounded window, its projection is noise and the
+            // cursor must pause instead of free-running the route.
+            if (best>request.forward_focus_distance_m) front_s=previous;
         }
         const double cursor=std::min(route.total_length,
             std::max(previous,std::min(previous+request.cursor_advance_m,
@@ -954,8 +1014,13 @@ inline Task22AllocationResult allocateTask22Sweep(
         const Task22RouteSample& sample=route.samples[nav_index];
         const Eigen::Vector2d focus=sample.position+
             request.forward_focus_distance_m*sample.tangent;
+        // P10 binding law (researcher-ruled semantics): oldest-
+        // uncertified-first -- the pending window cell with the earliest
+        // first-witness arclength wins (deterministic id tie-break);
+        // with no pending cell the pose advances along the route.
+        // Effective from the first allocation, no tail branch.
         const FrontierCell* best_cell=nullptr;
-        double best_distance=std::numeric_limits<double>::infinity();
+        double best_first_s=std::numeric_limits<double>::infinity();
         bool any_pending=false;
         for (const auto& [id,cell]:uncovered) {
             if (used.count(id)) continue;
@@ -965,16 +1030,15 @@ inline Task22AllocationResult allocateTask22Sweep(
             if (first_s>cursor+window_span) continue;
             ++result.scanned_cells;
             any_pending=true;
-            const double distance=(cell.center-focus).squaredNorm();
-            if (best_cell==nullptr||
-                distance<best_distance-request.comparison_epsilon||
-                (std::abs(distance-best_distance)<=
+            if (first_s<best_first_s-request.comparison_epsilon||
+                (std::abs(first_s-best_first_s)<=
                      request.comparison_epsilon&&
-                 id<best_cell->id())) {
+                 (best_cell==nullptr||id<best_cell->id()))) {
                 best_cell=&cell;
-                best_distance=distance;
+                best_first_s=first_s;
             }
         }
+        (void)focus;
         const bool window_empty=!any_pending;
         const Eigen::Vector2d nav_pose=sample.position;
         const Eigen::Vector2d nav_tangent=sample.tangent;

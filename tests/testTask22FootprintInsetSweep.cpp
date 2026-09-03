@@ -265,10 +265,12 @@ TEST_CASE("Task 22 first pass starts on the side nearest the initial front") {
         contract,fixedAnchors(),initialFronts(contract,high_mobile));
     REQUIRE(low.valid);
     REQUIRE(high.valid);
+    // P11 phase lock: every unit's first pass travels toward +cross
+    // regardless of where its initial front sits.
     for (const auto& [unit,route]:low.routes)
         CHECK(route.passes.front().direction==1);
     for (const auto& [unit,route]:high.routes)
-        CHECK(route.passes.front().direction==-1);
+        CHECK(route.passes.front().direction==1);
 }
 
 TEST_CASE("Task 22 pinball-5-4-3-2 static contract is valid and parameter-free") {
