@@ -71,6 +71,8 @@ TEST_CASE("Task 19 switcher completes the two-edge DAG action make-before-break"
     CHECK(gf::task19SameDag(fixture->adapter.runtimeSnapshot().topology,
                             gf::task19MicrofixDag()));
     CHECK(switcher.audit().certified_edge_replacements==2);
+    REQUIRE(switcher.audit().trigger_tick.has_value());
+    CHECK(*switcher.audit().trigger_tick==0);
     for (const auto& [owner,target]:step.committed_targets) {
         CAPTURE(owner);
         CHECK(target.x_index>=0);

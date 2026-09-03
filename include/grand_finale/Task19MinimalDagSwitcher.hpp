@@ -206,8 +206,10 @@ public:
         }
         event.switch_requested=true;
         ++audit_.switch_requests;
-        audit_.trigger_tick=tick;
-        audit_.trigger_fraction=signal_.rollingFraction();
+        if (!audit_.trigger_tick.has_value()) {
+            audit_.trigger_tick=tick;
+            audit_.trigger_fraction=signal_.rollingFraction();
+        }
         if (!task19SameDag(adapter_.runtimeSnapshot().topology,
                            task19OriginDag())) {
             phase_=Phase::Failed;

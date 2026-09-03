@@ -1386,6 +1386,16 @@ int main(int argc,char** argv) {
                 {"final_certified_hash",final_grid.certified_hash},
                 {"final_truth_hash",final_grid.truth_hash}};
         }
+        if (production_semantics) {
+            record["task19_gridworld"]={{"delta_path",
+                grid_delta_path.string()},
+                {"initial_certified_count",initial_grid.certified_count},
+                {"initial_truth_count",initial_grid.truth_count},
+                {"final_certified_count",final_grid.certified_count},
+                {"final_truth_count",final_grid.truth_count},
+                {"final_certified_hash",final_grid.certified_hash},
+                {"final_truth_hash",final_grid.truth_hash}};
+        }
         record["safety_and_information"]={
             {"maximum_actual_reference_m",maximum_actual_reference_m},
             {"maximum_target_reference_m",maximum_target_reference_m},
