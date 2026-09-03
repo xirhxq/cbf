@@ -12,6 +12,7 @@
 #include "grand_finale/Task16Cbf2026CoveragePolicy.hpp"
 #include "grand_finale/Task16FormationGovernor.hpp"
 #include "grand_finale/Task20CoveragePolicy.hpp"
+#include "grand_finale/Task21PersistentRibbon.hpp"
 #include "grand_finale/TargetLiftTransitionPrototype.hpp"
 
 #include <functional>
@@ -95,6 +96,8 @@ struct SimpleCoverageControlStep {
     Task16CoverageResult task18_allocation;
     bool task20_allocation_evaluated=false;
     Task20CoverageResult task20_allocation;
+    bool task21_allocation_evaluated=false;
+    Task21AllocationResult task21_allocation;
     GrandFinaleSwarmStep step;
     std::string reason;
     std::map<NodeId,FrontierCell> committed_targets;
@@ -205,9 +208,14 @@ public:
         const bool policy_task20=
             adapter_.config().target_policy_task20_dag_lattice;
         if (policy_task20) {
-            advanceTask20Targets(runtime,result);
-            if (result.task20_allocation_evaluated&&
-                !result.task20_allocation.valid) {
+            if (adapter_.config().task20_target_policy==4)
+                advanceTask21Targets(runtime,result);
+            else
+                advanceTask20Targets(runtime,result);
+            if ((result.task20_allocation_evaluated&&
+                 !result.task20_allocation.valid)||
+                (result.task21_allocation_evaluated&&
+                 !result.task21_allocation.valid)) {
                 result.step.reason=result.reason;
                 return result;
             }
@@ -720,6 +728,10 @@ public:
         task17_last_allocation_cycle_=0;
         task20_last_allocation_cycle_=0;
         task20_initial_distance_m_.clear();
+        task21_plan_=Task21RibbonPlan{};
+        task21_cursors_.clear();
+        task21_active_segments_.clear();
+        task21_fronts_.clear();
     }
     SimpleCoverageControlStep advanceWithDynamicPairResponsibility(
         const std::string& pair_base_id) {
@@ -809,6 +821,112 @@ private:
             if (targets_.size()!=runtime.estimate.mobile_ids.size()) {
                 result.reason="task20_incomplete_initial_target_ledger";
                 result.task20_allocation.valid=false;
+                return;
+            }
+            ++target_epoch_;
+        }
+        task20_last_allocation_cycle_=control_boundaries_;
+        consecutive_failures_=0;
+    }
+
+    Task20DagLatticeContract task21Contract() const {
+        const int mode=adapter_.config().task20_lattice_mode;
+        if (mode==4) return task21PinballContract();
+        return task20DagLatticeContract(static_cast<Task20LatticeMode>(mode));
+    }
+
+    void advanceTask21Targets(
+        const GrandFinaleRuntimeSnapshot& runtime,
+        SimpleCoverageControlStep& result) {
+        const auto& config=adapter_.config();
+        const bool periodic=targets_.empty()||
+            control_boundaries_>=task20_last_allocation_cycle_+
+                config.task20_update_period_cycles;
+        if (!periodic) return;
+        const auto uncovered=currentCertifiedUncoveredCells();
+        if (uncovered.empty()&&!targets_.empty()) return;
+        const auto contract=task21Contract();
+        if (!contract.valid) {
+            result.reason=contract.reason;
+            result.task21_allocation_evaluated=true;
+            result.task21_allocation.reason=contract.reason;
+            return;
+        }
+        std::map<NodeId,Eigen::Vector2d> positions;
+        for (std::size_t index=0;index<runtime.estimate.mobile_ids.size();++index)
+            positions[runtime.estimate.mobile_ids[index]]=
+                runtime.estimate.mean.segment<2>(4*index);
+        std::map<std::string,Eigen::Vector2d> initial_front_positions;
+        for (const auto& unit:contract.coverage_units) {
+            const auto& front_members=unit.front_members.empty()
+                ?std::vector<NodeId>{unit.leader}:unit.front_members;
+            Eigen::Vector2d front=Eigen::Vector2d::Zero();
+            for (NodeId member:front_members) front+=positions.at(member);
+            initial_front_positions[unit.id]=
+                front/static_cast<double>(front_members.size());
+        }
+        if (!task21_plan_.valid) {
+            const auto field=task21AffineCoordinateField({0.0,0.0},
+                {config.task21_progress_axis_x,config.task21_progress_axis_y},
+                {config.task21_cross_axis_x,config.task21_cross_axis_y});
+            std::vector<std::string> units;
+            for (const auto& unit:contract.coverage_units)
+                units.push_back(unit.id);
+            task21_plan_=task21BuildRibbonPlan(denominator_cells_,units,field,
+                config.task20_wavefront_band_width_m,
+                config.task21_local_window_cells,initial_front_positions);
+            if (!task21_plan_.valid) {
+                result.reason=task21_plan_.reason;
+                result.task21_allocation_evaluated=true;
+                result.task21_allocation.reason=task21_plan_.reason;
+                return;
+            }
+        }
+        Task21AllocationRequest request;
+        request.plan=task21_plan_;
+        request.uncovered_cells=uncovered;
+        request.cursors=task21_cursors_;
+        request.active_segments=task21_active_segments_;
+        request.front_positions=initial_front_positions;
+        result.task21_allocation_evaluated=true;
+        result.task21_allocation=allocateTask21Ribbon(request);
+        if (!result.task21_allocation.valid) {
+            result.reason=result.task21_allocation.reason;
+            return;
+        }
+        task21_cursors_=result.task21_allocation.cursors;
+        task21_active_segments_=result.task21_allocation.active_segments;
+        if (!result.task21_allocation.complete) {
+            for (const auto& [unit,assignment]:result.task21_allocation.assignments)
+                task21_fronts_[unit]=assignment.front;
+            if (task21_fronts_.size()!=contract.coverage_units.size()) {
+                result.reason="task21_incomplete_initial_front_ledger";
+                result.task21_allocation.valid=false;
+                return;
+            }
+            const auto lifted=task20LiftTargets(
+                contract,runtime.estimate.fixed_positions,task21_fronts_);
+            if (!lifted.valid) {
+                result.reason=lifted.reason;
+                result.task21_allocation.valid=false;
+                return;
+            }
+            for (const auto& [unit_id,assignment]:
+                 result.task21_allocation.assignments) {
+                const std::string sought_unit_id=unit_id;
+                const auto unit=std::find_if(contract.coverage_units.begin(),
+                    contract.coverage_units.end(),[&](const auto& value) {
+                        return value.id==sought_unit_id;
+                    });
+                for (NodeId member:unit->members) {
+                    FrontierCell target=assignment.task;
+                    target.center=lifted.targets.at(member);
+                    targets_[member]=target;
+                }
+            }
+            if (targets_.size()!=runtime.estimate.mobile_ids.size()) {
+                result.reason="task21_incomplete_initial_target_ledger";
+                result.task21_allocation.valid=false;
                 return;
             }
             ++target_epoch_;
@@ -1998,6 +2116,10 @@ private:
     std::size_t task18_last_allocation_cycle_=0;
     std::size_t task20_last_allocation_cycle_=0;
     std::vector<double> task20_initial_distance_m_;
+    Task21RibbonPlan task21_plan_;
+    std::map<std::string,std::size_t> task21_cursors_;
+    std::map<std::string,std::size_t> task21_active_segments_;
+    std::map<std::string,Eigen::Vector2d> task21_fronts_;
     CanonicalHocbfQpController task16_governor_qp_;
     // Task 13 Phase B0-a (target policy v2) state.
     double last_demand_recompute_s_=-1.0e9;

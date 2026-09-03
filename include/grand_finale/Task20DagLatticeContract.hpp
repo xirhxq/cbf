@@ -20,6 +20,9 @@ struct Task20CoverageUnit {
     std::vector<NodeId> members;
     std::vector<NodeId> base_anchors;
     NodeId leader=0;
+    // Generic front-frame support.  Legacy contracts may leave this empty,
+    // in which case the leader is the sole front member.
+    std::vector<NodeId> front_members;
 };
 
 // Every role is an affine triangular map
@@ -212,8 +215,8 @@ inline Task20DagLatticeContract task20DagLatticeContract(
         result.id="dual-ladder";
         result.structural_signature="units=7+7;rows=2x(2-2-2-1);ladder";
         result.reference_edges=task20_lattice_detail::dualLadderEdges();
-        result.coverage_units={{"A",{1,2,3,4,5,6,7},{101},7},
-                               {"B",{8,9,10,11,12,13,14},{101},14}};
+        result.coverage_units={{"A",{1,2,3,4,5,6,7},{101},7,{7}},
+                               {"B",{8,9,10,11,12,13,14},{101},14,{14}}};
         const std::vector<std::pair<double,double>> a{
             {0.25,0.0},{0.25,-0.25},{0.50,0.0},{0.50,-0.25},
             {0.75,0.0},{0.75,-0.25},{1.0,0.0}};
@@ -227,7 +230,7 @@ inline Task20DagLatticeContract task20DagLatticeContract(
         result.structural_signature="units=14;rows=2-2-2-2-2-2-2;merged-cross";
         result.reference_edges=task20_lattice_detail::mergedStripEdges();
         result.coverage_units={{"M",{1,8,2,9,3,10,4,11,5,12,6,13,7,14},
-                                {100,101,102},14}};
+                                {100,101,102},14,{7,14}}};
         std::vector<std::pair<double,double>> roles;
         for (int depth=1;depth<=7;++depth) {
             roles.emplace_back(depth/7.0,-0.09);
@@ -238,9 +241,9 @@ inline Task20DagLatticeContract task20DagLatticeContract(
         result.id="split-three-front";
         result.structural_signature="units=5+5+4;three-fibonacci-chains";
         result.reference_edges=task20_lattice_detail::splitThreeFrontEdges();
-        result.coverage_units={{"L",{1,2,3,4,5},{100,101},5},
-                               {"C",{6,7,8,9,10},{101,102},10},
-                               {"R",{11,12,13,14},{100,102},14}};
+        result.coverage_units={{"L",{1,2,3,4,5},{100,101},5,{5}},
+                               {"C",{6,7,8,9,10},{101,102},10,{10}},
+                               {"R",{11,12,13,14},{100,102},14,{14}}};
         task20_lattice_detail::addRoles(result,result.coverage_units[0],
             {{0.20,-0.08},{0.40,0.08},{0.60,-0.08},{0.80,0.08},{1.0,0.0}});
         task20_lattice_detail::addRoles(result,result.coverage_units[1],
@@ -251,8 +254,8 @@ inline Task20DagLatticeContract task20DagLatticeContract(
         result.id="cross-braced-diamond";
         result.structural_signature="units=7+7;rows=1-2-3-1;diamond";
         result.reference_edges=task20_lattice_detail::diamondEdges();
-        result.coverage_units={{"A",{1,2,3,4,5,6,7},{100,101},7},
-                               {"B",{8,9,10,11,12,13,14},{101,102},14}};
+        result.coverage_units={{"A",{1,2,3,4,5,6,7},{100,101},7,{7}},
+                               {"B",{8,9,10,11,12,13,14},{101,102},14,{14}}};
         const std::vector<std::pair<double,double>> roles{
             {0.25,0.0},{0.50,-0.12},{0.50,0.12},{0.75,0.0},
             {0.75,-0.16},{0.75,0.16},{1.0,0.0}};

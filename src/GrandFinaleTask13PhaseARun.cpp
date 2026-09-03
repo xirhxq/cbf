@@ -122,6 +122,11 @@ PhaseATemplate makeTemplate(const std::string& id) {
             return {contract.id,"Task 20 DAG-conditioned lattice mode",
                 launch,contract.reference_edges};
     }
+    if (id=="pinball-four-layer") {
+        const auto contract=gf::task21PinballContract();
+        return {contract.id,"Task 21 four-layer pinball lattice mode",
+            launch,contract.reference_edges};
+    }
     throw std::runtime_error("unknown template:"+id);
 }
 
@@ -264,13 +269,16 @@ int main(int argc,char** argv) {
             policy.rfind("task18",0)==0;
         const bool policy_task20=policy.rfind("task20-",0)==0;
         const int task20_lattice_mode=
+            policy.find("pinball")!=std::string::npos?4:
             policy.find("merged-strip")!=std::string::npos?1:
             policy.find("split-three-front")!=std::string::npos?2:
             policy.find("cross-braced-diamond")!=std::string::npos?3:0;
         const int task20_target_policy=
+            policy.rfind("-p4")!=std::string::npos?4:
             policy.rfind("-p1")!=std::string::npos?1:
             policy.rfind("-p2")!=std::string::npos?2:
             policy.rfind("-p3")!=std::string::npos?3:0;
+        const bool policy_task21=policy_task20&&task20_target_policy==4;
         const auto task16_arm=policy=="task16c"
             ?gf::Task16CoverageArm::FormationAware:
             policy=="task16b"?gf::Task16CoverageArm::BoundaryDecoupled:
@@ -389,7 +397,9 @@ int main(int argc,char** argv) {
             policy_task18,task18_common_governor_enabled,
             task18_collision_only_vaug,
             task18_yaw_objective,gf::task17UpdatePeriodCycles(policy),
-            policy_task20,task20_lattice_mode,task20_target_policy,5,190.0);
+            policy_task20,task20_lattice_mode,task20_target_policy,5,
+            task20_target_policy==4
+                ?(task20_lattice_mode==0?220.0:450.0):190.0);
         if (!fixture->adapter.initializeStageZero().initialized) {
             // Qualification-gate boundary point: recorded, not run.
             json boundary={{"protocol","task13-phase-a-run-v1"},
@@ -430,7 +440,8 @@ int main(int argc,char** argv) {
                 ++workspace_rows;
         }
         const auto& config=fixture->adapter.config();
-        json record={{"protocol",policy_task20
+        json record={{"protocol",policy_task21
+                ?"task21-dag-agnostic-persistent-ribbon-v1":policy_task20
                 ?"task20-dag-lattice-target-joint-design-v1":
                 policy_task19_switch
                 ?"grand-finale-task19-minimal-dag-switch-v1":
@@ -439,8 +450,9 @@ int main(int argc,char** argv) {
                 ?"task18-cbf2026-behavioral-recovery-v1":
                 policy_task17?"task17-periodic-run-v1":
                 "task13-phase-a-run-v1"},
-            {"preregistration",policy_task20
-                ?"2026-09-03-task20-dag-lattice-target-joint-design":
+            {"preregistration",policy_task21
+                ?"2026-09-03-task21-dag-agnostic-persistent-ribbon-preregistration":
+                policy_task20?"2026-09-03-task20-dag-lattice-target-joint-design":
                 policy_production
                 ?"task19-production-and-fixed-vs-switching-2026-09-03":
                 policy_task18?"task18-cbf2026-behavioral-recovery-2026-09-03":
@@ -608,6 +620,17 @@ int main(int argc,char** argv) {
                     config.task20_update_period_cycles},
                 {"task20_wavefront_band_width_m",
                     config.task20_wavefront_band_width_m},
+                {"task21_progress_axis",
+                    {config.task21_progress_axis_x,
+                     config.task21_progress_axis_y}},
+                {"task21_cross_axis",
+                    {config.task21_cross_axis_x,
+                     config.task21_cross_axis_y}},
+                {"task21_local_window_cells",
+                    config.task21_local_window_cells},
+                {"task21_endpoint_gate_enabled",task20_target_policy==4},
+                {"task21_endpoint_tolerance_rule",
+                    "1.5_times_minimum_cross_track_cell_pitch"},
                 {"task15_forward_shortlist_capacity",
                 config.task15_forward_shortlist_capacity},
                 {"task15_forward_update_period_cycles",
@@ -800,6 +823,10 @@ int main(int argc,char** argv) {
                 last_step.task20_allocation.valid)
                 task16_allocation_wall_s.push_back(
                     last_step.task20_allocation.allocation_wall_s);
+            if (last_step.task21_allocation_evaluated&&
+                last_step.task21_allocation.valid)
+                task16_allocation_wall_s.push_back(
+                    last_step.task21_allocation.allocation_wall_s);
             if (last_step.target_governor_evaluated) {
                 ++target_governor_ticks;
                 minimum_target_governor_fraction=std::min(
@@ -911,6 +938,10 @@ int main(int argc,char** argv) {
                 last_step.task20_allocation.valid)
                 current_active_squads=
                     last_step.task20_allocation.assignments.size();
+            if (last_step.task21_allocation_evaluated&&
+                last_step.task21_allocation.valid)
+                current_active_squads=
+                    last_step.task21_allocation.assignments.size();
             active_squad_ticks+=current_active_squads;
             if (last_step.target_epoch!=last_target_epoch) {
                 if (last_target_epoch!=0) ++target_switches;
@@ -1159,6 +1190,21 @@ int main(int argc,char** argv) {
                                 rolling_intervention_fraction},
                         {"reason",task19_switch_event.reason}});
             }
+            json task21_assignments=json::array();
+            for (const auto& [unit,assignment]:
+                 last_step.task21_allocation.assignments) {
+                task21_assignments.push_back({
+                    {"coverage_unit",unit},
+                    {"task_id",assignment.task.id()},
+                    {"task_center",{assignment.task.center.x(),
+                        assignment.task.center.y()}},
+                    {"route_index",assignment.route_index},
+                    {"band_index",assignment.band_index},
+                    {"route_tangent",{assignment.route_tangent.x(),
+                        assignment.route_tangent.y()}},
+                    {"front",{assignment.front.x(),assignment.front.y()}},
+                    {"transition_hold",assignment.transition_hold}});
+            }
             telemetry<<json({{"tick",tick},
                 {"runtime_s",snapshot.runtime_s},
                 {"coverage_fraction",fraction},
@@ -1243,6 +1289,20 @@ int main(int argc,char** argv) {
                     {"scanned_cells",last_step.task20_allocation.scanned_cells},
                     {"active_units",
                         last_step.task20_allocation.assignments.size()}}},
+                {"task21",{{"allocation_evaluated",
+                    last_step.task21_allocation_evaluated},
+                    {"allocation_wall_s",
+                    last_step.task21_allocation_evaluated
+                        ?json(last_step.task21_allocation.allocation_wall_s)
+                        :json(nullptr)},
+                    {"scanned_cells",
+                        last_step.task21_allocation.scanned_cells},
+                    {"active_units",
+                        last_step.task21_allocation.assignments.size()},
+                    {"cursors",last_step.task21_allocation.cursors},
+                    {"active_segments",
+                        last_step.task21_allocation.active_segments},
+                    {"assignments",task21_assignments}}},
                 {"task19_switch",{{"enabled",policy_task19_switch},
                     {"signal_evaluated",
                         task19_switch_event.signal_evaluated},

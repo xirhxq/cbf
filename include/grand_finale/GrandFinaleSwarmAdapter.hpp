@@ -207,6 +207,14 @@ struct GrandFinaleSwarmAdapterConfig {
     int task20_target_policy = 0;
     std::size_t task20_update_period_cycles = 5;
     double task20_wavefront_band_width_m = 190.0;
+    // Task 21 P4 consumes a scenario-provided coordinate field.  Defaults
+    // describe the canonical coastal entry, but the online policy never
+    // inspects Cartesian axis names.
+    double task21_progress_axis_x = 0.0;
+    double task21_progress_axis_y = 1.0;
+    double task21_cross_axis_x = 1.0;
+    double task21_cross_axis_y = 0.0;
+    std::size_t task21_local_window_cells = 1024;
     double v6_neighborhood_radius_m = 450.0;
     double demand_recompute_interval_s = 5.0;
     double target_lock_epsilon_m = 30.0;
@@ -598,10 +606,19 @@ public:
             config_.task17_update_period_cycles==0 ||
             config_.task18_update_period_cycles==0 ||
             config_.task20_update_period_cycles==0 ||
-            config_.task20_lattice_mode<0||config_.task20_lattice_mode>3||
-            config_.task20_target_policy<0||config_.task20_target_policy>3||
+            config_.task20_lattice_mode<0||config_.task20_lattice_mode>4||
+            config_.task20_target_policy<0||config_.task20_target_policy>4||
             !std::isfinite(config_.task20_wavefront_band_width_m)||
             config_.task20_wavefront_band_width_m<=0.0 ||
+            config_.task21_local_window_cells==0 ||
+            !std::isfinite(config_.task21_progress_axis_x) ||
+            !std::isfinite(config_.task21_progress_axis_y) ||
+            !std::isfinite(config_.task21_cross_axis_x) ||
+            !std::isfinite(config_.task21_cross_axis_y) ||
+            std::hypot(config_.task21_progress_axis_x,
+                config_.task21_progress_axis_y)<=1.0e-12 ||
+            std::hypot(config_.task21_cross_axis_x,
+                config_.task21_cross_axis_y)<=1.0e-12 ||
             !std::isfinite(
                 config_.task16_reference_damping_reserve_multiples) ||
             config_.task16_reference_damping_reserve_multiples<=0.0 ||
