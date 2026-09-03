@@ -1025,6 +1025,10 @@ private:
         request.uncovered_cells=uncovered;
         request.cursors=task22_cursors_;
         request.front_positions=initial_front_positions;
+        // Leading-cursor advance per allocation call at the frozen stack
+        // speed ceiling (29.9 m/s) over the update cadence.
+        request.cursor_advance_m=2.99*
+            static_cast<double>(config.task20_update_period_cycles);
         result.task22_allocation_evaluated=true;
         result.task22_allocation=allocateTask22Sweep(request);
         if (!result.task22_allocation.valid) {

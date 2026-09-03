@@ -86,6 +86,10 @@ struct Task22UnitRoute {
     std::vector<Task22RouteSample> samples;
     double total_length=0.0;
     std::vector<Task22CellService> cell_order;
+    // Per-cell (indexed like plan.cells) first/last service arclength for
+    // this unit's route; -1 when the unit's route never services the cell.
+    std::vector<double> first_service_s;
+    std::vector<double> last_service_s;
     std::size_t full_extent_service_count=0;
 };
 
@@ -100,6 +104,11 @@ struct Task22SweepPlan {
     std::map<std::string,std::size_t> cell_lookup;
     std::map<std::string,Task21RibbonCorridor> corridors;
     std::map<std::string,Task22UnitRoute> routes;
+    // Witness arclength interval per cell (indexed like cell_lookup),
+    // derived from a bidirectional first-service sweep; -1 marks cells the
+    // route never services.
+    std::vector<double> cell_first_service_s;
+    std::vector<double> cell_last_service_s;
 };
 
 struct Task22AllocationRequest {
@@ -108,6 +117,10 @@ struct Task22AllocationRequest {
     std::map<std::string,Eigen::Vector2d> front_positions;
     std::map<std::string,double> cursors;
     double forward_focus_distance_m=400.0;
+    // Leading-cursor advance per allocation call at the frozen stack speed
+    // ceiling (29.9 m/s x update period); the controller derives it from
+    // the update cadence.
+    double cursor_advance_m=14.95;
     double comparison_epsilon=1.0e-9;
 };
 
@@ -697,6 +710,8 @@ inline Task22SweepPlan task22BuildSweepPlan(
             return result;
         }
 
+        route.first_service_s.assign(cell_count,-1.0);
+        route.last_service_s.assign(cell_count,-1.0);
         // Route-ordered first-service ledger for online windowing.
         task22_detail::CellBits serviced(words,0);
         for (const auto& sample:route.samples) {
@@ -733,6 +748,50 @@ inline Task22SweepPlan task22BuildSweepPlan(
                         lifted.targets.at(member),yaw,cell.center)) {
                         task22_detail::setBit(serviced,index);
                         route.cell_order.push_back({cell.id(),sample.s});
+                        route.first_service_s[index]=sample.s;
+                        break;
+                    }
+            }
+        }
+        // Backward sweep: last service arclength per cell (any-forward-
+        // witness windows need the full witness interval, not only the
+        // first).
+        for (std::size_t si=route.samples.size();si-->0;) {
+            const auto& sample=route.samples[si];
+            std::map<std::string,Eigen::Vector2d> fronts=
+                geometry.other_fronts;
+            fronts[unit_id]=sample.position;
+            const auto lifted=task20LiftTargets(contract,fixed_positions,
+                fronts);
+            if (!lifted.valid) {
+                result.reason="lifting_failed:"+unit_id;
+                return result;
+            }
+            const double yaw=std::atan2(sample.tangent.y(),
+                sample.tangent.x());
+            double min_x=1.0e18,max_x=-1.0e18,min_y=1.0e18,max_y=-1.0e18;
+            for (NodeId member:unit.members) {
+                const Eigen::Vector2d pose=lifted.targets.at(member);
+                min_x=std::min(min_x,pose.x());
+                max_x=std::max(max_x,pose.x());
+                min_y=std::min(min_y,pose.y());
+                max_y=std::max(max_y,pose.y());
+            }
+            for (std::size_t index=0;index<cell_count;++index) {
+                if (route.last_service_s[index]>=0.0) continue;
+                const double cell_cross=field.coordinates(
+                    result.cells[index].center).y();
+                if (cell_cross+1.0e-9<corridor.cross_min||
+                    cell_cross>corridor.cross_max+1.0e-9) continue;
+                const FrontierCell& cell=result.cells[index];
+                if (cell.center.x()<min_x-400.0||
+                    cell.center.x()>max_x+400.0||
+                    cell.center.y()<min_y-400.0||
+                    cell.center.y()>max_y+400.0) continue;
+                for (NodeId member:unit.members)
+                    if (task22CellInCertifiedSector(
+                        lifted.targets.at(member),yaw,cell.center)) {
+                        route.last_service_s[index]=sample.s;
                         break;
                     }
             }
@@ -741,8 +800,29 @@ inline Task22SweepPlan task22BuildSweepPlan(
             result.reason="route_services_no_cells:"+unit_id;
             return result;
         }
+        (void)0;
         result.corridors.emplace(unit_id,corridor);
         result.routes.emplace(unit_id,std::move(route));
+    }
+    result.cell_first_service_s.assign(cell_count,-1.0);
+    result.cell_last_service_s.assign(cell_count,-1.0);
+    for (const auto& [unit_id,route]:result.routes) {
+        for (std::size_t index=0;index<route.last_service_s.size();
+             ++index) {
+            if (route.last_service_s[index]<0.0) continue;
+            const std::size_t cell=result.cell_lookup.at(
+                result.cells[index].id());
+            if (result.cell_first_service_s[cell]<0.0||
+                route.first_service_s[index]<
+                    result.cell_first_service_s[cell])
+                result.cell_first_service_s[cell]=
+                    route.first_service_s[index];
+            if (result.cell_last_service_s[cell]<0.0||
+                route.last_service_s[index]>
+                    result.cell_last_service_s[cell])
+                result.cell_last_service_s[cell]=
+                    route.last_service_s[index];
+        }
     }
     result.valid=true;
     return result;
@@ -810,96 +890,94 @@ inline Task22AllocationResult allocateTask22Sweep(
             result.reason="missing_unit_front:"+unit;
             return finish(std::move(result));
         }
-        // Monotone projection of the actual front onto the route ahead.
+        // Leading cursor (2026-09-04 erratum II): the cursor advances
+        // along the route at flight speed and pauses ONLY while a
+        // physically serviceable pending cell exists in the window -- its
+        // witness arclength interval intersects [cursor, cursor+focus].
+        // No projection onto the folding route (pass-jumping defect), no
+        // first_service_s-only exclusion (constructive stranding defect),
+        // and the anchor decouples from the certification front like P0's
+        // forward focus (crawling-equilibrium defect).
         const double previous=std::min(std::max(0.0,
             result.cursors.at(unit)),route.total_length);
-        std::size_t index=0;
-        while (index+1<route.samples.size()&&
-               route.samples[index].s<previous-1.0e-9) ++index;
-        double best=(front->second-route.samples[index].position).norm();
-        std::size_t best_index=index;
-        // Global projection over the remaining route (the earlier
-        // first-increase walk stopped at approach-arc local minima and
-        // froze the cursor at zero for whole runs).
-        for (std::size_t probe=index+1;probe<route.samples.size();++probe) {
-            const double distance=(front->second-
-                route.samples[probe].position).norm();
-            if (distance<best-request.comparison_epsilon) {
-                best=distance;
-                best_index=probe;
+        const auto cell_service_s=[&](const std::string& id,
+            double& first_s,double& last_s) {
+            const auto found=request.plan.cell_lookup.find(id);
+            if (found==request.plan.cell_lookup.end()) return false;
+            first_s=request.plan.cell_first_service_s[found->second];
+            last_s=request.plan.cell_last_service_s[found->second];
+            return last_s>=0.0;
+        };
+        // Bounded-step monotone projection of the actual front: searching
+        // only [previous, previous + 2*advance] per call removes the
+        // folding-route pass-jumping defect while tracking the formation.
+        // The serviceable-cell pause of the erratum is realized as a
+        // bounded lead: the cursor advances at flight speed but never
+        // leads the projected front by more than the forward focus, so it
+        // waits exactly while the formation can still physically service
+        // the pending cells it is passing (pausing on anchor-region cells
+        // alone re-created a crawling equilibrium in the 300 s smoke).
+        double front_s=previous;
+        {
+            std::size_t index=0;
+            while (index+1<route.samples.size()&&
+                   route.samples[index].s<previous-1.0e-9) ++index;
+            const double bound=previous+2.0*request.cursor_advance_m;
+            double best=(front->second-route.samples[index].position).
+                norm();
+            std::size_t best_index=index;
+            for (std::size_t probe=index+1;probe<route.samples.size()&&
+                 route.samples[probe].s<=bound;++probe) {
+                const double distance=(front->second-
+                    route.samples[probe].position).norm();
+                if (distance<best-request.comparison_epsilon) {
+                    best=distance;
+                    best_index=probe;
+                }
             }
+            front_s=route.samples[best_index].s;
         }
-        const double cursor=route.samples[best_index].s;
+        const double cursor=std::min(route.total_length,
+            std::max(previous,std::min(previous+request.cursor_advance_m,
+                front_s+request.forward_focus_distance_m)));
         result.cursors[unit]=cursor;
         const double window_span=static_cast<double>(
-            request.plan.local_window_cells)*request.plan.sample_pitch_m;
-        // First pending work in route order: the navigation pose anchors to
-        // the service point of the oldest uncovered window cell, so the
-        // front only advances as certification clears pending work (the
-        // arclength form of P0's nearest-real-cell pacing).  With no
-        // pending cell in the window the pose advances freely along the
-        // connecting arc by the forward-focus arclength.
-        // Cell selection first: nearest real uncovered window cell to the
-        // 400 m forward focus at the projected front (exact P0 pacing).
-        const Task22RouteSample& projected=route.samples[best_index];
-        const Eigen::Vector2d focus=projected.position+
-            request.forward_focus_distance_m*projected.tangent;
+            request.plan.local_window_cells)*
+            request.plan.sample_pitch_m;
+        // Anchor: the continuous route point at cursor + forward focus
+        // (leading, decoupled from the certification front).  Window: any
+        // pending cell whose LAST witness arclength is still ahead of the
+        // cursor (any-forward-witness; no first_s exclusion).
+        std::size_t nav_index=0;
+        while (nav_index+1<route.samples.size()&&
+               route.samples[nav_index].s<
+                   cursor+request.forward_focus_distance_m)
+            ++nav_index;
+        const Task22RouteSample& sample=route.samples[nav_index];
+        const Eigen::Vector2d focus=sample.position+
+            request.forward_focus_distance_m*sample.tangent;
         const FrontierCell* best_cell=nullptr;
         double best_distance=std::numeric_limits<double>::infinity();
-        double best_cell_s=0.0;
-        double first_pending_s=
-            std::numeric_limits<double>::infinity();
         bool any_pending=false;
-        for (const auto& service:route.cell_order) {
-            if (service.first_service_s<previous-request.plan.sample_pitch_m)
-                continue;
-            if (service.first_service_s>cursor+window_span) break;
-            const auto found=uncovered.find(service.cell_id);
-            if (found==uncovered.end()||used.count(found->first)) continue;
+        for (const auto& [id,cell]:uncovered) {
+            if (used.count(id)) continue;
+            double first_s=0.0,last_s=0.0;
+            if (!cell_service_s(id,first_s,last_s)) continue;
+            if (last_s<cursor-request.plan.sample_pitch_m) continue;
+            if (first_s>cursor+window_span) continue;
             ++result.scanned_cells;
             any_pending=true;
-            first_pending_s=std::min(first_pending_s,
-                service.first_service_s);
-            const double distance=(found->second.center-focus).squaredNorm();
+            const double distance=(cell.center-focus).squaredNorm();
             if (best_cell==nullptr||
                 distance<best_distance-request.comparison_epsilon||
                 (std::abs(distance-best_distance)<=
                      request.comparison_epsilon&&
-                 found->first<best_cell->id())) {
-                best_cell=&found->second;
+                 id<best_cell->id())) {
+                best_cell=&cell;
                 best_distance=distance;
-                best_cell_s=service.first_service_s;
             }
         }
-        // Navigation pose, frozen P5 anchor convention: the selected
-        // cell's own first-service witness pose from the route ledger --
-        // the exact configuration whose members' certified sectors cover
-        // the cell, so parking there certifies it by construction.  (The
-        // earlier pass-line-at-cell-cross reconstruction deadlocked on
-        // cells whose witness lies on a fillet: no member's sector faced
-        // the cell from the reconstructed pose.)  With no pending cell in
-        // the window the pose advances freely along the connecting arc by
-        // the forward-focus arclength.
         const bool window_empty=!any_pending;
-        std::size_t nav_index=best_index;
-        if (!window_empty) {
-            // Nearest-to-focus witness pursuit (best-attested anchor,
-            // 2026-09-04 P6 comparison): the front chases the witness pose
-            // of the uncovered window cell nearest the 400 m forward
-            // focus.  The oldest-pending variant (P6 addendum) was
-            // dominated in the 300 s smoke (18.0% vs 39.6% certified) and
-            // is recorded as adjudicated without a formal run.
-            while (nav_index+1<route.samples.size()&&
-                   route.samples[nav_index].s<best_cell_s)
-                ++nav_index;
-        } else {
-            const double nav_target_s=
-                cursor+request.forward_focus_distance_m;
-            while (nav_index+1<route.samples.size()&&
-                   route.samples[nav_index].s<nav_target_s)
-                ++nav_index;
-        }
-        const Task22RouteSample& sample=route.samples[nav_index];
         const Eigen::Vector2d nav_pose=sample.position;
         const Eigen::Vector2d nav_tangent=sample.tangent;
         const bool nav_on_fillet=sample.on_fillet;
@@ -913,11 +991,10 @@ inline Task22AllocationResult allocateTask22Sweep(
         if (best_cell!=nullptr) {
             assignment.task=*best_cell;
         } else {
-            // Route-order fallback: the next real uncovered cell along the
-            // remaining route, else the globally nearest real cell to the
-            // route pose (uniform completion rule; no tail mode, the cell
-            // remains a real certified-uncovered ID and the navigation
-            // pose stays the typed route pose).
+            // Route-order fallback: the earliest-first-witness real
+            // uncovered cell ahead of the cursor, else the globally
+            // nearest real cell to the route pose (uniform completion
+            // rule; no tail mode).
             bool fallback=false;
             for (const auto& service:route.cell_order) {
                 if (service.first_service_s<previous) continue;
