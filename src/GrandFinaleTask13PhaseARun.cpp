@@ -3,6 +3,7 @@
 #include "grand_finale/Task17GridTelemetry.hpp"
 #include "grand_finale/Task19ProductionBaseline.hpp"
 #include "grand_finale/Task19MinimalDagSwitcher.hpp"
+#include "grand_finale/Task20CoveragePolicy.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -113,6 +114,14 @@ PhaseATemplate makeTemplate(const std::string& id) {
             "101->9 becomes 102->9); all else frozen",
             launch,topology};
     }
+    for (const auto mode:{gf::Task20LatticeMode::MergedStrip,
+                          gf::Task20LatticeMode::SplitThreeFront,
+                          gf::Task20LatticeMode::CrossBracedDiamond}) {
+        const auto contract=gf::task20DagLatticeContract(mode);
+        if (id==contract.id)
+            return {contract.id,"Task 20 DAG-conditioned lattice mode",
+                launch,contract.reference_edges};
+    }
     throw std::runtime_error("unknown template:"+id);
 }
 
@@ -146,7 +155,11 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     bool task18_common_governor_enabled,
     bool task18_collision_only_vaug,
     gf::Task18YawObjective task18_yaw_objective,
-    std::size_t task18_update_period_cycles) {
+    std::size_t task18_update_period_cycles,
+    bool target_policy_task20_dag_lattice,
+    int task20_lattice_mode,int task20_target_policy,
+    std::size_t task20_update_period_cycles,
+    double task20_wavefront_band_width_m) {
     auto scenario=gf::task10p11rFixedBaselineScenario();
     scenario.mobile_positions=def.positions;
     scenario.initial_topology=def.topology;
@@ -188,7 +201,10 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
         task18_common_governor_enabled,
         task18_collision_only_vaug,
         task18_yaw_objective,
-        task18_update_period_cycles);
+        task18_update_period_cycles,
+        target_policy_task20_dag_lattice,
+        task20_lattice_mode,task20_target_policy,
+        task20_update_period_cycles,task20_wavefront_band_width_m);
 }
 
 }  // namespace
@@ -246,6 +262,15 @@ int main(int argc,char** argv) {
             policy.rfind("task17simple",0)==0;
         const bool policy_task18=production_semantics||
             policy.rfind("task18",0)==0;
+        const bool policy_task20=policy.rfind("task20-",0)==0;
+        const int task20_lattice_mode=
+            policy.find("merged-strip")!=std::string::npos?1:
+            policy.find("split-three-front")!=std::string::npos?2:
+            policy.find("cross-braced-diamond")!=std::string::npos?3:0;
+        const int task20_target_policy=
+            policy.rfind("-p1")!=std::string::npos?1:
+            policy.rfind("-p2")!=std::string::npos?2:
+            policy.rfind("-p3")!=std::string::npos?3:0;
         const auto task16_arm=policy=="task16c"
             ?gf::Task16CoverageArm::FormationAware:
             policy=="task16b"?gf::Task16CoverageArm::BoundaryDecoupled:
@@ -276,7 +301,8 @@ int main(int argc,char** argv) {
                 ?gf::Task18YawObjective::SharedTask:
             policy.find("-coneyaw")!=std::string::npos
                 ?gf::Task18YawObjective::VelocityTaskCone:
-            production_semantics||policy.find("-velyaw")!=std::string::npos
+            production_semantics||policy_task20||
+                policy.find("-velyaw")!=std::string::npos
                 ?gf::Task18YawObjective::ActualVelocity:
                  gf::Task18YawObjective::IndividualFormationTarget;
         const double service_standoff_m=argc>=13?std::stod(argv[12]):
@@ -362,7 +388,8 @@ int main(int argc,char** argv) {
             task17_update_period_cycles,
             policy_task18,task18_common_governor_enabled,
             task18_collision_only_vaug,
-            task18_yaw_objective,gf::task17UpdatePeriodCycles(policy));
+            task18_yaw_objective,gf::task17UpdatePeriodCycles(policy),
+            policy_task20,task20_lattice_mode,task20_target_policy,5,190.0);
         if (!fixture->adapter.initializeStageZero().initialized) {
             // Qualification-gate boundary point: recorded, not run.
             json boundary={{"protocol","task13-phase-a-run-v1"},
@@ -403,14 +430,18 @@ int main(int argc,char** argv) {
                 ++workspace_rows;
         }
         const auto& config=fixture->adapter.config();
-        json record={{"protocol",policy_task19_switch
+        json record={{"protocol",policy_task20
+                ?"task20-dag-lattice-target-joint-design-v1":
+                policy_task19_switch
                 ?"grand-finale-task19-minimal-dag-switch-v1":
                 policy_production
                 ?"grand-finale-production-search-v1":policy_task18
                 ?"task18-cbf2026-behavioral-recovery-v1":
                 policy_task17?"task17-periodic-run-v1":
                 "task13-phase-a-run-v1"},
-            {"preregistration",policy_production
+            {"preregistration",policy_task20
+                ?"2026-09-03-task20-dag-lattice-target-joint-design":
+                policy_production
                 ?"task19-production-and-fixed-vs-switching-2026-09-03":
                 policy_task18?"task18-cbf2026-behavioral-recovery-2026-09-03":
                 policy_task17?"task17-periodic-campaign-2026-09-02":
@@ -569,6 +600,14 @@ int main(int argc,char** argv) {
                     config.task18_collision_only_vaug},
                 {"task18_yaw_objective",
                     static_cast<int>(config.task18_yaw_objective)},
+                {"target_policy_task20_dag_lattice",
+                    config.target_policy_task20_dag_lattice},
+                {"task20_lattice_mode",config.task20_lattice_mode},
+                {"task20_target_policy",config.task20_target_policy},
+                {"task20_update_period_cycles",
+                    config.task20_update_period_cycles},
+                {"task20_wavefront_band_width_m",
+                    config.task20_wavefront_band_width_m},
                 {"task15_forward_shortlist_capacity",
                 config.task15_forward_shortlist_capacity},
                 {"task15_forward_update_period_cycles",
@@ -598,7 +637,7 @@ int main(int argc,char** argv) {
                 {"dt_s",config.dt_s},
                 {"truth_initial_set_gate_mps",
                 (policy_h2||policy_task15||policy_task16||policy_task17||
-                    policy_task18)
+                    policy_task18||policy_task20)
                     ?30.0:30.01}}},
             {"s3_stop_rule",
                 "terminate_at_certified_t100_else_budget_censored"},
@@ -710,7 +749,7 @@ int main(int argc,char** argv) {
                 }
                 const double hard_speed_limit=
                     (policy_h2||policy_task15||policy_task16||policy_task17||
-                        policy_task18)
+                        policy_task18||policy_task20)
                         ?30.0:30.01;
                 if (truth_gate_max_speed>hard_speed_limit+1e-9) {
                     truth_gate_violation=true;
@@ -720,7 +759,7 @@ int main(int argc,char** argv) {
                         {"reason","speed_initial_set_truth_violated"},
                         {"coverage_fraction",
                         (policy_h2||policy_task15||policy_task16||
-                            policy_task17||policy_task18)
+                            policy_task17||policy_task18||policy_task20)
                             ?fixture->adapter.coverage().certifiedFraction()
                             :fixture->adapter.coverage().truthFraction()},
                         {"minimum_hard_residual",json(nullptr)}});
@@ -757,6 +796,10 @@ int main(int argc,char** argv) {
                 last_step.task18_allocation.valid)
                 task16_allocation_wall_s.push_back(
                     last_step.task18_allocation.allocation_wall_s);
+            if (last_step.task20_allocation_evaluated&&
+                last_step.task20_allocation.valid)
+                task16_allocation_wall_s.push_back(
+                    last_step.task20_allocation.allocation_wall_s);
             if (last_step.target_governor_evaluated) {
                 ++target_governor_ticks;
                 minimum_target_governor_fraction=std::min(
@@ -793,7 +836,7 @@ int main(int argc,char** argv) {
                 truth_checkpoint_500_count=grid_tick.truth_count;
             }
             const double fraction=(policy_h2||policy_task15||policy_task16||
-                policy_task17||policy_task18)
+                policy_task17||policy_task18||policy_task20)
                 ?certified_fraction:truth_fraction;
             if (!t95_tick.has_value()&&fraction>=0.95) t95_tick=tick;
             if (!t100_tick.has_value()&&fraction>=1.0-1e-12) t100_tick=tick;
@@ -819,7 +862,7 @@ int main(int argc,char** argv) {
                 if (truth_max>0.0) ++truth_overspeed_ticks;
                 if (interval_max>0.0) ++interval_overspeed_ticks;
                 if ((policy_h2||policy_task15||policy_task16||policy_task17||
-                    policy_task18) &&
+                    policy_task18||policy_task20) &&
                     (truth_max>1e-9||interval_max>1e-9)) {
                     runtime_safety_violation=true;
                     runtime_safety_reason="hard_speed_limit_violated";
@@ -864,6 +907,10 @@ int main(int argc,char** argv) {
                 last_step.task18_allocation.valid)
                 current_active_squads=
                     last_step.task18_allocation.active_squads;
+            if (last_step.task20_allocation_evaluated&&
+                last_step.task20_allocation.valid)
+                current_active_squads=
+                    last_step.task20_allocation.assignments.size();
             active_squad_ticks+=current_active_squads;
             if (last_step.target_epoch!=last_target_epoch) {
                 if (last_target_epoch!=0) ++target_switches;
@@ -971,7 +1018,7 @@ int main(int argc,char** argv) {
                 applied_target_max=applied_target_max.cwiseMax(target);
             }
             if ((policy_h2||policy_task15||policy_task16||policy_task17||
-                policy_task18) &&
+                policy_task18||policy_task20) &&
                 (tick_actual_reference>850.0+1e-9 ||
                     tick_actual_separation<10.0-1e-9 ||
                     (policy_h2 && !policy_h2wide &&
@@ -1186,6 +1233,16 @@ int main(int argc,char** argv) {
                         ?json(last_step.task18_allocation.allocation_wall_s)
                         :json(nullptr)},
                     {"common_fraction",last_step.task18_common_fraction}}},
+                {"task20",{{"allocation_evaluated",
+                    last_step.task20_allocation_evaluated},
+                    {"allocation_wall_s",
+                    last_step.task20_allocation_evaluated
+                        ?json(last_step.task20_allocation.allocation_wall_s)
+                        :json(nullptr)},
+                    {"active_band",last_step.task20_allocation.active_band},
+                    {"scanned_cells",last_step.task20_allocation.scanned_cells},
+                    {"active_units",
+                        last_step.task20_allocation.assignments.size()}}},
                 {"task19_switch",{{"enabled",policy_task19_switch},
                     {"signal_evaluated",
                         task19_switch_event.signal_evaluated},
@@ -1292,7 +1349,7 @@ int main(int argc,char** argv) {
                 :"not_observed"}};
         record["final_coverage_fraction"]=
             (policy_h2||policy_task15||policy_task16||policy_task17||
-                policy_task18)
+                policy_task18||policy_task20)
                 ?fixture->adapter.coverage().certifiedFraction():
                 fixture->adapter.coverage().truthFraction();
         record["final_certified_coverage_fraction"]=

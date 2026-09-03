@@ -143,7 +143,11 @@ inline GrandFinaleSwarmAdapterConfig task10p11rFixtureAdapterConfig(
     bool task18_collision_only_vaug=false,
     Task18YawObjective task18_yaw_objective=
         Task18YawObjective::IndividualFormationTarget,
-    std::size_t task18_update_period_cycles=5) {
+    std::size_t task18_update_period_cycles=5,
+    bool target_policy_task20_dag_lattice=false,
+    int task20_lattice_mode=0,int task20_target_policy=0,
+    std::size_t task20_update_period_cycles=5,
+    double task20_wavefront_band_width_m=190.0) {
     auto config=task10p11rFixedAdapterConfig(selection,predictive_tau_mps2);
     config.speed_row_nominal=speed_row_nominal;
     config.tau_margin_gate_enabled=tau_margin_gate;
@@ -267,11 +271,13 @@ inline GrandFinaleSwarmAdapterConfig task10p11rFixtureAdapterConfig(
     config.task16_reference_damping_reserve_multiples=
         task16_reference_damping_reserve_multiples;
     if ((target_policy_task16_cbf2026||target_policy_task17_periodic||
-         target_policy_task18_cbf2026_outer)&&
+         target_policy_task18_cbf2026_outer||
+         target_policy_task20_dag_lattice)&&
         task16_plant_speed_facet_count!=0)
         config.plant_speed_facet_count=task16_plant_speed_facet_count;
     if ((target_policy_task16_cbf2026||target_policy_task17_periodic||
-         target_policy_task18_cbf2026_outer)&&
+         target_policy_task18_cbf2026_outer||
+         target_policy_task20_dag_lattice)&&
         task16_speed_row_limit_mps>0.0)
         config.speed_row_nominal_limit_mps=task16_speed_row_limit_mps;
     config.target_policy_task17_periodic=target_policy_task17_periodic;
@@ -294,6 +300,14 @@ inline GrandFinaleSwarmAdapterConfig task10p11rFixtureAdapterConfig(
     config.task18_yaw_objective=task18_yaw_objective;
     config.task18_update_period_cycles=task18_update_period_cycles;
     if (target_policy_task18_cbf2026_outer)
+        config.boundary.policy=BoundaryPolicy::None;
+    config.target_policy_task20_dag_lattice=
+        target_policy_task20_dag_lattice;
+    config.task20_lattice_mode=task20_lattice_mode;
+    config.task20_target_policy=task20_target_policy;
+    config.task20_update_period_cycles=task20_update_period_cycles;
+    config.task20_wavefront_band_width_m=task20_wavefront_band_width_m;
+    if (target_policy_task20_dag_lattice)
         config.boundary.policy=BoundaryPolicy::None;
     return config;
 }
@@ -370,7 +384,11 @@ struct Task10p11rFixedBaselineFixture {
     bool task18_collision_only_vaug=false,
     Task18YawObjective task18_yaw_objective=
         Task18YawObjective::IndividualFormationTarget,
-    std::size_t task18_update_period_cycles=5)
+    std::size_t task18_update_period_cycles=5,
+    bool target_policy_task20_dag_lattice=false,
+    int task20_lattice_mode=0,int task20_target_policy=0,
+    std::size_t task20_update_period_cycles=5,
+    double task20_wavefront_band_width_m=190.0)
         : scenario(std::move(scenario_value)),settings(std::move(settings_value)),
           swarm(settings),
           adapter(swarm,scenario.mobile_ids,scenario.fixed_positions,
@@ -411,7 +429,11 @@ struct Task10p11rFixedBaselineFixture {
                   task18_common_governor_enabled,
                   task18_collision_only_vaug,
                   task18_yaw_objective,
-                  task18_update_period_cycles)),
+                  task18_update_period_cycles,
+                  target_policy_task20_dag_lattice,
+                  task20_lattice_mode,task20_target_policy,
+                  task20_update_period_cycles,
+                  task20_wavefront_band_width_m)),
           controller(swarm,adapter,{}, {},task10p11rAuthorityContract().branches),
           frozen_topology(scenario.initial_topology),
           initial_topology_version(adapter.supervisor().topologyVersion()) {}

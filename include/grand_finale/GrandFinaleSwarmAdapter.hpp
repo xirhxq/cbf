@@ -199,6 +199,14 @@ struct GrandFinaleSwarmAdapterConfig {
     bool task18_common_governor_enabled = false;
     Task18YawObjective task18_yaw_objective =
         Task18YawObjective::IndividualFormationTarget;
+    // Task 20 DAG-conditioned lattice research path.  Default-off and
+    // represented by stable integer enum codes to keep the safety adapter
+    // independent of the planner header.
+    bool target_policy_task20_dag_lattice = false;
+    int task20_lattice_mode = 0;
+    int task20_target_policy = 0;
+    std::size_t task20_update_period_cycles = 5;
+    double task20_wavefront_band_width_m = 190.0;
     double v6_neighborhood_radius_m = 450.0;
     double demand_recompute_interval_s = 5.0;
     double target_lock_epsilon_m = 30.0;
@@ -589,6 +597,11 @@ public:
             config_.task16_cvt_update_period_cycles==0 ||
             config_.task17_update_period_cycles==0 ||
             config_.task18_update_period_cycles==0 ||
+            config_.task20_update_period_cycles==0 ||
+            config_.task20_lattice_mode<0||config_.task20_lattice_mode>3||
+            config_.task20_target_policy<0||config_.task20_target_policy>3||
+            !std::isfinite(config_.task20_wavefront_band_width_m)||
+            config_.task20_wavefront_band_width_m<=0.0 ||
             !std::isfinite(
                 config_.task16_reference_damping_reserve_multiples) ||
             config_.task16_reference_damping_reserve_multiples<=0.0 ||

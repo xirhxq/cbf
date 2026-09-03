@@ -17,6 +17,7 @@ TEST_CASE("GrandFinale production defaults are the selected Task 18 policy") {
     CHECK_FALSE(config.target_policy_task17_periodic);
     CHECK_FALSE(config.target_policy_task16_cbf2026);
     CHECK_FALSE(config.target_policy_task15_forward);
+    CHECK_FALSE(config.target_policy_task20_dag_lattice);
     CHECK(config.task18_update_period_cycles==5);
     CHECK_FALSE(config.task18_common_governor_enabled);
     CHECK(config.task18_yaw_objective==
@@ -52,7 +53,8 @@ TEST_CASE("Production fixture exposes only real Task 18 targets") {
     REQUIRE(step.task18_allocation.valid);
     REQUIRE(step.committed_targets.size()==14);
     for (const auto& [owner,target]:step.committed_targets) {
-        CAPTURE(owner);
+        const gf::NodeId captured_owner=owner;
+        CAPTURE(captured_owner);
         CHECK(target.x_index>=0);
         CHECK(target.x_index<300);
         CHECK(target.y_index>=0);
