@@ -372,6 +372,19 @@ int main(int argc,char** argv) {
              rows_mode=="vaug-facets")?4.0:1.0;
         const double task16_speed_row_limit_mps=
             rows_mode.find("speed29p9")!=std::string::npos?29.9:0.0;
+        // Task 22 erratum guard (infrastructure, fail closed): the whole
+        // task20 policy family (P0..P5, any lattice mode) is only defined
+        // on the frozen vaug-speed29p9 row stack; a bare classic stack
+        // silently swaps in 30.0 m/s speed rows whose ZOH asymptote
+        // crosses the hard gate under sustained full throttle.  Refuse to
+        // start instead of running an unintended safety configuration.
+        if (policy_task20&&
+            rows_mode.find("vaug-speed29p9")==std::string::npos) {
+            std::cerr<<"refusing to start: task20-family policy \""
+                <<policy<<"\" requires the frozen vaug-speed29p9 row "
+                "stack; pass ROWS=vaug-speed29p9 explicitly\n";
+            return 2;
+        }
         const double range_noise_std_m=argc>=10?std::stod(argv[9]):0.0;
         const double range_dropout_probability=argc>=11?
             std::stod(argv[10]):0.0;
