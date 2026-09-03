@@ -269,3 +269,35 @@ TEST_CASE("Task 22 first pass starts on the side nearest the initial front") {
     for (const auto& [unit,route]:high.routes)
         CHECK(route.passes.front().direction==-1);
 }
+
+TEST_CASE("Task 22 pinball-5-4-3-2 static contract is valid and parameter-free") {
+    const auto contract=gf::task22Pinball5432Contract();
+    REQUIRE(contract.valid);
+    REQUIRE(contract.reference_edges.size()==28);
+    REQUIRE(contract.member_roles.size()==14);
+    REQUIRE(contract.coverage_units.size()==1);
+    REQUIRE(contract.coverage_units.front().members.size()==14);
+    const std::vector<gf::NodeId> expected_front{13,14};
+    CHECK(contract.coverage_units.front().front_members==expected_front);
+    // Layered mobile parents: rows {1..5}, {6..9}, {10..12}, {13,14}.
+    std::map<gf::NodeId,std::vector<gf::NodeId>> parents;
+    for (const auto& edge:contract.reference_edges)
+        parents[edge.owner].push_back(edge.reference);
+    REQUIRE(parents.size()==14);
+    for (const auto& entry:parents) CHECK(entry.second.size()==2);
+    for (gf::NodeId owner=1;owner<=5;++owner)
+        for (gf::NodeId ref:parents[owner]) CHECK(ref>=100);
+    for (gf::NodeId owner=6;owner<=9;++owner)
+        for (gf::NodeId ref:parents[owner]) { CHECK(ref>=1); CHECK(ref<=5); }
+    for (gf::NodeId owner=10;owner<=12;++owner)
+        for (gf::NodeId ref:parents[owner]) { CHECK(ref>=6); CHECK(ref<=9); }
+    for (gf::NodeId owner=13;owner<=14;++owner)
+        for (gf::NodeId ref:parents[owner]) { CHECK(ref>=10); CHECK(ref<=12); }
+    // Closed-form lifting is the shared triangular affine map; the oracle
+    // gate on the full map is exercised by GrandFinaleTask22RouteOracle.
+    const auto plan=gf::task22BuildSweepPlan(grid(60,60),{"P"},
+        gf::task21AffineCoordinateField({0.0,0.0},{0.0,1.0},{1.0,0.0}),
+        220.0,64,contract,fixedAnchors(),
+        std::map<std::string,Eigen::Vector2d>{{"P",{45.0,15.0}}});
+    REQUIRE(plan.valid);
+}

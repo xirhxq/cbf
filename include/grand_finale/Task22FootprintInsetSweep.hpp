@@ -29,19 +29,32 @@ namespace gf {
 // Certified sensing sector predicate, identical to the Task 21 route
 // oracle: reserve tube 0.05 + half cell diagonal, range (reserve, 400 m],
 // bearing cone of 60 degrees including the asin(reserve/d) widening.
+// Algebraically identical to the Task 21 oracle's atan2/asin form: with
+// r=reserve, d=distance, lateral=|delta x tangent|, the cone condition
+// error+asin(r/d)<=pi/3 equals forward>0 AND
+// lateral<=sin(pi/3)*sqrt(d^2-r^2)-r/2 (the forward gate keeps the sine
+// map monotone).  The Python independent verifier keeps the original
+// trigonometric form as a cross-check; it caught a missing forward-branch
+// in the first version of this rewrite.
 inline bool task22CellInCertifiedSector(const Eigen::Vector2d& pose,double yaw,
     const Eigen::Vector2d& center) {
     constexpr double reserve=0.05+5.0*1.4142135623730950488;
-    const Eigen::Vector2d delta=center-pose;
-    const double distance=delta.norm();
-    if (distance<=reserve||distance+reserve>400.0) return false;
-    const double bearing=std::atan2(delta.y(),delta.x());
-    double error=bearing-yaw;
-    while (error>M_PI) error-=2.0*M_PI;
-    while (error<-M_PI) error+=2.0*M_PI;
-    error=std::abs(error);
-    return error+std::asin(std::min(1.0,reserve/distance))<=
-        M_PI/3.0+1.0e-12;
+    const double cosine=std::cos(yaw);
+    const double sine=std::sin(yaw);
+    const double dx=center.x()-pose.x();
+    const double dy=center.y()-pose.y();
+    const double distance_squared=dx*dx+dy*dy;
+    if (distance_squared<=reserve*reserve||
+        distance_squared>(400.0-reserve)*(400.0-reserve)) return false;
+    const double forward=cosine*dx+sine*dy;
+    if (forward<=0.0) return false;  // the cone is strictly forward; this
+    // restores the branch that the monotone-sine step needs for exact
+    // equivalence with error+asin(r/d)<=pi/3.
+    const double lateral=std::abs(-sine*dx+cosine*dy);
+    constexpr double sin60=0.86602540378443864676;
+    const double half_r=0.5*reserve;
+    return lateral<=sin60*std::sqrt(distance_squared-reserve*reserve)-
+        half_r+1.0e-9;
 }
 
 struct Task22SweepPass {
@@ -779,6 +792,36 @@ inline Task22AllocationResult allocateTask22Sweep(
     result.valid=true;
     result.reason="task22_real_cell_assignments";
     return finish(std::move(result));
+}
+
+// Task 22 preregistration section 3: pinball 5-4-3-2 static contract.
+// Mobile layers {1..5}/{6..9}/{10..12}/{13,14}, fixed {100,101,102}, 28
+// edges with exactly two references per owner, layered pinball parents.
+// Lifting is the shared affine triangular role map with axial fractions
+// 0.25/0.50/0.75/1.00 by layer depth and interleaved triangular fractions
+// per layer.  Offline oracle only; no closed loop is authorized by its
+// existence.
+inline Task20DagLatticeContract task22Pinball5432Contract() {
+    Task20DagLatticeContract result;
+    result.id="pinball-5-4-3-2";
+    result.structural_signature="units=14;rows=5-4-3-2;pinball-layered";
+    result.reference_edges={
+        {100,1},{101,1},{100,2},{101,2},{101,3},{102,3},{101,4},{102,4},
+        {100,5},{102,5},
+        {1,6},{2,6},{2,7},{3,7},{3,8},{4,8},{4,9},{5,9},
+        {6,10},{7,10},{7,11},{8,11},{8,12},{9,12},
+        {10,13},{11,13},{11,14},{12,14}};
+    result.coverage_units={{"P",{1,2,3,4,5,6,7,8,9,10,11,12,13,14},
+        {100,101,102},14,{13,14}}};
+    const std::vector<std::pair<double,double>> roles{
+        {0.25,-0.24},{0.25,-0.12},{0.25,0.0},{0.25,0.12},{0.25,0.24},
+        {0.50,-0.18},{0.50,-0.06},{0.50,0.06},{0.50,0.18},
+        {0.75,-0.16},{0.75,0.0},{0.75,0.16},
+        {1.00,-0.08},{1.00,0.08}};
+    task20_lattice_detail::addRoles(result,result.coverage_units.front(),
+        roles);
+    task20_lattice_detail::finish(result);
+    return result;
 }
 
 }  // namespace gf
