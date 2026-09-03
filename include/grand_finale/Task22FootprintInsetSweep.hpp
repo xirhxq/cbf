@@ -604,36 +604,84 @@ inline Task22SweepPlan task22BuildSweepPlan(
                 result.reason="degenerate_pass_spacing:"+unit_id;
                 return result;
             }
-            const double radius=0.5*std::abs(dp);
+            // Preregistration section 1(iii): R = min(kappa_max^-1, dp/2)
+            // with kappa_max = a_box/v_max^2 = 4/30^2 (no hand constant).
+            // When 2R < |dp| the remaining |dp|-2R of progress is crossed
+            // by a straight segment along the cross direction, keeping the
+            // connector position- and tangent-continuous.
+            constexpr double kappa_max=4.0/(30.0*30.0);
+            const double radius=std::min(1.0/kappa_max,0.5*std::abs(dp));
+            const double straight=std::max(0.0,std::abs(dp)-2.0*radius);
             const double turn=from.cross_end;
-            const Eigen::Vector2d center=field.origin+
-                0.5*(from.progress+to.progress)*field.progress_axis+
-                turn*field.cross_axis;
             const Eigen::Vector2d start=field.origin+
                 from.progress*field.progress_axis+turn*field.cross_axis;
-            const double theta0=std::atan2(
-                field.cross_axis.dot(start-center),
-                field.progress_axis.dot(start-center));
-            // Travel tangent at the start is direction*cross_axis; the arc
-            // derivative for dtheta>0 is (-sin,cos), so the sweep sign
-            // follows from the cross-axis component at theta0 (which is 0,
-            // i.e. cos(theta0)=+-1 with the sign of -dp).
             const double travel_sign=static_cast<double>(from.direction);
-            const double cos_theta0=-dp/(2.0*radius);
-            const int dtheta=travel_sign*cos_theta0>=0.0?1:-1;
-            const auto tangent_at=[&](double theta) {
-                return static_cast<double>(dtheta)*
+            // Arc A: quarter turn from the travel tangent into the
+            // progress direction; its centre sits one radius inward of the
+            // turn line toward the route interior.
+            const int progress_sign=dp>0.0?1:-1;
+            const Eigen::Vector2d center_a=start+
+                progress_sign*radius*field.progress_axis;
+            const double theta_a0=std::atan2(
+                field.cross_axis.dot(start-center_a),
+                field.progress_axis.dot(start-center_a));
+            // dtheta sign: the start tangent must equal travel*cross.
+            const int dtheta_a=travel_sign*progress_sign>=0.0?-1:1;
+            const auto arc_tangent=[&](const Eigen::Vector2d& center,
+                double theta,int dsign) {
+                return static_cast<double>(dsign)*
                     (-std::sin(theta)*field.progress_axis+
                      std::cos(theta)*field.cross_axis);
             };
-            const std::size_t steps=std::max<std::size_t>(8,
-                static_cast<std::size_t>(std::ceil(M_PI*radius/pitch))+1);
-            for (std::size_t step=1;step<=steps;++step) {
-                const double theta=theta0+dtheta*M_PI*
-                    static_cast<double>(step)/static_cast<double>(steps);
-                push(center+radius*(std::cos(theta)*field.progress_axis+
-                    std::sin(theta)*field.cross_axis),tangent_at(theta),
+            const double quarter=M_PI/2.0;
+            const std::size_t steps_a=std::max<std::size_t>(4,
+                static_cast<std::size_t>(std::ceil(quarter*radius/pitch))+1);
+            Eigen::Vector2d junction=start;
+            for (std::size_t step=1;step<=steps_a;++step) {
+                const double theta=theta_a0+dtheta_a*quarter*
+                    static_cast<double>(step)/static_cast<double>(steps_a);
+                junction=center_a+radius*(std::cos(theta)*
+                    field.progress_axis+std::sin(theta)*field.cross_axis);
+                push(junction,arc_tangent(center_a,theta,dtheta_a),
                     to.pass_index,true);
+            }
+            if (straight>1.0e-9) {
+                const Eigen::Vector2d straight_tangent=
+                    progress_sign*field.progress_axis;
+                const std::size_t steps_s=std::max<std::size_t>(1,
+                    static_cast<std::size_t>(std::ceil(straight/pitch)));
+                for (std::size_t step=1;step<=steps_s;++step) {
+                    const double fraction=static_cast<double>(step)/
+                        static_cast<double>(steps_s);
+                    push(junction+fraction*straight*straight_tangent,
+                        straight_tangent,to.pass_index,true);
+                }
+            }
+            // Arc B: quarter turn from the progress direction back to the
+            // opposite travel tangent, centred one radius inward of the
+            // destination pass line.  The arc STARTS at the straight
+            // segment's end (pure cross offset from the centre), not at
+            // the pass-arrival point.
+            const Eigen::Vector2d end=field.origin+
+                to.progress*field.progress_axis+to.cross_begin*
+                field.cross_axis;
+            const double to_travel=static_cast<double>(to.direction);
+            const Eigen::Vector2d center_b=end-
+                progress_sign*radius*field.progress_axis;
+            const Eigen::Vector2d straight_end=junction+
+                straight*progress_sign*field.progress_axis;
+            const double theta_b0=std::atan2(
+                field.cross_axis.dot(straight_end-center_b),
+                field.progress_axis.dot(straight_end-center_b));
+            const int dtheta_b=to_travel*progress_sign>=0.0?1:-1;
+            const std::size_t steps_b=std::max<std::size_t>(4,
+                static_cast<std::size_t>(std::ceil(quarter*radius/pitch))+1);
+            for (std::size_t step=1;step<=steps_b;++step) {
+                const double theta=theta_b0+dtheta_b*quarter*
+                    static_cast<double>(step)/static_cast<double>(steps_b);
+                push(center_b+radius*(std::cos(theta)*
+                    field.progress_axis+std::sin(theta)*field.cross_axis),
+                    arc_tangent(center_b,theta,dtheta_b),to.pass_index,true);
             }
             push_pass(to,true);
         }
@@ -770,12 +818,16 @@ inline Task22AllocationResult allocateTask22Sweep(
                route.samples[index].s<previous-1.0e-9) ++index;
         double best=(front->second-route.samples[index].position).norm();
         std::size_t best_index=index;
+        // Global projection over the remaining route (the earlier
+        // first-increase walk stopped at approach-arc local minima and
+        // froze the cursor at zero for whole runs).
         for (std::size_t probe=index+1;probe<route.samples.size();++probe) {
             const double distance=(front->second-
                 route.samples[probe].position).norm();
-            if (distance>best+request.comparison_epsilon) break;
-            best=distance;
-            best_index=probe;
+            if (distance<best-request.comparison_epsilon) {
+                best=distance;
+                best_index=probe;
+            }
         }
         const double cursor=route.samples[best_index].s;
         result.cursors[unit]=cursor;
@@ -795,6 +847,8 @@ inline Task22AllocationResult allocateTask22Sweep(
         const FrontierCell* best_cell=nullptr;
         double best_distance=std::numeric_limits<double>::infinity();
         double best_cell_s=0.0;
+        double first_pending_s=
+            std::numeric_limits<double>::infinity();
         bool any_pending=false;
         for (const auto& service:route.cell_order) {
             if (service.first_service_s<previous-request.plan.sample_pitch_m)
@@ -804,6 +858,8 @@ inline Task22AllocationResult allocateTask22Sweep(
             if (found==uncovered.end()||used.count(found->first)) continue;
             ++result.scanned_cells;
             any_pending=true;
+            first_pending_s=std::min(first_pending_s,
+                service.first_service_s);
             const double distance=(found->second.center-focus).squaredNorm();
             if (best_cell==nullptr||
                 distance<best_distance-request.comparison_epsilon||
@@ -815,44 +871,38 @@ inline Task22AllocationResult allocateTask22Sweep(
                 best_cell_s=service.first_service_s;
             }
         }
-        // Navigation pose, frozen P5 anchor convention (P4 lineage): the
-        // front sits ON the route manifold at the selected cell's cross
-        // coordinate on its witness pass line, so the lifting displacement
-        // stays at cell scale (Task 21 P4's working anchoring) instead of
-        // witness-pose scale.  With no pending cell in the window the pose
-        // advances freely along the connecting arc by the forward-focus
-        // arclength.
+        // Navigation pose, frozen P5 anchor convention: the selected
+        // cell's own first-service witness pose from the route ledger --
+        // the exact configuration whose members' certified sectors cover
+        // the cell, so parking there certifies it by construction.  (The
+        // earlier pass-line-at-cell-cross reconstruction deadlocked on
+        // cells whose witness lies on a fillet: no member's sector faced
+        // the cell from the reconstructed pose.)  With no pending cell in
+        // the window the pose advances freely along the connecting arc by
+        // the forward-focus arclength.
         const bool window_empty=!any_pending;
         std::size_t nav_index=best_index;
-        Eigen::Vector2d nav_pose=route.samples[best_index].position;
-        Eigen::Vector2d nav_tangent=route.samples[best_index].tangent;
-        bool nav_on_fillet=route.samples[best_index].on_fillet;
         if (!window_empty) {
+            // Nearest-to-focus witness pursuit (best-attested anchor,
+            // 2026-09-04 P6 comparison): the front chases the witness pose
+            // of the uncovered window cell nearest the 400 m forward
+            // focus.  The oldest-pending variant (P6 addendum) was
+            // dominated in the 300 s smoke (18.0% vs 39.6% certified) and
+            // is recorded as adjudicated without a formal run.
             while (nav_index+1<route.samples.size()&&
                    route.samples[nav_index].s<best_cell_s)
                 ++nav_index;
-            const Task22SweepPass& pass=
-                route.passes[route.samples[nav_index].pass_index];
-            const double cell_cross=request.plan.field.coordinates(
-                best_cell->center).y();
-            nav_pose=request.plan.field.origin+
-                pass.progress*request.plan.field.progress_axis+
-                cell_cross*request.plan.field.cross_axis;
-            nav_tangent=static_cast<double>(pass.direction)*
-                request.plan.field.cross_axis;
-            nav_on_fillet=false;
         } else {
             const double nav_target_s=
                 cursor+request.forward_focus_distance_m;
             while (nav_index+1<route.samples.size()&&
                    route.samples[nav_index].s<nav_target_s)
                 ++nav_index;
-            nav_pose=route.samples[nav_index].position;
-            nav_tangent=route.samples[nav_index].tangent;
-            nav_on_fillet=route.samples[nav_index].on_fillet;
         }
         const Task22RouteSample& sample=route.samples[nav_index];
-        (void)sample;
+        const Eigen::Vector2d nav_pose=sample.position;
+        const Eigen::Vector2d nav_tangent=sample.tangent;
+        const bool nav_on_fillet=sample.on_fillet;
         Task22SweepAssignment assignment;
         assignment.coverage_unit=unit;
         assignment.cursor_s=cursor;
