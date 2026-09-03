@@ -2,6 +2,7 @@
 #include "grand_finale/PlantSpeedAppliedControl.hpp"
 #include "grand_finale/Task17GridTelemetry.hpp"
 #include "grand_finale/Task19ProductionBaseline.hpp"
+#include "grand_finale/Task19MinimalDagSwitcher.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -216,10 +217,16 @@ int main(int argc,char** argv) {
         const std::string policy=argc>=8?argv[7]:
             production_defaults.policy;
         const bool policy_production=policy==production_defaults.policy;
+        const bool policy_task19_switch=
+            policy=="task19-switch-origin-microfix";
+        const bool production_semantics=
+            policy_production||policy_task19_switch;
         const double window_s=argc>=7?std::stod(argv[6]):
-            (policy_production?production_defaults.resource_watchdog_s:500.0);
+            (production_semantics?production_defaults.resource_watchdog_s:
+                500.0);
         const double tau=argc>=6?std::stod(argv[5]):
-            (policy_production?production_defaults.predictive_tau_mps2:22.0);
+            (production_semantics?production_defaults.predictive_tau_mps2:
+                22.0);
         const bool policy_v2=policy=="v2";
         // v3 and v4 share the target_policy_v3 flag: v3 was the centroid-
         // primary form (rejected), v4 is the frontier-pacing +
@@ -237,7 +244,7 @@ int main(int argc,char** argv) {
         const bool policy_task17=policy.rfind("task17b",0)==0||
             policy.rfind("task17c",0)==0||
             policy.rfind("task17simple",0)==0;
-        const bool policy_task18=policy_production||
+        const bool policy_task18=production_semantics||
             policy.rfind("task18",0)==0;
         const auto task16_arm=policy=="task16c"
             ?gf::Task16CoverageArm::FormationAware:
@@ -269,7 +276,7 @@ int main(int argc,char** argv) {
                 ?gf::Task18YawObjective::SharedTask:
             policy.find("-coneyaw")!=std::string::npos
                 ?gf::Task18YawObjective::VelocityTaskCone:
-            policy_production||policy.find("-velyaw")!=std::string::npos
+            production_semantics||policy.find("-velyaw")!=std::string::npos
                 ?gf::Task18YawObjective::ActualVelocity:
                  gf::Task18YawObjective::IndividualFormationTarget;
         const double service_standoff_m=argc>=13?std::stod(argv[12]):
@@ -311,7 +318,7 @@ int main(int argc,char** argv) {
             return 2;
         }
         const std::string rows_mode=argc>=9?argv[8]:
-            (policy_production?"vaug-speed29p9":"classic");
+            (production_semantics?"vaug-speed29p9":"classic");
         const bool velocity_augmented_rows=
             rows_mode.rfind("vaug",0)==0;
         const bool task16_tracking_envelope_enabled=
@@ -329,6 +336,9 @@ int main(int argc,char** argv) {
         const unsigned int range_random_seed=argc>=12?
             static_cast<unsigned int>(std::stoul(argv[11])):2027U;
         const auto def=makeTemplate(template_id);
+        if (policy_task19_switch&&template_id!="origin")
+            throw std::invalid_argument(
+                "Task 19 switcher must start from production origin DAG");
         auto fixture=makeFixture(def,tau,policy_v2,
             velocity_augmented_rows,policy_v3,policy_v6,
             leader_reachability_filter,policy_h2,gamma_selection,
@@ -365,6 +375,11 @@ int main(int argc,char** argv) {
             std::cout<<boundary.dump(2)<<'\n';
             return 0;
         }
+        std::unique_ptr<gf::Task19OriginMicrofixSwitcher> task19_switcher;
+        if (policy_task19_switch)
+            task19_switcher=
+                std::make_unique<gf::Task19OriginMicrofixSwitcher>(
+                    fixture->adapter);
         const auto request0=gf::task10p11zCaptureBeforeOverride(*fixture).
             request;
         const auto rows0=gf::buildCanonicalHardRows(request0);
@@ -388,7 +403,9 @@ int main(int argc,char** argv) {
                 ++workspace_rows;
         }
         const auto& config=fixture->adapter.config();
-        json record={{"protocol",policy_production
+        json record={{"protocol",policy_task19_switch
+                ?"grand-finale-task19-minimal-dag-switch-v1":
+                policy_production
                 ?"grand-finale-production-search-v1":policy_task18
                 ?"task18-cbf2026-behavioral-recovery-v1":
                 policy_task17?"task17-periodic-run-v1":
@@ -411,6 +428,18 @@ int main(int argc,char** argv) {
             {"rows_mode",rows_mode},
             {"window_s",window_s},
             {"production_default_selected",policy_production},
+            {"task19_switcher_enabled",policy_task19_switch},
+            {"task19_switcher_config",policy_task19_switch?json({
+                {"initial_dag","origin"},{"target_dag","microfix"},
+                {"coverage_role_mapping","task18-origin-equivalent"},
+                {"signal","rolling_cbf_intervention_fraction"},
+                {"window_ticks",250},{"minimum_dwell_ticks",2250},
+                {"evaluation_period_ticks",50},
+                {"trigger_fraction_strictly_greater_than",0.40},
+                {"transition","two certified single-edge replacements; "
+                    "one fresh SEARCH cycle between replacements"}}):
+                json(nullptr)},
+            {"task19_switch_events",json::array()},
             {"coverage_checkpoint_s",
                 production_defaults.coverage_checkpoint_s},
             {"resource_watchdog_s",window_s},
@@ -661,6 +690,7 @@ int main(int argc,char** argv) {
         double squared_control_energy_proxy=0.0;
         double maximum_outside_distance_m=0.0;
         std::vector<double> task16_allocation_wall_s;
+        std::vector<double> task19_scheduler_wall_s;
         gf::SimpleCoverageControlStep last_step;
         gf::Task10p11ComputeProfile profiler;
         const auto mobile_ids=
@@ -1053,6 +1083,35 @@ int main(int argc,char** argv) {
                             json(task_bearing->second)}}},
                     {"target",std::move(target)}});
             }
+            gf::Task19DagSwitchEvent task19_switch_event;
+            if (task19_switcher) {
+                const auto scheduler_started=
+                    std::chrono::steady_clock::now();
+                task19_switch_event=task19_switcher->afterStep(
+                    tick,last_step.step);
+                task19_scheduler_wall_s.push_back(
+                    std::chrono::duration<double>(
+                        std::chrono::steady_clock::now()-scheduler_started).
+                            count());
+                if (task19_switch_event.signal_evaluated||
+                    task19_switch_event.switch_requested||
+                    task19_switch_event.transition_started||
+                    task19_switch_event.transition_finished)
+                    record["task19_switch_events"].push_back({
+                        {"tick",tick},{"runtime_s",snapshot.runtime_s},
+                        {"signal_evaluated",
+                            task19_switch_event.signal_evaluated},
+                        {"switch_requested",
+                            task19_switch_event.switch_requested},
+                        {"transition_started",
+                            task19_switch_event.transition_started},
+                        {"transition_finished",
+                            task19_switch_event.transition_finished},
+                        {"rolling_intervention_fraction",
+                            task19_switch_event.
+                                rolling_intervention_fraction},
+                        {"reason",task19_switch_event.reason}});
+            }
             telemetry<<json({{"tick",tick},
                 {"runtime_s",snapshot.runtime_s},
                 {"coverage_fraction",fraction},
@@ -1127,6 +1186,18 @@ int main(int argc,char** argv) {
                         ?json(last_step.task18_allocation.allocation_wall_s)
                         :json(nullptr)},
                     {"common_fraction",last_step.task18_common_fraction}}},
+                {"task19_switch",{{"enabled",policy_task19_switch},
+                    {"signal_evaluated",
+                        task19_switch_event.signal_evaluated},
+                    {"switch_requested",
+                        task19_switch_event.switch_requested},
+                    {"transition_started",
+                        task19_switch_event.transition_started},
+                    {"transition_finished",
+                        task19_switch_event.transition_finished},
+                    {"rolling_intervention_fraction",
+                        task19_switch_event.rolling_intervention_fraction},
+                    {"reason",task19_switch_event.reason}}},
                 {"throttle",{{"active",throttle.active},
                     {"s",throttle.s}}},
                 {"owners",std::move(owners)}}).dump()<<'\n';
@@ -1276,6 +1347,34 @@ int main(int argc,char** argv) {
             {"allocator_wall_p50_s",task16_percentile(0.50)},
             {"allocator_wall_p95_s",task16_percentile(0.95)},
             {"allocator_wall_max_s",task16_percentile(1.00)}};
+        if (task19_switcher) {
+            const auto scheduler_percentile=[&](double q)->json {
+                if (task19_scheduler_wall_s.empty()) return nullptr;
+                auto values=task19_scheduler_wall_s;
+                std::sort(values.begin(),values.end());
+                const std::size_t index=static_cast<std::size_t>(std::floor(
+                    q*static_cast<double>(values.size()-1)));
+                return values[index];
+            };
+            const auto& audit=task19_switcher->audit();
+            record["task19_switcher"]={{"complete",
+                    task19_switcher->complete()},
+                {"failed",task19_switcher->failed()},
+                {"signal_evaluations",audit.signal_evaluations},
+                {"switch_requests",audit.switch_requests},
+                {"preflight_rejections",audit.preflight_rejections},
+                {"transition_start_failures",
+                    audit.transition_start_failures},
+                {"certified_edge_replacements",
+                    audit.certified_edge_replacements},
+                {"trigger_tick",audit.trigger_tick.has_value()
+                    ?json(*audit.trigger_tick):json(nullptr)},
+                {"trigger_fraction",audit.trigger_fraction},
+                {"failure_reason",audit.failure_reason},
+                {"scheduler_wall_p50_s",scheduler_percentile(0.50)},
+                {"scheduler_wall_p95_s",scheduler_percentile(0.95)},
+                {"scheduler_wall_max_s",scheduler_percentile(1.00)}};
+        }
         if (policy_task17) {
             record["task17_trajectory"]=record["task16_trajectory"];
             record["task17_gridworld"]={{"delta_path",
