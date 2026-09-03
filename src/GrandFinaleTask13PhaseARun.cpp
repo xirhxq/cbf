@@ -1,6 +1,7 @@
 #include "grand_finale/Task11aDynamicTopologyCoordinator.hpp"
 #include "grand_finale/PlantSpeedAppliedControl.hpp"
 #include "grand_finale/Task17GridTelemetry.hpp"
+#include "grand_finale/Task19ProductionBaseline.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -191,9 +192,8 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
 
 }  // namespace
 
-// Task 13 Phase A: frozen-formation sensitivity sweep.  One template per
-// invocation, 500 s window with T100 latch, rung-B'' 14-row speed domain,
-// per-tick telemetry and cumulative compute profile (profiler deliverable).
+// GrandFinale production/search evidence runner.  Historical policies remain
+// explicit; an omitted policy selects the researcher-frozen Task 18 baseline.
 int main(int argc,char** argv) {
     if (argc<5||argc>22) {
         std::cerr<<"usage: GrandFinaleTask13PhaseARun TEMPLATE OUTPUT_JSON "
@@ -212,9 +212,14 @@ int main(int argc,char** argv) {
     };
     try {
         const std::string template_id=argv[1];
-        const double window_s=argc>=7?std::stod(argv[6]):500.0;
-        const double tau=argc>=6?std::stod(argv[5]):22.0;
-        const std::string policy=argc>=8?argv[7]:"classic";
+        const auto production_defaults=gf::task19ProductionDefaults();
+        const std::string policy=argc>=8?argv[7]:
+            production_defaults.policy;
+        const bool policy_production=policy==production_defaults.policy;
+        const double window_s=argc>=7?std::stod(argv[6]):
+            (policy_production?production_defaults.resource_watchdog_s:500.0);
+        const double tau=argc>=6?std::stod(argv[5]):
+            (policy_production?production_defaults.predictive_tau_mps2:22.0);
         const bool policy_v2=policy=="v2";
         // v3 and v4 share the target_policy_v3 flag: v3 was the centroid-
         // primary form (rejected), v4 is the frontier-pacing +
@@ -232,7 +237,8 @@ int main(int argc,char** argv) {
         const bool policy_task17=policy.rfind("task17b",0)==0||
             policy.rfind("task17c",0)==0||
             policy.rfind("task17simple",0)==0;
-        const bool policy_task18=policy.rfind("task18",0)==0;
+        const bool policy_task18=policy_production||
+            policy.rfind("task18",0)==0;
         const auto task16_arm=policy=="task16c"
             ?gf::Task16CoverageArm::FormationAware:
             policy=="task16b"?gf::Task16CoverageArm::BoundaryDecoupled:
@@ -263,7 +269,7 @@ int main(int argc,char** argv) {
                 ?gf::Task18YawObjective::SharedTask:
             policy.find("-coneyaw")!=std::string::npos
                 ?gf::Task18YawObjective::VelocityTaskCone:
-            policy.find("-velyaw")!=std::string::npos
+            policy_production||policy.find("-velyaw")!=std::string::npos
                 ?gf::Task18YawObjective::ActualVelocity:
                  gf::Task18YawObjective::IndividualFormationTarget;
         const double service_standoff_m=argc>=13?std::stod(argv[12]):
@@ -304,7 +310,8 @@ int main(int argc,char** argv) {
             std::cerr<<"policies v2 and v3 are mutually exclusive\n";
             return 2;
         }
-        const std::string rows_mode=argc>=9?argv[8]:"classic";
+        const std::string rows_mode=argc>=9?argv[8]:
+            (policy_production?"vaug-speed29p9":"classic");
         const bool velocity_augmented_rows=
             rows_mode.rfind("vaug",0)==0;
         const bool task16_tracking_envelope_enabled=
@@ -381,12 +388,14 @@ int main(int argc,char** argv) {
                 ++workspace_rows;
         }
         const auto& config=fixture->adapter.config();
-        json record={{"protocol",policy_task18
+        json record={{"protocol",policy_production
+                ?"grand-finale-production-search-v1":policy_task18
                 ?"task18-cbf2026-behavioral-recovery-v1":
                 policy_task17?"task17-periodic-run-v1":
                 "task13-phase-a-run-v1"},
-            {"preregistration",policy_task18
-                ?"task18-cbf2026-behavioral-recovery-2026-09-03":
+            {"preregistration",policy_production
+                ?"task19-production-and-fixed-vs-switching-2026-09-03":
+                policy_task18?"task18-cbf2026-behavioral-recovery-2026-09-03":
                 policy_task17?"task17-periodic-campaign-2026-09-02":
                 "task-13-phase-a-launch-2026-09-01"},
             {"template",template_id},{"description",def.description},
@@ -401,6 +410,10 @@ int main(int argc,char** argv) {
                 fixture->adapter.config().gamma_feedback_selection)},
             {"rows_mode",rows_mode},
             {"window_s",window_s},
+            {"production_default_selected",policy_production},
+            {"coverage_checkpoint_s",
+                production_defaults.coverage_checkpoint_s},
+            {"resource_watchdog_s",window_s},
             {"noise_profile",{{"range_noise_std_m",range_noise_std_m},
                 {"range_dropout_probability",range_dropout_probability},
                 {"range_random_seed",range_random_seed},
@@ -558,7 +571,8 @@ int main(int argc,char** argv) {
                 (policy_h2||policy_task15||policy_task16||policy_task17||
                     policy_task18)
                     ?30.0:30.01}}},
-            {"s3_stop_rule","terminate_at_t100_latch"},
+            {"s3_stop_rule",
+                "terminate_at_certified_t100_else_budget_censored"},
             {"evaluations",json::array()},
             {"complete",false}};
         std::filesystem::create_directories(argv[3]);
@@ -577,6 +591,8 @@ int main(int argc,char** argv) {
         GridWorld previous_truth=fixture->adapter.coverage().truthGrid();
         const auto initial_grid=gf::task17GridSnapshot(
             previous_certified,previous_truth);
+        gf::Task19EfficiencyAccumulator efficiency(
+            initial_grid.valid_count,fixture->adapter.config().dt_s);
         grid_delta<<json({{"kind","initial"},
             {"x_cells",initial_grid.x_cells},
             {"y_cells",initial_grid.y_cells},
@@ -595,6 +611,8 @@ int main(int argc,char** argv) {
         double max_truth_overspeed=0.0,max_interval_overspeed=0.0;
         std::size_t truth_overspeed_ticks=0,interval_overspeed_ticks=0;
         std::optional<std::size_t> t95_tick,t100_tick;
+        std::optional<std::size_t> certified_checkpoint_500_count;
+        std::optional<std::size_t> truth_checkpoint_500_count;
         std::size_t tick=0;
         bool hard_stop=false;
         bool truth_gate_violation=false;
@@ -640,6 +658,7 @@ int main(int argc,char** argv) {
         Eigen::Vector2d actual_position_min=nominal_target_min;
         Eigen::Vector2d actual_position_max=nominal_target_max;
         double total_distance_m=0.0;
+        double squared_control_energy_proxy=0.0;
         double maximum_outside_distance_m=0.0;
         std::vector<double> task16_allocation_wall_s;
         gf::SimpleCoverageControlStep last_step;
@@ -692,6 +711,10 @@ int main(int argc,char** argv) {
                     robot->model->getStateVariable("y")};
                 }
             last_step=fixture->controller.advance();
+            if (last_step.step.advanced)
+                squared_control_energy_proxy+=
+                    gf::task19SquaredControlEnergyIncrement(
+                        last_step.step.applied_controls,config.dt_s);
             if (last_step.task16_allocation_evaluated&&
                 last_step.task16_allocation.valid)
                 task16_allocation_wall_s.push_back(
@@ -724,6 +747,7 @@ int main(int argc,char** argv) {
                 fixture->adapter.coverage().truthGrid();
             const auto grid_tick=gf::task17GridDelta(previous_certified,
                 previous_truth,current_certified,current_truth);
+            efficiency.observe(grid_tick.certified_count);
             grid_delta<<json({{"kind","delta"},{"tick",tick},
                 {"runtime_s",fixture->adapter.runtimeSnapshot().runtime_s},
                 {"certified_new_ids",grid_tick.certified_new_ids},
@@ -732,6 +756,12 @@ int main(int argc,char** argv) {
                 {"truth_count",grid_tick.truth_count}}).dump()<<'\n';
             previous_certified=current_certified;
             previous_truth=current_truth;
+            if (!certified_checkpoint_500_count.has_value()&&
+                fixture->adapter.runtimeSnapshot().runtime_s>=
+                    production_defaults.coverage_checkpoint_s-1.0e-9) {
+                certified_checkpoint_500_count=grid_tick.certified_count;
+                truth_checkpoint_500_count=grid_tick.truth_count;
+            }
             const double fraction=(policy_h2||policy_task15||policy_task16||
                 policy_task17||policy_task18)
                 ?certified_fraction:truth_fraction;
@@ -1165,6 +1195,30 @@ int main(int argc,char** argv) {
             json(nullptr));
         record["t100_tick"]=(t100_tick.has_value()?json(*t100_tick):
             json(nullptr));
+        record["t50_tick"]=efficiency.t50_tick().has_value()
+            ?json(*efficiency.t50_tick()):json(nullptr);
+        record["t99_tick"]=efficiency.t99_tick().has_value()
+            ?json(*efficiency.t99_tick()):json(nullptr);
+        record["j_uncovered_cell_seconds"]=
+            efficiency.j_uncovered_cell_seconds();
+        if (!certified_checkpoint_500_count.has_value()&&
+            t100_tick.has_value()&&
+            *t100_tick<=static_cast<std::size_t>(std::llround(
+                production_defaults.coverage_checkpoint_s/config.dt_s))) {
+            certified_checkpoint_500_count=final_grid.certified_count;
+            truth_checkpoint_500_count=final_grid.truth_count;
+        }
+        record["coverage_checkpoint_500_s"]={
+            {"certified_count",certified_checkpoint_500_count.has_value()
+                ?json(*certified_checkpoint_500_count):json(nullptr)},
+            {"truth_count",truth_checkpoint_500_count.has_value()
+                ?json(*truth_checkpoint_500_count):json(nullptr)},
+            {"status",certified_checkpoint_500_count.has_value()
+                ?(t100_tick.has_value()&&
+                  *t100_tick<=static_cast<std::size_t>(std::llround(
+                    production_defaults.coverage_checkpoint_s/config.dt_s))
+                    ?"complete_before_checkpoint":"observed")
+                :"not_observed"}};
         record["final_coverage_fraction"]=
             (policy_h2||policy_task15||policy_task16||policy_task17||
                 policy_task18)
@@ -1216,6 +1270,8 @@ int main(int argc,char** argv) {
             {"maximum_outside_distance_m",
                 maximum_outside_distance_m},
             {"total_distance_m",total_distance_m},
+            {"squared_control_energy_proxy",
+                squared_control_energy_proxy},
             {"allocator_calls",task16_allocation_wall_s.size()},
             {"allocator_wall_p50_s",task16_percentile(0.50)},
             {"allocator_wall_p95_s",task16_percentile(0.95)},
@@ -1286,6 +1342,11 @@ int main(int argc,char** argv) {
                 profiled_total)},
             {"phases",std::move(profiler_json)}};
         record["complete"]=true;
+        record["run_outcome"]=gf::task19RunOutcomeName(
+            gf::classifyTask19Run(t100_tick,hard_stop,
+                runtime_safety_violation));
+        record["right_censored"]=!t100_tick.has_value()&&
+            !hard_stop&&!runtime_safety_violation;
         record["wall_time_s"]=elapsed();
         gf::writeTask10p11vJson(argv[2],record);
         std::cout<<record.dump(2)<<'\n';
