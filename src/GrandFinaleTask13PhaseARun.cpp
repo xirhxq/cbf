@@ -127,6 +127,11 @@ PhaseATemplate makeTemplate(const std::string& id) {
         return {contract.id,"Task 21 four-layer pinball lattice mode",
             launch,contract.reference_edges};
     }
+    if (id=="pinball-5-4-3-2") {
+        const auto contract=gf::task22Pinball5432Contract();
+        return {contract.id,"Task 22 layered pinball 5-4-3-2 lattice mode",
+            launch,contract.reference_edges};
+    }
     throw std::runtime_error("unknown template:"+id);
 }
 
@@ -269,16 +274,19 @@ int main(int argc,char** argv) {
             policy.rfind("task18",0)==0;
         const bool policy_task20=policy.rfind("task20-",0)==0;
         const int task20_lattice_mode=
+            policy.find("pinball-5-4-3-2")!=std::string::npos?5:
             policy.find("pinball")!=std::string::npos?4:
             policy.find("merged-strip")!=std::string::npos?1:
             policy.find("split-three-front")!=std::string::npos?2:
             policy.find("cross-braced-diamond")!=std::string::npos?3:0;
         const int task20_target_policy=
+            policy.rfind("-p5")!=std::string::npos?5:
             policy.rfind("-p4")!=std::string::npos?4:
             policy.rfind("-p1")!=std::string::npos?1:
             policy.rfind("-p2")!=std::string::npos?2:
             policy.rfind("-p3")!=std::string::npos?3:0;
         const bool policy_task21=policy_task20&&task20_target_policy==4;
+        const bool policy_task22=policy_task20&&task20_target_policy==5;
         const auto task16_arm=policy=="task16c"
             ?gf::Task16CoverageArm::FormationAware:
             policy=="task16b"?gf::Task16CoverageArm::BoundaryDecoupled:
@@ -400,6 +408,8 @@ int main(int argc,char** argv) {
             policy_task20,task20_lattice_mode,task20_target_policy,5,
             task20_target_policy==4
                 ?(task20_lattice_mode==0?220.0:450.0):190.0);
+        // P5 selects its pass spacing at runtime from the hole-free rule,
+        // so the configured band width is recorded but unused for -p5.
         if (!fixture->adapter.initializeStageZero().initialized) {
             // Qualification-gate boundary point: recorded, not run.
             json boundary={{"protocol","task13-phase-a-run-v1"},
@@ -440,7 +450,8 @@ int main(int argc,char** argv) {
                 ++workspace_rows;
         }
         const auto& config=fixture->adapter.config();
-        json record={{"protocol",policy_task21
+        json record={{"protocol",policy_task22
+                ?"task22-p5-footprint-inset-sweep-v1":policy_task21
                 ?"task21-dag-agnostic-persistent-ribbon-v1":policy_task20
                 ?"task20-dag-lattice-target-joint-design-v1":
                 policy_task19_switch
@@ -450,7 +461,9 @@ int main(int argc,char** argv) {
                 ?"task18-cbf2026-behavioral-recovery-v1":
                 policy_task17?"task17-periodic-run-v1":
                 "task13-phase-a-run-v1"},
-            {"preregistration",policy_task21
+            {"preregistration",policy_task22
+                ?"2026-09-03-task22-p5-continuous-footprint-inset-sweep-preregistration":
+                policy_task21
                 ?"2026-09-03-task21-dag-agnostic-persistent-ribbon-preregistration":
                 policy_task20?"2026-09-03-task20-dag-lattice-target-joint-design":
                 policy_production
@@ -827,6 +840,10 @@ int main(int argc,char** argv) {
                 last_step.task21_allocation.valid)
                 task16_allocation_wall_s.push_back(
                     last_step.task21_allocation.allocation_wall_s);
+            if (last_step.task22_allocation_evaluated&&
+                last_step.task22_allocation.valid)
+                task16_allocation_wall_s.push_back(
+                    last_step.task22_allocation.allocation_wall_s);
             if (last_step.target_governor_evaluated) {
                 ++target_governor_ticks;
                 minimum_target_governor_fraction=std::min(
@@ -942,6 +959,10 @@ int main(int argc,char** argv) {
                 last_step.task21_allocation.valid)
                 current_active_squads=
                     last_step.task21_allocation.assignments.size();
+            if (last_step.task22_allocation_evaluated&&
+                last_step.task22_allocation.valid)
+                current_active_squads=
+                    last_step.task22_allocation.assignments.size();
             active_squad_ticks+=current_active_squads;
             if (last_step.target_epoch!=last_target_epoch) {
                 if (last_target_epoch!=0) ++target_switches;
@@ -1190,6 +1211,20 @@ int main(int argc,char** argv) {
                                 rolling_intervention_fraction},
                         {"reason",task19_switch_event.reason}});
             }
+            json task22_assignments=json::array();
+            for (const auto& [unit,assignment]:
+                 last_step.task22_allocation.assignments) {
+                task22_assignments.push_back({
+                    {"coverage_unit",unit},
+                    {"task_id",assignment.task.id()},
+                    {"cursor_s",assignment.cursor_s},
+                    {"route_pose",{assignment.route_pose.x(),
+                        assignment.route_pose.y()}},
+                    {"route_tangent",{assignment.route_tangent.x(),
+                        assignment.route_tangent.y()}},
+                    {"on_fillet",assignment.on_fillet},
+                    {"window_empty",assignment.window_empty}});
+            }
             json task21_assignments=json::array();
             for (const auto& [unit,assignment]:
                  last_step.task21_allocation.assignments) {
@@ -1303,6 +1338,16 @@ int main(int argc,char** argv) {
                     {"active_segments",
                         last_step.task21_allocation.active_segments},
                     {"assignments",task21_assignments}}},
+                {"task22",{{"allocation_evaluated",
+                    last_step.task22_allocation_evaluated},
+                    {"allocation_wall_s",
+                    last_step.task22_allocation_evaluated
+                        ?json(last_step.task22_allocation.allocation_wall_s)
+                        :json(nullptr)},
+                    {"scanned_cells",
+                    last_step.task22_allocation.scanned_cells},
+                    {"pass_spacing_m",config.task20_wavefront_band_width_m},
+                    {"assignments",task22_assignments}}},
                 {"task19_switch",{{"enabled",policy_task19_switch},
                     {"signal_evaluated",
                         task19_switch_event.signal_evaluated},

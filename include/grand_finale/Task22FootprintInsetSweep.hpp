@@ -525,6 +525,76 @@ inline Task22SweepPlan task22BuildSweepPlan(
                     cross*field.cross_axis,tangent,pass.pass_index,false);
             }
         };
+        // Route-start convention: an approach arc from the unit's initial
+        // front to the first pass begin, tangent-continuous with the pass
+        // direction.  Radius comes from the closed-form circle through the
+        // initial front tangent to the pass line (no parameter); the
+        // approach poses service cells like any other route pose.
+        {
+            const Task22SweepPass& first=passes.front();
+            const Eigen::Vector2d begin=field.origin+
+                first.progress*field.progress_axis+
+                first.cross_begin*field.cross_axis;
+            const Eigen::Vector2d travel=static_cast<double>(
+                first.direction)*field.cross_axis;
+            const auto initial_front_entry=initial_front_positions.find(
+                unit_id);
+            if (initial_front_entry!=initial_front_positions.end()&&
+                initial_front_entry->second.allFinite()&&
+                (initial_front_entry->second-begin).norm()>pitch) {
+                const Eigen::Vector2d from=initial_front_entry->second;
+                const Eigen::Vector2d offset=from-begin;
+                const double along=offset.dot(travel);
+                const double across=offset.dot(field.progress_axis);
+                if (std::abs(across)<1.0e-9) {
+                    // On the pass line: straight approach along the pass.
+                    const std::size_t count=std::max<std::size_t>(2,
+                        static_cast<std::size_t>(
+                            std::ceil(std::abs(along)/pitch)));
+                    for (std::size_t index=0;index<count;++index) {
+                        const double fraction=static_cast<double>(index)/
+                            static_cast<double>(count);
+                        push(begin+fraction*offset,travel,
+                            first.pass_index,true);
+                    }
+                } else {
+                    const double radius=(along*along+across*across)/
+                        (2.0*across);
+                    const Eigen::Vector2d center=begin+
+                        radius*field.progress_axis;
+                    const double theta_begin=std::atan2(
+                        field.cross_axis.dot(from-center),
+                        field.progress_axis.dot(from-center));
+                    const double theta_end=std::atan2(
+                        field.cross_axis.dot(begin-center),
+                        field.progress_axis.dot(begin-center));
+                    // Sweep from theta_begin to theta_end choosing the
+                    // direction whose tangent at begin matches travel.
+                    const int dtheta=travel.dot(field.cross_axis)>=0.0?1:-1;
+                    double delta=theta_end-theta_begin;
+                    while (delta> M_PI) delta-=2.0*M_PI;
+                    while (delta<-M_PI) delta+=2.0*M_PI;
+                    if (delta*dtheta<0.0) delta+=2.0*M_PI*dtheta;
+                    const auto tangent_at=[&](double theta) {
+                        return static_cast<double>(dtheta)*
+                            (-std::sin(theta)*field.progress_axis+
+                             std::cos(theta)*field.cross_axis);
+                    };
+                    const double arc=std::abs(delta)*std::abs(radius);
+                    const std::size_t steps=std::max<std::size_t>(2,
+                        static_cast<std::size_t>(std::ceil(arc/pitch)));
+                    for (std::size_t step=0;step<steps;++step) {
+                        const double theta=theta_begin+delta*
+                            static_cast<double>(step)/
+                            static_cast<double>(steps);
+                        push(center+std::abs(radius)*
+                            (std::cos(theta)*field.progress_axis+
+                             std::sin(theta)*field.cross_axis),
+                            tangent_at(theta),first.pass_index,true);
+                    }
+                }
+            }
+        }
         push_pass(passes.front(),false);
         for (std::size_t pass=1;pass<passes.size();++pass) {
             const Task22SweepPass& from=passes[pass-1];

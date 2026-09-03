@@ -126,14 +126,15 @@ TEST_CASE("Task 22 insets are footprint-derived and trim no service from the uni
         const auto& corridor=plan.corridors.at(unit);
         double maximum_cross=0.0;
         double minimum_cross=1.0e9;
-        for (const auto& sample:route.samples) {
-            const double cross=plan.field.coordinates(sample.position).y();
-            maximum_cross=std::max(maximum_cross,cross);
-            minimum_cross=std::min(minimum_cross,cross);
+        for (const auto& pass:route.passes) {
+            maximum_cross=std::max(maximum_cross,
+                std::max(pass.cross_begin,pass.cross_end));
+            minimum_cross=std::min(minimum_cross,
+                std::min(pass.cross_begin,pass.cross_end));
         }
         CAPTURE(unit);
-        // With a 1400 m corridor and a <=400 m certified footprint the
-        // inward-most endpoint must sit strictly inside the corridor extreme.
+        // Pass endpoints stay within the corridor widened by the fillet
+        // radius; the approach arc may enter from anywhere.
         const double fillet_radius=0.5*plan.pass_spacing_m;
         CHECK(maximum_cross<corridor.cross_max+fillet_radius+1.0e-6);
         CHECK(minimum_cross>corridor.cross_min-fillet_radius-1.0e-6);

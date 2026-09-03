@@ -606,8 +606,8 @@ public:
             config_.task17_update_period_cycles==0 ||
             config_.task18_update_period_cycles==0 ||
             config_.task20_update_period_cycles==0 ||
-            config_.task20_lattice_mode<0||config_.task20_lattice_mode>4||
-            config_.task20_target_policy<0||config_.task20_target_policy>4||
+            config_.task20_lattice_mode<0||config_.task20_lattice_mode>5||
+            config_.task20_target_policy<0||config_.task20_target_policy>5||
             !std::isfinite(config_.task20_wavefront_band_width_m)||
             config_.task20_wavefront_band_width_m<=0.0 ||
             config_.task21_local_window_cells==0 ||
