@@ -19,6 +19,11 @@ gf::Task20DagLatticeContract contractFor(const std::string& mode) {
             gf::Task20LatticeMode::SplitThreeFront);
     if (mode=="pinball") return gf::task21PinballContract();
     if (mode=="pinball-5-4-3-2") return gf::task22Pinball5432Contract();
+    if (mode=="tiling-fan") return gf::task22SwathTilingContract("fan");
+    if (mode=="tiling-trailing-fan")
+        return gf::task22SwathTilingContract("trailing-fan");
+    if (mode=="lanes-14") return gf::task22Lanes14Contract();
+    if (mode=="lanes-7") return gf::task22Lanes7Contract();
     throw std::invalid_argument("unknown Task 22 DAG mode:"+mode);
 }
 

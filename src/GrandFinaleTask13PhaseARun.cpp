@@ -132,6 +132,16 @@ PhaseATemplate makeTemplate(const std::string& id) {
         return {contract.id,"Task 22 layered pinball 5-4-3-2 lattice mode",
             launch,contract.reference_edges};
     }
+    if (id=="lanes-14") {
+        const auto contract=gf::task22Lanes14Contract();
+        return {contract.id,"Task 22 P8 fourteen independent lanes",
+            launch,contract.reference_edges};
+    }
+    if (id=="lanes-7") {
+        const auto contract=gf::task22Lanes7Contract();
+        return {contract.id,"Task 22 P9 seven two-member lanes",
+            launch,contract.reference_edges};
+    }
     throw std::runtime_error("unknown template:"+id);
 }
 
@@ -274,6 +284,8 @@ int main(int argc,char** argv) {
             policy.rfind("task18",0)==0;
         const bool policy_task20=policy.rfind("task20-",0)==0;
         const int task20_lattice_mode=
+            policy.find("lanes-14")!=std::string::npos?6:
+            policy.find("lanes-7")!=std::string::npos?7:
             policy.find("pinball-5-4-3-2")!=std::string::npos?5:
             policy.find("pinball")!=std::string::npos?4:
             policy.find("merged-strip")!=std::string::npos?1:

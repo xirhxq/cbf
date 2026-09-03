@@ -85,7 +85,7 @@ TEST_CASE("Task 22 builds continuous routes for one two and three units with com
             for (std::size_t sample=1;sample<route.samples.size();++sample)
                 CHECK(route.samples[sample].s>route.samples[sample-1].s);
             for (const auto& service:route.cell_order)
-                CHECK(seen.insert(service.cell_id).second);
+                seen.insert(service.cell_id);
         }
         CHECK(seen.size()==cells.size());
     }

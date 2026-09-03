@@ -737,9 +737,11 @@ inline Task22SweepPlan task22BuildSweepPlan(
             for (std::size_t index=0;index<cell_count;++index) {
                 if (task22_detail::getBit(serviced,index)) continue;
                 const FrontierCell& cell=result.cells[index];
-                const double cell_cross=field.coordinates(cell.center).y();
-                if (cell_cross+1.0e-9<corridor.cross_min||
-                    cell_cross>corridor.cross_max+1.0e-9) continue;
+                // Deliberately NOT corridor-restricted: fillet bulges and
+                // approach arcs legitimately service neighbouring-corridor
+                // cells, and the runtime no-hole check unions the ledgers.
+                // Cross-unit duplicate task IDs are deduped by the
+                // allocator's used-set.
                 if (cell.center.x()<min_x-400.0||cell.center.x()>max_x+400.0||
                     cell.center.y()<min_y-400.0||
                     cell.center.y()>max_y+400.0) continue;
@@ -779,10 +781,6 @@ inline Task22SweepPlan task22BuildSweepPlan(
             }
             for (std::size_t index=0;index<cell_count;++index) {
                 if (route.last_service_s[index]>=0.0) continue;
-                const double cell_cross=field.coordinates(
-                    result.cells[index].center).y();
-                if (cell_cross+1.0e-9<corridor.cross_min||
-                    cell_cross>corridor.cross_max+1.0e-9) continue;
                 const FrontierCell& cell=result.cells[index];
                 if (cell.center.x()<min_x-400.0||
                     cell.center.x()>max_x+400.0||
@@ -1037,6 +1035,98 @@ inline Task22AllocationResult allocateTask22Sweep(
     result.valid=true;
     result.reason="task22_real_cell_assignments";
     return finish(std::move(result));
+}
+
+// Task 22 addendum III, P7 swath-tiling serpentine contracts: the
+// dual-ladder edge structure and unit split are unchanged; only the
+// member roles change from the compact progress ladder to a cross fan
+// (members' (a+0.5|t|) coefficients form a uniform k-ladder so their
+// certified sectors tile the cross axis during a pass instead of
+// stacking).  Variant "fan" spans k in [0,1] (near-shore cross tiling,
+// morphing to a ladder offshore); variant "trailing-fan" clusters
+// k in [0.5,1] (formation trails the front with a 750 m cross fan at all
+// depths, keeping reference edges bounded).  The static oracle decides.
+inline Task20DagLatticeContract task22SwathTilingContract(
+    const std::string& variant) {
+    Task20DagLatticeContract result;
+    result.id="swath-tiling-"+variant;
+    result.structural_signature="units=7+7;ladder-edges;cross-fan-roles";
+    result.reference_edges=task20_lattice_detail::dualLadderEdges();
+    result.coverage_units={{"A",{1,2,3,4,5,6,7},{101},7,{7}},
+                           {"B",{8,9,10,11,12,13,14},{101},14,{14}}};
+    std::vector<std::pair<double,double>> roles;
+    for (std::size_t index=0;index<7;++index) {
+        const double k=variant=="fan"
+            ?static_cast<double>(index)/6.0
+            :0.5+static_cast<double>(index)/12.0;
+        const double t=(index%2==0?1.0:-1.0)*0.06;
+        const double a=k-0.5*std::abs(t);
+        roles.push_back({a,t});
+    }
+    task20_lattice_detail::addRoles(result,result.coverage_units[0],roles);
+    task20_lattice_detail::addRoles(result,result.coverage_units[1],roles);
+    task20_lattice_detail::finish(result);
+    return result;
+}
+
+// Task 22 addendum III, P8 lanes-14: fourteen single-member coverage
+// units, each UAV its own front and corridor (the designated fallback
+// after the P7 affine fan contracts failed the static tiling gate).
+// Edges: owner 1 from {100,101}; owners 2..13 from {previous,101};
+// owner 14 from {13,102} -- 28 edges, two references per owner, DAG.
+// Every role is the identity (a=1, t=0): member == front.
+inline Task20DagLatticeContract task22Lanes14Contract() {
+    Task20DagLatticeContract result;
+    result.id="lanes-14";
+    result.structural_signature="units=1x14;lanes;identity-roles";
+    result.reference_edges={{100,1},{101,1}};
+    for (NodeId owner=2;owner<14;++owner) {
+        result.reference_edges.emplace_back(owner-1,owner);
+        result.reference_edges.emplace_back(101,owner);
+    }
+    result.reference_edges.emplace_back(13,14);
+    result.reference_edges.emplace_back(102,14);
+    for (NodeId member=1;member<=14;++member)
+        result.coverage_units.push_back({std::to_string(member),
+            {member},{101},member,{member}});
+    for (const auto& unit:result.coverage_units)
+        task20_lattice_detail::addRoles(result,unit,{{1.0,0.0}});
+    task20_lattice_detail::finish(result);
+    return result;
+}
+
+// Task 22 addendum III, P9 lanes-7: seven two-member coverage units on
+// ~429 m corridors (pass length) at wide spacing -- the aspect optimum of
+// the path-efficiency model route(U,s) ~= ceil(3000/s)*(3000/U) +
+// (ceil(3000/s)-1)*(pi*R + s - 2R).  Edges: owner 1 from {100,101};
+// owners 2..13 chained pairwise; owner 14 from {13,102}; units pair
+// consecutive members (1,2),(3,4)...(13,14), each unit's front is its
+// second member.  Roles: leader a=0.9 t=0, front a=1 t=0 (the pair keeps
+// a 0.1-displacement separation for reference-edge sanity).
+inline Task20DagLatticeContract task22Lanes7Contract() {
+    Task20DagLatticeContract result;
+    result.id="lanes-7";
+    result.structural_signature="units=2x7;lanes;identity-pair-roles";
+    result.reference_edges={{100,1},{101,1}};
+    for (NodeId owner=2;owner<14;++owner) {
+        result.reference_edges.emplace_back(owner-1,owner);
+        result.reference_edges.emplace_back(101,owner);
+    }
+    result.reference_edges.emplace_back(13,14);
+    result.reference_edges.emplace_back(102,14);
+    for (std::size_t lane=0;lane<7;++lane) {
+        const NodeId leader=2*lane+1;
+        const NodeId front=2*lane+2;
+        result.coverage_units.push_back({std::to_string(lane),
+            {leader,front},{101},front,{front}});
+    }
+    for (std::size_t lane=0;lane<7;++lane) {
+        const auto& unit=result.coverage_units[lane];
+        task20_lattice_detail::addRoles(result,unit,
+            {{0.9,0.0},{1.0,0.0}});
+    }
+    task20_lattice_detail::finish(result);
+    return result;
 }
 
 // Task 22 preregistration section 3: pinball 5-4-3-2 static contract.

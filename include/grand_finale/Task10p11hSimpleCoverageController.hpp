@@ -843,6 +843,8 @@ private:
         const int mode=adapter_.config().task20_lattice_mode;
         if (mode==4) return task21PinballContract();
         if (mode==5) return task22Pinball5432Contract();
+        if (mode==6) return task22Lanes14Contract();
+        if (mode==7) return task22Lanes7Contract();
         return task20DagLatticeContract(static_cast<Task20LatticeMode>(mode));
     }
 
