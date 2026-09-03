@@ -779,14 +779,23 @@ inline Task22AllocationResult allocateTask22Sweep(
         }
         const double cursor=route.samples[best_index].s;
         result.cursors[unit]=cursor;
-        const Task22RouteSample& sample=route.samples[best_index];
-        const Eigen::Vector2d focus=sample.position+
-            request.forward_focus_distance_m*sample.tangent;
         const double window_span=static_cast<double>(
             request.plan.local_window_cells)*request.plan.sample_pitch_m;
+        // First pending work in route order: the navigation pose anchors to
+        // the service point of the oldest uncovered window cell, so the
+        // front only advances as certification clears pending work (the
+        // arclength form of P0's nearest-real-cell pacing).  With no
+        // pending cell in the window the pose advances freely along the
+        // connecting arc by the forward-focus arclength.
+        // Cell selection first: nearest real uncovered window cell to the
+        // 400 m forward focus at the projected front (exact P0 pacing).
+        const Task22RouteSample& projected=route.samples[best_index];
+        const Eigen::Vector2d focus=projected.position+
+            request.forward_focus_distance_m*projected.tangent;
         const FrontierCell* best_cell=nullptr;
         double best_distance=std::numeric_limits<double>::infinity();
-        bool window_empty=true;
+        double best_cell_s=0.0;
+        bool any_pending=false;
         for (const auto& service:route.cell_order) {
             if (service.first_service_s<previous-request.plan.sample_pitch_m)
                 continue;
@@ -794,7 +803,7 @@ inline Task22AllocationResult allocateTask22Sweep(
             const auto found=uncovered.find(service.cell_id);
             if (found==uncovered.end()||used.count(found->first)) continue;
             ++result.scanned_cells;
-            window_empty=false;
+            any_pending=true;
             const double distance=(found->second.center-focus).squaredNorm();
             if (best_cell==nullptr||
                 distance<best_distance-request.comparison_epsilon||
@@ -803,15 +812,54 @@ inline Task22AllocationResult allocateTask22Sweep(
                  found->first<best_cell->id())) {
                 best_cell=&found->second;
                 best_distance=distance;
+                best_cell_s=service.first_service_s;
             }
         }
+        // Navigation pose, frozen P5 anchor convention (P4 lineage): the
+        // front sits ON the route manifold at the selected cell's cross
+        // coordinate on its witness pass line, so the lifting displacement
+        // stays at cell scale (Task 21 P4's working anchoring) instead of
+        // witness-pose scale.  With no pending cell in the window the pose
+        // advances freely along the connecting arc by the forward-focus
+        // arclength.
+        const bool window_empty=!any_pending;
+        std::size_t nav_index=best_index;
+        Eigen::Vector2d nav_pose=route.samples[best_index].position;
+        Eigen::Vector2d nav_tangent=route.samples[best_index].tangent;
+        bool nav_on_fillet=route.samples[best_index].on_fillet;
+        if (!window_empty) {
+            while (nav_index+1<route.samples.size()&&
+                   route.samples[nav_index].s<best_cell_s)
+                ++nav_index;
+            const Task22SweepPass& pass=
+                route.passes[route.samples[nav_index].pass_index];
+            const double cell_cross=request.plan.field.coordinates(
+                best_cell->center).y();
+            nav_pose=request.plan.field.origin+
+                pass.progress*request.plan.field.progress_axis+
+                cell_cross*request.plan.field.cross_axis;
+            nav_tangent=static_cast<double>(pass.direction)*
+                request.plan.field.cross_axis;
+            nav_on_fillet=false;
+        } else {
+            const double nav_target_s=
+                cursor+request.forward_focus_distance_m;
+            while (nav_index+1<route.samples.size()&&
+                   route.samples[nav_index].s<nav_target_s)
+                ++nav_index;
+            nav_pose=route.samples[nav_index].position;
+            nav_tangent=route.samples[nav_index].tangent;
+            nav_on_fillet=route.samples[nav_index].on_fillet;
+        }
+        const Task22RouteSample& sample=route.samples[nav_index];
+        (void)sample;
         Task22SweepAssignment assignment;
         assignment.coverage_unit=unit;
         assignment.cursor_s=cursor;
-        assignment.route_pose=sample.position;
-        assignment.route_tangent=sample.tangent;
-        assignment.route_sample_index=best_index;
-        assignment.on_fillet=sample.on_fillet;
+        assignment.route_pose=nav_pose;
+        assignment.route_tangent=nav_tangent;
+        assignment.route_sample_index=nav_index;
+        assignment.on_fillet=nav_on_fillet;
         if (best_cell!=nullptr) {
             assignment.task=*best_cell;
         } else {
