@@ -14,6 +14,7 @@
 #include "grand_finale/Task20CoveragePolicy.hpp"
 #include "grand_finale/Task21PersistentRibbon.hpp"
 #include "grand_finale/Task22FootprintInsetSweep.hpp"
+#include "grand_finale/Task24PersistentRasterSweep.hpp"
 #include "grand_finale/TargetLiftTransitionPrototype.hpp"
 
 #include <functional>
@@ -101,6 +102,8 @@ struct SimpleCoverageControlStep {
     Task21AllocationResult task21_allocation;
     bool task22_allocation_evaluated=false;
     Task22AllocationResult task22_allocation;
+    bool task24_allocation_evaluated=false;
+    Task24RasterResult task24_allocation;
     GrandFinaleSwarmStep step;
     std::string reason;
     std::map<NodeId,FrontierCell> committed_targets;
@@ -211,7 +214,9 @@ public:
         const bool policy_task20=
             adapter_.config().target_policy_task20_dag_lattice;
         if (policy_task20) {
-            if (adapter_.config().task20_target_policy==5)
+            if (adapter_.config().task20_target_policy==6)
+                advanceTask24Targets(runtime,result);
+            else if (adapter_.config().task20_target_policy==5)
                 advanceTask22Targets(runtime,result);
             else if (adapter_.config().task20_target_policy==4)
                 advanceTask21Targets(runtime,result);
@@ -222,7 +227,9 @@ public:
                 (result.task21_allocation_evaluated&&
                  !result.task21_allocation.valid)||
                 (result.task22_allocation_evaluated&&
-                 !result.task22_allocation.valid)) {
+                 !result.task22_allocation.valid)||
+                (result.task24_allocation_evaluated&&
+                 !result.task24_allocation.valid)) {
                 result.step.reason=result.reason;
                 return result;
             }
@@ -742,6 +749,8 @@ public:
         task22_plan_=Task22SweepPlan{};
         task22_cursors_.clear();
         task22_fronts_.clear();
+        task24_plan_=Task24RasterPlan{};
+        task24_states_.clear();
     }
     SimpleCoverageControlStep advanceWithDynamicPairResponsibility(
         const std::string& pair_base_id) {
@@ -1069,6 +1078,124 @@ private:
             if (targets_.size()!=runtime.estimate.mobile_ids.size()) {
                 result.reason="task22_incomplete_initial_target_ledger";
                 result.task22_allocation.valid=false;
+                return;
+            }
+            ++target_epoch_;
+        }
+        task20_last_allocation_cycle_=control_boundaries_;
+        consecutive_failures_=0;
+    }
+
+    // ---- Task 24: DAG-agnostic persistent raster sweep ----
+    Task24DagContract task24ContractForConfig() const {
+        const int mode=adapter_.config().task20_lattice_mode;
+        if (mode==0) return task24Contract(Task24LatticeMode::H0DualLadder);
+        if (mode==8) return task24Contract(Task24LatticeMode::Pinball5432);
+        if (mode==9)
+            return task24Contract(Task24LatticeMode::LongTriangleSingleLadder);
+        Task24DagContract invalid;
+        invalid.reason="unknown_task24_lattice_mode";
+        return invalid;
+    }
+
+    void advanceTask24Targets(
+        const GrandFinaleRuntimeSnapshot& runtime,
+        SimpleCoverageControlStep& result) {
+        const auto& config=adapter_.config();
+        const bool periodic=targets_.empty()||
+            control_boundaries_>=task20_last_allocation_cycle_+
+                config.task20_update_period_cycles;
+        if (!periodic) return;
+        const auto uncovered=currentCertifiedUncoveredCells();
+        if (uncovered.empty()&&!targets_.empty()) return;
+        const auto contract=task24ContractForConfig();
+        if (!contract.valid) {
+            result.reason=contract.reason;
+            result.task24_allocation_evaluated=true;
+            result.task24_allocation.reason=contract.reason;
+            return;
+        }
+        std::map<NodeId,Eigen::Vector2d> actual_positions;
+        for (const auto& robot:swarm_.robots) {
+            const Point value=robot->model->xy();
+            actual_positions[robot->id]={value.x,value.y};
+        }
+        std::map<std::string,Eigen::Vector2d> actual_fronts;
+        for (const auto& unit:contract.coverage_units) {
+            const auto front=task24ActualFront(
+                contract,actual_positions,unit.id);
+            if (!front.has_value()) {
+                result.reason="task24_missing_actual_front:"+unit.id;
+                result.task24_allocation_evaluated=true;
+                result.task24_allocation.reason=result.reason;
+                return;
+            }
+            actual_fronts[unit.id]=*front;
+        }
+        if (!task24_plan_.valid) {
+            const auto field=task21AffineCoordinateField({0.0,0.0},
+                {config.task21_progress_axis_x,config.task21_progress_axis_y},
+                {config.task21_cross_axis_x,config.task21_cross_axis_y});
+            std::vector<std::string> units;
+            for (const auto& unit:contract.coverage_units)
+                units.push_back(unit.id);
+            std::set<std::string> initial_certified;
+            const GridWorld& grid=adapter_.coverage().certifiedGrid();
+            for (int x=0;x<grid.xNum;++x) for (int y=0;y<grid.yNum;++y) {
+                const int index=grid.getIndex(x,y);
+                if (grid.valid[index]&&grid.vis[index])
+                    initial_certified.insert(
+                        std::to_string(x)+":"+std::to_string(y));
+            }
+            task24_plan_=task24BuildRasterPlan(denominator_cells_,units,
+                field,config.task20_wavefront_band_width_m,
+                initial_certified);
+            if (!task24_plan_.valid) {
+                result.reason=task24_plan_.reason;
+                result.task24_allocation_evaluated=true;
+                result.task24_allocation.reason=result.reason;
+                return;
+            }
+            for (const auto& unit:units)
+                task24_states_[unit]=task24InitialRasterState(
+                    task24_plan_,unit);
+        }
+        result.task24_allocation_evaluated=true;
+        result.task24_allocation=allocateTask24Raster({task24_plan_,
+            uncovered,actual_fronts,task24_states_});
+        if (!result.task24_allocation.valid) {
+            result.reason=result.task24_allocation.reason;
+            return;
+        }
+        std::map<std::string,Eigen::Vector2d> commanded_fronts;
+        for (const auto& [unit,assignment]:
+             result.task24_allocation.assignments) {
+            task24_states_[unit]=assignment.state;
+            commanded_fronts[unit]=assignment.continuous_front;
+        }
+        if (!result.task24_allocation.complete) {
+            const auto lifted=task24LiftTargets(contract,commanded_fronts);
+            if (!lifted.valid) {
+                result.reason=lifted.reason;
+                result.task24_allocation.valid=false;
+                return;
+            }
+            for (const auto& unit:contract.coverage_units) {
+                const auto& assignment=
+                    result.task24_allocation.assignments.at(unit.id);
+                if (!assignment.active&&!assignment.state.last_real_task)
+                    continue;
+                const FrontierCell ledger=assignment.active?assignment.task:
+                    *assignment.state.last_real_task;
+                for (NodeId member:unit.members) {
+                    FrontierCell target=ledger;
+                    target.center=lifted.targets.at(member);
+                    targets_[member]=target;
+                }
+            }
+            if (targets_.size()!=runtime.estimate.mobile_ids.size()) {
+                result.reason="task24_incomplete_initial_target_ledger";
+                result.task24_allocation.valid=false;
                 return;
             }
             ++target_epoch_;
@@ -2265,6 +2392,8 @@ private:
     Task22SweepPlan task22_plan_;
     std::map<std::string,double> task22_cursors_;
     std::map<std::string,Eigen::Vector2d> task22_fronts_;
+    Task24RasterPlan task24_plan_;
+    std::map<std::string,Task24RasterState> task24_states_;
     CanonicalHocbfQpController task16_governor_qp_;
     // Task 13 Phase B0-a (target policy v2) state.
     double last_demand_recompute_s_=-1.0e9;

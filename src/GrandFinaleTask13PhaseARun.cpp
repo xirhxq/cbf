@@ -4,6 +4,7 @@
 #include "grand_finale/Task19ProductionBaseline.hpp"
 #include "grand_finale/Task19MinimalDagSwitcher.hpp"
 #include "grand_finale/Task20CoveragePolicy.hpp"
+#include "grand_finale/Task24PersistentRasterSweep.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -142,6 +143,27 @@ PhaseATemplate makeTemplate(const std::string& id) {
         return {contract.id,"Task 22 P9 seven two-member lanes",
             launch,contract.reference_edges};
     }
+    if (id=="task24-h0")
+        return {id,"Task 24 H0 dual-ladder raster contract",
+            launch,gf::task24Contract(
+                gf::Task24LatticeMode::H0DualLadder).reference_edges};
+    if (id=="task24-pinball"||id=="task24-triangle") {
+        const auto mode=id=="task24-pinball"
+            ?gf::Task24LatticeMode::Pinball5432
+            :gf::Task24LatticeMode::LongTriangleSingleLadder;
+        const auto contract=gf::task24Contract(mode);
+        const double spacing=id=="task24-pinball"?650.0:560.0;
+        const Eigen::Vector2d front{
+            0.5*contract.width_m,5.0+0.5*spacing};
+        const auto lifted=gf::task24LiftTargets(
+            contract,{{contract.coverage_units.front().id,front}});
+        if (!lifted.valid) throw std::runtime_error(lifted.reason);
+        std::vector<Eigen::Vector2d> positions;
+        for (gf::NodeId owner=1;owner<=14;++owner)
+            positions.push_back(lifted.targets.at(owner));
+        return {id,"Task 24 frozen raster DAG/lifting contract",
+            positions,contract.reference_edges};
+    }
     throw std::runtime_error("unknown template:"+id);
 }
 
@@ -183,8 +205,19 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     auto scenario=gf::task10p11rFixedBaselineScenario();
     scenario.mobile_positions=def.positions;
     scenario.initial_topology=def.topology;
+    if (def.id=="task24-pinball"||def.id=="task24-triangle") {
+        const auto contract=gf::task24Contract(def.id=="task24-pinball"
+            ?gf::Task24LatticeMode::Pinball5432
+            :gf::Task24LatticeMode::LongTriangleSingleLadder);
+        scenario.id=contract.id;
+        scenario.width_m=contract.width_m;
+        scenario.height_m=contract.height_m;
+        scenario.fixed_positions=contract.fixed_positions;
+    }
     auto settings=gf::task10p11pSwarmSettings(scenario,
         gf::SolverProfile::Gurobi);
+    if (def.id=="task24-pinball"||def.id=="task24-triangle")
+        settings["initial"]["yawDeg"]=0.0;
     // Rung B'' speed domain: single nominal row @30, gain 7, no
     // saturation, preflight demoted (31 m/s fuse), truth initial-set gate.
     // Bool order: srnm, margin, family, analytic, demoted, throttle,
@@ -282,8 +315,11 @@ int main(int argc,char** argv) {
             policy.rfind("task17simple",0)==0;
         const bool policy_task18=production_semantics||
             policy.rfind("task18",0)==0;
-        const bool policy_task20=policy.rfind("task20-",0)==0;
+        const bool policy_task24=policy.rfind("task24-",0)==0;
+        const bool policy_task20=policy.rfind("task20-",0)==0||policy_task24;
         const int task20_lattice_mode=
+            policy_task24&&policy.find("pinball")!=std::string::npos?8:
+            policy_task24&&policy.find("triangle")!=std::string::npos?9:
             policy.find("lanes-14")!=std::string::npos?6:
             policy.find("lanes-7")!=std::string::npos?7:
             policy.find("pinball-5-4-3-2")!=std::string::npos?5:
@@ -292,6 +328,7 @@ int main(int argc,char** argv) {
             policy.find("split-three-front")!=std::string::npos?2:
             policy.find("cross-braced-diamond")!=std::string::npos?3:0;
         const int task20_target_policy=
+            policy_task24?6:
             policy.rfind("-p5")!=std::string::npos?5:
             policy.rfind("-p4")!=std::string::npos?4:
             policy.rfind("-p1")!=std::string::npos?1:
@@ -431,6 +468,7 @@ int main(int argc,char** argv) {
             task18_collision_only_vaug,
             task18_yaw_objective,gf::task17UpdatePeriodCycles(policy),
             policy_task20,task20_lattice_mode,task20_target_policy,5,
+            policy_task24?(task20_lattice_mode==9?560.0:650.0):
             task20_target_policy==4
                 ?(task20_lattice_mode==0?220.0:450.0):190.0);
         // P5 selects its pass spacing at runtime from the hole-free rule,
@@ -475,7 +513,8 @@ int main(int argc,char** argv) {
                 ++workspace_rows;
         }
         const auto& config=fixture->adapter.config();
-        json record={{"protocol",policy_task22
+        json record={{"protocol",policy_task24
+                ?"task24-dag-agnostic-persistent-raster-v1":policy_task22
                 ?"task22-p5-footprint-inset-sweep-v1":policy_task21
                 ?"task21-dag-agnostic-persistent-ribbon-v1":policy_task20
                 ?"task20-dag-lattice-target-joint-design-v1":
@@ -486,7 +525,8 @@ int main(int argc,char** argv) {
                 ?"task18-cbf2026-behavioral-recovery-v1":
                 policy_task17?"task17-periodic-run-v1":
                 "task13-phase-a-run-v1"},
-            {"preregistration",policy_task22
+            {"preregistration",policy_task24
+                ?"2026-09-04-task24-persistent-raster-sweep-preregistration":policy_task22
                 ?"2026-09-03-task22-p5-continuous-footprint-inset-sweep-preregistration":
                 policy_task21
                 ?"2026-09-03-task21-dag-agnostic-persistent-ribbon-preregistration":
@@ -869,6 +909,10 @@ int main(int argc,char** argv) {
                 last_step.task22_allocation.valid)
                 task16_allocation_wall_s.push_back(
                     last_step.task22_allocation.allocation_wall_s);
+            if (last_step.task24_allocation_evaluated&&
+                last_step.task24_allocation.valid)
+                task16_allocation_wall_s.push_back(
+                    last_step.task24_allocation.allocation_wall_s);
             if (last_step.target_governor_evaluated) {
                 ++target_governor_ticks;
                 minimum_target_governor_fraction=std::min(
@@ -988,6 +1032,12 @@ int main(int argc,char** argv) {
                 last_step.task22_allocation.valid)
                 current_active_squads=
                     last_step.task22_allocation.assignments.size();
+            if (last_step.task24_allocation_evaluated&&
+                last_step.task24_allocation.valid)
+                current_active_squads=std::count_if(
+                    last_step.task24_allocation.assignments.begin(),
+                    last_step.task24_allocation.assignments.end(),
+                    [](const auto& value) { return value.second.active; });
             active_squad_ticks+=current_active_squads;
             if (last_step.target_epoch!=last_target_epoch) {
                 if (last_target_epoch!=0) ++target_switches;
@@ -1265,6 +1315,27 @@ int main(int argc,char** argv) {
                     {"front",{assignment.front.x(),assignment.front.y()}},
                     {"transition_hold",assignment.transition_hold}});
             }
+            json task24_assignments=json::array();
+            for (const auto& [unit,assignment]:
+                 last_step.task24_allocation.assignments) {
+                const bool has_task=assignment.active||
+                    assignment.state.last_real_task.has_value();
+                task24_assignments.push_back({
+                    {"coverage_unit",unit},
+                    {"active",assignment.active},
+                    {"task_id",has_task?json(assignment.task.id()):json(nullptr)},
+                    {"task_center",has_task
+                        ?json::array({assignment.task.center.x(),
+                            assignment.task.center.y()}):json(nullptr)},
+                    {"continuous_front",{assignment.continuous_front.x(),
+                        assignment.continuous_front.y()}},
+                    {"band_index",assignment.state.band_index},
+                    {"direction",assignment.state.direction},
+                    {"pass_cursor_m",assignment.state.pass_cursor_m},
+                    {"route_cursor_m",assignment.state.route_cursor_m},
+                    {"pass_epoch",assignment.state.pass_epoch},
+                    {"same_band_rescans",assignment.state.same_band_rescans}});
+            }
             telemetry<<json({{"tick",tick},
                 {"runtime_s",snapshot.runtime_s},
                 {"coverage_fraction",fraction},
@@ -1373,6 +1444,16 @@ int main(int argc,char** argv) {
                     last_step.task22_allocation.scanned_cells},
                     {"pass_spacing_m",config.task20_wavefront_band_width_m},
                     {"assignments",task22_assignments}}},
+                {"task24",{{"allocation_evaluated",
+                    last_step.task24_allocation_evaluated},
+                    {"allocation_wall_s",
+                    last_step.task24_allocation_evaluated
+                        ?json(last_step.task24_allocation.allocation_wall_s)
+                        :json(nullptr)},
+                    {"scanned_cells",
+                        last_step.task24_allocation.scanned_cells},
+                    {"pass_spacing_m",config.task20_wavefront_band_width_m},
+                    {"assignments",task24_assignments}}},
                 {"task19_switch",{{"enabled",policy_task19_switch},
                     {"signal_evaluated",
                         task19_switch_event.signal_evaluated},
