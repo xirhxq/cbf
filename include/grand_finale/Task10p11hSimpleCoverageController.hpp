@@ -14,6 +14,7 @@
 #include "grand_finale/Task20CoveragePolicy.hpp"
 #include "grand_finale/Task21PersistentRibbon.hpp"
 #include "grand_finale/Task22FootprintInsetSweep.hpp"
+#include "grand_finale/Task23PersistentDeadlineRibbon.hpp"
 #include "grand_finale/TargetLiftTransitionPrototype.hpp"
 
 #include <functional>
@@ -101,6 +102,8 @@ struct SimpleCoverageControlStep {
     Task21AllocationResult task21_allocation;
     bool task22_allocation_evaluated=false;
     Task22AllocationResult task22_allocation;
+    bool task23_allocation_evaluated=false;
+    Task23CoreResult task23_allocation;
     GrandFinaleSwarmStep step;
     std::string reason;
     std::map<NodeId,FrontierCell> committed_targets;
@@ -211,7 +214,9 @@ public:
         const bool policy_task20=
             adapter_.config().target_policy_task20_dag_lattice;
         if (policy_task20) {
-            if (adapter_.config().task20_target_policy==5)
+            if (adapter_.config().task20_target_policy==6)
+                advanceTask23Targets(runtime,result);
+            else if (adapter_.config().task20_target_policy==5)
                 advanceTask22Targets(runtime,result);
             else if (adapter_.config().task20_target_policy==4)
                 advanceTask21Targets(runtime,result);
@@ -222,7 +227,9 @@ public:
                 (result.task21_allocation_evaluated&&
                  !result.task21_allocation.valid)||
                 (result.task22_allocation_evaluated&&
-                 !result.task22_allocation.valid)) {
+                 !result.task22_allocation.valid)||
+                (result.task23_allocation_evaluated&&
+                 !result.task23_allocation.valid)) {
                 result.step.reason=result.reason;
                 return result;
             }
@@ -742,6 +749,9 @@ public:
         task22_plan_=Task22SweepPlan{};
         task22_cursors_.clear();
         task22_fronts_.clear();
+        task23_plan_=Task23DeadlinePlan{};
+        task23_states_.clear();
+        task23_fronts_.clear();
     }
     SimpleCoverageControlStep advanceWithDynamicPairResponsibility(
         const std::string& pair_base_id) {
@@ -1069,6 +1079,127 @@ private:
             if (targets_.size()!=runtime.estimate.mobile_ids.size()) {
                 result.reason="task22_incomplete_initial_target_ledger";
                 result.task22_allocation.valid=false;
+                return;
+            }
+            ++target_epoch_;
+        }
+        task20_last_allocation_cycle_=control_boundaries_;
+        consecutive_failures_=0;
+    }
+
+    // ---- Task 23: Persistent Deadline Ribbon core ----
+    void advanceTask23Targets(
+        const GrandFinaleRuntimeSnapshot& runtime,
+        SimpleCoverageControlStep& result) {
+        const auto& config=adapter_.config();
+        const bool periodic=targets_.empty()||
+            control_boundaries_>=task20_last_allocation_cycle_+
+                config.task20_update_period_cycles;
+        if (!periodic) return;
+        const auto uncovered=currentCertifiedUncoveredCells();
+        if (uncovered.empty()&&!targets_.empty()) return;
+        const auto contract=task21Contract();
+        const auto audit=task23AuditCoverageContract(contract);
+        if (!audit.valid) {
+            result.reason=audit.reason;
+            result.task23_allocation_evaluated=true;
+            result.task23_allocation.reason=audit.reason;
+            return;
+        }
+        std::map<NodeId,Eigen::Vector2d> positions;
+        for (std::size_t index=0;index<runtime.estimate.mobile_ids.size();
+             ++index)
+            positions[runtime.estimate.mobile_ids[index]]=
+                runtime.estimate.mean.segment<2>(4*index);
+        std::map<std::string,Eigen::Vector2d> actual_fronts;
+        std::map<std::string,double> actual_front_yaws;
+        for (const auto& unit:contract.coverage_units) {
+            const auto& front_members=unit.front_members.empty()
+                ?std::vector<NodeId>{unit.leader}:unit.front_members;
+            Eigen::Vector2d front=Eigen::Vector2d::Zero();
+            Eigen::Vector2d heading=Eigen::Vector2d::Zero();
+            for (NodeId member:front_members) {
+                front+=positions.at(member);
+                const double yaw=currentYaw(member);
+                heading+=Eigen::Vector2d(std::cos(yaw),std::sin(yaw));
+            }
+            actual_fronts[unit.id]=
+                front/static_cast<double>(front_members.size());
+            actual_front_yaws[unit.id]=heading.norm()>1.0e-12
+                ?std::atan2(heading.y(),heading.x()):currentYaw(unit.leader);
+        }
+        if (!task23_plan_.valid) {
+            const auto field=task21AffineCoordinateField({0.0,0.0},
+                {config.task21_progress_axis_x,config.task21_progress_axis_y},
+                {config.task21_cross_axis_x,config.task21_cross_axis_y});
+            std::set<std::string> initially_certified;
+            std::set<std::string> initially_uncovered;
+            for (const auto& cell:uncovered)
+                initially_uncovered.insert(cell.id());
+            for (const auto& cell:denominator_cells_)
+                if (!initially_uncovered.count(cell.id()))
+                    initially_certified.insert(cell.id());
+            task23_plan_=task23BuildDeadlinePlan(denominator_cells_,field,
+                config.task23_pass_spacing_m,
+                config.task21_local_window_cells,contract,
+                runtime.estimate.fixed_positions,actual_fronts,
+                initially_certified);
+            if (!task23_plan_.valid) {
+                result.reason=task23_plan_.reason;
+                result.task23_allocation_evaluated=true;
+                result.task23_allocation.reason=result.reason;
+                return;
+            }
+        }
+        Task23CoreRequest request;
+        request.plan=&task23_plan_;
+        request.certified_uncovered=uncovered;
+        request.actual_fronts=actual_fronts;
+        request.actual_front_yaws=actual_front_yaws;
+        request.states=task23_states_;
+        result.task23_allocation_evaluated=true;
+        result.task23_allocation=allocateTask23PdrCore(request);
+        if (!result.task23_allocation.valid) {
+            result.reason=result.task23_allocation.reason;
+            return;
+        }
+        task23_states_=result.task23_allocation.states;
+        if (!result.task23_allocation.complete) {
+            for (const auto& [unit,assignment]:
+                 result.task23_allocation.assignments)
+                if (assignment.active||
+                    task23_states_.at(unit).has_shared_front_target)
+                    task23_fronts_[unit]=
+                        task23_states_.at(unit).shared_front_target;
+            if (task23_fronts_.size()!=contract.coverage_units.size()) {
+                result.reason="task23_incomplete_initial_front_ledger";
+                result.task23_allocation.valid=false;
+                return;
+            }
+            const auto lifted=task20LiftTargets(contract,
+                runtime.estimate.fixed_positions,task23_fronts_);
+            if (!lifted.valid) {
+                result.reason=lifted.reason;
+                result.task23_allocation.valid=false;
+                return;
+            }
+            for (const auto& [unit_id,assignment]:
+                 result.task23_allocation.assignments) {
+                if (!assignment.active) continue;
+                const std::string sought_unit_id=unit_id;
+                const auto unit=std::find_if(contract.coverage_units.begin(),
+                    contract.coverage_units.end(),[&](const auto& value) {
+                        return value.id==sought_unit_id;
+                    });
+                for (NodeId member:unit->members) {
+                    FrontierCell target=assignment.task;
+                    target.center=lifted.targets.at(member);
+                    targets_[member]=target;
+                }
+            }
+            if (targets_.size()!=runtime.estimate.mobile_ids.size()) {
+                result.reason="task23_incomplete_initial_target_ledger";
+                result.task23_allocation.valid=false;
                 return;
             }
             ++target_epoch_;
@@ -2265,6 +2396,9 @@ private:
     Task22SweepPlan task22_plan_;
     std::map<std::string,double> task22_cursors_;
     std::map<std::string,Eigen::Vector2d> task22_fronts_;
+    Task23DeadlinePlan task23_plan_;
+    std::map<std::string,Task23CoreUnitState> task23_states_;
+    std::map<std::string,Eigen::Vector2d> task23_fronts_;
     CanonicalHocbfQpController task16_governor_qp_;
     // Task 13 Phase B0-a (target policy v2) state.
     double last_demand_recompute_s_=-1.0e9;

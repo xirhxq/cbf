@@ -215,6 +215,10 @@ struct GrandFinaleSwarmAdapterConfig {
     double task21_cross_axis_x = 1.0;
     double task21_cross_axis_y = 0.0;
     std::size_t task21_local_window_cells = 1024;
+    // Task 23 offline-oracle asset identity.  The online PDR core does not
+    // tune or score this value; formal runs use the adopted one-cell notch
+    // below the independently verified maximum hole-free spacing.
+    double task23_pass_spacing_m = 650.0;
     double v6_neighborhood_radius_m = 450.0;
     double demand_recompute_interval_s = 5.0;
     double target_lock_epsilon_m = 30.0;
@@ -607,10 +611,12 @@ public:
             config_.task18_update_period_cycles==0 ||
             config_.task20_update_period_cycles==0 ||
             config_.task20_lattice_mode<0||config_.task20_lattice_mode>7||
-            config_.task20_target_policy<0||config_.task20_target_policy>5||
+            config_.task20_target_policy<0||config_.task20_target_policy>6||
             !std::isfinite(config_.task20_wavefront_band_width_m)||
             config_.task20_wavefront_band_width_m<=0.0 ||
             config_.task21_local_window_cells==0 ||
+            !std::isfinite(config_.task23_pass_spacing_m)||
+            config_.task23_pass_spacing_m<=0.0 ||
             !std::isfinite(config_.task21_progress_axis_x) ||
             !std::isfinite(config_.task21_progress_axis_y) ||
             !std::isfinite(config_.task21_cross_axis_x) ||

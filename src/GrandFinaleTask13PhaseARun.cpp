@@ -252,16 +252,19 @@ int main(int argc,char** argv) {
         const auto production_defaults=gf::task19ProductionDefaults();
         const std::string policy=argc>=8?argv[7]:
             production_defaults.policy;
+        const bool task23_policy_name=policy.rfind("task23-",0)==0;
         const bool policy_production=policy==production_defaults.policy;
         const bool policy_task19_switch=
             policy=="task19-switch-origin-microfix";
         const bool production_semantics=
             policy_production||policy_task19_switch;
         const double window_s=argc>=7?std::stod(argv[6]):
-            (production_semantics?production_defaults.resource_watchdog_s:
+            (production_semantics||task23_policy_name
+                ?production_defaults.resource_watchdog_s:
                 500.0);
         const double tau=argc>=6?std::stod(argv[5]):
-            (production_semantics?production_defaults.predictive_tau_mps2:
+            (production_semantics||task23_policy_name
+                ?production_defaults.predictive_tau_mps2:
                 22.0);
         const bool policy_v2=policy=="v2";
         // v3 and v4 share the target_policy_v3 flag: v3 was the centroid-
@@ -282,7 +285,8 @@ int main(int argc,char** argv) {
             policy.rfind("task17simple",0)==0;
         const bool policy_task18=production_semantics||
             policy.rfind("task18",0)==0;
-        const bool policy_task20=policy.rfind("task20-",0)==0;
+        const bool policy_task20=policy.rfind("task20-",0)==0||
+            policy.rfind("task23-",0)==0;
         const int task20_lattice_mode=
             policy.find("lanes-14")!=std::string::npos?6:
             policy.find("lanes-7")!=std::string::npos?7:
@@ -292,6 +296,7 @@ int main(int argc,char** argv) {
             policy.find("split-three-front")!=std::string::npos?2:
             policy.find("cross-braced-diamond")!=std::string::npos?3:0;
         const int task20_target_policy=
+            policy.rfind("task23-",0)==0?6:
             policy.rfind("-p5")!=std::string::npos?5:
             policy.rfind("-p4")!=std::string::npos?4:
             policy.rfind("-p1")!=std::string::npos?1:
@@ -299,6 +304,7 @@ int main(int argc,char** argv) {
             policy.rfind("-p3")!=std::string::npos?3:0;
         const bool policy_task21=policy_task20&&task20_target_policy==4;
         const bool policy_task22=policy_task20&&task20_target_policy==5;
+        const bool policy_task23=policy_task20&&task20_target_policy==6;
         const auto task16_arm=policy=="task16c"
             ?gf::Task16CoverageArm::FormationAware:
             policy=="task16b"?gf::Task16CoverageArm::BoundaryDecoupled:
@@ -372,7 +378,8 @@ int main(int argc,char** argv) {
             return 2;
         }
         const std::string rows_mode=argc>=9?argv[8]:
-            (production_semantics?"vaug-speed29p9":"classic");
+            (production_semantics||task23_policy_name
+                ?"vaug-speed29p9":"classic");
         const bool velocity_augmented_rows=
             rows_mode.rfind("vaug",0)==0;
         const bool task16_tracking_envelope_enabled=
@@ -475,7 +482,8 @@ int main(int argc,char** argv) {
                 ++workspace_rows;
         }
         const auto& config=fixture->adapter.config();
-        json record={{"protocol",policy_task22
+        json record={{"protocol",policy_task23
+                ?"task23-persistent-deadline-ribbon-core-v1":policy_task22
                 ?"task22-p5-footprint-inset-sweep-v1":policy_task21
                 ?"task21-dag-agnostic-persistent-ribbon-v1":policy_task20
                 ?"task20-dag-lattice-target-joint-design-v1":
@@ -486,7 +494,9 @@ int main(int argc,char** argv) {
                 ?"task18-cbf2026-behavioral-recovery-v1":
                 policy_task17?"task17-periodic-run-v1":
                 "task13-phase-a-run-v1"},
-            {"preregistration",policy_task22
+            {"preregistration",policy_task23
+                ?"2026-09-04-task23-persistent-deadline-ribbon-preregistration":
+                policy_task22
                 ?"2026-09-03-task22-p5-continuous-footprint-inset-sweep-preregistration":
                 policy_task21
                 ?"2026-09-03-task21-dag-agnostic-persistent-ribbon-preregistration":
@@ -666,6 +676,11 @@ int main(int argc,char** argv) {
                      config.task21_cross_axis_y}},
                 {"task21_local_window_cells",
                     config.task21_local_window_cells},
+                {"task23_pass_spacing_m",config.task23_pass_spacing_m},
+                {"task23_core_online_terms",
+                    "queue_head_route_valid_actual_front_plus_400_deadline"},
+                {"task23_deadline_rule",
+                    "earliest_feasible_pass_compatible_interval"},
                 {"task21_endpoint_gate_enabled",task20_target_policy==4},
                 {"task21_endpoint_tolerance_rule",
                     "1.5_times_minimum_cross_track_cell_pitch"},
@@ -1250,6 +1265,25 @@ int main(int argc,char** argv) {
                     {"on_fillet",assignment.on_fillet},
                     {"window_empty",assignment.window_empty}});
             }
+            json task23_assignments=json::array();
+            for (const auto& [unit,assignment]:
+                 last_step.task23_allocation.assignments) {
+                task23_assignments.push_back({
+                    {"coverage_unit",unit},
+                    {"active",assignment.active},
+                    {"task_id",assignment.task.id()},
+                    {"shared_front_target",
+                        {assignment.shared_front_target.x(),
+                         assignment.shared_front_target.y()}},
+                    {"route_tangent",
+                        {assignment.route_tangent.x(),
+                         assignment.route_tangent.y()}},
+                    {"actual_front_s",assignment.actual_front_s},
+                    {"target_s",assignment.target_s},
+                    {"deadline_s",assignment.deadline_s},
+                    {"route_valid",assignment.route_valid},
+                    {"holding",assignment.holding}});
+            }
             json task21_assignments=json::array();
             for (const auto& [unit,assignment]:
                  last_step.task21_allocation.assignments) {
@@ -1373,6 +1407,15 @@ int main(int argc,char** argv) {
                     last_step.task22_allocation.scanned_cells},
                     {"pass_spacing_m",config.task20_wavefront_band_width_m},
                     {"assignments",task22_assignments}}},
+                {"task23",{{"allocation_evaluated",
+                    last_step.task23_allocation_evaluated},
+                    {"allocation_wall_s",
+                    last_step.task23_allocation_evaluated
+                        ?json(last_step.task23_allocation.allocation_wall_s)
+                        :json(nullptr)},
+                    {"covered_deadlines_skipped",
+                        last_step.task23_allocation.covered_deadlines_skipped},
+                    {"assignments",task23_assignments}}},
                 {"task19_switch",{{"enabled",policy_task19_switch},
                     {"signal_evaluated",
                         task19_switch_event.signal_evaluated},
