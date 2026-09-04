@@ -5,6 +5,7 @@
 #include "grand_finale/Task19MinimalDagSwitcher.hpp"
 #include "grand_finale/Task20CoveragePolicy.hpp"
 #include "grand_finale/Task24PersistentRasterSweep.hpp"
+#include "grand_finale/Task25P0MultiDag.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -133,6 +134,19 @@ PhaseATemplate makeTemplate(const std::string& id) {
         return {contract.id,"Task 22 layered pinball 5-4-3-2 lattice mode",
             launch,contract.reference_edges};
     }
+    if (id=="cross-braced-dual-front") {
+        const auto contract=gf::task25DagContract(
+            gf::Task25DagMode::CrossBracedDualFront);
+        return {contract.id,
+            "Task 25 coverage-role-equivalent symmetric cross brace",
+            launch,contract.reference_edges};
+    }
+    if (id=="long-triangle-single-ladder") {
+        const auto contract=gf::task25DagContract(
+            gf::Task25DagMode::LongTriangleSingleLadder);
+        return {contract.id,"Task 25 single-unit long triangle",
+            launch,contract.reference_edges};
+    }
     if (id=="lanes-14") {
         const auto contract=gf::task22Lanes14Contract();
         return {contract.id,"Task 22 P8 fourteen independent lanes",
@@ -201,10 +215,24 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     bool target_policy_task20_dag_lattice,
     int task20_lattice_mode,int task20_target_policy,
     std::size_t task20_update_period_cycles,
-    double task20_wavefront_band_width_m) {
+    double task20_wavefront_band_width_m,
+    double venue_width_m=3000.0,double venue_height_m=3000.0) {
     auto scenario=gf::task10p11rFixedBaselineScenario();
+    if (!(venue_width_m>0.0&&venue_height_m>0.0)||
+        std::fmod(venue_width_m,10.0)!=0.0||
+        std::fmod(venue_height_m,10.0)!=0.0)
+        throw std::invalid_argument(
+            "Task25 venue dimensions must be positive 10 m multiples");
+    const double center_shift=0.5*(venue_width_m-3000.0);
     scenario.mobile_positions=def.positions;
+    for (auto& position:scenario.mobile_positions)
+        position.x()+=center_shift;
     scenario.initial_topology=def.topology;
+    scenario.width_m=venue_width_m;
+    scenario.height_m=venue_height_m;
+    scenario.fixed_positions={{100,{0.4*venue_width_m,-50.0}},
+        {101,{0.5*venue_width_m,-50.0}},
+        {102,{0.6*venue_width_m,-50.0}}};
     if (def.id=="task24-pinball"||def.id=="task24-triangle") {
         const auto contract=gf::task24Contract(def.id=="task24-pinball"
             ?gf::Task24LatticeMode::Pinball5432
@@ -265,14 +293,14 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
 // GrandFinale production/search evidence runner.  Historical policies remain
 // explicit; an omitted policy selects the researcher-frozen Task 18 baseline.
 int main(int argc,char** argv) {
-    if (argc<5||argc>22) {
+    if (argc<5||argc>24||argc==23) {
         std::cerr<<"usage: GrandFinaleTask13PhaseARun TEMPLATE OUTPUT_JSON "
             "PROGRESS_DIR TELEMETRY_JSONL [TAU] [WINDOW_S] [POLICY] [ROWS] "
             "[RANGE_NOISE_STD_M] [DROPOUT_PROBABILITY] [RANGE_SEED] "
             "[SERVICE_STANDOFF_M] [ACCELERATION_HALF_BOX_MPS2] "
             "[linear|braking] [WS_K1] [WS_K2] [WS_BRAKE_A] [WS_EPS] "
             "[TARGET_HOMOTOPY_0_OR_1] [HOMOTOPY_RATE_GAIN] "
-            "[HOMOTOPY_GUARD_M]\n";
+            "[HOMOTOPY_GUARD_M] [VENUE_WIDTH_M VENUE_HEIGHT_M]\n";
         return 2;
     }
     const auto started=std::chrono::steady_clock::now();
@@ -316,8 +344,15 @@ int main(int argc,char** argv) {
         const bool policy_task18=production_semantics||
             policy.rfind("task18",0)==0;
         const bool policy_task24=policy.rfind("task24-",0)==0;
-        const bool policy_task20=policy.rfind("task20-",0)==0||policy_task24;
+        const bool policy_task25=policy.rfind("task25-",0)==0;
+        const bool policy_task20=policy.rfind("task20-",0)==0||policy_task24||
+            policy_task25;
         const int task20_lattice_mode=
+            policy_task25&&policy.find("microfix")!=std::string::npos?10:
+            policy_task25&&policy.find("cross-braced")!=std::string::npos?11:
+            policy_task25&&policy.find("pinball")!=std::string::npos?12:
+            policy_task25&&policy.find("long-triangle")!=std::string::npos?13:
+            policy_task25&&policy.find("split-three-front")!=std::string::npos?2:
             policy_task24&&policy.find("pinball")!=std::string::npos?8:
             policy_task24&&policy.find("triangle")!=std::string::npos?9:
             policy.find("lanes-14")!=std::string::npos?6:
@@ -390,6 +425,8 @@ int main(int argc,char** argv) {
             std::stod(argv[20]):1.0;
         const double target_homotopy_workspace_guard_m=argc>=22?
             std::stod(argv[21]):1.5;
+        const double venue_width_m=argc>=24?std::stod(argv[22]):3000.0;
+        const double venue_height_m=argc>=24?std::stod(argv[23]):3000.0;
         const auto gamma_selection=policy=="h2diag"||
             policy.find("-projection")!=std::string::npos
             ?gf::GammaFeedbackSelectionMode::DiagnosticsOnly
@@ -470,7 +507,8 @@ int main(int argc,char** argv) {
             policy_task20,task20_lattice_mode,task20_target_policy,5,
             policy_task24?(task20_lattice_mode==9?560.0:650.0):
             task20_target_policy==4
-                ?(task20_lattice_mode==0?220.0:450.0):190.0);
+                ?(task20_lattice_mode==0?220.0:450.0):190.0,
+            venue_width_m,venue_height_m);
         // P5 selects its pass spacing at runtime from the hole-free rule,
         // so the configured band width is recorded but unused for -p5.
         if (!fixture->adapter.initializeStageZero().initialized) {
@@ -513,7 +551,8 @@ int main(int argc,char** argv) {
                 ++workspace_rows;
         }
         const auto& config=fixture->adapter.config();
-        json record={{"protocol",policy_task24
+        json record={{"protocol",policy_task25
+                ?"task25-task18-p0-multidag-lifting-v1":policy_task24
                 ?"task24-dag-agnostic-persistent-raster-v1":policy_task22
                 ?"task22-p5-footprint-inset-sweep-v1":policy_task21
                 ?"task21-dag-agnostic-persistent-ribbon-v1":policy_task20
@@ -525,7 +564,8 @@ int main(int argc,char** argv) {
                 ?"task18-cbf2026-behavioral-recovery-v1":
                 policy_task17?"task17-periodic-run-v1":
                 "task13-phase-a-run-v1"},
-            {"preregistration",policy_task24
+            {"preregistration",policy_task25
+                ?"2026-09-04-task25-task18-p0-multidag-lifting-preregistration":policy_task24
                 ?"2026-09-04-task24-persistent-raster-sweep-preregistration":policy_task22
                 ?"2026-09-03-task22-p5-continuous-footprint-inset-sweep-preregistration":
                 policy_task21
@@ -548,6 +588,10 @@ int main(int argc,char** argv) {
                 fixture->adapter.config().gamma_feedback_selection)},
             {"rows_mode",rows_mode},
             {"window_s",window_s},
+            {"venue",{{"width_m",venue_width_m},
+                {"height_m",venue_height_m},
+                {"cell_size_m",10.0},{"entry_boundary","local_y=0"},
+                {"orientation","progress=local_+y;cross=local_+x"}}},
             {"production_default_selected",policy_production},
             {"task19_switcher_enabled",policy_task19_switch},
             {"task19_switcher_config",policy_task19_switch?json({

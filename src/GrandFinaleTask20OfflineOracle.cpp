@@ -1,4 +1,5 @@
 #include "grand_finale/Task20GridOracle.hpp"
+#include "grand_finale/Task25P0MultiDag.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -6,12 +7,24 @@
 
 namespace {
 
-gf::Task20LatticeMode parseMode(const std::string& value) {
-    if (value=="dual-ladder") return gf::Task20LatticeMode::DualLadder;
-    if (value=="merged-strip") return gf::Task20LatticeMode::MergedStrip;
-    if (value=="split-three-front") return gf::Task20LatticeMode::SplitThreeFront;
+gf::Task20DagLatticeContract parseContract(const std::string& value) {
+    if (value=="dual-ladder") return gf::task25DagContract(
+        gf::Task25DagMode::H0Origin);
+    if (value=="h0-microfix") return gf::task25DagContract(
+        gf::Task25DagMode::H0Microfix);
+    if (value=="cross-braced-dual-front") return gf::task25DagContract(
+        gf::Task25DagMode::CrossBracedDualFront);
+    if (value=="pinball-5-4-3-2") return gf::task25DagContract(
+        gf::Task25DagMode::Pinball5432);
+    if (value=="long-triangle-single-ladder") return gf::task25DagContract(
+        gf::Task25DagMode::LongTriangleSingleLadder);
+    if (value=="merged-strip") return gf::task20DagLatticeContract(
+        gf::Task20LatticeMode::MergedStrip);
+    if (value=="split-three-front") return gf::task25DagContract(
+        gf::Task25DagMode::SplitThreeFront);
     if (value=="cross-braced-diamond")
-        return gf::Task20LatticeMode::CrossBracedDiamond;
+        return gf::task20DagLatticeContract(
+            gf::Task20LatticeMode::CrossBracedDiamond);
     throw std::invalid_argument("unknown Task 20 lattice mode");
 }
 
@@ -27,7 +40,7 @@ int main(int argc,char** argv) {
             "[WIDTH_M HEIGHT_M SUMMARY_ONLY]\n";
         return 2;
     }
-    const auto contract=gf::task20DagLatticeContract(parseMode(argv[1]));
+    const auto contract=parseContract(argv[1]);
     if (!contract.valid) throw std::runtime_error(contract.reason);
     const std::filesystem::path output(argv[2]);
     std::filesystem::create_directories(output);
@@ -139,6 +152,11 @@ int main(int argc,char** argv) {
         roles[std::to_string(member)]={{"coverage_unit",role.coverage_unit},
             {"axial_fraction",role.axial_fraction},
             {"triangular_fraction",role.triangular_fraction}};
+    nlohmann::json units=nlohmann::json::array();
+    for (const auto& unit:contract.coverage_units)
+        units.push_back({{"id",unit.id},{"members",unit.members},
+            {"base_anchors",unit.base_anchors},{"leader",unit.leader},
+            {"front_members",unit.front_members}});
     nlohmann::json summary{
         {"schema",1},{"mode",contract.id},
         {"structural_signature",contract.structural_signature},
@@ -164,7 +182,8 @@ int main(int argc,char** argv) {
         {"minimum_witness_target_separation_cell",min_separation_cell},
         {"minimum_witness_nominal_fim_proxy",global_min_fim},
         {"minimum_witness_nominal_fim_cell",min_fim_cell},
-        {"reference_edges",edges},{"member_roles",roles},
+        {"reference_edges",edges},{"coverage_units",units},
+        {"member_roles",roles},
         {"witness_reconstruction",
             "fronts + member_roles + fixed anchors deterministically reconstruct all 14 targets and all edge lengths"},
         {"evidence_boundary",

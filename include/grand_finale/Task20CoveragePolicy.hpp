@@ -59,6 +59,35 @@ inline const Task16CoverageAgentState& agent(
     return *found;
 }
 
+struct UnitFrontState {
+    Eigen::Vector2d position=Eigen::Vector2d::Zero();
+    Eigen::Vector2d direction=Eigen::Vector2d{0.0,1.0};
+};
+
+inline UnitFrontState unitFront(
+    const Task20CoverageUnit& unit,
+    const std::vector<Task16CoverageAgentState>& agents) {
+    const std::vector<NodeId> members=unit.front_members.empty()
+        ?std::vector<NodeId>{unit.leader}:unit.front_members;
+    UnitFrontState result;
+    Eigen::Vector2d yaw_direction=Eigen::Vector2d::Zero();
+    for (NodeId member:members) {
+        const auto& state=agent(agents,member);
+        result.position+=state.position;
+        yaw_direction+=Eigen::Vector2d{std::cos(state.yaw_rad),
+                                      std::sin(state.yaw_rad)};
+    }
+    result.position/=static_cast<double>(members.size());
+    if (yaw_direction.norm()>1.0e-9)
+        result.direction=yaw_direction.normalized();
+    else {
+        const auto& leader=agent(agents,unit.leader);
+        result.direction={std::cos(leader.yaw_rad),
+                          std::sin(leader.yaw_rad)};
+    }
+    return result;
+}
+
 inline const FrontierCell* nearest(const std::vector<const FrontierCell*>& cells,
     const Eigen::Vector2d& focus,double epsilon,
     const std::set<std::string>& used) {
@@ -192,12 +221,10 @@ inline Task20CoverageResult allocateTask20Coverage(Task20CoverageRequest request
         }
         std::set<int> claimed_bins;
         for (const auto& unit:request.contract.coverage_units) {
-            const auto& leader=task20_policy_detail::agent(
-                request.agents,unit.leader);
-            const Eigen::Vector2d focus=leader.position+
-                request.config.forward_focus_distance_m*
-                Eigen::Vector2d{std::cos(leader.yaw_rad),
-                                std::sin(leader.yaw_rad)};
+            const auto front=task20_policy_detail::unitFront(
+                unit,request.agents);
+            const Eigen::Vector2d focus=front.position+
+                request.config.forward_focus_distance_m*front.direction;
             const FrontierCell* best=nullptr;
             std::set<int> best_bins;
             int best_gain=-1;
@@ -272,9 +299,9 @@ inline Task20CoverageResult allocateTask20Coverage(Task20CoverageRequest request
             const Task20CoverageUnit* selected=nullptr;
             double selected_distance=std::numeric_limits<double>::infinity();
             for (const auto& unit:request.contract.coverage_units) {
-                const auto& leader=task20_policy_detail::agent(
-                    request.agents,unit.leader);
-                const double distance=(cell->center-leader.position).squaredNorm();
+                const auto front=task20_policy_detail::unitFront(
+                    unit,request.agents);
+                const double distance=(cell->center-front.position).squaredNorm();
                 if (selected==nullptr||
                     distance<selected_distance-request.config.comparison_epsilon||
                     (std::abs(distance-selected_distance)<=
@@ -292,10 +319,9 @@ inline Task20CoverageResult allocateTask20Coverage(Task20CoverageRequest request
         const auto& unit=request.contract.coverage_units[unit_index];
         std::vector<const FrontierCell*> candidates=shares[unit.id];
         if (candidates.empty()) candidates=eligible;
-        const auto& leader=task20_policy_detail::agent(request.agents,unit.leader);
-        Eigen::Vector2d focus=leader.position+
-            request.config.forward_focus_distance_m*
-            Eigen::Vector2d{std::cos(leader.yaw_rad),std::sin(leader.yaw_rad)};
+        const auto front=task20_policy_detail::unitFront(unit,request.agents);
+        Eigen::Vector2d focus=front.position+
+            request.config.forward_focus_distance_m*front.direction;
         if (request.policy==Task20TargetPolicy::ResidualShape)
             focus=task20_policy_detail::residualShapeFocus(eligible,unit_index,
                 request.contract.coverage_units.size());

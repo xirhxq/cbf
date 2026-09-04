@@ -15,6 +15,7 @@
 #include "grand_finale/Task21PersistentRibbon.hpp"
 #include "grand_finale/Task22FootprintInsetSweep.hpp"
 #include "grand_finale/Task24PersistentRasterSweep.hpp"
+#include "grand_finale/Task25P0MultiDag.hpp"
 #include "grand_finale/TargetLiftTransitionPrototype.hpp"
 
 #include <functional>
@@ -800,8 +801,10 @@ private:
         // T100 retains the final real ledger; no synthetic terminal target.
         if (uncovered.empty()&&!targets_.empty()) return;
         Task20CoverageRequest request;
-        request.contract=task20DagLatticeContract(
-            static_cast<Task20LatticeMode>(config.task20_lattice_mode));
+        request.contract=config.task20_lattice_mode>=10
+            ?task25DagContractFromCode(config.task20_lattice_mode)
+            :task20DagLatticeContract(
+                static_cast<Task20LatticeMode>(config.task20_lattice_mode));
         request.policy=static_cast<Task20TargetPolicy>(
             config.task20_target_policy);
         request.uncovered_cells=uncovered;
