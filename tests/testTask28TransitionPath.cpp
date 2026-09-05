@@ -147,5 +147,19 @@ TEST_CASE("Task28 centered frame preserves serial relative geometry and linear f
     CHECK(minimum==doctest::Approx(12.96136497327083).epsilon(1e-5));
     CHECK(maximum_reference==doctest::Approx(790.0206928648051).epsilon(1e-10));
     for(const auto& [id,p]:a){CHECK((path.evaluate(0).at(id)-p).norm()==0);CHECK((path.evaluate(1).at(id)-b.at(id)).norm()==0);}
+    // Internal joins are C1. At endpoints the frozen outer smoothstep supplies
+    // zero time derivative even when the geometric phase tangent is nonzero.
+    for(double h:{.25,.5,.75}) {
+        auto l=path.evaluate(h-1e-6),c=path.evaluate(h),r=path.evaluate(h+1e-6);
+        for(const auto& [id,p]:a)CHECK(((r.at(id)-c.at(id))-(c.at(id)-l.at(id))).norm()/1e-6<.1);
+    }
+    for(double t:{0.,1.}) {
+        auto l=path.evaluate(gf::task26SmoothStep(t-1e-6)),r=path.evaluate(gf::task26SmoothStep(t+1e-6));
+        for(const auto& [id,p]:a)CHECK((r.at(id)-l.at(id)).norm()/1e-6<.01);
+    }
+    auto rotated_a=a,rotated_b=b;const Eigen::Rotation2Dd R(.71);const Eigen::Vector2d shift(113,-27);
+    for(auto& [id,p]:rotated_a)p=R*p+shift;for(auto& [id,p]:rotated_b)p=R*p+shift;
+    gf::Task28LayerPath moved(goal,rotated_a,rotated_b,gf::Task28LayerPath::Kind::CenteredFrame);
+    for(double h:{.07,.32,.71,.94})for(const auto& [id,p]:path.evaluate(h))CHECK((moved.evaluate(h).at(id)-(R*p+shift)).norm()<1e-9);
     std::cout<<"TASK28_CENTERED_FRAME_SCALAR_MIN "<<std::setprecision(16)<<minimum<<" MAX_NOMINAL_REF "<<maximum_reference<<'\n';
 }
