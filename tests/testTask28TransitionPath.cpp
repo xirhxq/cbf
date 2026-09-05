@@ -84,7 +84,7 @@ TEST_CASE("Task28 layer path has no Pinball member-number dependency") {
 TEST_CASE("Task28 common-finish path preserves layer starts without early terminal hold") {
     const auto old=gf::task25DagContractFromCode(0),goal=gf::task25DagContractFromCode(12);
     const auto a=endpoints(old),b=endpoints(goal);
-    gf::Task28LayerPath path(goal,a,b,true);
+    gf::Task28LayerPath path(goal,a,b,gf::Task28LayerPath::Kind::CommonFinish);
     CHECK((path.evaluate(.5).at(14)-b.at(14)).norm()>1);
     CHECK((path.evaluate(.5).at(1)-a.at(1)).norm()==0);
     for (const auto& [id,p]:a) {
@@ -115,4 +115,37 @@ TEST_CASE("Task28 common-finish path preserves layer starts without early termin
     CHECK(minimum==doctest::Approx(11.2179554165421).epsilon(1e-5));
     CHECK(maximum_reference==doctest::Approx(754.75922466535).epsilon(1e-10));
     std::cout<<"TASK28_COMMON_FINISH_SCALAR_MIN "<<minimum<<" MAX_NOMINAL_REF "<<maximum_reference<<'\n';
+}
+
+TEST_CASE("Task28 centered frame preserves serial relative geometry and linear frame progress") {
+    const auto old=gf::task25DagContractFromCode(0),goal=gf::task25DagContractFromCode(12);
+    const auto a=endpoints(old),b=endpoints(goal);
+    gf::Task28LayerPath serial(goal,a,b),path(goal,a,b,gf::Task28LayerPath::Kind::CenteredFrame);
+    Eigen::Vector2d c0=Eigen::Vector2d::Zero(),c1=c0;
+    for(const auto& [id,p]:a){c0+=p;c1+=b.at(id);} c0/=a.size();c1/=a.size();
+    const std::map<gf::NodeId,Eigen::Vector2d> fixed{{100,{1800,-50}},{101,{2250,-50}},{102,{2700,-50}}};
+    double minimum=1e9,maximum_reference=0;
+    for(int k=0;k<=100000;++k) {
+        const double h=k/100000.;auto scalar=fixed;Eigen::Vector2d mean=Eigen::Vector2d::Zero();
+        for(const auto& [id,p]:a) {
+            const double u=std::clamp(4*h-(4-serial.depths().at(id)),0.,1.),s=u*u*(3-2*u);
+            scalar[id]=p+s*(b.at(id)-p);mean+=scalar[id];
+        }
+        mean/=a.size();for(const auto& [id,p]:a)scalar[id]+=(1-h)*c0+h*c1-mean;
+        for(const auto& [id,p]:a)for(const auto& [other,q]:scalar)if(other>id)
+            minimum=std::min(minimum,(scalar.at(id)-q).norm());
+        for(const auto& e:goal.reference_edges)maximum_reference=std::max(maximum_reference,(scalar.at(e.reference)-scalar.at(e.owner)).norm());
+        if(k%1000==0) {
+            const auto q=path.evaluate(h),z=serial.evaluate(h);Eigen::Vector2d center=Eigen::Vector2d::Zero();
+            for(const auto& [id,p]:q) {
+                center+=p;CHECK((p-scalar.at(id)).norm()<1e-9);
+                for(const auto& [other,r]:q)CHECK(((p-r)-(z.at(id)-z.at(other))).norm()<1e-9);
+            }
+            CHECK((center/a.size()-((1-h)*c0+h*c1)).norm()<1e-9);
+        }
+    }
+    CHECK(minimum==doctest::Approx(12.96136497327083).epsilon(1e-5));
+    CHECK(maximum_reference==doctest::Approx(790.0206928648051).epsilon(1e-10));
+    for(const auto& [id,p]:a){CHECK((path.evaluate(0).at(id)-p).norm()==0);CHECK((path.evaluate(1).at(id)-b.at(id)).norm()==0);}
+    std::cout<<"TASK28_CENTERED_FRAME_SCALAR_MIN "<<std::setprecision(16)<<minimum<<" MAX_NOMINAL_REF "<<maximum_reference<<'\n';
 }
