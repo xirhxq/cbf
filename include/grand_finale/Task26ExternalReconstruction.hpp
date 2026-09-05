@@ -1,6 +1,7 @@
 #pragma once
 
 #include "grand_finale/Task25P0MultiDag.hpp"
+#include "grand_finale/Task28TransitionPath.hpp"
 #include "grand_finale/TransitionCertifier.hpp"
 #include "grand_finale/Task10p11hSimpleCoverageController.hpp"
 
@@ -104,6 +105,10 @@ public:
         Task10p11hSimpleCoverageController& controller,const std::string& action,
         double request_s=60.0)
         :adapter_(adapter),controller_(controller),action_(action),next_request_s_(request_s) {
+        if (action_=="pinball-qualified-layered"||action_=="cross-roundtrip-qualified-layered") {
+            layered_expansion_=true;
+            action_.erase(action_.size()-std::string("-layered").size());
+        }
         if (action_=="pinball-qualified"||action_=="cross-roundtrip-qualified") {
             qualified_contraction_=true;
             action_.erase(action_.size()-std::string("-qualified").size());
@@ -181,6 +186,9 @@ public:
                 controller_.commitExternalCoverageMode(pending_mode_);
                 active_mode_=pending_mode_;
                 stage_="expanding";expansion_started_=now;shape_dwell_=0;
+                if (layered_expansion_)
+                    expansion_path_=std::make_unique<Task28LayerPath>(
+                        new_contract_,old_compact_targets_,new_compact_targets_);
                 event("graph_handoff","full_dag_roles_lifting_pair_committed");
                 if (qualified_contraction_&&
                     task27SameTargetMapping(old_contract_,new_contract_)&&
@@ -210,7 +218,8 @@ public:
             else {last_reason_=adapter_.lastCertificationReason();++rejections_[last_reason_];}
         } else if (stage_=="expanding") {
             fraction_=task26SmoothStep((now-expansion_started_)/60.0);
-            for (const auto& [id,p]:old_compact_targets_)
+            if (layered_expansion_) reference_=expansion_path_->evaluate(fraction_);
+            else for (const auto& [id,p]:old_compact_targets_)
                 reference_[id]=(1.0-fraction_)*p+fraction_*new_compact_targets_.at(id);
             controller_.setExternalReconstructionReference(reference_);
             tracking(runtime);
@@ -237,6 +246,9 @@ public:
         if (qualified_contraction_) result["task27"]={{"qualified_contraction",true},
             {"plan_audits",plan_audits_},{"qualified_plan_prefix",plan_prefix_},
             {"plan_reason",plan_reason_}};
+        if (layered_expansion_) result["task28"]={{"expansion_path","terminal_first_dag_layers"},
+            {"layers",expansion_path_?expansion_path_->layerCount():0},
+            {"search_governor",false},{"expansion_duration_s",60.0}};
         return result;
     }
     nlohmann::json report() const {
@@ -318,6 +330,8 @@ private:
     std::size_t edge_index_=0,shape_dwell_=0,qualification_attempts_=0;
     bool shape_ready_=false;
     bool qualified_contraction_=false;
+    bool layered_expansion_=false;
+    std::unique_ptr<Task28LayerPath> expansion_path_;
     std::size_t plan_audits_=0,plan_prefix_=0;
     std::string plan_reason_;
     Task20DagLatticeContract old_contract_,new_contract_;
