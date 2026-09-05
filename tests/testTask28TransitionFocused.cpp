@@ -4,7 +4,8 @@
 #include "grand_finale/Task26ExternalReconstruction.hpp"
 #include "grand_finale/Task19ProductionBaseline.hpp"
 
-TEST_CASE("Task28 full fourteen-member path fixture with offset and nonzero velocity") {
+namespace {
+void runPathFixture(bool common_finish) {
     for (int variant:{0,1}) {
         auto scenario=gf::task10p11rFixedBaselineScenario();
         scenario.width_m=4500;scenario.height_m=2250;
@@ -12,7 +13,7 @@ TEST_CASE("Task28 full fourteen-member path fixture with offset and nonzero velo
         const auto old=gf::task25DagContractFromCode(0),goal=gf::task25DagContractFromCode(12);
         const auto a=gf::task20LiftTargets(old,scenario.fixed_positions,gf::task26CompactFronts(old,scenario.fixed_positions)).targets;
         const auto b=gf::task20LiftTargets(goal,scenario.fixed_positions,gf::task26CompactFronts(goal,scenario.fixed_positions)).targets;
-        gf::Task28LayerPath path(goal,a,b);
+        gf::Task28LayerPath path(goal,a,b,common_finish);
         scenario.initial_topology=goal.reference_edges;scenario.mobile_positions.clear();
         for (auto id:scenario.mobile_ids)
             scenario.mobile_positions.push_back(a.at(id)+Eigen::Vector2d(variant*2.0,variant*-1.0));
@@ -44,8 +45,11 @@ TEST_CASE("Task28 full fourteen-member path fixture with offset and nonzero velo
             maxerror=std::max(maxerror,(p-b.at(id)).norm());maxspeed=std::max(maxspeed,v.norm());
             record[std::to_string(id)]={{"position",{p.x(),p.y()}},{"velocity",{v.x(),v.y()}},{"final_target",{b.at(id).x(),b.at(id).y()}}};
         }
-        std::cout<<"TASK28_FOCUSED "<<nlohmann::json({{"variant",variant},{"ticks",1200},{"maximum_tracking_error_m",maxerror},{"maximum_speed_mps",maxspeed},{"states",record}}).dump()<<'\n';
+        std::cout<<"TASK28_FOCUSED "<<nlohmann::json({{"common_finish",common_finish},{"variant",variant},{"ticks",1200},{"maximum_tracking_error_m",maxerror},{"maximum_speed_mps",maxspeed},{"states",record}}).dump()<<'\n';
         // This fixture checks actual gates and task identity; convergence is
         // measured, not assumed from the nominal all-pair geometry.
     }
 }
+}
+TEST_CASE("Task28 full fourteen-member path fixture with offset and nonzero velocity") {runPathFixture(false);}
+TEST_CASE("Task28 common-finish full fourteen-member fixture") {runPathFixture(true);}

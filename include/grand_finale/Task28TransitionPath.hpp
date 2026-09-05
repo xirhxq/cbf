@@ -10,8 +10,8 @@ namespace gf {
 class Task28LayerPath {
 public:
     using Targets=std::map<NodeId,Eigen::Vector2d>;
-    Task28LayerPath(const Task20DagLatticeContract& goal,Targets from,Targets to)
-        :from_(std::move(from)),to_(std::move(to)) {
+    Task28LayerPath(const Task20DagLatticeContract& goal,Targets from,Targets to,bool common_finish=false)
+        :from_(std::move(from)),to_(std::move(to)),common_finish_(common_finish) {
         if (!goal.valid||from_.empty()||from_.size()!=goal.member_roles.size()||
             to_.size()!=from_.size()) throw std::invalid_argument("invalid path endpoint contract");
         for (const auto& [id,role]:goal.member_roles) {
@@ -37,7 +37,10 @@ public:
         for (const auto& [id,p]:from_) {
             // Terminal layers clear the channel first. Internal joins have
             // zero tangent; total expansion duration remains the caller's.
-            const double u=std::clamp(layers_*phase-(layers_-depth_.at(id)),0.0,1.0);
+            const double raw=common_finish_
+                ? (phase-(1-depth_.at(id)/double(layers_)))/(depth_.at(id)/double(layers_))
+                : layers_*phase-(layers_-depth_.at(id));
+            const double u=std::clamp(raw,0.0,1.0);
             const double a=u*u*(3-2*u);
             out[id]=(1-a)*p+a*to_.at(id);
         }
@@ -49,6 +52,7 @@ private:
     Targets from_,to_;
     std::map<NodeId,std::size_t> depth_;
     std::size_t layers_=0;
+    bool common_finish_=false;
 };
 
 } // namespace gf
