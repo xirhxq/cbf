@@ -2,6 +2,7 @@
 
 #include "grand_finale/Task25P0MultiDag.hpp"
 #include "grand_finale/Task28TransitionPath.hpp"
+#include "grand_finale/Task29MovingCompletion.hpp"
 #include "grand_finale/TransitionCertifier.hpp"
 #include "grand_finale/Task10p11hSimpleCoverageController.hpp"
 
@@ -105,6 +106,11 @@ public:
         Task10p11hSimpleCoverageController& controller,const std::string& action,
         double request_s=60.0)
         :adapter_(adapter),controller_(controller),action_(action),next_request_s_(request_s) {
+        if (action_=="pinball-qualified-layered-centeredframe-moving"||
+            action_=="cross-roundtrip-qualified-layered-centeredframe-moving") {
+            moving_completion_=true;
+            action_.erase(action_.size()-std::string("-moving").size());
+        }
         if (action_=="pinball-qualified-layered-centeredframe"||action_=="cross-roundtrip-qualified-layered-centeredframe") {
             expansion_kind_=Task28LayerPath::Kind::CenteredFrame;
             action_.erase(action_.size()-std::string("-centeredframe").size());
@@ -130,6 +136,7 @@ public:
     void beforeStep() {
         const auto runtime=adapter_.runtimeSnapshot();
         const double now=runtime.runtime_s;
+        if (moving_completion_) moving_telemetry_["applicable"]=false;
         if (adapter_.coverage().certifiedFraction()>=1.0-1e-12) return;
         if (stage_=="search" && now+1e-9>=next_request_s_) start(runtime);
         if (stage_=="search"||stage_=="blocked_partial") return;
@@ -192,7 +199,7 @@ public:
             if (edge_index_==plan_.replacements.size()) {
                 controller_.commitExternalCoverageMode(pending_mode_);
                 active_mode_=pending_mode_;
-                stage_="expanding";expansion_started_=now;shape_dwell_=0;
+                stage_="expanding";expansion_started_=now;shape_dwell_=0;legacy_shadow_dwell_=0;
                 if (layered_expansion_)
                     expansion_path_=std::make_unique<Task28LayerPath>(
                         new_contract_,old_compact_targets_,new_compact_targets_,expansion_kind_);
@@ -231,7 +238,8 @@ public:
             controller_.setExternalReconstructionReference(reference_);
             tracking(runtime);
             if (fraction_>=1.0&&shape_ready_) {
-                restore(now,"new_actual_shape_tracking_and_information_ready");
+                restore(now,moving_completion_?"new_actual_shape_coordinated_motion_and_information_ready":
+                    "new_actual_shape_tracking_and_information_ready");
             }
         }
     }
@@ -257,6 +265,7 @@ public:
                 (expansion_kind_==Task28LayerPath::Kind::CommonFinish?"terminal_first_common_finish":"terminal_first_dag_layers")},
             {"layers",expansion_path_?expansion_path_->layerCount():0},
             {"search_governor",false},{"expansion_duration_s",60.0}};
+        if (moving_completion_) result["task29"]=moving_telemetry_;
         return result;
     }
     nlohmann::json report() const {
@@ -292,7 +301,46 @@ private:
                 adapter_.config().uncertainty_sigma*std::sqrt(std::max(0.0,detail::maximumVelocityEigenvalue(r.estimate,id))));
         }
         rms_=std::sqrt(rms_/14.0);
-        const bool ok=rms_<=100.0&&max_error_<=180.0&&max_speed_<=3.0&&informationReady();
+        const bool info=informationReady();
+        const bool ok=rms_<=100.0&&max_error_<=180.0&&max_speed_<=3.0&&info;
+        if (moving_completion_&&stage_=="expanding") {
+            std::map<NodeId,Task29MotionState> states;
+            nlohmann::json inputs=nlohmann::json::object(),fronts=nlohmann::json::object();
+            for (std::size_t i=0;i<r.estimate.mobile_ids.size();++i) {
+                const auto id=r.estimate.mobile_ids[i];
+                const double ps=adapter_.config().uncertainty_sigma*std::sqrt(std::max(0.0,
+                    detail::maximumPositionEigenvalue(r.estimate,id)))+adapter_.config().certified_shadow_single_position_support_m;
+                const double vs=adapter_.config().uncertainty_sigma*std::sqrt(std::max(0.0,
+                    detail::maximumVelocityEigenvalue(r.estimate,id)));
+                states[id]={r.estimate.mean.segment<2>(4*i),r.estimate.mean.segment<2>(4*i+2),ps,vs};
+                const auto& s=states.at(id);
+                inputs[std::to_string(id)]={{"estimated_position",{s.position.x(),s.position.y()}},
+                    {"estimated_velocity",{s.velocity.x(),s.velocity.y()}},{"position_support_m",ps},{"velocity_support_mps",vs}};
+            }
+            const bool graph_ready=edge_index_==plan_.replacements.size()&&!r.adapter_transition_pending&&
+                active_mode_==pending_mode_&&task25_detail::edgeSet(r.topology)==task25_detail::edgeSet(new_contract_.reference_edges);
+            const auto audit=task29MovingCompletion(new_contract_,r.estimate.fixed_positions,reference_,states,graph_ready,info);
+            for (const auto& [unit,p]:audit.front_positions) {
+                const auto& v=audit.front_velocities.at(unit);
+                fronts[unit]={{"position",{p.x(),p.y()}},{"velocity",{v.x(),v.y()}}};
+            }
+            for (const auto& [id,bound]:audit.coordinated_speed_bounds) {
+                inputs[std::to_string(id)]["coordinated_speed_bound_mps"]=bound;
+                inputs[std::to_string(id)]["coordinated_speed_residual_mps"]=audit.coordinated_speed_residuals.at(id);
+            }
+            legacy_shadow_dwell_=ok?legacy_shadow_dwell_+1:0;
+            shape_dwell_=audit.valid&&audit.moving_instant_ready?shape_dwell_+1:0;
+            shape_ready_=shape_dwell_>=10;
+            moving_telemetry_={{"completion_contract","moving-v1"},{"applicable",true},
+                {"pre_control_s",r.runtime_s},{"graph_handed_off",graph_ready},{"information_ready",info},
+                {"valid",audit.valid},{"reason",audit.reason},{"fronts",fronts},{"members",inputs},
+                {"maximum_coordinated_speed_bound_mps",audit.maximum_coordinated_speed_bound},
+                {"moving_instant_ready",audit.moving_instant_ready},{"moving_dwell_ticks",shape_dwell_},
+                {"moving_complete",shape_ready_&&fraction_>=1.0},
+                {"legacy_instant_ready",ok},{"legacy_dwell_ticks",legacy_shadow_dwell_},
+                {"legacy_complete",legacy_shadow_dwell_>=10&&fraction_>=1.0&&graph_ready}};
+            return;
+        }
         shape_dwell_=ok?shape_dwell_+1:0;shape_ready_=shape_dwell_>=10;
     }
     void start(const GrandFinaleRuntimeSnapshot& r) {
@@ -339,6 +387,9 @@ private:
     bool shape_ready_=false;
     bool qualified_contraction_=false;
     bool layered_expansion_=false;
+    bool moving_completion_=false;
+    std::size_t legacy_shadow_dwell_=0;
+    nlohmann::json moving_telemetry_={{"completion_contract","moving-v1"},{"applicable",false}};
     Task28LayerPath::Kind expansion_kind_=Task28LayerPath::Kind::Serial;
     std::unique_ptr<Task28LayerPath> expansion_path_;
     std::size_t plan_audits_=0,plan_prefix_=0;
