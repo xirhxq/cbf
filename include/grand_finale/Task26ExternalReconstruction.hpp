@@ -55,6 +55,36 @@ inline double task26SmoothStep(double t) {
     const double s=std::clamp(t,0.0,1.0);return s*s*(3.0-2.0*s);
 }
 
+// Compare the actual affine target mapping, not DAG labels or edge names.
+inline bool task27SameTargetMapping(const Task20DagLatticeContract& a,
+    const Task20DagLatticeContract& b) {
+    if (!a.valid||!b.valid||a.coverage_units.size()!=b.coverage_units.size()||
+        a.member_roles.size()!=b.member_roles.size()) return false;
+    for (std::size_t i=0;i<a.coverage_units.size();++i) {
+        const auto& u=a.coverage_units[i];const auto& v=b.coverage_units[i];
+        if (u.id!=v.id||u.members!=v.members||u.base_anchors!=v.base_anchors||
+            u.leader!=v.leader||u.front_members!=v.front_members) return false;
+    }
+    for (const auto& [id,u]:a.member_roles) {
+        const auto p=b.member_roles.find(id);if (p==b.member_roles.end()) return false;
+        const auto& v=p->second;
+        if (u.member!=v.member||u.coverage_unit!=v.coverage_unit||
+            u.axial_fraction!=v.axial_fraction||u.triangular_fraction!=v.triangular_fraction)
+            return false;
+    }
+    return true;
+}
+inline bool task27SameMotionReference(const std::map<NodeId,Eigen::Vector2d>& a,
+    const std::map<NodeId,Eigen::Vector2d>& b) {
+    if (a.empty()||a.size()!=b.size()) return false;
+    for (const auto& [id,p]:a) {
+        const auto q=b.find(id);
+        if (q==b.end()||!p.allFinite()||!q->second.allFinite()||
+            (p.array()!=q->second.array()).any()) return false;
+    }
+    return true;
+}
+
 inline std::map<std::string,Eigen::Vector2d> task26CompactFronts(
     const Task20DagLatticeContract& contract,
     const std::map<NodeId,Eigen::Vector2d>& fixed) {
@@ -74,7 +104,11 @@ public:
         Task10p11hSimpleCoverageController& controller,const std::string& action,
         double request_s=60.0)
         :adapter_(adapter),controller_(controller),action_(action),next_request_s_(request_s) {
-        if ((action!="pinball"&&action!="cross-roundtrip")||
+        if (action_=="pinball-qualified"||action_=="cross-roundtrip-qualified") {
+            qualified_contraction_=true;
+            action_.erase(action_.size()-std::string("-qualified").size());
+        }
+        if ((action_!="pinball"&&action_!="cross-roundtrip")||
             !adapter.config().target_policy_task20_dag_lattice||
             adapter.config().task20_lattice_mode!=0||
             adapter.config().task20_target_policy!=0)
@@ -106,7 +140,30 @@ public:
             reference_=task20LiftTargets(old_contract_,runtime.estimate.fixed_positions,fronts).targets;
             controller_.setExternalReconstructionReference(reference_);
             tracking(runtime);
-            if (fraction_>=1.0&&shape_ready_) {
+            if (qualified_contraction_) {
+                const auto certificates=adapter_.auditReplacementPlan(plan_.replacements);
+                ++plan_audits_;
+                plan_prefix_=0;
+                for (const auto& c:certificates) {
+                    if (!c.valid) {
+                        plan_reason_=c.reason+":"+c.old_state.reason+":"+
+                            c.union_state.reason+":"+c.successor_state.reason;break;
+                    }
+                    ++plan_prefix_;
+                }
+                if (plan_prefix_==plan_.replacements.size()&&informationReady()) {
+                    plan_reason_="all_plan_states_certified_at_current_snapshot";
+                    // Freeze the CURRENT common-front reference, not the
+                    // unfinished compact endpoint. No target discontinuity.
+                    old_compact_targets_=reference_;
+                    if (task27SameTargetMapping(old_contract_,new_contract_))
+                        new_compact_targets_=task20LiftTargets(new_contract_,
+                            runtime.estimate.fixed_positions,fronts).targets;
+                    stage_="handoff";
+                    event("contracted",plan_reason_);
+                    requests_.back()["contraction_fraction_at_admission"]=fraction_;
+                }
+            } else if (fraction_>=1.0&&shape_ready_) {
                 stage_="handoff";event("contracted","tracking_and_information_ready");
             }
         } else if (stage_=="handoff") {
@@ -125,6 +182,14 @@ public:
                 active_mode_=pending_mode_;
                 stage_="expanding";expansion_started_=now;shape_dwell_=0;
                 event("graph_handoff","full_dag_roles_lifting_pair_committed");
+                if (qualified_contraction_&&
+                    task27SameTargetMapping(old_contract_,new_contract_)&&
+                    task27SameMotionReference(reference_,new_compact_targets_)&&informationReady()) {
+                    // No geometric change exists to demonstrate. The normal
+                    // flight speed gate remains enforced by every plant step;
+                    // <=3 m/s is not an admission condition for unchanged motion.
+                    restore(now,"identical_mapping_and_motion_reference_no_interpolation");
+                }
                 return;
             }
             const auto& pair=plan_.replacements.at(edge_index_);
@@ -150,13 +215,7 @@ public:
             controller_.setExternalReconstructionReference(reference_);
             tracking(runtime);
             if (fraction_>=1.0&&shape_ready_) {
-                event("restored","new_actual_shape_tracking_and_information_ready");
-                requests_.back()["outcome"]="realized";
-                requests_.back()["restored_s"]=now;
-                controller_.setExternalReconstructionReference(std::nullopt);
-                stage_="search";
-                next_request_s_=action_=="cross-roundtrip"&&requests_.size()==1
-                    ?now+60.0:std::numeric_limits<double>::infinity();
+                restore(now,"new_actual_shape_tracking_and_information_ready");
             }
         }
     }
@@ -166,7 +225,7 @@ public:
         nlohmann::json edges=nlohmann::json::array(),targets=nlohmann::json::object();
         for (const auto& edge:runtime.topology) edges.push_back({edge.reference,edge.owner});
         for (const auto& [id,p]:reference_) targets[std::to_string(id)]={p.x(),p.y()};
-        return {{"enabled",true},{"stage",stage_},{"active_mode",active_mode_},
+        nlohmann::json result={{"enabled",true},{"stage",stage_},{"active_mode",active_mode_},
             {"pending_mode",pending_mode_},{"request_count",requests_.size()},
             {"edge_index",edge_index_},{"replacement_count",plan_.replacements.size()},
             {"topology_version",runtime.topology_token},{"estimator_version",runtime.estimator_token},
@@ -175,6 +234,10 @@ public:
             {"tracking_max_bound_m",max_error_},{"speed_bound_mps",max_speed_},
             {"shape_dwell_ticks",shape_dwell_},{"task_ledger_active",stage_=="search"},
             {"qualification_attempts",qualification_attempts_},{"last_reason",last_reason_}};
+        if (qualified_contraction_) result["task27"]={{"qualified_contraction",true},
+            {"plan_audits",plan_audits_},{"qualified_plan_prefix",plan_prefix_},
+            {"plan_reason",plan_reason_}};
+        return result;
     }
     nlohmann::json report() const {
         return {{"action",action_},{"requests",requests_},{"events",events_},
@@ -183,6 +246,13 @@ public:
             {"untriggered_request_count",(action_=="cross-roundtrip"?2:1)-requests_.size()}};
     }
 private:
+    void restore(double now,const std::string& reason) {
+        event("restored",reason);requests_.back()["outcome"]="realized";
+        requests_.back()["restored_s"]=now;
+        controller_.setExternalReconstructionReference(std::nullopt);stage_="search";
+        next_request_s_=action_=="cross-roundtrip"&&requests_.size()==1
+            ?now+60.0:std::numeric_limits<double>::infinity();
+    }
     bool informationReady() {
         const auto info=adapter_.currentReferenceAudit();
         return info.minimum_effective_reference_count>=2&&info.minimum_information_edge_count>=2&&
@@ -247,6 +317,9 @@ private:
     double rms_=0,max_error_=0,max_speed_=0;
     std::size_t edge_index_=0,shape_dwell_=0,qualification_attempts_=0;
     bool shape_ready_=false;
+    bool qualified_contraction_=false;
+    std::size_t plan_audits_=0,plan_prefix_=0;
+    std::string plan_reason_;
     Task20DagLatticeContract old_contract_,new_contract_;
     Task26ReplacementPlan plan_;
     std::map<std::string,Eigen::Vector2d> from_fronts_,compact_fronts_;

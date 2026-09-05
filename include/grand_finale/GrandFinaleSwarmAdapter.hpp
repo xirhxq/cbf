@@ -1464,6 +1464,27 @@ public:
             proposal,certificationContext(snapshot,{new_edge}),true);
     }
 
+    // Read-only necessary admission test for a finite conversion plan at ONE
+    // estimate. It does not predict motion or admit any edge. The executor must
+    // still re-certify each make and each post-union break with a fresh state.
+    std::vector<TransitionCertificate> auditReplacementPlan(
+        const std::vector<std::pair<DirectedEdge,DirectedEdge>>& replacements) {
+        const auto snapshot=estimator_.reconstructForAudit();
+        std::vector<DirectedEdge> additions;
+        for (const auto& pair:replacements) additions.push_back(pair.first);
+        const auto context=certificationContext(snapshot,additions);
+        auto edges=supervisor_.topology();
+        std::vector<TransitionCertificate> result;
+        for (const auto& pair:replacements) {
+            result.push_back(TransitionCertifier{}.certify(
+                {edges,pair.first,pair.second,context.topology_version,
+                 context.estimator_version},context,true));
+            if (!result.back().valid) break;
+            edges=result.back().successor_edges;
+        }
+        return result;
+    }
+
     GrandFinaleProposalResult proposeAndBegin(TopologyRequest request) {
         GrandFinaleProposalResult result;
         request.old_edges = supervisor_.topology();

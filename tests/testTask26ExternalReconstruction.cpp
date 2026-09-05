@@ -3,6 +3,86 @@
 #include "grand_finale/Task26ExternalReconstruction.hpp"
 #include "grand_finale/Task19ProductionBaseline.hpp"
 
+TEST_CASE("Task27 a qualified first edge does not certify a complete replacement plan") {
+    auto scenario=gf::task10p11rFixedBaselineScenario();
+    auto config=gf::task19ProductionAdapterConfig();
+    auto settings=gf::task10p11pSwarmSettings(scenario,gf::SolverProfile::Gurobi);
+    Swarm swarm(settings);
+    gf::GrandFinaleSwarmAdapter adapter(swarm,scenario.mobile_ids,scenario.fixed_positions,scenario.initial_topology,config);
+    REQUIRE(adapter.initializeStageZero().initialized);
+    const auto before=adapter.runtimeSnapshot();
+    const std::pair<gf::DirectedEdge,gf::DirectedEdge> first{{8,2},{101,2}};
+    REQUIRE(adapter.auditReplacement(first.first,first.second).valid);
+    const auto audit=adapter.auditReplacementPlan({first,{{7,1},{100,1}}});
+    REQUIRE(audit.size()==2);
+    CHECK(audit.front().valid);
+    CHECK_FALSE(audit.back().valid); // The second union contains a cycle.
+    const auto after=adapter.runtimeSnapshot();
+    CHECK(before.topology_token==after.topology_token);
+    CHECK(before.estimator_token==after.estimator_token);
+    CHECK((before.estimate.mean-after.estimate.mean).norm()==0);
+    CHECK(gf::task25_detail::edgeSet(before.topology)==gf::task25_detail::edgeSet(after.topology));
+}
+
+TEST_CASE("Task27 empty interpolation requires identical complete target mappings") {
+    const auto h0=gf::task25DagContractFromCode(0);
+    const auto cross=gf::task25DagContractFromCode(11);
+    const auto pin=gf::task25DagContractFromCode(12);
+    CHECK(gf::task27SameTargetMapping(h0,cross));
+    CHECK_FALSE(gf::task27SameTargetMapping(h0,pin));
+    std::map<gf::NodeId,Eigen::Vector2d> a{{1,{1,2}},{2,{3,4}}};
+    CHECK(gf::task27SameMotionReference(a,a));
+    auto b=a;b[1].x()+=1e-8;
+    CHECK_FALSE(gf::task27SameMotionReference(a,b));
+    b=a;b.erase(2);
+    CHECK_FALSE(gf::task27SameMotionReference(a,b));
+}
+
+TEST_CASE("Task27 actual same-mapping handoff skips empty expansion without ledger or safety bypass") {
+    auto scenario=gf::task10p11rFixedBaselineScenario();
+    auto config=gf::task19ProductionAdapterConfig();
+    config.target_policy_task18_cbf2026_outer=false;
+    config.target_policy_task20_dag_lattice=true;
+    auto settings=gf::task10p11pSwarmSettings(scenario,gf::SolverProfile::Gurobi);
+    // The display threshold is 3 m/s, not the flight hard gate. Exercise an
+    // unchanged mapping while already moving above that display threshold.
+    settings["initial"]["velocity"]["values"]=nlohmann::json::array();
+    for (int i=0;i<14;++i) settings["initial"]["velocity"]["values"].push_back({4.0,0.0});
+    Swarm swarm(settings);
+    gf::GrandFinaleSwarmAdapter adapter(swarm,scenario.mobile_ids,scenario.fixed_positions,scenario.initial_topology,config);
+    gf::Task10p11hSimpleCoverageController controller(swarm,adapter);
+    REQUIRE(adapter.initializeStageZero().initialized);
+    REQUIRE(controller.advance().step.advanced);
+    gf::Task26ExternalReconstructor external(adapter,controller,"cross-roundtrip-qualified",.1);
+    bool union_seen=false,restored=false;
+    for (int i=0;i<100&&!restored;++i) {
+        external.beforeStep();
+        const auto status=external.telemetry();
+        CHECK(status.at("stage")!="expanding");
+        const auto before=adapter.runtimeSnapshot();
+        union_seen=union_seen||before.topology.size()==29;
+        const auto ledger=controller.committedTargets();
+        const auto step=controller.advance();
+        REQUIRE(step.step.advanced);
+        if (status.at("stage")!="search")
+            for (const auto& [id,cell]:ledger)
+                CHECK(step.committed_targets.at(id).id()==cell.id());
+        const auto report=external.report();
+        restored=report.at("requests").at(0).at("outcome")=="realized";
+    }
+    CHECK(union_seen);CHECK(restored);
+    bool restored_above_display_speed=false;
+    const auto events=external.report().at("events");
+    INFO(events.dump());
+    for (const auto& e:events)
+        if (e.at("kind")=="restored")
+            restored_above_display_speed=e.at("max_speed_bound_mps").get<double>()>3.0;
+    CHECK(restored_above_display_speed);
+    CHECK(external.telemetry().at("active_mode")==11);
+    CHECK(gf::task25_detail::edgeSet(adapter.runtimeSnapshot().topology)==
+        gf::task25_detail::edgeSet(gf::task25DagContractFromCode(11).reference_edges));
+}
+
 TEST_CASE("Task26 full DAG actions use deterministic acyclic single-owner handoffs") {
     for (int target:{11,12}) {
         auto a=gf::task25DagContractFromCode(0);
