@@ -1524,7 +1524,7 @@ public:
         return result;
     }
 
-    bool finishReplacementAfterFreshCycle() {
+    bool finishReplacementAfterFreshCycle(bool defer_invalid_certificate=false) {
         if (!pending_proposal_.has_value() || union_control_cycles_ < 1 ||
             supervisor_.mode() != SupervisorMode::Union) {
             return false;
@@ -1537,6 +1537,7 @@ public:
             refreshed, certificationContext(snapshot, {refreshed.new_edge}),
             true);
         last_certification_reason_ = certificate.reason;
+        if (defer_invalid_certificate&&!certificate.valid) return false;
         if (!supervisor_.finishMakeBeforeBreak(
                 certificate, supervisor_.topologyVersion(),
                 estimator_.version(), swarm_.robots.front()->runtime)) {

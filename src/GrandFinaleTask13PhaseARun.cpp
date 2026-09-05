@@ -6,6 +6,7 @@
 #include "grand_finale/Task20CoveragePolicy.hpp"
 #include "grand_finale/Task24PersistentRasterSweep.hpp"
 #include "grand_finale/Task25P0MultiDag.hpp"
+#include "grand_finale/Task26ExternalReconstruction.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -293,14 +294,15 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
 // GrandFinale production/search evidence runner.  Historical policies remain
 // explicit; an omitted policy selects the researcher-frozen Task 18 baseline.
 int main(int argc,char** argv) {
-    if (argc<5||argc>24||argc==23) {
+    if (argc<5||argc>25||argc==23) {
         std::cerr<<"usage: GrandFinaleTask13PhaseARun TEMPLATE OUTPUT_JSON "
             "PROGRESS_DIR TELEMETRY_JSONL [TAU] [WINDOW_S] [POLICY] [ROWS] "
             "[RANGE_NOISE_STD_M] [DROPOUT_PROBABILITY] [RANGE_SEED] "
             "[SERVICE_STANDOFF_M] [ACCELERATION_HALF_BOX_MPS2] "
             "[linear|braking] [WS_K1] [WS_K2] [WS_BRAKE_A] [WS_EPS] "
             "[TARGET_HOMOTOPY_0_OR_1] [HOMOTOPY_RATE_GAIN] "
-            "[HOMOTOPY_GUARD_M] [VENUE_WIDTH_M VENUE_HEIGHT_M]\n";
+            "[HOMOTOPY_GUARD_M] [VENUE_WIDTH_M VENUE_HEIGHT_M] "
+            "[EXTERNAL_RECONSTRUCTION: cross-roundtrip|pinball]\n";
         return 2;
     }
     const auto started=std::chrono::steady_clock::now();
@@ -477,6 +479,11 @@ int main(int argc,char** argv) {
         const unsigned int range_random_seed=argc>=12?
             static_cast<unsigned int>(std::stoul(argv[11])):2027U;
         const auto def=makeTemplate(template_id);
+        const bool external_reconstruction_enabled=argc==25;
+        if (external_reconstruction_enabled && (template_id!="origin"||
+            policy!="task25-h0-p0"||tau!=14.0||acceleration_half_box_mps2!=4.0||
+            rows_mode!="vaug-speed29p9"||target_homotopy_enabled))
+            throw std::invalid_argument("external reconstruction requires frozen Task18-P0 stack");
         if (policy_task19_switch&&template_id!="origin")
             throw std::invalid_argument(
                 "Task 19 switcher must start from production origin DAG");
@@ -524,6 +531,10 @@ int main(int argc,char** argv) {
             return 0;
         }
         std::unique_ptr<gf::Task19OriginMicrofixSwitcher> task19_switcher;
+        std::unique_ptr<gf::Task26ExternalReconstructor> external_reconstructor;
+        if (external_reconstruction_enabled)
+            external_reconstructor=std::make_unique<gf::Task26ExternalReconstructor>(
+                fixture->adapter,fixture->controller,argv[24]);
         if (policy_task19_switch)
             task19_switcher=
                 std::make_unique<gf::Task19OriginMicrofixSwitcher>(
@@ -789,6 +800,8 @@ int main(int argc,char** argv) {
             {"evaluations",json::array()},
             {"complete",false}};
         std::filesystem::create_directories(argv[3]);
+        if (external_reconstructor)
+            record["external_reconstruction_plan"]=external_reconstructor->report();
         gf::writeTask10p11vJson(
             std::filesystem::path(argv[3])/"00-config.json",record);
         std::ofstream telemetry(argv[4]);
@@ -885,6 +898,7 @@ int main(int argc,char** argv) {
             throw std::runtime_error("unknown robot id");
         };
         while (fixture->adapter.runtimeSnapshot().runtime_s<window_s) {
+            if (external_reconstructor) external_reconstructor->beforeStep();
             if (fixture->adapter.config().speed_initial_set_truth_gate) {
                 truth_gate_max_speed=0.0;
                 for (const auto& robot:fixture->swarm.robots) {
@@ -1381,6 +1395,8 @@ int main(int argc,char** argv) {
                     {"same_band_rescans",assignment.state.same_band_rescans}});
             }
             telemetry<<json({{"tick",tick},
+                {"external_reconstruction",external_reconstructor
+                    ?external_reconstructor->telemetry():json(nullptr)},
                 {"runtime_s",snapshot.runtime_s},
                 {"coverage_fraction",fraction},
                 {"certified_coverage_fraction",certified_fraction},
@@ -1525,6 +1541,8 @@ int main(int argc,char** argv) {
             if (t100_tick.has_value()) break;
         }
         telemetry.close();
+        if (external_reconstructor)
+            record["external_reconstruction"]=external_reconstructor->report();
         const auto final_grid=gf::task17GridSnapshot(
             fixture->adapter.coverage().certifiedGrid(),
             fixture->adapter.coverage().truthGrid());

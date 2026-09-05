@@ -178,7 +178,9 @@ public:
         SimpleCoverageControlStep result;
         result.t100_event_latched=observeT100Boundary();
         const auto runtime=adapter_.runtimeSnapshot();
-        if (runtime.mode!=SupervisorMode::Search) {
+        if (runtime.mode!=SupervisorMode::Search &&
+            !(external_reconstruction_reference_.has_value()&&
+              runtime.mode==SupervisorMode::Union)) {
             result.step=adapter_.step();
             ++control_boundaries_;
             if (result.step.advanced) {
@@ -214,7 +216,10 @@ public:
             adapter_.config().target_policy_task18_cbf2026_outer;
         const bool policy_task20=
             adapter_.config().target_policy_task20_dag_lattice;
-        if (policy_task20) {
+        if (external_reconstruction_reference_.has_value()) {
+            // External motion takeover only. Preserve the real historical
+            // task ledger and certified pool; do not invoke the allocator.
+        } else if (policy_task20) {
             if (adapter_.config().task20_target_policy==6)
                 advanceTask24Targets(runtime,result);
             else if (adapter_.config().task20_target_policy==5)
@@ -347,6 +352,8 @@ public:
         std::map<NodeId,Eigen::Vector2d> nominal_targets;
         for (const auto& [owner,target]:targets_)
             nominal_targets[owner]=target.center;
+        if (external_reconstruction_reference_)
+            nominal_targets=*external_reconstruction_reference_;
         if ((policy_task16||policy_task17||policy_task18||policy_task20) &&
             nominal_targets.size()==runtime.estimate.mobile_ids.size()) {
             if (policy_task16&&adapter_.config().task16_coverage_arm==
@@ -467,7 +474,8 @@ public:
                     std::optional<Eigen::Vector2d>{found->second};
             const auto soft=task10p11gSoftTask({state.head<2>(),state.tail<2>(),
                 currentYaw(owner),soft_target,
-                runtime.mode},model);
+                external_reconstruction_reference_.has_value()
+                    ?SupervisorMode::Search:runtime.mode},model);
             nominal[owner]=soft.acceleration;
             double desired_yaw=soft.desired_yaw_rad;
             const auto committed=targets_.find(owner);
@@ -676,6 +684,33 @@ public:
     const std::map<NodeId,FrontierCell>& committedTargets() const {
         return targets_;
     }
+    // Explicit research-only seam. Merely compiling it changes no default.
+    // The caller supplies a complete analytic lifting, not task identities.
+    void setExternalReconstructionReference(
+        std::optional<std::map<NodeId,Eigen::Vector2d>> reference) {
+        if (reference) {
+            if (!adapter_.config().target_policy_task20_dag_lattice||
+                reference->size()!=14||targets_.size()!=14)
+                throw std::invalid_argument("external reference requires initialized P0 ledger");
+            for (NodeId id=1;id<=14;++id)
+                if (!reference->count(id)||!reference->at(id).allFinite())
+                    throw std::invalid_argument("external reference incomplete");
+        } else if (external_reconstruction_reference_) {
+            external_force_reallocate_=true;
+        }
+        external_reconstruction_reference_=std::move(reference);
+    }
+    void commitExternalCoverageMode(int mode) {
+        const auto contract=task25DagContractFromCode(mode);
+        const auto runtime=adapter_.runtimeSnapshot();
+        if (!adapter_.config().target_policy_task20_dag_lattice||!contract.valid||
+            runtime.mode!=SupervisorMode::Search||runtime.adapter_transition_pending||
+            task25_detail::edgeSet(contract.reference_edges)!=
+                task25_detail::edgeSet(runtime.topology))
+            throw std::logic_error("coverage mode cannot precede certified full DAG handoff");
+        external_coverage_mode_=mode;
+        external_force_reallocate_=true;
+    }
     std::size_t targetEpoch() const { return target_epoch_; }
     std::size_t successfulControlCycles() const {
         return successful_control_cycles_;
@@ -793,7 +828,7 @@ private:
         const GrandFinaleRuntimeSnapshot& runtime,
         SimpleCoverageControlStep& result) {
         const auto& config=adapter_.config();
-        const bool periodic=targets_.empty()||
+        const bool periodic=external_force_reallocate_||targets_.empty()||
             control_boundaries_>=task20_last_allocation_cycle_+
                 config.task20_update_period_cycles;
         if (!periodic) return;
@@ -801,10 +836,11 @@ private:
         // T100 retains the final real ledger; no synthetic terminal target.
         if (uncovered.empty()&&!targets_.empty()) return;
         Task20CoverageRequest request;
-        request.contract=config.task20_lattice_mode>=10
-            ?task25DagContractFromCode(config.task20_lattice_mode)
+        const int mode=external_coverage_mode_.value_or(config.task20_lattice_mode);
+        request.contract=mode>=10
+            ?task25DagContractFromCode(mode)
             :task20DagLatticeContract(
-                static_cast<Task20LatticeMode>(config.task20_lattice_mode));
+                static_cast<Task20LatticeMode>(mode));
         request.policy=static_cast<Task20TargetPolicy>(
             config.task20_target_policy);
         request.uncovered_cells=uncovered;
@@ -848,6 +884,7 @@ private:
             ++target_epoch_;
         }
         task20_last_allocation_cycle_=control_boundaries_;
+        external_force_reallocate_=false;
         consecutive_failures_=0;
     }
 
@@ -2362,6 +2399,9 @@ private:
     std::set<std::string> denominator_ids_;
     std::vector<FrontierCell> denominator_cells_;
     std::map<NodeId,FrontierCell> targets_;
+    std::optional<std::map<NodeId,Eigen::Vector2d>> external_reconstruction_reference_;
+    std::optional<int> external_coverage_mode_;
+    bool external_force_reallocate_=false;
     std::map<NodeId,Eigen::Vector2d> governed_targets_;
     std::size_t target_epoch_=0;
     std::size_t consecutive_failures_=0;
