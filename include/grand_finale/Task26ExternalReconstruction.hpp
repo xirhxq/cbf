@@ -4,6 +4,7 @@
 #include "grand_finale/Task28TransitionPath.hpp"
 #include "grand_finale/Task29MovingCompletion.hpp"
 #include "grand_finale/Task29ProjectedCompact.hpp"
+#include "grand_finale/Task29ExpansionTime.hpp"
 #include "grand_finale/TransitionCertifier.hpp"
 #include "grand_finale/Task10p11hSimpleCoverageController.hpp"
 
@@ -107,6 +108,10 @@ public:
         Task10p11hSimpleCoverageController& controller,const std::string& action,
         double request_s=60.0)
         :adapter_(adapter),controller_(controller),action_(action),next_request_s_(request_s) {
+        if(action_=="pinball-qualified-layered-centeredframe-moving-linearphase"||
+            action_=="cross-roundtrip-qualified-layered-centeredframe-moving-linearphase") {
+            linear_expansion_phase_=true;action_.erase(action_.size()-std::string("-linearphase").size());
+        }
         if(action_=="pinball-qualified-layered-centeredframe-moving-projected"||
             action_=="cross-roundtrip-qualified-layered-centeredframe-moving-projected") {
             projected_compact_=true;action_.erase(action_.size()-std::string("-projected").size());
@@ -236,7 +241,8 @@ public:
                 event("edge_make",pair.first.id(),certificate.minimum_gamma);
             else {last_reason_=adapter_.lastCertificationReason();++rejections_[last_reason_];}
         } else if (stage_=="expanding") {
-            fraction_=task26SmoothStep((now-expansion_started_)/60.0);
+            fraction_=linear_expansion_phase_?task29LinearExpansionPhase(now-expansion_started_):
+                task26SmoothStep((now-expansion_started_)/60.0);
             if (layered_expansion_) reference_=expansion_path_->evaluate(fraction_);
             else for (const auto& [id,p]:old_compact_targets_)
                 reference_[id]=(1.0-fraction_)*p+fraction_*new_compact_targets_.at(id);
@@ -272,6 +278,7 @@ public:
             {"search_governor",false},{"expansion_duration_s",60.0}};
         if (moving_completion_) result["task29"]=moving_telemetry_;
         if (projected_compact_) result["task29_compact"]=compact_telemetry_;
+        if (linear_expansion_phase_) result["task29_timing"]={{"common_phase","linear"},{"duration_s",60.0}};
         return result;
     }
     nlohmann::json report() const {
@@ -432,6 +439,7 @@ private:
     bool layered_expansion_=false;
     bool moving_completion_=false;
     bool projected_compact_=false;
+    bool linear_expansion_phase_=false;
     nlohmann::json compact_telemetry_={{"enabled",true},{"applicable",false}};
     std::size_t legacy_shadow_dwell_=0;
     nlohmann::json moving_telemetry_={{"completion_contract","moving-v1"},{"applicable",false}};

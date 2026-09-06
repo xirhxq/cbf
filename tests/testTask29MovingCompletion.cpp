@@ -44,6 +44,18 @@ TEST_CASE("Task29 instantaneous shape is insufficient for incoherent velocities 
     state.erase(14);CHECK_FALSE(gf::task29MovingCompletion(c,fixed,q,state,true,true).valid);
 }
 
+TEST_CASE("Task29 absolute-low-speed and relative-coordination completion sets are not nested") {
+    const auto c=gf::task25DagContractFromCode(12);auto state=movingState(c,{0,0});
+    std::map<gf::NodeId,Eigen::Vector2d> q;for(const auto& [id,s]:state)q[id]=s.position;
+    for(const auto& u:c.coverage_units)for(auto i:u.front_members)state.at(i).velocity={2.9,0};
+    // A small-depth member opposing its fixed front remains absolutely slow
+    // but violates the common-front motion contract. Not a runtime member rule.
+    state.at(c.coverage_units.front().members.front()).velocity={-2.9,0};
+    const auto x=gf::task29MovingCompletion(c,fixed,q,state,true,true);
+    REQUIRE(x.valid);CHECK(x.legacy_instant_ready);CHECK_FALSE(x.moving_instant_ready);
+    CHECK(x.maximum_coordinated_speed_bound>3);
+}
+
 TEST_CASE("Task29 fixed-front estimator has no number or coverage-unit-count special branch") {
     for (int code:{0,11,12,13,2}) {
         const auto c=gf::task25DagContractFromCode(code);auto state=movingState(c,{7,-2});
