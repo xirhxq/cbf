@@ -3,6 +3,7 @@
 #include "grand_finale/Task25P0MultiDag.hpp"
 #include "grand_finale/Task28TransitionPath.hpp"
 #include "grand_finale/Task29MovingCompletion.hpp"
+#include "grand_finale/Task29ProjectedCompact.hpp"
 #include "grand_finale/TransitionCertifier.hpp"
 #include "grand_finale/Task10p11hSimpleCoverageController.hpp"
 
@@ -106,6 +107,10 @@ public:
         Task10p11hSimpleCoverageController& controller,const std::string& action,
         double request_s=60.0)
         :adapter_(adapter),controller_(controller),action_(action),next_request_s_(request_s) {
+        if(action_=="pinball-qualified-layered-centeredframe-moving-projected"||
+            action_=="cross-roundtrip-qualified-layered-centeredframe-moving-projected") {
+            projected_compact_=true;action_.erase(action_.size()-std::string("-projected").size());
+        }
         if (action_=="pinball-qualified-layered-centeredframe-moving"||
             action_=="cross-roundtrip-qualified-layered-centeredframe-moving") {
             moving_completion_=true;
@@ -266,6 +271,7 @@ public:
             {"layers",expansion_path_?expansion_path_->layerCount():0},
             {"search_governor",false},{"expansion_duration_s",60.0}};
         if (moving_completion_) result["task29"]=moving_telemetry_;
+        if (projected_compact_) result["task29_compact"]=compact_telemetry_;
         return result;
     }
     nlohmann::json report() const {
@@ -360,6 +366,42 @@ private:
             from_fronts_[unit.id]=inverse.front;
         }
         compact_fronts_=task26CompactFronts(old_contract_,r.estimate.fixed_positions);
+        nlohmann::json compact_inputs;
+        if(projected_compact_) {
+            auto zero=compact_fronts_;
+            const Eigen::Vector2d axis(0,1); // Frozen venue entry frame; not a member-specific direction.
+            const auto origin=r.estimate.fixed_positions.at(101);
+            for(auto& [u,p]:zero)p-=(p-origin).dot(axis)*axis;
+            std::map<NodeId,Eigen::Vector2d> estimated;
+            for(std::size_t i=0;i<r.estimate.mobile_ids.size();++i)estimated[r.estimate.mobile_ids[i]]=r.estimate.mean.segment<2>(4*i);
+            auto geometric_edges=old_contract_.reference_edges;
+            for(const auto& pair:plan_.replacements)geometric_edges.push_back(pair.first);
+            const auto& cfg=adapter_.config();
+            const double support=cfg.uncertainty_sigma*std::sqrt(cfg.maximum_posterior_eigenvalue_m2)+cfg.certified_shadow_single_position_support_m;
+            const auto projection=task29ProjectedCompact(old_contract_,r.estimate.fixed_positions,zero,axis,estimated,
+                geometric_edges,cfg.reference_distance_m,support,cfg.collision_distance_m);
+            compact_telemetry_={{"enabled",true},{"valid",projection.valid},{"reason",projection.reason},
+                {"height_m",projection.height_m},{"unconstrained_height_m",projection.unconstrained_height_m},
+                {"minimum_height_m",projection.minimum_height_m},{"maximum_height_m",projection.maximum_height_m},
+                {"maximum_supported_edge_m",projection.maximum_supported_edge_m},
+                {"minimum_separation_m",std::isfinite(projection.minimum_separation_m)?nlohmann::json(projection.minimum_separation_m):nlohmann::json(nullptr)},
+                {"active_edge",projection.active_edge}};
+            compact_inputs={{"audit",compact_telemetry_},{"position_support_m",support},
+                {"reference_limit_m",cfg.reference_distance_m},{"separation_limit_m",cfg.collision_distance_m},
+                {"pre_control_s",r.runtime_s},{"estimated_positions",nlohmann::json::object()},
+                {"zero_fronts",nlohmann::json::object()}};
+            for(const auto& [id,p]:estimated)compact_inputs["estimated_positions"][std::to_string(id)]={p.x(),p.y()};
+            for(const auto& [u,p]:zero)compact_inputs["zero_fronts"][u]={p.x(),p.y()};
+            if(!projection.valid) {
+                request_started_=r.runtime_s;
+                requests_.push_back({{"from_mode",active_mode_},{"to_mode",pending_mode_},{"received_s",r.runtime_s},
+                    {"outcome","rejected"},{"history_ledger",ledger},{"compact_projection",compact_inputs},
+                    {"estimator_version_at_request",r.estimator_token},{"topology_version_at_request",r.topology_token}});
+                event("accepted","external_pre_registered_request");event("rejected",projection.reason);
+                next_request_s_=std::numeric_limits<double>::infinity();return;
+            }
+            compact_fronts_=projection.fronts;
+        }
         old_compact_targets_=task20LiftTargets(old_contract_,r.estimate.fixed_positions,compact_fronts_).targets;
         new_compact_targets_=task20LiftTargets(new_contract_,r.estimate.fixed_positions,
             task26CompactFronts(new_contract_,r.estimate.fixed_positions)).targets;
@@ -367,6 +409,7 @@ private:
         requests_.push_back({{"from_mode",active_mode_},{"to_mode",pending_mode_},
             {"received_s",r.runtime_s},{"outcome","pending"},{"history_ledger",ledger},
             {"estimator_version_at_request",r.estimator_token},{"topology_version_at_request",r.topology_token}});
+        if(projected_compact_)requests_.back()["compact_projection"]=compact_inputs;
         event("accepted","external_pre_registered_request");
     }
     void event(const std::string& kind,const std::string& reason,double gamma=0) {
@@ -388,6 +431,8 @@ private:
     bool qualified_contraction_=false;
     bool layered_expansion_=false;
     bool moving_completion_=false;
+    bool projected_compact_=false;
+    nlohmann::json compact_telemetry_={{"enabled",true},{"applicable",false}};
     std::size_t legacy_shadow_dwell_=0;
     nlohmann::json moving_telemetry_={{"completion_contract","moving-v1"},{"applicable",false}};
     Task28LayerPath::Kind expansion_kind_=Task28LayerPath::Kind::Serial;
