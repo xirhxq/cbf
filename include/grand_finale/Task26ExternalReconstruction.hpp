@@ -5,6 +5,7 @@
 #include "grand_finale/Task29MovingCompletion.hpp"
 #include "grand_finale/Task29ProjectedCompact.hpp"
 #include "grand_finale/Task29ExpansionTime.hpp"
+#include "grand_finale/Task29RoleCenterPath.hpp"
 #include "grand_finale/TransitionCertifier.hpp"
 #include "grand_finale/Task10p11hSimpleCoverageController.hpp"
 
@@ -108,6 +109,10 @@ public:
         Task10p11hSimpleCoverageController& controller,const std::string& action,
         double request_s=60.0)
         :adapter_(adapter),controller_(controller),action_(action),next_request_s_(request_s) {
+        if(action_=="pinball-qualified-layered-centeredframe-moving-linearphase-rolecenter"||
+            action_=="cross-roundtrip-qualified-layered-centeredframe-moving-linearphase-rolecenter") {
+            role_center_expansion_=true;action_.erase(action_.size()-std::string("-rolecenter").size());
+        }
         if(action_=="pinball-qualified-layered-centeredframe-moving-linearphase"||
             action_=="cross-roundtrip-qualified-layered-centeredframe-moving-linearphase") {
             linear_expansion_phase_=true;action_.erase(action_.size()-std::string("-linearphase").size());
@@ -210,9 +215,13 @@ public:
                 controller_.commitExternalCoverageMode(pending_mode_);
                 active_mode_=pending_mode_;
                 stage_="expanding";expansion_started_=now;shape_dwell_=0;legacy_shadow_dwell_=0;
-                if (layered_expansion_)
-                    expansion_path_=std::make_unique<Task28LayerPath>(
-                        new_contract_,old_compact_targets_,new_compact_targets_,expansion_kind_);
+                if (layered_expansion_) {
+                    if(role_center_expansion_)
+                        role_center_path_=std::make_unique<Task29RoleCenterPath>(
+                            new_contract_,old_compact_targets_,new_compact_targets_);
+                    else expansion_path_=std::make_unique<Task28LayerPath>(
+                            new_contract_,old_compact_targets_,new_compact_targets_,expansion_kind_);
+                }
                 event("graph_handoff","full_dag_roles_lifting_pair_committed");
                 if (qualified_contraction_&&
                     task27SameTargetMapping(old_contract_,new_contract_)&&
@@ -243,7 +252,8 @@ public:
         } else if (stage_=="expanding") {
             fraction_=linear_expansion_phase_?task29LinearExpansionPhase(now-expansion_started_):
                 task26SmoothStep((now-expansion_started_)/60.0);
-            if (layered_expansion_) reference_=expansion_path_->evaluate(fraction_);
+            if (role_center_expansion_) reference_=role_center_path_->evaluate(fraction_);
+            else if (layered_expansion_) reference_=expansion_path_->evaluate(fraction_);
             else for (const auto& [id,p]:old_compact_targets_)
                 reference_[id]=(1.0-fraction_)*p+fraction_*new_compact_targets_.at(id);
             controller_.setExternalReconstructionReference(reference_);
@@ -272,13 +282,15 @@ public:
         if (qualified_contraction_) result["task27"]={{"qualified_contraction",true},
             {"plan_audits",plan_audits_},{"qualified_plan_prefix",plan_prefix_},
             {"plan_reason",plan_reason_}};
-        if (layered_expansion_) result["task28"]={{"expansion_path",expansion_kind_==Task28LayerPath::Kind::CenteredFrame?"terminal_first_centered_frame":
+        if (layered_expansion_) result["task28"]={{"expansion_path",role_center_expansion_?"terminal_first_role_center":expansion_kind_==Task28LayerPath::Kind::CenteredFrame?"terminal_first_centered_frame":
                 (expansion_kind_==Task28LayerPath::Kind::CommonFinish?"terminal_first_common_finish":"terminal_first_dag_layers")},
-            {"layers",expansion_path_?expansion_path_->layerCount():0},
+            {"layers",role_center_expansion_?(role_center_path_?role_center_path_->layerCount():0):(expansion_path_?expansion_path_->layerCount():0)},
             {"search_governor",false},{"expansion_duration_s",60.0}};
         if (moving_completion_) result["task29"]=moving_telemetry_;
         if (projected_compact_) result["task29_compact"]=compact_telemetry_;
         if (linear_expansion_phase_) result["task29_timing"]={{"common_phase","linear"},{"duration_s",60.0}};
+        if (role_center_expansion_) result["task29_path"]={{"common_correction","final_role_matrix"},
+            {"mean","per_coverage_unit_all_members"},{"parameter_count",0}};
         return result;
     }
     nlohmann::json report() const {
@@ -440,11 +452,13 @@ private:
     bool moving_completion_=false;
     bool projected_compact_=false;
     bool linear_expansion_phase_=false;
+    bool role_center_expansion_=false;
     nlohmann::json compact_telemetry_={{"enabled",true},{"applicable",false}};
     std::size_t legacy_shadow_dwell_=0;
     nlohmann::json moving_telemetry_={{"completion_contract","moving-v1"},{"applicable",false}};
     Task28LayerPath::Kind expansion_kind_=Task28LayerPath::Kind::Serial;
     std::unique_ptr<Task28LayerPath> expansion_path_;
+    std::unique_ptr<Task29RoleCenterPath> role_center_path_;
     std::size_t plan_audits_=0,plan_prefix_=0;
     std::string plan_reason_;
     Task20DagLatticeContract old_contract_,new_contract_;
