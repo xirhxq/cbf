@@ -110,7 +110,9 @@ public:
         double request_s=60.0)
         :adapter_(adapter),controller_(controller),action_(action),next_request_s_(request_s) {
         if(action_=="pinball-qualified-layered-centeredframe-moving-linearphase-rolecenter"||
-            action_=="cross-roundtrip-qualified-layered-centeredframe-moving-linearphase-rolecenter") {
+            action_=="cross-roundtrip-qualified-layered-centeredframe-moving-linearphase-rolecenter"||
+            action_=="pinball-qualified-layered-centeredframe-moving-rolecenter"||
+            action_=="cross-roundtrip-qualified-layered-centeredframe-moving-rolecenter") {
             role_center_expansion_=true;action_.erase(action_.size()-std::string("-rolecenter").size());
         }
         if(action_=="pinball-qualified-layered-centeredframe-moving-linearphase"||

@@ -3,7 +3,7 @@
 #include "grand_finale/Task26ExternalReconstruction.hpp"
 #include "grand_finale/Task19ProductionBaseline.hpp"
 
-TEST_CASE("Task29 role-center full fourteen-member fixture with offsets and unequal initial velocities") {
+static void runRoleCenterFixture(bool smooth_clock) {
     for(int variant:{0,1,2}) {
         auto scenario=gf::task10p11rFixedBaselineScenario();scenario.width_m=4500;scenario.height_m=2250;
         scenario.fixed_positions={{100,{1800,-50}},{101,{2250,-50}},{102,{2700,-50}}};
@@ -27,7 +27,8 @@ TEST_CASE("Task29 role-center full fourteen-member fixture with offsets and uneq
         INFO("variant="<<variant);const auto init=adapter.initializeStageZero();INFO(init.reason);REQUIRE(init.initialized);
         REQUIRE(controller.advance().step.advanced);const auto ledger=controller.committedTargets();
         for(int tick=0;tick<1200;++tick) {
-            controller.setExternalReconstructionReference(path.evaluate(gf::task29LinearExpansionPhase(tick*.1)));
+            const double s=gf::task29LinearExpansionPhase(tick*.1);
+            controller.setExternalReconstructionReference(path.evaluate(smooth_clock?gf::task26SmoothStep(s):s));
             const auto step=controller.advance();INFO("tick="<<tick<<" reason="<<step.step.reason);REQUIRE(step.step.advanced);
             CHECK(gf::task25_detail::edgeSet(adapter.runtimeSnapshot().topology)==gf::task25_detail::edgeSet(goal.reference_edges));
             for(const auto& [id,cell]:ledger)CHECK(controller.committedTargets().at(id).id()==cell.id());
@@ -39,7 +40,16 @@ TEST_CASE("Task29 role-center full fourteen-member fixture with offsets and uneq
         }
         CHECK(error<=180);CHECK(speed<=3);
         std::cout<<"TASK29_ROLE_CENTER_FOCUSED "<<nlohmann::json({{"variant",variant},{"safe_ticks",1200},
+            {"time_law",smooth_clock?"smoothstep":"linear"},
             {"maximum_tracking_error_m",error},{"maximum_speed_mps",speed},
             {"boundary","full fourteen-member safety and ledger fixture; end bounds are not the complete external-request/noise confirmation gate"}}).dump()<<'\n';
     }
+}
+
+TEST_CASE("Task29 role-center full fourteen-member fixture with offsets and unequal initial velocities") {
+    runRoleCenterFixture(false);
+}
+
+TEST_CASE("Task29 C4 original smooth clock full fourteen-member fixture") {
+    runRoleCenterFixture(true);
 }

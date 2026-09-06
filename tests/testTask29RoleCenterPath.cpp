@@ -70,3 +70,37 @@ TEST_CASE("Task29 role center only enabled by exact external research action") {
     CHECK(c3.telemetry().at("task29_timing").at("common_phase")=="linear");
     CHECK(c3.telemetry().contains("task29"));CHECK_FALSE(c3.telemetry().contains("task29_compact"));
 }
+
+TEST_CASE("Task29 C4 keeps the role path image and labelled endpoints with zero endpoint clock velocity") {
+    const std::map<gf::NodeId,Eigen::Vector2d> fixed{{100,{1800,-50}},{101,{2250,-50}},{102,{2700,-50}}};
+    const auto old=gf::task25DagContractFromCode(0);
+    const auto a=gf::task20LiftTargets(old,fixed,gf::task26CompactFronts(old,fixed)).targets;
+    for(int mode:{12,0,2}) {
+        const auto goal=gf::task25DagContractFromCode(mode);
+        const auto b=gf::task20LiftTargets(goal,fixed,gf::task26CompactFronts(goal,fixed)).targets;
+        const gf::Task29RoleCenterPath path(goal,a,b);
+        const double dt=1e-4;
+        const auto near_start=path.evaluate(gf::task26SmoothStep(dt/60));
+        const auto near_end=path.evaluate(gf::task26SmoothStep(1-dt/60));
+        for(const auto& [id,p]:a) {
+            CHECK((path.evaluate(0).at(id)-p).norm()==0);
+            CHECK((path.evaluate(1).at(id)-b.at(id)).norm()==0);
+            CHECK((near_start.at(id)-p).norm()/dt<1e-3);
+            CHECK((b.at(id)-near_end.at(id)).norm()/dt<1e-3);
+        }
+        for(int tick=0;tick<=600;++tick) {
+            const double s=tick/600.,phase=gf::task26SmoothStep(s);
+            CHECK(phase>=0);CHECK(phase<=1);
+            const auto q=path.evaluate(phase);
+            for(const auto& unit:goal.coverage_units) {
+                Eigen::Vector2d mean=Eigen::Vector2d::Zero(),expected=Eigen::Vector2d::Zero();
+                for(auto id:unit.members) {mean+=q.at(id);expected+=(1-phase)*a.at(id)+phase*b.at(id);}
+                CHECK((mean-expected).norm()<1e-8);
+            }
+            if(mode==12)for(const auto& [id,p]:q) {
+                for(const auto& [j,z]:q)if(id<j)CHECK((p-z).norm()>10);
+                for(const auto& [base,z]:fixed)CHECK((p-z).norm()>10);
+            }
+        }
+    }
+}

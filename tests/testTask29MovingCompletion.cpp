@@ -100,3 +100,29 @@ TEST_CASE("Task29 uncertainty bound contains deterministic joint errors without 
     auto singular=c;for(auto& [id,r]:singular.member_roles){r.axial_fraction=0;r.triangular_fraction=0;}
     CHECK_FALSE(gf::task29MovingCompletion(singular,fixed,q,states,true,true).valid);
 }
+
+TEST_CASE("Task29 role-center with original r4 time law is explicit opt-in") {
+    auto scenario=gf::task10p11rFixedBaselineScenario();
+    auto config=gf::task19ProductionAdapterConfig();
+    CHECK(config.target_policy_task18_cbf2026_outer);
+    config.target_policy_task18_cbf2026_outer=false;config.target_policy_task20_dag_lattice=true;
+    auto settings=gf::task10p11pSwarmSettings(scenario,gf::SolverProfile::Gurobi);
+    Swarm swarm(settings);
+    gf::GrandFinaleSwarmAdapter adapter(swarm,scenario.mobile_ids,scenario.fixed_positions,scenario.initial_topology,config);
+    gf::Task10p11hSimpleCoverageController controller(swarm,adapter);
+    REQUIRE(adapter.initializeStageZero().initialized);
+    const auto before=adapter.runtimeSnapshot();
+    for(const auto& prefix:{std::string("pinball"),std::string("cross-roundtrip")}) {
+        gf::Task26ExternalReconstructor request(adapter,controller,prefix+"-qualified-layered-centeredframe-moving-rolecenter");
+        const auto observed=request.telemetry();
+        CHECK(observed.at("task29_path").at("common_correction")=="final_role_matrix");
+        CHECK(observed.at("task28").at("expansion_path")=="terminal_first_role_center");
+        CHECK(observed.at("task28").at("expansion_duration_s")==60.0);
+        CHECK(observed.at("task29").at("completion_contract")=="moving-v1");
+        CHECK_FALSE(observed.contains("task29_timing"));
+        CHECK_FALSE(observed.contains("task29_compact"));
+        CHECK_FALSE(observed.at("task28").at("search_governor").get<bool>());
+    }
+    CHECK((before.estimate.mean-adapter.runtimeSnapshot().estimate.mean).norm()==0);
+    CHECK(before.topology_token==adapter.runtimeSnapshot().topology_token);
+}
