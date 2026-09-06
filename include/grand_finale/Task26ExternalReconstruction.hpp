@@ -109,6 +109,10 @@ public:
         Task10p11hSimpleCoverageController& controller,const std::string& action,
         double request_s=60.0)
         :adapter_(adapter),controller_(controller),action_(action),next_request_s_(request_s) {
+        if(action_=="pinball-qualified-layered-centeredframe-moving-linearphase-rolecenter-continuingfront"||
+            action_=="cross-roundtrip-qualified-layered-centeredframe-moving-linearphase-rolecenter-continuingfront") {
+            continuing_front_=true;action_.erase(action_.size()-std::string("-continuingfront").size());
+        }
         if(action_=="pinball-qualified-layered-centeredframe-moving-linearphase-rolecenter"||
             action_=="cross-roundtrip-qualified-layered-centeredframe-moving-linearphase-rolecenter"||
             action_=="pinball-qualified-layered-centeredframe-moving-rolecenter"||
@@ -216,7 +220,7 @@ public:
             if (edge_index_==plan_.replacements.size()) {
                 controller_.commitExternalCoverageMode(pending_mode_);
                 active_mode_=pending_mode_;
-                stage_="expanding";expansion_started_=now;shape_dwell_=0;legacy_shadow_dwell_=0;
+                stage_="expanding";expansion_started_=now;motion_phase_=0;shape_dwell_=0;legacy_shadow_dwell_=0;
                 if (layered_expansion_) {
                     if(role_center_expansion_)
                         role_center_path_=std::make_unique<Task29RoleCenterPath>(
@@ -254,7 +258,10 @@ public:
         } else if (stage_=="expanding") {
             fraction_=linear_expansion_phase_?task29LinearExpansionPhase(now-expansion_started_):
                 task26SmoothStep((now-expansion_started_)/60.0);
-            if (role_center_expansion_) reference_=role_center_path_->evaluate(fraction_);
+            if (continuing_front_) {
+                motion_phase_=std::max(0.0,(now-expansion_started_)/60.0);
+                reference_=role_center_path_->evaluateContinuingFront(motion_phase_);
+            } else if (role_center_expansion_) reference_=role_center_path_->evaluate(fraction_);
             else if (layered_expansion_) reference_=expansion_path_->evaluate(fraction_);
             else for (const auto& [id,p]:old_compact_targets_)
                 reference_[id]=(1.0-fraction_)*p+fraction_*new_compact_targets_.at(id);
@@ -293,6 +300,9 @@ public:
         if (linear_expansion_phase_) result["task29_timing"]={{"common_phase","linear"},{"duration_s",60.0}};
         if (role_center_expansion_) result["task29_path"]={{"common_correction","final_role_matrix"},
             {"mean","per_coverage_unit_all_members"},{"parameter_count",0}};
+        if (continuing_front_) result["task29_front"]={{"terminal_behavior","continue_final_role_tangent"},
+            {"unclamped_motion_phase",motion_phase_},{"applicable",stage_=="expanding"},
+            {"shape_phase_clamped",true},{"duration_s",60.0}};
         return result;
     }
     nlohmann::json report() const {
@@ -445,7 +455,7 @@ private:
     Task10p11hSimpleCoverageController& controller_;
     std::string action_,stage_="search",last_reason_;
     int active_mode_=0,pending_mode_=0;
-    double next_request_s_,request_started_=0,expansion_started_=0,fraction_=0;
+    double next_request_s_,request_started_=0,expansion_started_=0,fraction_=0,motion_phase_=0;
     double rms_=0,max_error_=0,max_speed_=0;
     std::size_t edge_index_=0,shape_dwell_=0,qualification_attempts_=0;
     bool shape_ready_=false;
@@ -455,6 +465,7 @@ private:
     bool projected_compact_=false;
     bool linear_expansion_phase_=false;
     bool role_center_expansion_=false;
+    bool continuing_front_=false;
     nlohmann::json compact_telemetry_={{"enabled",true},{"applicable",false}};
     std::size_t legacy_shadow_dwell_=0;
     nlohmann::json moving_telemetry_={{"completion_contract","moving-v1"},{"applicable",false}};

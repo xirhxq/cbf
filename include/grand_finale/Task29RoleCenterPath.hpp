@@ -50,6 +50,21 @@ public:
         }
         return out;
     }
+    Targets evaluateContinuingFront(double phase) const {
+        if(!std::isfinite(phase))throw std::invalid_argument("nonfinite continuing-front phase");
+        if(phase<=1)return evaluate(phase);
+        auto out=to_;
+        for(const auto& members:units_) {
+            Eigen::Vector2d displacement=Eigen::Vector2d::Zero();
+            for(auto id:members)displacement+=to_.at(id)-from_.at(id);
+            displacement*=(phase-1)/members.size();
+            for(auto id:members) {
+                out.at(id)+=weights_.at(id)*displacement;
+                if(!out.at(id).allFinite())throw std::invalid_argument("nonfinite continuing-front reference");
+            }
+        }
+        return out;
+    }
     std::size_t layerCount() const {return raw_.layerCount();}
 private:
     Targets from_,to_;

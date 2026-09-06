@@ -104,3 +104,61 @@ TEST_CASE("Task29 C4 keeps the role path image and labelled endpoints with zero 
         }
     }
 }
+
+TEST_CASE("Task29 continued front preserves the final lifting in nonzero coordinated motion") {
+    const std::map<gf::NodeId,Eigen::Vector2d> fixed{{100,{1800,-50}},{101,{2250,-50}},{102,{2700,-50}}};
+    const auto old=gf::task25DagContractFromCode(0),goal=gf::task25DagContractFromCode(12);
+    const auto a=gf::task20LiftTargets(old,fixed,gf::task26CompactFronts(old,fixed)).targets;
+    const auto b=gf::task20LiftTargets(goal,fixed,gf::task26CompactFronts(goal,fixed)).targets;
+    const gf::Task29RoleCenterPath path(goal,a,b);const double eps=1e-6;
+    const auto q=path.evaluateContinuingFront(1.25),next=path.evaluateContinuingFront(1.25+eps);
+    std::map<gf::NodeId,gf::Task29MotionState> states;
+    for(const auto& [id,p]:q)states[id]={p,(next.at(id)-p)/(60*eps),0,0};
+    const auto audit=gf::task29MovingCompletion(goal,fixed,q,states,true,true);
+    REQUIRE(audit.valid);CHECK(audit.moving_instant_ready);CHECK_FALSE(audit.legacy_instant_ready);
+    CHECK(audit.maximum_coordinated_speed_bound<1e-5);
+    const auto lifted=gf::task20LiftTargets(goal,fixed,audit.front_positions);
+    REQUIRE(lifted.valid);
+    for(const auto& [id,p]:q)CHECK((p-lifted.targets.at(id)).norm()<1e-8);
+}
+
+TEST_CASE("Task29 continued front exactly preserves C3 prefix and is C1 for one two three units") {
+    const std::map<gf::NodeId,Eigen::Vector2d> fixed{{100,{1800,-50}},{101,{2250,-50}},{102,{2700,-50}}};
+    const auto old=gf::task25DagContractFromCode(0);
+    const auto a=gf::task20LiftTargets(old,fixed,gf::task26CompactFronts(old,fixed)).targets;
+    for(int mode:{12,0,2}) {
+        const auto goal=gf::task25DagContractFromCode(mode);
+        auto fronts=gf::task26CompactFronts(goal,fixed);
+        if(mode==0) {
+            int ordinal=0;
+            for(auto& [unit,g]:fronts){++ordinal;g+=Eigen::Vector2d(80*ordinal,50*ordinal);}
+        }
+        const auto b=gf::task20LiftTargets(goal,fixed,fronts).targets;
+        const gf::Task29RoleCenterPath path(goal,a,b);
+        for(int k=-10;k<=1000;++k) {
+            const double s=k/1000.;const auto q=path.evaluateContinuingFront(s),r=path.evaluate(s);
+            for(const auto& [id,p]:q)CHECK((p-r.at(id)).norm()==0);
+        }
+        const double eps=1e-7;
+        const auto left=path.evaluateContinuingFront(1-eps),right=path.evaluateContinuingFront(1+eps);
+        const auto coarse_left=path.evaluateContinuingFront(1-10*eps),coarse_right=path.evaluateContinuingFront(1+10*eps);
+        for(const auto& [id,p]:b) {
+            const double fine=((p-left.at(id))-(right.at(id)-p)).norm()/eps;
+            const double coarse=((p-coarse_left.at(id))-(coarse_right.at(id)-p)).norm()/(10*eps);
+            CHECK(std::isfinite(fine));
+            CHECK(fine<=.15*coarse+1e-5); // First-order finite-difference curvature must converge to zero.
+        }
+        for(double s:{1.,1.01,1.5,2.,6.}) {
+            const auto q=path.evaluateContinuingFront(s),next=path.evaluateContinuingFront(s+eps);
+            std::map<gf::NodeId,gf::Task29MotionState> state;
+            for(const auto& [id,p]:q)state[id]={p,(next.at(id)-p)/(60*eps),0,0};
+            const auto audit=gf::task29MovingCompletion(goal,fixed,q,state,true,true);
+            REQUIRE(audit.valid);CHECK(audit.maximum_coordinated_speed_bound<1e-5);
+            const auto lifted=gf::task20LiftTargets(goal,fixed,audit.front_positions);REQUIRE(lifted.valid);
+            for(const auto& [id,p]:q)CHECK((p-lifted.targets.at(id)).norm()<1e-8);
+        }
+        CHECK_THROWS(path.evaluateContinuingFront(std::numeric_limits<double>::quiet_NaN()));
+        CHECK_THROWS(path.evaluateContinuingFront(std::numeric_limits<double>::infinity()));
+        CHECK_THROWS(path.evaluateContinuingFront(-std::numeric_limits<double>::infinity()));
+    }
+}

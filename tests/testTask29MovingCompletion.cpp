@@ -126,3 +126,30 @@ TEST_CASE("Task29 role-center with original r4 time law is explicit opt-in") {
     CHECK((before.estimate.mean-adapter.runtimeSnapshot().estimate.mean).norm()==0);
     CHECK(before.topology_token==adapter.runtimeSnapshot().topology_token);
 }
+
+TEST_CASE("Task29 continued front is explicit linear role-path reconstruction only") {
+    auto scenario=gf::task10p11rFixedBaselineScenario();auto config=gf::task19ProductionAdapterConfig();
+    CHECK(config.target_policy_task18_cbf2026_outer);
+    config.target_policy_task18_cbf2026_outer=false;config.target_policy_task20_dag_lattice=true;
+    auto settings=gf::task10p11pSwarmSettings(scenario,gf::SolverProfile::Gurobi);Swarm swarm(settings);
+    gf::GrandFinaleSwarmAdapter adapter(swarm,scenario.mobile_ids,scenario.fixed_positions,scenario.initial_topology,config);
+    gf::Task10p11hSimpleCoverageController controller(swarm,adapter);REQUIRE(adapter.initializeStageZero().initialized);
+    const auto before=adapter.runtimeSnapshot();
+    for(const auto& prefix:{std::string("pinball"),std::string("cross-roundtrip")}) {
+        const auto action=prefix+"-qualified-layered-centeredframe-moving-linearphase-rolecenter";
+        gf::Task26ExternalReconstructor old(adapter,controller,action);
+        CHECK_FALSE(old.telemetry().contains("task29_front"));
+        gf::Task26ExternalReconstructor continued(adapter,controller,action+"-continuingfront");
+        const auto observed=continued.telemetry();
+        CHECK(observed.at("task29_front").at("terminal_behavior")=="continue_final_role_tangent");
+        CHECK(observed.at("task29_front").at("unclamped_motion_phase")==0.0);
+        CHECK_FALSE(observed.at("task29_front").at("applicable").get<bool>());
+        CHECK(observed.at("task29_timing").at("common_phase")=="linear");
+        CHECK(observed.at("task29").at("completion_contract")=="moving-v1");
+        CHECK_FALSE(observed.at("task28").at("search_governor").get<bool>());
+        CHECK_THROWS(gf::Task26ExternalReconstructor(adapter,controller,
+            prefix+"-qualified-layered-centeredframe-moving-rolecenter-continuingfront"));
+    }
+    CHECK((before.estimate.mean-adapter.runtimeSnapshot().estimate.mean).norm()==0);
+    CHECK(before.topology_token==adapter.runtimeSnapshot().topology_token);
+}
