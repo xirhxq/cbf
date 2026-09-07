@@ -24,6 +24,7 @@ public:
                     goal.member_roles.at(id).coverage_unit!=unit.id||goal.member_roles.at(id).member!=id)
                     throw std::invalid_argument("invalid role-center membership");
                 const auto m=task29RoleMatrix(goal.member_roles.at(id));
+                role_matrices_[id]=m;
                 if(!m.allFinite())throw std::invalid_argument("nonfinite role-center matrix");
                 mean+=m;
             }
@@ -36,6 +37,7 @@ public:
                 if(!weights_.at(id).allFinite())throw std::invalid_argument("nonfinite role-center weight");
             }
             units_.push_back(unit.members);
+            unit_names_.push_back(unit.id);
         }
         if(seen.size()!=from_.size())throw std::invalid_argument("incomplete role-center units");
     }
@@ -51,12 +53,20 @@ public:
         return out;
     }
     Targets evaluateContinuingFront(double phase) const {
+        return evaluateContinuingFront(phase,from_);
+    }
+    // Contract-derived basis; not an actual-state fit or a free member target.
+    Targets evaluateContinuingFront(double phase,const Targets& canonical_from) const {
         if(!std::isfinite(phase))throw std::invalid_argument("nonfinite continuing-front phase");
+        if(canonical_from.size()!=from_.size())throw std::invalid_argument("incomplete continuation basis");
+        for(const auto& [id,p]:from_)
+            if(!canonical_from.count(id)||!canonical_from.at(id).allFinite())
+                throw std::invalid_argument("invalid continuation basis");
         if(phase<=1)return evaluate(phase);
         auto out=to_;
         for(const auto& members:units_) {
             Eigen::Vector2d displacement=Eigen::Vector2d::Zero();
-            for(auto id:members)displacement+=to_.at(id)-from_.at(id);
+            for(auto id:members)displacement+=to_.at(id)-canonical_from.at(id);
             displacement*=(phase-1)/members.size();
             for(auto id:members) {
                 out.at(id)+=weights_.at(id)*displacement;
@@ -65,12 +75,31 @@ public:
         }
         return out;
     }
+    // Explicit per-unit front displacement per common phase. This is used
+    // only by a registered reconstruction experiment, never normal search.
+    Targets evaluateContinuingFrontWithRates(double phase,
+        const std::map<std::string,Eigen::Vector2d>& displacements) const {
+        if(!std::isfinite(phase)||displacements.size()!=units_.size())
+            throw std::invalid_argument("invalid explicit front continuation");
+        for(const auto& name:unit_names_)
+            if(!displacements.count(name)||!displacements.at(name).allFinite())
+                throw std::invalid_argument("missing or nonfinite front continuation");
+        if(phase<=1)return evaluate(phase);
+        auto out=to_;
+        for(std::size_t k=0;k<units_.size();++k)for(auto id:units_[k]) {
+            out.at(id)+=(phase-1)*role_matrices_.at(id)*displacements.at(unit_names_[k]);
+            if(!out.at(id).allFinite())throw std::invalid_argument("nonfinite explicit front reference");
+        }
+        return out;
+    }
     std::size_t layerCount() const {return raw_.layerCount();}
 private:
     Targets from_,to_;
     Task28LayerPath raw_;
     std::vector<std::vector<NodeId>> units_;
+    std::vector<std::string> unit_names_;
     std::map<NodeId,Eigen::Matrix2d> weights_;
+    std::map<NodeId,Eigen::Matrix2d> role_matrices_;
 };
 
 } // namespace gf

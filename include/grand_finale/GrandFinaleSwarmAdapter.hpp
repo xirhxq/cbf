@@ -14,6 +14,7 @@
 #include "grand_finale/InformationGateDiagnostic.hpp"
 #include "grand_finale/Task16CoverageTypes.hpp"
 #include "grand_finale/Task17PeriodicCoveragePolicy.hpp"
+#include "grand_finale/DistanceRangeAvailability.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -258,6 +259,7 @@ struct GrandFinaleSwarmAdapterConfig {
     unsigned int range_random_seed = 2027;
     double range_noise_std_m = 0.0;
     double range_dropout_probability = 0.0;
+    DistanceRangeAvailability distance_range_availability;
     double sensor_radius_m = 1.6;
     CoverageFootprintKind coverage_footprint_kind =
         CoverageFootprintKind::Circular;
@@ -487,6 +489,13 @@ struct AcceptedRangeUpdateAudit {
     double innovation_variance=0.0;
 };
 
+struct RangeGenerationAudit {
+    std::size_t batch=0;
+    UndirectedEdge edge;
+    double true_distance_m=0,probability=1,uniform=0;
+    bool acquired=true;
+};
+
 namespace range_noise_detail {
 
 inline std::uint64_t splitmix64(std::uint64_t value) {
@@ -679,6 +688,8 @@ public:
             !std::isfinite(config_.range_dropout_probability) ||
             config_.range_dropout_probability < 0.0 ||
             config_.range_dropout_probability > 1.0 ||
+            (config_.distance_range_availability.enabled &&
+             config_.range_dropout_probability != 0.0) ||
             !std::isfinite(config_.position_gain) ||
             config_.position_gain < 0.0 ||
             !std::isfinite(config_.velocity_gain) ||
@@ -1634,6 +1645,9 @@ public:
     std::vector<AcceptedRangeUpdateAudit> lastAcceptedRangeBatchAudit() const {
         return last_accepted_range_batch_audit_;
     }
+    std::vector<RangeGenerationAudit> lastRangeGenerationAudit() const {
+        return last_range_generation_audit_;
+    }
     std::vector<Eigen::Vector2d> searchPolygonVertices() const {
         return searchPolygon();
     }
@@ -1662,6 +1676,7 @@ public:
         const GrandFinaleFixedRestartState& state) {
         if (config_.range_noise_std_m!=0.0 ||
             config_.range_dropout_probability!=0.0 ||
+            config_.distance_range_availability.enabled ||
             !state.stage_zero_initialized ||
             state.mode!=SupervisorMode::Search ||
             supervisor_.mode()!=SupervisorMode::Search ||
@@ -2284,6 +2299,7 @@ private:
 
     void applyDeterministicRangeBatch() {
         last_accepted_range_batch_audit_.clear();
+        last_range_generation_audit_.clear();
         std::vector<RangeMeasurement> measurements;
         const std::int64_t timestamp = static_cast<std::int64_t>(
             std::llround(swarm_.robots.front()->runtime * 1.0e9));
@@ -2312,7 +2328,18 @@ private:
             const auto field=range_noise_detail::sample(
                 config_.range_random_seed,range_batch_count_,
                 measurement.edge,config_.range_dropout_probability);
-            if (field.dropped) {
+            bool dropped=field.dropped;
+            if(config_.distance_range_availability.enabled) {
+                const auto& model=config_.distance_range_availability;
+                const double uniform=range_noise_detail::openUnit(
+                    range_noise_detail::keyedBits(model.link_seed,range_batch_count_,
+                        measurement.edge,0x6a09e667f3bcc909ULL));
+                const bool acquired=model.acquired(measurement.range_m,uniform);
+                last_range_generation_audit_.push_back({range_batch_count_,measurement.edge,
+                    measurement.range_m,model.acquisitionProbability(measurement.range_m),uniform,acquired});
+                dropped=!acquired;
+            }
+            if (dropped) {
                 continue;
             }
             RangeMeasurement accepted = measurement;
@@ -2374,6 +2401,7 @@ private:
     std::map<std::string, double> range_quality_;
     std::map<std::string, double> range_variance_m2_;
     std::vector<AcceptedRangeUpdateAudit> last_accepted_range_batch_audit_;
+    std::vector<RangeGenerationAudit> last_range_generation_audit_;
     std::optional<std::map<NodeId, Eigen::Vector2d>> nominal_override_;
     std::optional<Swarm::CertifiedYawRateBatch> yaw_rate_override_;
     std::size_t range_batch_count_ = 0;

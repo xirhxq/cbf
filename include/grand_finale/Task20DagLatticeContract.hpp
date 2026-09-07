@@ -23,6 +23,8 @@ struct Task20CoverageUnit {
     // Generic front-frame support.  Legacy contracts may leave this empty,
     // in which case the leader is the sole front member.
     std::vector<NodeId> front_members;
+    // Optional explicit geometric origin; unrelated to physical range sources.
+    std::optional<Eigen::Vector2d> frame_origin;
 };
 
 // Every role is an affine triangular map
@@ -44,6 +46,9 @@ struct Task20DagLatticeContract {
     std::vector<Task20CoverageUnit> coverage_units;
     std::map<NodeId,Task20MemberRole> member_roles;
     std::vector<NodeId> topological_order;
+    // Physical scene membership, not the subset chosen as reference edges.
+    // Legacy default stays byte-for-byte compatible in target/control paths.
+    std::vector<NodeId> fixed_anchor_ids{100,101,102};
 };
 
 struct Task20LiftResult {
@@ -126,8 +131,11 @@ inline std::vector<DirectedEdge> diamondEdges() {
 }
 
 inline std::vector<NodeId> topologicalOrder(
-    const std::vector<DirectedEdge>& edges,std::string& reason) {
-    std::set<NodeId> nodes{100,101,102};
+    const std::vector<DirectedEdge>& edges,std::string& reason,
+    const std::vector<NodeId>& fixed_ids={100,101,102}) {
+    std::set<NodeId> nodes(fixed_ids.begin(),fixed_ids.end());
+    if(nodes.size()!=fixed_ids.size()||nodes.empty()) {reason="invalid_physical_anchors";return {};}
+    for(NodeId id:fixed_ids)if(id>=1&&id<=14) {reason="mobile_fixed_identity_overlap";return {};}
     for (NodeId owner=1;owner<=14;++owner) nodes.insert(owner);
     std::map<NodeId,std::size_t> indegree;
     std::map<NodeId,std::vector<NodeId>> successors;
@@ -180,6 +188,7 @@ inline void addRoles(Task20DagLatticeContract& result,
 }
 
 inline void finish(Task20DagLatticeContract& result) {
+    result.valid=false;result.reason.clear();result.topological_order.clear();
     if (result.reference_edges.size()!=28||result.member_roles.size()!=14) {
         result.reason="contract_cardinality";
         return;
@@ -202,8 +211,15 @@ inline void finish(Task20DagLatticeContract& result) {
         result.reason="missing_coverage_member";
         return;
     }
-    result.topological_order=topologicalOrder(result.reference_edges,result.reason);
-    result.valid=result.topological_order.size()==17;
+    for(const auto& unit:result.coverage_units)for(auto id:unit.base_anchors)
+        if(std::find(result.fixed_anchor_ids.begin(),result.fixed_anchor_ids.end(),id)==result.fixed_anchor_ids.end()) {
+            result.reason="unknown_frame_anchor";return;
+        }
+    for(const auto& unit:result.coverage_units)if(unit.frame_origin&&!unit.frame_origin->allFinite()) {
+        result.reason="nonfinite_frame_origin";return;
+    }
+    result.topological_order=topologicalOrder(result.reference_edges,result.reason,result.fixed_anchor_ids);
+    result.valid=result.topological_order.size()==14+result.fixed_anchor_ids.size();
 }
 
 }  // namespace task20_lattice_detail
@@ -291,6 +307,8 @@ inline Task20LiftResult task20LiftTargets(
             base+=fixed->second;
         }
         base/=static_cast<double>(unit.base_anchors.size());
+        if(unit.frame_origin)base=*unit.frame_origin;
+        if(!base.allFinite()){result.reason="nonfinite_frame_origin";return result;}
         const Eigen::Vector2d displacement=front->second-base;
         for (NodeId member:unit.members) {
             const auto& role=contract.member_roles.at(member);
@@ -338,6 +356,8 @@ inline Task20FrontInverseResult task20FrontForMemberPose(
         base+=fixed->second;
     }
     base/=static_cast<double>(unit->base_anchors.size());
+    if(unit->frame_origin)base=*unit->frame_origin;
+    if(!base.allFinite()){result.reason="nonfinite_frame_origin";return result;}
     const double a=role->second.axial_fraction;
     const double t=std::abs(role->second.triangular_fraction);
     const double sign=role->second.triangular_fraction<0.0?-1.0:1.0;

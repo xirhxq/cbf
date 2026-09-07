@@ -59,6 +59,8 @@ inline Task29CompletionAudit task29MovingCompletion(
             base+=fixed.at(id);
         }
         base/=unit.base_anchors.size();
+        if(unit.frame_origin)base=*unit.frame_origin;
+        if(!base.allFinite())return invalid("nonfinite_frame_origin");
         for (auto id:front) {
             if (!states.count(id)||contract.member_roles.at(id).coverage_unit!=unit.id||
                 std::find(unit.members.begin(),unit.members.end(),id)==unit.members.end()) return invalid("invalid_front_member");

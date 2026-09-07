@@ -217,7 +217,9 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     int task20_lattice_mode,int task20_target_policy,
     std::size_t task20_update_period_cycles,
     double task20_wavefront_band_width_m,
-    double venue_width_m=3000.0,double venue_height_m=3000.0) {
+    double venue_width_m=3000.0,double venue_height_m=3000.0,
+    const std::optional<gf::Task31AnchorScene>& anchor_scene=std::nullopt,
+    gf::DistanceRangeAvailability range_availability={}) {
     auto scenario=gf::task10p11rFixedBaselineScenario();
     if (!(venue_width_m>0.0&&venue_height_m>0.0)||
         std::fmod(venue_width_m,10.0)!=0.0||
@@ -234,6 +236,11 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     scenario.fixed_positions={{100,{0.4*venue_width_m,-50.0}},
         {101,{0.5*venue_width_m,-50.0}},
         {102,{0.6*venue_width_m,-50.0}}};
+    if(anchor_scene) {
+        if(!anchor_scene->valid||anchor_scene->width_m!=venue_width_m||anchor_scene->height_m!=venue_height_m)
+            throw std::invalid_argument("anchor asset venue identity mismatch");
+        scenario.fixed_positions=anchor_scene->fixed;
+    }
     if (def.id=="task24-pinball"||def.id=="task24-triangle") {
         const auto contract=gf::task24Contract(def.id=="task24-pinball"
             ?gf::Task24LatticeMode::Pinball5432
@@ -253,8 +260,7 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     // throttle_v2, rows_removed, rung_b, v4_prime, bare, rung_b_prime,
     // rung_b2, target_policy_v2, velocity_augmented_rows,
     // target_policy_v3.
-    return std::make_unique<gf::Task10p11rFixedBaselineFixture>(
-        std::move(scenario),std::move(settings),
+    auto launch_config=gf::task10p11rFixtureAdapterConfig(
         selection,tau,true,
         false,false,false,false,false,false,
         false,false,false,false,false,true,policy_v2,
@@ -287,6 +293,9 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
         target_policy_task20_dag_lattice,
         task20_lattice_mode,task20_target_policy,
         task20_update_period_cycles,task20_wavefront_band_width_m);
+    launch_config.distance_range_availability=range_availability;
+    return std::make_unique<gf::Task10p11rFixedBaselineFixture>(
+        std::move(scenario),std::move(settings),std::move(launch_config));
 }
 
 }  // namespace
@@ -294,7 +303,11 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
 // GrandFinale production/search evidence runner.  Historical policies remain
 // explicit; an omitted policy selects the researcher-frozen Task 18 baseline.
 int main(int argc,char** argv) {
-    if (argc<5||argc>25||argc==23) {
+    const std::string trailing=argc>1?argv[argc-1]:"";
+    const std::string range_prefix="range-availability=";
+    const bool explicit_range_model=trailing.rfind(range_prefix,0)==0;
+    if(explicit_range_model)--argc;
+    if (argc<5||argc>30||argc==23) {
         std::cerr<<"usage: GrandFinaleTask13PhaseARun TEMPLATE OUTPUT_JSON "
             "PROGRESS_DIR TELEMETRY_JSONL [TAU] [WINDOW_S] [POLICY] [ROWS] "
             "[RANGE_NOISE_STD_M] [DROPOUT_PROBABILITY] [RANGE_SEED] "
@@ -302,7 +315,8 @@ int main(int argc,char** argv) {
             "[linear|braking] [WS_K1] [WS_K2] [WS_BRAKE_A] [WS_EPS] "
             "[TARGET_HOMOTOPY_0_OR_1] [HOMOTOPY_RATE_GAIN] "
             "[HOMOTOPY_GUARD_M] [VENUE_WIDTH_M VENUE_HEIGHT_M] "
-            "[EXTERNAL_RECONSTRUCTION: cross-roundtrip|pinball]\n";
+            "[EXTERNAL_RECONSTRUCTION: cross-roundtrip|pinball] [BRIDGE_SCALE_KAPPA] "
+            "[old-only-canonical-continuation]\n";
         return 2;
     }
     const auto started=std::chrono::steady_clock::now();
@@ -311,6 +325,25 @@ int main(int argc,char** argv) {
             std::chrono::steady_clock::now()-started).count();
     };
     try {
+        gf::DistanceRangeAvailability range_availability;
+        json range_asset;
+        if(explicit_range_model) {
+            std::ifstream input(trailing.substr(range_prefix.size()));
+            if(!input)throw std::invalid_argument("missing distance range asset");
+            input>>range_asset;
+            if(range_asset.at("model")!="distance-exponential-850-1000p05-v1"||
+               range_asset.at("enabled")!=true||
+               range_asset.at("certain_acquisition_radius_m")!=850.0||
+               range_asset.at("calibration_distance_m")!=1000.0||
+               range_asset.at("calibration_acquisition_probability")!=.05||
+               range_asset.at("fixed_dropout_probability")!=0.0||
+               range_asset.at("initial_batch_uses_same_rule")!=true)
+                throw std::invalid_argument("distance range asset violates frozen contract");
+            const auto seed=range_asset.at("link_seed").get<std::int64_t>();
+            if(seed<0||seed>std::numeric_limits<unsigned int>::max())
+                throw std::invalid_argument("invalid independent link seed");
+            range_availability={true,static_cast<unsigned int>(seed)};
+        }
         const std::string template_id=argv[1];
         const auto production_defaults=gf::task19ProductionDefaults();
         const std::string policy=argc>=8?argv[7]:
@@ -478,8 +511,40 @@ int main(int argc,char** argv) {
             std::stod(argv[10]):0.0;
         const unsigned int range_random_seed=argc>=12?
             static_cast<unsigned int>(std::stoul(argv[11])):2027U;
-        const auto def=makeTemplate(template_id);
-        const bool external_reconstruction_enabled=argc==25;
+        double bridge_scale=1.0;
+        if(argc>=26) {
+            const std::string value(argv[25]);std::size_t consumed=0;
+            try {bridge_scale=std::stod(value,&consumed);}
+            catch(const std::exception&) {throw std::invalid_argument("invalid bridge scale");}
+            if(consumed!=value.size()||!std::isfinite(bridge_scale)||bridge_scale<1)
+                throw std::invalid_argument("invalid bridge scale");
+        }
+        const bool task31_common=argc>=28&&std::string(argv[27])=="task31-triangular-common";
+        const bool task31_triangular=argc>=28&&(std::string(argv[27])=="task31-triangular-final"||task31_common);
+        if(argc>=28&&(!task31_triangular||std::string(argv[26])!="canonical"))
+            throw std::invalid_argument("invalid Task31 final lifting option");
+        const bool task31_fixed_control=argc==30;
+        const int task31_fixed_code=task31_fixed_control&&std::string(argv[29])=="fixed-h0-control"?0:12;
+        if(task31_fixed_control&&((std::string(argv[29])!="fixed-pinball-control"&&std::string(argv[29])!="fixed-h0-control")||task31_common))
+            throw std::invalid_argument("invalid fixed Pinball diagnostic option");
+        std::optional<gf::Task31AnchorScene> anchor_scene;
+        if(argc>=29) {
+            std::ifstream input(argv[28]);if(!input)throw std::invalid_argument("missing anchor asset");
+            json asset;input>>asset;anchor_scene=gf::task31AnchorScene(asset);
+            if(!anchor_scene->valid)throw std::invalid_argument(anchor_scene->reason);
+        }
+        const bool old_bridge_only=argc==27;
+        if(old_bridge_only&&std::string(argv[26])!="old-only-canonical-continuation")
+            throw std::invalid_argument("invalid old-bridge continuation option");
+        auto def=makeTemplate(template_id);
+        if(task31_fixed_control) {
+            if(!anchor_scene||!task31_triangular)
+                throw std::invalid_argument("fixed Pinball control requires immutable triangular anchor asset");
+            if(task31_fixed_code!=0)def.topology=anchor_scene->goal.reference_edges;
+            def.description=task31_fixed_code==0?"Task31 fixed six-anchor H0; original physical launch state; no external request":
+                "Task31 fixed six-anchor triangular Pinball; original physical launch state; no external request";
+        }
+        const bool external_reconstruction_enabled=argc>=25;
         if (external_reconstruction_enabled && (template_id!="origin"||
             policy!="task25-h0-p0"||tau!=14.0||acceleration_half_box_mps2!=4.0||
             rows_mode!="vaug-speed29p9"||target_homotopy_enabled))
@@ -515,7 +580,7 @@ int main(int argc,char** argv) {
             policy_task24?(task20_lattice_mode==9?560.0:650.0):
             task20_target_policy==4
                 ?(task20_lattice_mode==0?220.0:450.0):190.0,
-            venue_width_m,venue_height_m);
+            venue_width_m,venue_height_m,anchor_scene,range_availability);
         // P5 selects its pass spacing at runtime from the hole-free rule,
         // so the configured band width is recorded but unused for -p5.
         if (!fixture->adapter.initializeStageZero().initialized) {
@@ -534,7 +599,7 @@ int main(int argc,char** argv) {
         std::unique_ptr<gf::Task26ExternalReconstructor> external_reconstructor;
         if (external_reconstruction_enabled)
             external_reconstructor=std::make_unique<gf::Task26ExternalReconstructor>(
-                fixture->adapter,fixture->controller,argv[24]);
+                fixture->adapter,fixture->controller,argv[24],60.0,bridge_scale,old_bridge_only,task31_triangular,task31_common,anchor_scene,task31_fixed_control,task31_fixed_code);
         if (policy_task19_switch)
             task19_switcher=
                 std::make_unique<gf::Task19OriginMicrofixSwitcher>(
@@ -802,6 +867,14 @@ int main(int argc,char** argv) {
         std::filesystem::create_directories(argv[3]);
         if (external_reconstructor)
             record["external_reconstruction_plan"]=external_reconstructor->report();
+        if(argc>=26)record["task30_bridge_scale"]=bridge_scale;
+        if(old_bridge_only)record["task30_bridge_scope"]="old-only-canonical-continuation";
+        if(task31_triangular)record["task31_lifting"]="dag-depth-staggered-slots-v1";
+        if(task31_common)record["task31_bridge"]="union-depth-nearest-anchor-third";
+        if(anchor_scene)record["task31_anchor_asset"]=anchor_scene->identity;
+        if(explicit_range_model)record["range_availability"]=range_asset;
+        if(task31_fixed_control)record["task31_fixed_mode_control"]=true;
+        if(task31_fixed_control&&task31_fixed_code==0)record["task31_fixed_mode_code"]=0;
         gf::writeTask10p11vJson(
             std::filesystem::path(argv[3])/"00-config.json",record);
         std::ofstream telemetry(argv[4]);

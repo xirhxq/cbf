@@ -6,13 +6,24 @@
 #include "grand_finale/Task29ProjectedCompact.hpp"
 #include "grand_finale/Task29ExpansionTime.hpp"
 #include "grand_finale/Task29RoleCenterPath.hpp"
+#include "grand_finale/Task30SimilarityBridge.hpp"
+#include "grand_finale/Task31TriangularLattice.hpp"
+#include "grand_finale/Task31InformationTelemetry.hpp"
+#include "grand_finale/Task31CommonBridge.hpp"
+#include "grand_finale/Task31AnchorScene.hpp"
 #include "grand_finale/TransitionCertifier.hpp"
 #include "grand_finale/Task10p11hSimpleCoverageController.hpp"
 
 namespace gf {
 
-inline bool task26ValidDag(const std::vector<DirectedEdge>& edges,std::size_t max_refs) {
-    const TopologyRequest request{task10p10MobileIds(14),{100,101,102},
+inline bool task26ValidDag(const std::vector<DirectedEdge>& edges,std::size_t max_refs,
+    const std::vector<NodeId>& fixed_ids={100,101,102}) {
+    const std::set<NodeId> fixed(fixed_ids.begin(),fixed_ids.end());
+    if(fixed.size()!=fixed_ids.size()||fixed.empty())return false;
+    for(auto id:fixed)if(id>=1&&id<=14)return false;
+    for(const auto& e:edges)if(e.owner<1||e.owner>14||
+        (!(e.reference>=1&&e.reference<=14)&&!fixed.count(e.reference)))return false;
+    const TopologyRequest request{task10p10MobileIds(14),fixed_ids,
         edges,edges,2,max_refs,{},{},{}};
     return TopologyModel(request).evaluate(edges).valid;
 }
@@ -26,9 +37,10 @@ struct Task26ReplacementPlan {
 // Fixed finite library action, no topology optimiser. Every intermediate
 // union is explicitly checked; a cyclic union is never executed.
 inline Task26ReplacementPlan task26ReplacementPlan(
-    std::vector<DirectedEdge> current,const std::vector<DirectedEdge>& goal) {
+    std::vector<DirectedEdge> current,const std::vector<DirectedEdge>& goal,
+    const std::vector<NodeId>& fixed_ids={100,101,102}) {
     Task26ReplacementPlan result;
-    if (!task26ValidDag(current,2)||!task26ValidDag(goal,2)) {
+    if (!task26ValidDag(current,2,fixed_ids)||!task26ValidDag(goal,2,fixed_ids)) {
         result.reason="invalid_endpoint_dag";return result;
     }
     const auto target=task25_detail::edgeSet(goal);
@@ -47,7 +59,7 @@ inline Task26ReplacementPlan task26ReplacementPlan(
         for (const auto& pair:candidates) {
             auto united=current;united.push_back(pair.first);
             auto next=transition_certifier_detail::without(united,pair.second);
-            if (!task26ValidDag(united,3)||!task26ValidDag(next,2)) continue;
+            if (!task26ValidDag(united,3,fixed_ids)||!task26ValidDag(next,2,fixed_ids)) continue;
             result.replacements.push_back(pair);current=std::move(next);
             progressed=true;break;
         }
@@ -69,6 +81,8 @@ inline bool task27SameTargetMapping(const Task20DagLatticeContract& a,
         const auto& u=a.coverage_units[i];const auto& v=b.coverage_units[i];
         if (u.id!=v.id||u.members!=v.members||u.base_anchors!=v.base_anchors||
             u.leader!=v.leader||u.front_members!=v.front_members) return false;
+        if(u.frame_origin.has_value()!=v.frame_origin.has_value())return false;
+        if(u.frame_origin&&(*u.frame_origin-*v.frame_origin).squaredNorm()!=0)return false;
     }
     for (const auto& [id,u]:a.member_roles) {
         const auto p=b.member_roles.find(id);if (p==b.member_roles.end()) return false;
@@ -107,8 +121,9 @@ class Task26ExternalReconstructor {
 public:
     Task26ExternalReconstructor(GrandFinaleSwarmAdapter& adapter,
         Task10p11hSimpleCoverageController& controller,const std::string& action,
-        double request_s=60.0)
-        :adapter_(adapter),controller_(controller),action_(action),next_request_s_(request_s) {
+        double request_s=60.0,double bridge_scale=1.0,bool old_bridge_only=false,bool triangular_final=false,bool common_bridge=false,
+        std::optional<Task31AnchorScene> anchor_scene=std::nullopt,bool fixed_mode_observer=false,int fixed_mode_code=12)
+        :adapter_(adapter),controller_(controller),action_(action),next_request_s_(request_s),bridge_scale_(bridge_scale),old_bridge_only_(old_bridge_only),triangular_final_(triangular_final),common_bridge_(common_bridge),anchor_scene_(std::move(anchor_scene)),fixed_mode_observer_(fixed_mode_observer),fixed_mode_code_(fixed_mode_code) {
         if(action_=="pinball-qualified-layered-centeredframe-moving-linearphase-rolecenter-continuingfront"||
             action_=="cross-roundtrip-qualified-layered-centeredframe-moving-linearphase-rolecenter-continuingfront") {
             continuing_front_=true;action_.erase(action_.size()-std::string("-continuingfront").size());
@@ -147,14 +162,50 @@ public:
             qualified_contraction_=true;
             action_.erase(action_.size()-std::string("-qualified").size());
         }
+        if(!std::isfinite(bridge_scale_)||bridge_scale_<1||
+            ((bridge_scale_!=1||old_bridge_only_)&&!continuing_front_))
+            throw std::invalid_argument("similarity bridge scale requires C5 and finite kappa >= 1");
+        if(triangular_final_&&(!continuing_front_||action_!="pinball"||bridge_scale_!=1||old_bridge_only_))
+            throw std::invalid_argument("Task31 triangular final requires canonical C5 and unchanged old bridge");
+        if(common_bridge_&&!triangular_final_)
+            throw std::invalid_argument("Task31 common bridge requires the paired triangular final");
+        if(anchor_scene_&&anchor_scene_->reparameterizedFinal()&&!common_bridge_&&!fixed_mode_observer_)
+            throw std::invalid_argument("Task31 aperture transition requires explicit common-bridge continuation");
         if ((action_!="pinball"&&action_!="cross-roundtrip")||
             !adapter.config().target_policy_task20_dag_lattice||
             adapter.config().task20_lattice_mode!=0||
             adapter.config().task20_target_policy!=0)
             throw std::invalid_argument("Task26 requires frozen H0/P0 entry");
+        if(fixed_mode_observer_&&(!anchor_scene_||common_bridge_))
+            throw std::invalid_argument("fixed control requires explicit goal asset and no bridge");
+        if(fixed_mode_code_!=12&&(!fixed_mode_observer_||fixed_mode_code_!=0))
+            throw std::invalid_argument("fixed observer outside preregistered H0/Pinball library");
+        if(anchor_scene_) {
+            const auto& scene=*anchor_scene_;const auto r=adapter_.runtimeSnapshot();
+            if(!scene.valid||!triangular_final_||scene.mode_code!=12||r.estimate.fixed_positions!=scene.fixed)
+                throw std::invalid_argument("paired anchor asset must match immutable runtime scene");
+            const auto fixed_contract=fixed_mode_code_==0?task25DagContractFromCode(0):scene.goal;
+            if(fixed_mode_observer_&&(r.runtime_s!=0||r.adapter_transition_pending||
+                task25_detail::edgeSet(r.topology)!=task25_detail::edgeSet(fixed_contract.reference_edges)))
+                throw std::invalid_argument("fixed control must initialize in the actual goal DAG");
+            controller_.registerExternalCoverageContract(scene.mode_code,scene.goal);
+            if(fixed_mode_observer_) {
+                // Diagnostic fixed-mode control: select an already initialized
+                // DAG/mapping. This is not a graph handoff or a realized request.
+                if(fixed_mode_code_!=0)controller_.commitExternalCoverageMode(scene.mode_code,scene.goal);
+                active_mode_=fixed_mode_code_;new_contract_=fixed_contract;
+                next_request_s_=std::numeric_limits<double>::infinity();
+                if(fixed_mode_code_!=0)for(const auto& [id,cell]:scene.cells) {
+                    const auto& role=scene.goal.member_roles.at(id);
+                    triangular_roles_[std::to_string(id)]={{"row",cell.row},{"slot",cell.slot},
+                        {"axial_fraction",role.axial_fraction},{"triangular_fraction",role.triangular_fraction}};
+                }
+            }
+        }
     }
 
     void beforeStep() {
+        if(fixed_mode_observer_)return;
         const auto runtime=adapter_.runtimeSnapshot();
         const double now=runtime.runtime_s;
         if (moving_completion_) moving_telemetry_["applicable"]=false;
@@ -178,6 +229,8 @@ public:
             auto fronts=from_fronts_;
             for (auto& [unit,p]:fronts) p=(1.0-fraction_)*p+fraction_*compact_fronts_.at(unit);
             reference_=task20LiftTargets(old_contract_,runtime.estimate.fixed_positions,fronts).targets;
+            if(common_bridge_)for(const auto& [id,p]:initial_motion_targets_)
+                reference_[id]=(1.0-fraction_)*p+fraction_*old_compact_targets_.at(id);
             controller_.setExternalReconstructionReference(reference_);
             tracking(runtime);
             if (qualified_contraction_) {
@@ -196,6 +249,24 @@ public:
                     // Freeze the CURRENT common-front reference, not the
                     // unfinished compact endpoint. No target discontinuity.
                     old_compact_targets_=reference_;
+                    if(old_bridge_only_||common_bridge_) {
+                        auto canonical_fronts=from_fronts_;
+                        for(auto& [unit,p]:canonical_fronts)
+                            p=(1.0-fraction_)*p+fraction_*canonical_compact_fronts_.at(unit);
+                        continuation_from_=task20LiftTargets(old_contract_,
+                            runtime.estimate.fixed_positions,canonical_fronts).targets;
+                        nlohmann::json basis=nlohmann::json::object();
+                        for(const auto& [u,p]:canonical_fronts)basis[u]={p.x(),p.y()};
+                        requests_.back()[common_bridge_?"common_bridge":"old_bridge_only"]["canonical_admitted_fronts"]=basis;
+                        task31_continuation_rates_.clear();
+                        if(anchor_scene_&&anchor_scene_->reparameterizedFinal()) {
+                            task31_continuation_rates_=task31UnscaledContinuationRates(*anchor_scene_,continuation_from_);
+                            nlohmann::json rates=nlohmann::json::object();
+                            for(const auto& [unit,v]:task31_continuation_rates_)rates[unit]={v.x(),v.y()};
+                            requests_.back()["task31_front_continuation"]={{"displacement_per_phase",rates},
+                                {"phase_duration_s",60.0},{"source","unscaled_final_and_canonical_old_at_actual_admission"}};
+                        }
+                    }
                     if (task27SameTargetMapping(old_contract_,new_contract_))
                         new_compact_targets_=task20LiftTargets(new_contract_,
                             runtime.estimate.fixed_positions,fronts).targets;
@@ -218,7 +289,8 @@ public:
                 return;
             }
             if (edge_index_==plan_.replacements.size()) {
-                controller_.commitExternalCoverageMode(pending_mode_);
+                controller_.commitExternalCoverageMode(pending_mode_,triangular_final_?
+                    std::optional<Task20DagLatticeContract>(new_contract_):std::nullopt);
                 active_mode_=pending_mode_;
                 stage_="expanding";expansion_started_=now;motion_phase_=0;shape_dwell_=0;legacy_shadow_dwell_=0;
                 if (layered_expansion_) {
@@ -260,7 +332,10 @@ public:
                 task26SmoothStep((now-expansion_started_)/60.0);
             if (continuing_front_) {
                 motion_phase_=std::max(0.0,(now-expansion_started_)/60.0);
-                reference_=role_center_path_->evaluateContinuingFront(motion_phase_);
+                if(!task31_continuation_rates_.empty())
+                    reference_=role_center_path_->evaluateContinuingFrontWithRates(motion_phase_,task31_continuation_rates_);
+                else reference_=(old_bridge_only_||common_bridge_)?role_center_path_->evaluateContinuingFront(motion_phase_,continuation_from_):
+                    role_center_path_->evaluateContinuingFront(motion_phase_);
             } else if (role_center_expansion_) reference_=role_center_path_->evaluate(fraction_);
             else if (layered_expansion_) reference_=expansion_path_->evaluate(fraction_);
             else for (const auto& [id,p]:old_compact_targets_)
@@ -303,13 +378,38 @@ public:
         if (continuing_front_) result["task29_front"]={{"terminal_behavior","continue_final_role_tangent"},
             {"unclamped_motion_phase",motion_phase_},{"applicable",stage_=="expanding"},
             {"shape_phase_clamped",true},{"duration_s",60.0}};
+        if(old_bridge_only_)result["task30_old_bridge"]={{"old_scale",bridge_scale_},{"new_scale",1.0},
+            {"center_id",101},{"continuation_basis","unscaled_old_at_actual_admission_fraction"},
+            {"fixed_anchors_scaled",false},{"normal_search_scaled",false}};
+        else if(bridge_scale_!=1)result["task30_bridge"]={{"kappa",bridge_scale_},{"center_id",101},
+            {"fixed_anchors_scaled",false},{"normal_search_scaled",false}};
+        if(triangular_final_)result["task31"]={{"triangular_final",true},{"generator","dag-depth-staggered-slots-v1"},
+            {"bridge",common_bridge_?"union-depth-nearest-anchor-third":"legacy-C5"},{"final_contract_id",new_contract_.id},{"roles",triangular_roles_},
+            {"current_information",task31InformationTelemetry(adapter_)}};
+        if(common_bridge_)result["task31"]["common_bridge"]=common_bridge_metadata_;
+        if(anchor_scene_)result["task31"]["anchor_asset"]=anchor_scene_->identity;
+        if(anchor_scene_&&anchor_scene_->reparameterizedFinal()) {
+            result["task31"]["front_similarity_gain"]=anchor_scene_->front_similarity_gain;
+            if(anchor_scene_->front_port_binding!="none") {
+                result["task31"]["front_port_binding"]=anchor_scene_->front_port_binding;
+                result["task31"]["terminal_ports"]=anchor_scene_->terminal_ports;
+            }
+            result["task31"]["explicit_continuation_displacement_per_phase"]=nlohmann::json::object();
+            for(const auto& [unit,v]:task31_continuation_rates_)
+                result["task31"]["explicit_continuation_displacement_per_phase"][unit]={v.x(),v.y()};
+        }
+        if(fixed_mode_observer_) {
+            result["enabled"]=false;
+            result["task31"]["fixed_mode_control"]=true;
+            if(fixed_mode_code_==0)result["task31"]["fixed_mode_code"]=0;
+        }
         return result;
     }
     nlohmann::json report() const {
         return {{"action",action_},{"requests",requests_},{"events",events_},
             {"qualification_rejection_counts",rejections_},{"final",telemetry()},
-            {"planned_request_count",action_=="cross-roundtrip"?2:1},
-            {"untriggered_request_count",(action_=="cross-roundtrip"?2:1)-requests_.size()}};
+            {"planned_request_count",fixed_mode_observer_?0:action_=="cross-roundtrip"?2:1},
+            {"untriggered_request_count",(fixed_mode_observer_?0:action_=="cross-roundtrip"?2:1)-requests_.size()}};
     }
 private:
     void restore(double now,const std::string& reason) {
@@ -384,7 +484,19 @@ private:
         old_contract_=task25DagContractFromCode(active_mode_);
         pending_mode_=action_=="pinball"?12:(active_mode_==0?11:0);
         new_contract_=task25DagContractFromCode(pending_mode_);
-        plan_=task26ReplacementPlan(r.topology,new_contract_.reference_edges);
+        if(triangular_final_) {
+            const auto generated=anchor_scene_?Task31Lattice{true,"frozen_asset",anchor_scene_->goal,anchor_scene_->cells}:
+                task31TriangularLattice(new_contract_,r.estimate.fixed_positions,{0,1});
+            if(!generated.valid)throw std::logic_error(generated.reason);
+            new_contract_=generated.contract;
+            for(const auto& [id,cell]:generated.cells) {
+                const auto role=new_contract_.member_roles.at(id);
+                triangular_roles_[std::to_string(id)]={{"row",cell.row},{"slot",cell.slot},
+                    {"axial_fraction",role.axial_fraction},{"triangular_fraction",role.triangular_fraction}};
+            }
+        }
+        std::vector<NodeId> physical_ids;for(const auto& [id,p]:r.estimate.fixed_positions)physical_ids.push_back(id);
+        plan_=task26ReplacementPlan(r.topology,new_contract_.reference_edges,physical_ids);
         if (!plan_.valid) throw std::logic_error(plan_.reason);
         from_fronts_.clear();
         nlohmann::json ledger=nlohmann::json::object();
@@ -397,6 +509,14 @@ private:
             from_fronts_[unit.id]=inverse.front;
         }
         compact_fronts_=task26CompactFronts(old_contract_,r.estimate.fixed_positions);
+        canonical_compact_fronts_=compact_fronts_;
+        auto new_bridge_fronts=task26CompactFronts(new_contract_,r.estimate.fixed_positions);
+        if(anchor_scene_)for(auto& [id,p]:new_bridge_fronts)p=anchor_scene_->frame_origin+anchor_scene_->final_front_offset;
+        if(bridge_scale_!=1) {
+            compact_fronts_=task30SimilarityBridgeFronts(old_contract_,r.estimate.fixed_positions,compact_fronts_,bridge_scale_);
+            if(!old_bridge_only_)
+                new_bridge_fronts=task30SimilarityBridgeFronts(new_contract_,r.estimate.fixed_positions,new_bridge_fronts,bridge_scale_);
+        }
         nlohmann::json compact_inputs;
         if(projected_compact_) {
             auto zero=compact_fronts_;
@@ -434,13 +554,39 @@ private:
             compact_fronts_=projection.fronts;
         }
         old_compact_targets_=task20LiftTargets(old_contract_,r.estimate.fixed_positions,compact_fronts_).targets;
+        if(common_bridge_) {
+            const auto bridge=anchor_scene_?task31CommonBridge(old_contract_,new_contract_,r.estimate.fixed_positions,
+                anchor_scene_->direction,anchor_scene_->bridge_spacing_m,anchor_scene_->ranking_span_m,anchor_scene_->frame_origin):
+                task31CommonBridge(old_contract_,new_contract_,r.estimate.fixed_positions,{0,1});
+            if(!bridge.valid)throw std::logic_error(bridge.reason);
+            initial_motion_targets_=task20LiftTargets(old_contract_,r.estimate.fixed_positions,from_fronts_).targets;
+            old_compact_targets_=bridge.targets;
+            nlohmann::json edges=nlohmann::json::array(),roles=nlohmann::json::object();
+            for(const auto& e:bridge.geometry_edges)edges.push_back({e.reference,e.owner});
+            for(const auto& [id,p]:bridge.targets) {
+                const auto cell=bridge.lattice.cells.at(id);
+                roles[std::to_string(id)]={{"row",cell.row},{"slot",cell.slot},{"target",{p.x(),p.y()}}};
+            }
+            common_bridge_metadata_={{"geometry_edges",edges},{"temporary_roles",roles},{"spacing_m",bridge.spacing_m},
+                {"continuation_basis","canonical_old_at_actual_admission_fraction"},{"executed_as_union_graph",false},
+                {"reference_only_FIM_is_gate",false},{"interpolation","original_60s_smoothstep_shared_phase"}};
+        }
         new_compact_targets_=task20LiftTargets(new_contract_,r.estimate.fixed_positions,
-            task26CompactFronts(new_contract_,r.estimate.fixed_positions)).targets;
+            new_bridge_fronts).targets;
         request_started_=r.runtime_s;edge_index_=0;shape_dwell_=0;stage_="contracting";
         requests_.push_back({{"from_mode",active_mode_},{"to_mode",pending_mode_},
             {"received_s",r.runtime_s},{"outcome","pending"},{"history_ledger",ledger},
             {"estimator_version_at_request",r.estimator_token},{"topology_version_at_request",r.topology_token}});
+        if(common_bridge_)requests_.back()["common_bridge"]=common_bridge_metadata_;
         if(projected_compact_)requests_.back()["compact_projection"]=compact_inputs;
+        if(bridge_scale_!=1||old_bridge_only_) {
+            nlohmann::json old_fronts=nlohmann::json::object(),new_fronts=nlohmann::json::object();
+            for(const auto& [u,p]:compact_fronts_)old_fronts[u]={p.x(),p.y()};
+            for(const auto& [u,p]:new_bridge_fronts)new_fronts[u]={p.x(),p.y()};
+            requests_.back()[old_bridge_only_?"old_bridge_only":"similarity_bridge"]={{"kappa",bridge_scale_},{"center_id",101},
+                {"old_endpoint_fronts",old_fronts},{"new_endpoint_fronts",new_fronts},
+                {"admission_still_requires_fresh_actual_qualification",true}};
+        }
         event("accepted","external_pre_registered_request");
     }
     void event(const std::string& kind,const std::string& reason,double gamma=0) {
@@ -456,6 +602,15 @@ private:
     std::string action_,stage_="search",last_reason_;
     int active_mode_=0,pending_mode_=0;
     double next_request_s_,request_started_=0,expansion_started_=0,fraction_=0,motion_phase_=0;
+    double bridge_scale_=1.0;
+    bool old_bridge_only_=false;
+    bool triangular_final_=false;
+    bool common_bridge_=false;
+    std::optional<Task31AnchorScene> anchor_scene_;
+    bool fixed_mode_observer_=false;
+    int fixed_mode_code_=12;
+    nlohmann::json common_bridge_metadata_=nlohmann::json::object();
+    nlohmann::json triangular_roles_=nlohmann::json::object();
     double rms_=0,max_error_=0,max_speed_=0;
     std::size_t edge_index_=0,shape_dwell_=0,qualification_attempts_=0;
     bool shape_ready_=false;
@@ -476,8 +631,9 @@ private:
     std::string plan_reason_;
     Task20DagLatticeContract old_contract_,new_contract_;
     Task26ReplacementPlan plan_;
-    std::map<std::string,Eigen::Vector2d> from_fronts_,compact_fronts_;
-    std::map<NodeId,Eigen::Vector2d> reference_,old_compact_targets_,new_compact_targets_;
+    std::map<std::string,Eigen::Vector2d> from_fronts_,compact_fronts_,canonical_compact_fronts_;
+    std::map<std::string,Eigen::Vector2d> task31_continuation_rates_;
+    std::map<NodeId,Eigen::Vector2d> reference_,old_compact_targets_,new_compact_targets_,continuation_from_,initial_motion_targets_;
     nlohmann::json requests_=nlohmann::json::array(),events_=nlohmann::json::array();
     std::map<std::string,std::size_t> rejections_;
 };

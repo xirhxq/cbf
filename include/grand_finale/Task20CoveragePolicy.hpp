@@ -241,6 +241,7 @@ inline Task20CoverageResult allocateTask20Coverage(Task20CoverageRequest request
                 for (NodeId anchor:unit.base_anchors)
                     base+=request.fixed_positions.at(anchor);
                 base/=static_cast<double>(unit.base_anchors.size());
+                if(unit.frame_origin)base=*unit.frame_origin;
                 Eigen::Vector2d heading=candidate->center-base;
                 if (heading.norm()<=1.0e-12) heading={0.0,1.0};
                 heading.normalize();

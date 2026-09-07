@@ -335,6 +335,19 @@ struct Task10p11rFixedBaselineFixture {
           frozen_topology(scenario.initial_topology),
           initial_topology_version(adapter.supervisor().topologyVersion()) {}
 
+    // Explicit research launch configuration; installed before any measurement
+    // or EKF initialization. Legacy overloads and production defaults are intact.
+    Task10p11rFixedBaselineFixture(
+        Task10p10Scenario scenario_value,json settings_value,
+        GrandFinaleSwarmAdapterConfig config_value)
+        : scenario(std::move(scenario_value)),settings(std::move(settings_value)),
+          swarm(settings),
+          adapter(swarm,scenario.mobile_ids,scenario.fixed_positions,
+              scenario.initial_topology,std::move(config_value)),
+          controller(swarm,adapter,{}, {},task10p11rAuthorityContract().branches),
+          frozen_topology(scenario.initial_topology),
+          initial_topology_version(adapter.supervisor().topologyVersion()) {}
+
     Task10p11rFixedBaselineFixture(
         Task10p10Scenario scenario_value,json settings_value,
         GammaFeedbackSelectionMode selection,

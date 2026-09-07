@@ -700,8 +700,48 @@ public:
         }
         external_reconstruction_reference_=std::move(reference);
     }
-    void commitExternalCoverageMode(int mode) {
-        const auto contract=task25DagContractFromCode(mode);
+    // Explicit request-time mode library, sealed before the first plant step.
+    // Registering a target mapping never activates its reference edges.
+    void registerExternalCoverageContract(int mode,Task20DagLatticeContract contract) {
+        const auto r=adapter_.runtimeSnapshot();
+        if(!adapter_.config().target_policy_task20_dag_lattice||r.runtime_s!=0||target_epoch_!=0||
+            registered_external_contracts_.count(mode))throw std::logic_error("mode registration must precede motion");
+        task20_lattice_detail::finish(contract);
+        std::set<NodeId> actual;for(const auto& [id,p]:r.estimate.fixed_positions)actual.insert(id);
+        if(!contract.valid||actual!=std::set<NodeId>(contract.fixed_anchor_ids.begin(),contract.fixed_anchor_ids.end()))
+            throw std::logic_error("mode registration physical scene mismatch");
+        for(const auto& [id,role]:contract.member_roles)
+            if(id!=role.member||!std::isfinite(role.axial_fraction)||!std::isfinite(role.triangular_fraction))
+                throw std::logic_error("invalid registered role");
+        registered_external_contracts_.emplace(mode,std::move(contract));
+    }
+    void commitExternalCoverageMode(int mode,
+        std::optional<Task20DagLatticeContract> mapping=std::nullopt) {
+        auto contract=mapping.value_or(task25DagContractFromCode(mode));
+        if(mapping) {
+            contract.valid=false;task20_lattice_detail::finish(contract);
+            for(const auto& [id,r]:contract.member_roles)
+                if(r.member!=id||!std::isfinite(r.axial_fraction)||!std::isfinite(r.triangular_fraction))
+                    contract.valid=false;
+            const auto expected=registered_external_contracts_.count(mode)?registered_external_contracts_.at(mode):task25DagContractFromCode(mode);
+            if(task25_detail::edgeSet(contract.reference_edges)!=task25_detail::edgeSet(expected.reference_edges))
+                contract.valid=false;
+            if(registered_external_contracts_.count(mode)) {
+                if(contract.fixed_anchor_ids!=expected.fixed_anchor_ids||contract.coverage_units.size()!=expected.coverage_units.size()||
+                    contract.member_roles.size()!=expected.member_roles.size())contract.valid=false;
+                for(const auto& [id,x]:contract.member_roles) {
+                    if(!expected.member_roles.count(id)){contract.valid=false;continue;}
+                    const auto& y=expected.member_roles.at(id);
+                    if(x.member!=y.member||x.coverage_unit!=y.coverage_unit||x.axial_fraction!=y.axial_fraction||x.triangular_fraction!=y.triangular_fraction)contract.valid=false;
+                }
+                for(size_t i=0;i<std::min(contract.coverage_units.size(),expected.coverage_units.size());++i) {
+                    const auto& x=contract.coverage_units[i];const auto& y=expected.coverage_units[i];
+                    if(x.id!=y.id||x.members!=y.members||x.base_anchors!=y.base_anchors||x.leader!=y.leader||x.front_members!=y.front_members||
+                        x.frame_origin.has_value()!=y.frame_origin.has_value())contract.valid=false;
+                    if(x.frame_origin&&y.frame_origin&&(*x.frame_origin-*y.frame_origin).squaredNorm()!=0)contract.valid=false;
+                }
+            }
+        }
         const auto runtime=adapter_.runtimeSnapshot();
         if (!adapter_.config().target_policy_task20_dag_lattice||!contract.valid||
             runtime.mode!=SupervisorMode::Search||runtime.adapter_transition_pending||
@@ -709,6 +749,7 @@ public:
                 task25_detail::edgeSet(runtime.topology))
             throw std::logic_error("coverage mode cannot precede certified full DAG handoff");
         external_coverage_mode_=mode;
+        external_coverage_contract_=mapping;
         external_force_reallocate_=true;
     }
     std::size_t targetEpoch() const { return target_epoch_; }
@@ -841,6 +882,7 @@ private:
             ?task25DagContractFromCode(mode)
             :task20DagLatticeContract(
                 static_cast<Task20LatticeMode>(mode));
+        if(external_coverage_contract_)request.contract=*external_coverage_contract_;
         request.policy=static_cast<Task20TargetPolicy>(
             config.task20_target_policy);
         request.uncovered_cells=uncovered;
@@ -2401,6 +2443,8 @@ private:
     std::map<NodeId,FrontierCell> targets_;
     std::optional<std::map<NodeId,Eigen::Vector2d>> external_reconstruction_reference_;
     std::optional<int> external_coverage_mode_;
+    std::optional<Task20DagLatticeContract> external_coverage_contract_;
+    std::map<int,Task20DagLatticeContract> registered_external_contracts_;
     bool external_force_reallocate_=false;
     std::map<NodeId,Eigen::Vector2d> governed_targets_;
     std::size_t target_epoch_=0;
