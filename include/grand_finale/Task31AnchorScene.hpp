@@ -58,6 +58,11 @@ inline Task31AnchorScene task31AnchorScene(const nlohmann::json& j) {
         task20_lattice_detail::finish(out.goal);if(!out.goal.valid)return reject(out.goal.reason);
         out.front_similarity_gain=j.value("front_similarity_gain",1.0);
         out.front_port_binding=j.value("front_port_binding",std::string("none"));
+        const auto observation=j.value("search_observation",std::string("legacy_front"));
+        if(observation!="legacy_front"&&observation!="terminal_port")
+            return reject("unknown_search_observation");
+        if(observation=="terminal_port"&&out.front_port_binding!="positive_cross_terminal")
+            return reject("search_observation_requires_registered_terminal_port");
         if(out.front_port_binding!="none"&&out.front_port_binding!="positive_cross_terminal")
             return reject("unknown_front_port_binding");
         if(out.front_port_binding!="none"&&out.front_similarity_gain!=1.0)
@@ -72,6 +77,14 @@ inline Task31AnchorScene task31AnchorScene(const nlohmann::json& j) {
             const auto bound=task31PositiveTerminalPort(generated);
             if(!bound.valid)return reject(bound.reason);
             out.goal=bound.contract;out.terminal_ports=bound.ports;
+        }
+        if(observation=="terminal_port") {
+            for(auto& unit:out.goal.coverage_units)
+                unit.search_observation_members={out.terminal_ports.at(unit.id)};
+            task20_lattice_detail::finish(out.goal);
+            if(!out.goal.valid)return reject(out.goal.reason);
+            out.goal.id+="-port-observation";
+            out.goal.structural_signature+=";search-observation=registered-port";
         }
         out.goal.id+="-anchor-asset";out.valid=true;out.reason="parsed_geometry_not_actual_qualification";
         return out;

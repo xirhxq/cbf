@@ -34,7 +34,8 @@ enum class Task18YawObjective {
     SharedTask,
     ActualVelocity,
     VelocityTaskCone,
-    LegacyCvtSoftCbf
+    LegacyCvtSoftCbf,
+    SourceCvtSoftCbfSecondOrder
 };
 
 inline bool referenceEdgeInitialSetAudited(

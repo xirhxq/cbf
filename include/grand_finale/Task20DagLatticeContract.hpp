@@ -25,6 +25,9 @@ struct Task20CoverageUnit {
     std::vector<NodeId> front_members;
     // Optional explicit geometric origin; unrelated to physical range sources.
     std::optional<Eigen::Vector2d> frame_origin;
+    // Search observation only; never used to infer common shape or motion.
+    // Empty preserves the legacy front-members/leader observation exactly.
+    std::vector<NodeId> search_observation_members;
 };
 
 // Every role is an affine triangular map
@@ -217,6 +220,14 @@ inline void finish(Task20DagLatticeContract& result) {
         }
     for(const auto& unit:result.coverage_units)if(unit.frame_origin&&!unit.frame_origin->allFinite()) {
         result.reason="nonfinite_frame_origin";return;
+    }
+    for(const auto& unit:result.coverage_units) {
+        std::set<NodeId> observed;
+        for(auto id:unit.search_observation_members)
+            if(!observed.insert(id).second||
+                std::find(unit.members.begin(),unit.members.end(),id)==unit.members.end()) {
+                result.reason="invalid_search_observation_member";return;
+            }
     }
     result.topological_order=topologicalOrder(result.reference_edges,result.reason,result.fixed_anchor_ids);
     result.valid=result.topological_order.size()==14+result.fixed_anchor_ids.size();

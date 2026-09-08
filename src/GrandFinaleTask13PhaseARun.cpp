@@ -430,6 +430,8 @@ int main(int argc,char** argv) {
         const bool task18_collision_only_vaug=
             policy.find("-collisionvaug")!=std::string::npos;
         const auto task18_yaw_objective=
+            policy.find("-sourceyaw")!=std::string::npos
+                ?gf::Task18YawObjective::SourceCvtSoftCbfSecondOrder:
             policy.find("-legacyyaw")!=std::string::npos
                 ?gf::Task18YawObjective::LegacyCvtSoftCbf:
             policy.find("-taskyaw")!=std::string::npos
@@ -545,8 +547,19 @@ int main(int argc,char** argv) {
                 "Task31 fixed six-anchor triangular Pinball; original physical launch state; no external request";
         }
         const bool external_reconstruction_enabled=argc>=25;
+        const bool frozen_search_policy=policy=="task25-h0-p0"||
+            (task31_fixed_control&&
+             policy=="task25-h0-p0-sourceyaw");
+        // Research yaw must fail closed even when the extended CLI is absent.
+        // The external-stack guard below alone does not cover short argv.
+        if (task18_yaw_objective==
+                gf::Task18YawObjective::SourceCvtSoftCbfSecondOrder &&
+            (!task31_fixed_control||!task31_triangular||!anchor_scene||
+             policy!="task25-h0-p0-sourceyaw"))
+            throw std::invalid_argument(
+                "source yaw requires explicit frozen fixed H0/Pinball research configuration");
         if (external_reconstruction_enabled && (template_id!="origin"||
-            policy!="task25-h0-p0"||tau!=14.0||acceleration_half_box_mps2!=4.0||
+            !frozen_search_policy||tau!=14.0||acceleration_half_box_mps2!=4.0||
             rows_mode!="vaug-speed29p9"||target_homotopy_enabled))
             throw std::invalid_argument("external reconstruction requires frozen Task18-P0 stack");
         if (policy_task19_switch&&template_id!="origin")
@@ -1387,6 +1400,14 @@ int main(int argc,char** argv) {
                             last_step.task_bearing_rad.end()?json(nullptr):
                             json(task_bearing->second)}}},
                     {"target",std::move(target)}});
+                const auto source_yaw=last_step.source_cvt_yaw.find(owner);
+                if(source_yaw!=last_step.source_cvt_yaw.end()) {
+                    const auto& y=source_yaw->second;
+                    owners.back()["yaw"]["source_cvt"]={{"valid",y.valid},{"active",y.active},
+                        {"bearing_drift_radps",y.bearing_drift},{"h",y.h},
+                        {"coefficient",y.coefficient},{"rhs",y.rhs},{"slack",y.slack},
+                        {"linear_slack_weight",10.0},{"state_basis","prestep_estimate"}};
+                }
             }
             gf::Task19DagSwitchEvent task19_switch_event;
             if (task19_switcher) {

@@ -17,6 +17,7 @@
 #include "grand_finale/Task24PersistentRasterSweep.hpp"
 #include "grand_finale/Task25P0MultiDag.hpp"
 #include "grand_finale/TargetLiftTransitionPrototype.hpp"
+#include "grand_finale/Task32SourceCvtYaw.hpp"
 
 #include <functional>
 
@@ -133,6 +134,7 @@ struct SimpleCoverageControlStep {
     std::map<std::string,double> task18_common_fraction;
     std::map<NodeId,double> desired_yaw_rad;
     std::map<NodeId,double> task_bearing_rad;
+    std::map<NodeId,Task32SourceCvtYawResult> source_cvt_yaw;
 };
 
 struct SimpleCoverageControllerRestartState {
@@ -505,7 +507,18 @@ public:
                 }
             }
             result.desired_yaw_rad[owner]=desired_yaw;
-            if (policy_task18&&adapter_.config().task18_yaw_objective==
+            if ((policy_task18||policy_task20)&&adapter_.config().task18_yaw_objective==
+                    Task18YawObjective::SourceCvtSoftCbfSecondOrder) {
+                const Eigen::Vector2d goal=soft_target.has_value()
+                    ?*soft_target:Eigen::Vector2d(state.head<2>());
+                const auto yaw=task32SourceCvtYaw(state.head<2>(),state.tail<2>(),
+                    currentYaw(owner),goal,model.maximum_yaw_rate_radps);
+                if(!yaw.valid)throw std::invalid_argument("invalid source-CVT yaw state");
+                result.source_cvt_yaw[owner]=yaw;
+                result.desired_yaw_rad[owner]=yaw.active
+                    ?std::atan2(goal.y()-state.y(),goal.x()-state.x()):currentYaw(owner);
+                yaw_rates[owner]=yaw.rate;
+            } else if (policy_task18&&adapter_.config().task18_yaw_objective==
                     Task18YawObjective::LegacyCvtSoftCbf) {
                 yaw_rates[owner]=task18LegacyCvtYawRate(
                     currentYaw(owner),desired_yaw,
@@ -737,6 +750,7 @@ public:
                 for(size_t i=0;i<std::min(contract.coverage_units.size(),expected.coverage_units.size());++i) {
                     const auto& x=contract.coverage_units[i];const auto& y=expected.coverage_units[i];
                     if(x.id!=y.id||x.members!=y.members||x.base_anchors!=y.base_anchors||x.leader!=y.leader||x.front_members!=y.front_members||
+                        x.search_observation_members!=y.search_observation_members||
                         x.frame_origin.has_value()!=y.frame_origin.has_value())contract.valid=false;
                     if(x.frame_origin&&y.frame_origin&&(*x.frame_origin-*y.frame_origin).squaredNorm()!=0)contract.valid=false;
                 }

@@ -388,6 +388,15 @@ public:
             {"current_information",task31InformationTelemetry(adapter_)}};
         if(common_bridge_)result["task31"]["common_bridge"]=common_bridge_metadata_;
         if(anchor_scene_)result["task31"]["anchor_asset"]=anchor_scene_->identity;
+        if(anchor_scene_&&active_mode_==anchor_scene_->mode_code&&
+            anchor_scene_->identity.value("search_observation",std::string("legacy_front"))=="terminal_port") {
+            result["task31"]["search_observation_members"]=nlohmann::json::object();
+            result["task31"]["moving_front_members"]=nlohmann::json::object();
+            for(const auto& unit:anchor_scene_->goal.coverage_units) {
+                result["task31"]["search_observation_members"][unit.id]=unit.search_observation_members;
+                result["task31"]["moving_front_members"][unit.id]=unit.front_members;
+            }
+        }
         if(anchor_scene_&&anchor_scene_->reparameterizedFinal()) {
             result["task31"]["front_similarity_gain"]=anchor_scene_->front_similarity_gain;
             if(anchor_scene_->front_port_binding!="none") {

@@ -67,8 +67,9 @@ struct UnitFrontState {
 inline UnitFrontState unitFront(
     const Task20CoverageUnit& unit,
     const std::vector<Task16CoverageAgentState>& agents) {
-    const std::vector<NodeId> members=unit.front_members.empty()
-        ?std::vector<NodeId>{unit.leader}:unit.front_members;
+    const std::vector<NodeId> members=!unit.search_observation_members.empty()
+        ?unit.search_observation_members:(unit.front_members.empty()
+            ?std::vector<NodeId>{unit.leader}:unit.front_members);
     UnitFrontState result;
     Eigen::Vector2d yaw_direction=Eigen::Vector2d::Zero();
     for (NodeId member:members) {
