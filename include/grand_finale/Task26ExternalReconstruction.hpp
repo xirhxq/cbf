@@ -10,6 +10,8 @@
 #include "grand_finale/Task31TriangularLattice.hpp"
 #include "grand_finale/Task31InformationTelemetry.hpp"
 #include "grand_finale/Task31CommonBridge.hpp"
+#include "grand_finale/Task32ContractionPath.hpp"
+#include "grand_finale/Task32ModeTransition.hpp"
 #include "grand_finale/Task31AnchorScene.hpp"
 #include "grand_finale/TransitionCertifier.hpp"
 #include "grand_finale/Task10p11hSimpleCoverageController.hpp"
@@ -122,8 +124,10 @@ public:
     Task26ExternalReconstructor(GrandFinaleSwarmAdapter& adapter,
         Task10p11hSimpleCoverageController& controller,const std::string& action,
         double request_s=60.0,double bridge_scale=1.0,bool old_bridge_only=false,bool triangular_final=false,bool common_bridge=false,
-        std::optional<Task31AnchorScene> anchor_scene=std::nullopt,bool fixed_mode_observer=false,int fixed_mode_code=12)
-        :adapter_(adapter),controller_(controller),action_(action),next_request_s_(request_s),bridge_scale_(bridge_scale),old_bridge_only_(old_bridge_only),triangular_final_(triangular_final),common_bridge_(common_bridge),anchor_scene_(std::move(anchor_scene)),fixed_mode_observer_(fixed_mode_observer),fixed_mode_code_(fixed_mode_code) {
+        std::optional<Task31AnchorScene> anchor_scene=std::nullopt,bool fixed_mode_observer=false,int fixed_mode_code=12,
+        bool centered_bow_contraction=false,
+        std::optional<Task32ModeTransitionPlan> mode_plan=std::nullopt)
+        :adapter_(adapter),controller_(controller),action_(action),next_request_s_(request_s),bridge_scale_(bridge_scale),old_bridge_only_(old_bridge_only),triangular_final_(triangular_final),common_bridge_(common_bridge),anchor_scene_(std::move(anchor_scene)),fixed_mode_observer_(fixed_mode_observer),fixed_mode_code_(fixed_mode_code),mode_plan_(std::move(mode_plan)) {
         if(action_=="pinball-qualified-layered-centeredframe-moving-linearphase-rolecenter-continuingfront"||
             action_=="cross-roundtrip-qualified-layered-centeredframe-moving-linearphase-rolecenter-continuingfront") {
             continuing_front_=true;action_.erase(action_.size()-std::string("-continuingfront").size());
@@ -169,11 +173,14 @@ public:
             throw std::invalid_argument("Task31 triangular final requires canonical C5 and unchanged old bridge");
         if(common_bridge_&&!triangular_final_)
             throw std::invalid_argument("Task31 common bridge requires the paired triangular final");
+        if(centered_bow_contraction&&(!common_bridge_||fixed_mode_observer_))
+            throw std::invalid_argument("centered bow requires explicit common-bridge reconstruction");
+        centered_bow_contraction_=centered_bow_contraction;
         if(anchor_scene_&&anchor_scene_->reparameterizedFinal()&&!common_bridge_&&!fixed_mode_observer_)
             throw std::invalid_argument("Task31 aperture transition requires explicit common-bridge continuation");
         if ((action_!="pinball"&&action_!="cross-roundtrip")||
             !adapter.config().target_policy_task20_dag_lattice||
-            adapter.config().task20_lattice_mode!=0||
+            adapter.config().task20_lattice_mode!=(mode_plan_?mode_plan_->start_mode:0)||
             adapter.config().task20_target_policy!=0)
             throw std::invalid_argument("Task26 requires frozen H0/P0 entry");
         if(fixed_mode_observer_&&(!anchor_scene_||common_bridge_))
@@ -188,7 +195,7 @@ public:
             if(fixed_mode_observer_&&(r.runtime_s!=0||r.adapter_transition_pending||
                 task25_detail::edgeSet(r.topology)!=task25_detail::edgeSet(fixed_contract.reference_edges)))
                 throw std::invalid_argument("fixed control must initialize in the actual goal DAG");
-            controller_.registerExternalCoverageContract(scene.mode_code,scene.goal);
+            if(!mode_plan_)controller_.registerExternalCoverageContract(scene.mode_code,scene.goal);
             if(fixed_mode_observer_) {
                 // Diagnostic fixed-mode control: select an already initialized
                 // DAG/mapping. This is not a graph handoff or a realized request.
@@ -202,6 +209,26 @@ public:
                 }
             }
         }
+        if(mode_plan_) {
+            const auto r=adapter_.runtimeSnapshot();
+            if(!common_bridge_||!centered_bow_contraction_||!continuing_front_||
+                !moving_completion_||fixed_mode_observer_||bridge_scale_!=1||
+                old_bridge_only_||projected_compact_||!anchor_scene_||
+                anchor_scene_->identity!=mode_plan_->pinball_scene.identity||
+                request_s!=mode_plan_->first_request_s||r.runtime_s!=0||r.adapter_transition_pending)
+                throw std::invalid_argument("transition plan requires frozen bow/common-bridge protocol before motion");
+            task32ValidateTransitionStartup(*mode_plan_,adapter_.config().task20_lattice_mode,
+                r.topology,r.estimate.fixed_positions,adapter_.config().task32_target_mechanism);
+            for(const auto& [mode,asset]:mode_plan_->modes)
+                controller_.registerExternalCoverageContract(mode,asset.contract);
+            // This selects the already initialized graph. It does not add an
+            // edge, change physical anchors or count as a reconstruction.
+            controller_.commitExternalCoverageMode(mode_plan_->start_mode,mode_plan_->start().contract);
+            active_mode_=pending_mode_=mode_plan_->start_mode;
+            old_contract_=new_contract_=mode_plan_->start().contract;
+            sequence_=std::make_unique<Task32RequestSequence>(mode_plan_->target_modes,
+                mode_plan_->first_request_s,mode_plan_->after_restore_s);
+        }
     }
 
     void beforeStep() {
@@ -210,9 +237,10 @@ public:
         const double now=runtime.runtime_s;
         if (moving_completion_) moving_telemetry_["applicable"]=false;
         if (adapter_.coverage().certifiedFraction()>=1.0-1e-12) return;
-        if (stage_=="search" && now+1e-9>=next_request_s_) start(runtime);
+        if (stage_=="search" && (sequence_?sequence_->due(now):now+1e-9>=next_request_s_)) start(runtime);
         if (stage_=="search"||stage_=="blocked_partial") return;
         if (now-request_started_>=360.0) {
+            if(sequence_)sequence_->stop();
             if (edge_index_==0&&!runtime.adapter_transition_pending) {
                 event("rejected","compact_or_first_edge_deadline");
                 requests_.back()["outcome"]="rejected";
@@ -231,6 +259,7 @@ public:
             reference_=task20LiftTargets(old_contract_,runtime.estimate.fixed_positions,fronts).targets;
             if(common_bridge_)for(const auto& [id,p]:initial_motion_targets_)
                 reference_[id]=(1.0-fraction_)*p+fraction_*old_compact_targets_.at(id);
+            if(centered_bow_contraction_)reference_=contraction_path_->evaluate(fraction_);
             controller_.setExternalReconstructionReference(reference_);
             tracking(runtime);
             if (qualified_contraction_) {
@@ -259,7 +288,8 @@ public:
                         for(const auto& [u,p]:canonical_fronts)basis[u]={p.x(),p.y()};
                         requests_.back()[common_bridge_?"common_bridge":"old_bridge_only"]["canonical_admitted_fronts"]=basis;
                         task31_continuation_rates_.clear();
-                        if(anchor_scene_&&anchor_scene_->reparameterizedFinal()) {
+                        if(anchor_scene_&&anchor_scene_->reparameterizedFinal()&&
+                            (!mode_plan_||pending_mode_==anchor_scene_->mode_code)) {
                             task31_continuation_rates_=task31UnscaledContinuationRates(*anchor_scene_,continuation_from_);
                             nlohmann::json rates=nlohmann::json::object();
                             for(const auto& [unit,v]:task31_continuation_rates_)rates[unit]={v.x(),v.y()};
@@ -289,7 +319,7 @@ public:
                 return;
             }
             if (edge_index_==plan_.replacements.size()) {
-                controller_.commitExternalCoverageMode(pending_mode_,triangular_final_?
+                controller_.commitExternalCoverageMode(pending_mode_,(triangular_final_||mode_plan_)?
                     std::optional<Task20DagLatticeContract>(new_contract_):std::nullopt);
                 active_mode_=pending_mode_;
                 stage_="expanding";expansion_started_=now;motion_phase_=0;shape_dwell_=0;legacy_shadow_dwell_=0;
@@ -363,6 +393,9 @@ public:
             {"tracking_max_bound_m",max_error_},{"speed_bound_mps",max_speed_},
             {"shape_dwell_ticks",shape_dwell_},{"task_ledger_active",stage_=="search"},
             {"qualification_attempts",qualification_attempts_},{"last_reason",last_reason_}};
+        if(centered_bow_contraction_)result["contraction_path"]={
+            {"kind","centered-bow-v1"},{"common_phase",true},{"centroid_path","legacy_linear"},
+            {"shape_chirality","counterclockwise"},{"duration_s",60.0},{"search_governor",false}};
         if (qualified_contraction_) result["task27"]={{"qualified_contraction",true},
             {"plan_audits",plan_audits_},{"qualified_plan_prefix",plan_prefix_},
             {"plan_reason",plan_reason_}};
@@ -412,19 +445,32 @@ public:
             result["task31"]["fixed_mode_control"]=true;
             if(fixed_mode_code_==0)result["task31"]["fixed_mode_code"]=0;
         }
+        if(mode_plan_) {
+            result["mode_transition"]={{"schema","task32-mode-transition-runtime-v1"},
+                {"arm",mode_plan_->arm},{"target_mechanism",adapter_.config().task32_target_mechanism},
+                {"initial_mode",mode_plan_->start_mode},{"old_contract_id",old_contract_.id},
+                {"goal_contract_id",new_contract_.id},{"planned_requests",sequence_->planned()},
+                {"completed_requests",sequence_->completed()},{"untriggered_requests",sequence_->untriggered()},
+                {"request_pending",sequence_->pending()}};
+            // Legacy task31 names describe the asset library, not every goal.
+            result["task31"]["triangular_final"]=pending_mode_==mode_plan_->pinball_scene.mode_code;
+            result["task31"]["generator"]=pending_mode_==mode_plan_->pinball_scene.mode_code?
+                "registered-pinball-triangular":"registered-native-contract";
+        }
         return result;
     }
     nlohmann::json report() const {
         return {{"action",action_},{"requests",requests_},{"events",events_},
             {"qualification_rejection_counts",rejections_},{"final",telemetry()},
-            {"planned_request_count",fixed_mode_observer_?0:action_=="cross-roundtrip"?2:1},
-            {"untriggered_request_count",(fixed_mode_observer_?0:action_=="cross-roundtrip"?2:1)-requests_.size()}};
+            {"planned_request_count",sequence_?sequence_->planned():fixed_mode_observer_?0:action_=="cross-roundtrip"?2:1},
+            {"untriggered_request_count",sequence_?sequence_->untriggered():(fixed_mode_observer_?0:action_=="cross-roundtrip"?2:1)-requests_.size()}};
     }
 private:
     void restore(double now,const std::string& reason) {
         event("restored",reason);requests_.back()["outcome"]="realized";
         requests_.back()["restored_s"]=now;
         controller_.setExternalReconstructionReference(std::nullopt);stage_="search";
+        if(sequence_){sequence_->complete(now);return;}
         next_request_s_=action_=="cross-roundtrip"&&requests_.size()==1
             ?now+60.0:std::numeric_limits<double>::infinity();
     }
@@ -490,10 +536,24 @@ private:
         shape_dwell_=ok?shape_dwell_+1:0;shape_ready_=shape_dwell_>=10;
     }
     void start(const GrandFinaleRuntimeSnapshot& r) {
-        old_contract_=task25DagContractFromCode(active_mode_);
-        pending_mode_=action_=="pinball"?12:(active_mode_==0?11:0);
-        new_contract_=task25DagContractFromCode(pending_mode_);
-        if(triangular_final_) {
+        old_contract_=mode_plan_?mode_plan_->mode(active_mode_).contract:task25DagContractFromCode(active_mode_);
+        if(mode_plan_&&task25_detail::edgeSet(r.topology)!=task25_detail::edgeSet(old_contract_.reference_edges))
+            throw std::logic_error("request source mapping disagrees with actual DAG");
+        pending_mode_=sequence_?sequence_->begin(r.runtime_s):action_=="pinball"?12:(active_mode_==0?11:0);
+        new_contract_=mode_plan_?mode_plan_->mode(pending_mode_).contract:task25DagContractFromCode(pending_mode_);
+        if(mode_plan_) {
+            task31_continuation_rates_.clear();continuation_from_.clear();
+            contraction_path_.reset();role_center_path_.reset();expansion_path_.reset();
+            common_bridge_metadata_=nlohmann::json::object();triangular_roles_=nlohmann::json::object();
+            fraction_=motion_phase_=0;shape_ready_=false;legacy_shadow_dwell_=0;
+            plan_prefix_=0;plan_reason_.clear();last_reason_.clear();
+            if(pending_mode_==anchor_scene_->mode_code)for(const auto& [id,cell]:anchor_scene_->cells) {
+                const auto& role=new_contract_.member_roles.at(id);
+                triangular_roles_[std::to_string(id)]={{"row",cell.row},{"slot",cell.slot},
+                    {"axial_fraction",role.axial_fraction},{"triangular_fraction",role.triangular_fraction}};
+            }
+        }
+        if(triangular_final_&&!mode_plan_) {
             const auto generated=anchor_scene_?Task31Lattice{true,"frozen_asset",anchor_scene_->goal,anchor_scene_->cells}:
                 task31TriangularLattice(new_contract_,r.estimate.fixed_positions,{0,1});
             if(!generated.valid)throw std::logic_error(generated.reason);
@@ -517,10 +577,12 @@ private:
             if (!inverse.valid) throw std::logic_error(inverse.reason);
             from_fronts_[unit.id]=inverse.front;
         }
-        compact_fronts_=task26CompactFronts(old_contract_,r.estimate.fixed_positions);
+        compact_fronts_=mode_plan_?task32ModeCompactFronts(*mode_plan_,active_mode_):
+            task26CompactFronts(old_contract_,r.estimate.fixed_positions);
         canonical_compact_fronts_=compact_fronts_;
-        auto new_bridge_fronts=task26CompactFronts(new_contract_,r.estimate.fixed_positions);
-        if(anchor_scene_)for(auto& [id,p]:new_bridge_fronts)p=anchor_scene_->frame_origin+anchor_scene_->final_front_offset;
+        auto new_bridge_fronts=mode_plan_?task32ModeCompactFronts(*mode_plan_,pending_mode_):
+            task26CompactFronts(new_contract_,r.estimate.fixed_positions);
+        if(anchor_scene_&&!mode_plan_)for(auto& [id,p]:new_bridge_fronts)p=anchor_scene_->frame_origin+anchor_scene_->final_front_offset;
         if(bridge_scale_!=1) {
             compact_fronts_=task30SimilarityBridgeFronts(old_contract_,r.estimate.fixed_positions,compact_fronts_,bridge_scale_);
             if(!old_bridge_only_)
@@ -569,6 +631,11 @@ private:
                 task31CommonBridge(old_contract_,new_contract_,r.estimate.fixed_positions,{0,1});
             if(!bridge.valid)throw std::logic_error(bridge.reason);
             initial_motion_targets_=task20LiftTargets(old_contract_,r.estimate.fixed_positions,from_fronts_).targets;
+            if(mode_plan_) {
+                // Start at the applied motion ledger, not a label-dependent
+                // inverse/re-lift. Cell identities remain in the task ledger.
+                for(auto& [id,p]:initial_motion_targets_)p=controller_.committedTargets().at(id).center;
+            }
             old_compact_targets_=bridge.targets;
             nlohmann::json edges=nlohmann::json::array(),roles=nlohmann::json::object();
             for(const auto& e:bridge.geometry_edges)edges.push_back({e.reference,e.owner});
@@ -582,10 +649,18 @@ private:
         }
         new_compact_targets_=task20LiftTargets(new_contract_,r.estimate.fixed_positions,
             new_bridge_fronts).targets;
+        if(centered_bow_contraction_)contraction_path_=std::make_unique<Task32ContractionPath>(
+            initial_motion_targets_,old_compact_targets_);
         request_started_=r.runtime_s;edge_index_=0;shape_dwell_=0;stage_="contracting";
         requests_.push_back({{"from_mode",active_mode_},{"to_mode",pending_mode_},
             {"received_s",r.runtime_s},{"outcome","pending"},{"history_ledger",ledger},
             {"estimator_version_at_request",r.estimator_token},{"topology_version_at_request",r.topology_token}});
+        if(mode_plan_) {
+            requests_.back()["old_contract_id"]=old_contract_.id;
+            requests_.back()["goal_contract_id"]=new_contract_.id;
+            requests_.back()["registered_old_mapping"]=mode_plan_->mode(active_mode_).identity;
+            requests_.back()["registered_goal_mapping"]=mode_plan_->mode(pending_mode_).identity;
+        }
         if(common_bridge_)requests_.back()["common_bridge"]=common_bridge_metadata_;
         if(projected_compact_)requests_.back()["compact_projection"]=compact_inputs;
         if(bridge_scale_!=1||old_bridge_only_) {
@@ -618,6 +693,8 @@ private:
     std::optional<Task31AnchorScene> anchor_scene_;
     bool fixed_mode_observer_=false;
     int fixed_mode_code_=12;
+    std::optional<Task32ModeTransitionPlan> mode_plan_;
+    std::unique_ptr<Task32RequestSequence> sequence_;
     nlohmann::json common_bridge_metadata_=nlohmann::json::object();
     nlohmann::json triangular_roles_=nlohmann::json::object();
     double rms_=0,max_error_=0,max_speed_=0;
@@ -625,6 +702,8 @@ private:
     bool shape_ready_=false;
     bool qualified_contraction_=false;
     bool layered_expansion_=false;
+    bool centered_bow_contraction_=false;
+    std::unique_ptr<Task32ContractionPath> contraction_path_;
     bool moving_completion_=false;
     bool projected_compact_=false;
     bool linear_expansion_phase_=false;

@@ -7,6 +7,12 @@
 #include "grand_finale/Task24PersistentRasterSweep.hpp"
 #include "grand_finale/Task25P0MultiDag.hpp"
 #include "grand_finale/Task26ExternalReconstruction.hpp"
+#include "grand_finale/Task32InformationSnapshot.hpp"
+#include "grand_finale/Task32ExperimentAdmission.hpp"
+#include "grand_finale/Task32ReducedBatchAdmission.hpp"
+#include "grand_finale/Task32ConfirmationAdmission.hpp"
+#include "grand_finale/Task32FixedModeDispatch.hpp"
+#include "grand_finale/Task31InformationTelemetry.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -219,8 +225,13 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     double task20_wavefront_band_width_m,
     double venue_width_m=3000.0,double venue_height_m=3000.0,
     const std::optional<gf::Task31AnchorScene>& anchor_scene=std::nullopt,
-    gf::DistanceRangeAvailability range_availability={}) {
+    gf::DistanceRangeAvailability range_availability={},
+    int task32_target_mechanism=0,
+    const gf::Task32FixedModeDispatch* fixed_mode=nullptr) {
     auto scenario=gf::task10p11rFixedBaselineScenario();
+    if(fixed_mode&&fixed_mode->enabled) {
+        scenario=gf::task32FixedModeScenario(*fixed_mode,scenario);
+    } else {
     if (!(venue_width_m>0.0&&venue_height_m>0.0)||
         std::fmod(venue_width_m,10.0)!=0.0||
         std::fmod(venue_height_m,10.0)!=0.0)
@@ -249,6 +260,7 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
         scenario.width_m=contract.width_m;
         scenario.height_m=contract.height_m;
         scenario.fixed_positions=contract.fixed_positions;
+    }
     }
     auto settings=gf::task10p11pSwarmSettings(scenario,
         gf::SolverProfile::Gurobi);
@@ -294,6 +306,7 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
         task20_lattice_mode,task20_target_policy,
         task20_update_period_cycles,task20_wavefront_band_width_m);
     launch_config.distance_range_availability=range_availability;
+    launch_config.task32_target_mechanism=task32_target_mechanism;
     return std::make_unique<gf::Task10p11rFixedBaselineFixture>(
         std::move(scenario),std::move(settings),std::move(launch_config));
 }
@@ -303,6 +316,38 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
 // GrandFinale production/search evidence runner.  Historical policies remain
 // explicit; an omitted policy selects the researcher-frozen Task 18 baseline.
 int main(int argc,char** argv) {
+    const bool transition_preflight=argc>1&&std::string(argv[argc-1])=="--check-reconstruction-plan";
+    if(transition_preflight)--argc;
+    const std::string transition_prefix="reconstruction-plan=";
+    const std::string transition_tail=argc>1?argv[argc-1]:"";
+    const bool transition_explicit=transition_tail.rfind(transition_prefix,0)==0;
+    if(transition_preflight&&!transition_explicit) {
+        std::cerr<<"plan preflight requires explicit reconstruction plan\n";return 2;
+    }
+    if(transition_explicit)--argc;
+    const std::string contraction_prefix="contraction-path=";
+    const std::string contraction_tail=argc>1?argv[argc-1]:"";
+    const bool contraction_explicit=contraction_tail.rfind(contraction_prefix,0)==0;
+    if(contraction_explicit&&contraction_tail!="contraction-path=centered-bow-v1") {
+        std::cerr<<"unknown external contraction path\n";return 2;
+    }
+    if(contraction_explicit)--argc;
+    const auto fixed_request=gf::task32FixedModeDispatchRequest(
+        std::vector<std::string>(argv,argv+argc));
+    if(!fixed_request.valid){std::cerr<<fixed_request.reason<<'\n';return 2;}
+    if(fixed_request.enabled)--argc;
+    const std::string mechanism_prefix="target-mechanism=";
+    const std::string mechanism_tail=argc>1?argv[argc-1]:"";
+    const bool mechanism_explicit=mechanism_tail.rfind(mechanism_prefix,0)==0;
+    const std::string mechanism_name=mechanism_explicit
+        ?mechanism_tail.substr(mechanism_prefix.size()):"";
+    if(mechanism_explicit)--argc;
+    const std::string diagnostic_prefix="information-snapshot=";
+    const std::string diagnostic_tail=argc>1?argv[argc-1]:"";
+    const bool information_snapshot_enabled=diagnostic_tail.rfind(diagnostic_prefix,0)==0;
+    const std::string information_snapshot_path=information_snapshot_enabled
+        ?diagnostic_tail.substr(diagnostic_prefix.size()):"";
+    if(information_snapshot_enabled)--argc;
     const std::string trailing=argc>1?argv[argc-1]:"";
     const std::string range_prefix="range-availability=";
     const bool explicit_range_model=trailing.rfind(range_prefix,0)==0;
@@ -325,6 +370,38 @@ int main(int argc,char** argv) {
             std::chrono::steady_clock::now()-started).count();
     };
     try {
+        std::optional<gf::Task32ModeTransitionPlan> mode_transition;
+        if(transition_explicit) {
+            if(fixed_request.enabled||std::getenv("GRANDFINALE_START_MODE")||
+                std::getenv("GRANDFINALE_TARGET_SEQ")||std::getenv("GRANDFINALE_RECON_SEQUENCE"))
+                throw std::invalid_argument("explicit transition plan rejects fixed observer and legacy environment overrides");
+            const std::filesystem::path root="docs/evidence/task32-fixed-library";
+            std::ifstream source(transition_tail.substr(transition_prefix.size()));
+            std::ifstream registry(root/"observation-r1-anchor-asset.json");
+            json payload,pinball;
+            if(!source||!registry)throw std::invalid_argument("missing registered transition inputs");
+            source>>payload;registry>>pinball;
+            auto parsed=gf::task32ModeTransitionPlan(payload,pinball);
+            if(!parsed.valid)throw std::invalid_argument(parsed.reason);
+            const std::map<int,std::string> filenames={{0,"mode-contract-0-4500x2250-r1.json"},
+                {11,"mode-contract-11-4500x2250-preparation-r1.json"},
+                {12,"mode-contract-12-4500x2250-r1.json"},{13,"mode-contract-13-4500x2250-preparation-r1.json"}};
+            // The plan selects registered assets, not redefined final roles.
+            for(const auto& asset:payload.at("modes")) {
+                const int mode=asset.at("coverage").at("mode_code").get<int>();
+                std::ifstream input(root/filenames.at(mode));json registered;
+                if(!input)throw std::invalid_argument("missing canonical transition mode");
+                input>>registered;
+                if(asset!=registered)throw std::invalid_argument("transition mode differs from registration");
+            }
+            mode_transition=std::move(parsed);
+        }
+        if(mechanism_explicit&&mechanism_name!="inactive"&&mechanism_name!="linear-front")
+            throw std::invalid_argument("unknown registered target mechanism");
+        const int task32_target_mechanism=!mechanism_explicit?0:
+            (mechanism_name=="inactive"?1:2);
+        if(mode_transition&&task32_target_mechanism!=mode_transition->targetMechanism())
+            throw std::invalid_argument("transition arm does not match executable target mechanism");
         gf::DistanceRangeAvailability range_availability;
         json range_asset;
         if(explicit_range_model) {
@@ -345,6 +422,34 @@ int main(int argc,char** argv) {
             range_availability={true,static_cast<unsigned int>(seed)};
         }
         const std::string template_id=argv[1];
+        gf::Task32FixedModeDispatch fixed_mode;
+        if(fixed_request.enabled) {
+            const std::filesystem::path root="docs/evidence/task32-fixed-library";
+            std::ifstream index_stream(root/"mode-contract-assets-index-r1.json");
+            std::ifstream proposed(fixed_request.asset_path);json index,payload,registered,registry;
+            if(!index_stream||!proposed)throw std::invalid_argument("missing registered fixed-mode inputs");
+            index_stream>>index;proposed>>payload;json entry;
+            const std::string name=std::filesystem::path(fixed_request.asset_path).filename().string();
+            for(const auto& candidate:index.at("cells"))
+                if(!candidate.at("asset").is_null()&&candidate.at("asset")==name)entry=candidate;
+            if(entry.is_null()) {
+                std::ifstream supplementary(root/"ac-assets-registry-r1.json");
+                if(supplementary) {
+                    json extra;supplementary>>extra;
+                    for(const auto& candidate:extra.at("cells"))
+                        if(candidate.at("asset")==name)entry=candidate;
+                }
+            }
+            if(entry.is_null())throw std::invalid_argument("unregistered fixed-mode asset");
+            std::ifstream canonical(root/name);if(!canonical)throw std::invalid_argument("missing canonical mode asset");
+            canonical>>registered;if(registered!=payload)throw std::invalid_argument("fixed-mode asset differs from registration");
+            if(!entry.at("registered_task31_source").is_null()) {
+                std::ifstream source(root/entry.at("registered_task31_source").get<std::string>());
+                if(!source)throw std::invalid_argument("missing fixed-mode lifting registry");source>>registry;
+            }
+            fixed_mode=gf::task32FixedModeDispatch(fixed_request,payload,registry.is_null()?nullptr:&registry);
+            if(!fixed_mode.valid)throw std::invalid_argument(fixed_mode.reason);
+        }
         const auto production_defaults=gf::task19ProductionDefaults();
         const std::string policy=argc>=8?argv[7]:
             production_defaults.policy;
@@ -382,7 +487,8 @@ int main(int argc,char** argv) {
         const bool policy_task25=policy.rfind("task25-",0)==0;
         const bool policy_task20=policy.rfind("task20-",0)==0||policy_task24||
             policy_task25;
-        const int task20_lattice_mode=
+        const int task20_lattice_mode=mode_transition?mode_transition->start_mode:
+            fixed_mode.enabled?fixed_mode.asset->mode_code:
             policy_task25&&policy.find("microfix")!=std::string::npos?10:
             policy_task25&&policy.find("cross-braced")!=std::string::npos?11:
             policy_task25&&policy.find("pinball")!=std::string::npos?12:
@@ -539,6 +645,22 @@ int main(int argc,char** argv) {
         if(old_bridge_only&&std::string(argv[26])!="old-only-canonical-continuation")
             throw std::invalid_argument("invalid old-bridge continuation option");
         auto def=makeTemplate(template_id);
+        const bool reduced_field=gf::task32RegisteredReducedBatch(task32_target_mechanism,
+            range_noise_std_m,range_random_seed,range_availability.link_seed);
+        if(fixed_mode.enabled) {
+            if(argc!=24||template_id!="origin"||policy!="task25-h0-p0-sourceyaw"||
+               (!reduced_field&&(mechanism_explicit||range_noise_std_m!=0.0||range_random_seed!=2027||
+                 range_availability.link_seed!=134001))||information_snapshot_enabled||!explicit_range_model||
+               range_dropout_probability!=0.0||tau!=14.0||acceleration_half_box_mps2!=4.0||
+               rows_mode!="vaug-speed29p9"||target_homotopy_enabled||window_s>900.0||
+               !std::isfinite(window_s)||window_s<0||
+               (reduced_field&&(venue_width_m!=4500||venue_height_m!=2250))||
+               venue_width_m!=fixed_mode.asset->width_m||venue_height_m!=fixed_mode.asset->height_m)
+                throw std::invalid_argument("fixed-mode requires preregistered zero-noise 10s dispatch gate");
+            const auto prepared=gf::task32FixedModeScenario(fixed_mode,gf::task10p11rFixedBaselineScenario());
+            def.topology=prepared.initial_topology;def.positions=prepared.mobile_positions;
+            def.description="Task32 explicit fixed DAG-coverage asset; no external request";
+        }
         if(task31_fixed_control) {
             if(!anchor_scene||!task31_triangular)
                 throw std::invalid_argument("fixed Pinball control requires immutable triangular anchor asset");
@@ -546,15 +668,52 @@ int main(int argc,char** argv) {
             def.description=task31_fixed_code==0?"Task31 fixed six-anchor H0; original physical launch state; no external request":
                 "Task31 fixed six-anchor triangular Pinball; original physical launch state; no external request";
         }
+        if(mode_transition) {
+            // Set the actual graph before fixture/EKF/controller construction.
+            // The physical launch positions and anchor measurement model stay.
+            def.topology=mode_transition->start().contract.reference_edges;
+            def.description="Task32 registered finite mode-transition plan; common physical launch state";
+        }
         const bool external_reconstruction_enabled=argc>=25;
+        // Separate, default-off admission: a real external request is not a
+        // fixed-mode observer. This first gate permits initialization/identity
+        // windows only; the existing transition and information gates remain.
+        const bool task32_source_reconstruction=argc==29&&!fixed_mode.enabled&&
+            policy=="task25-h0-p0-sourceyaw";
+        if(mode_transition&&(!task32_source_reconstruction||!contraction_explicit||
+            !anchor_scene||anchor_scene->identity!=mode_transition->pinball_scene.identity||
+            range_noise_std_m!=0.0||range_random_seed!=2027||range_availability.link_seed!=154001||
+            window_s>900.0))
+            throw std::invalid_argument("mode transition package admits only the frozen zero field and <=900s watchdog");
+        if(task32_source_reconstruction) {
+            const bool registered_field=reduced_field||
+                (range_noise_std_m==0.0&&range_random_seed==2027&&range_availability.link_seed==134001)||
+                (range_noise_std_m==0.5&&
+                 ((range_random_seed==143011&&range_availability.link_seed==144011)||
+                  (range_random_seed==143029&&range_availability.link_seed==144029)||
+                  (range_random_seed==143047&&range_availability.link_seed==144047)));
+            if(template_id!="origin"||!task31_common||!anchor_scene||
+               std::string(argv[24])!="pinball-qualified-layered-centeredframe-moving-linearphase-rolecenter-continuingfront"||
+               bridge_scale!=1.0||(mechanism_explicit&&!reduced_field)||information_snapshot_enabled||
+               !explicit_range_model||!registered_field||range_dropout_probability!=0.0||
+               venue_width_m!=4500||venue_height_m!=2250||!std::isfinite(window_s)||
+               window_s<0||window_s>900.0)
+                throw std::invalid_argument("source-yaw reconstruction outside registered identity gate");
+            std::ifstream registered("docs/evidence/task32-fixed-library/observation-r1-anchor-asset.json");
+            std::ifstream proposed(argv[28]);json registration,payload;
+            if(!registered||!proposed)throw std::invalid_argument("missing registered reconstruction asset");
+            registered>>registration;proposed>>payload;
+            if(registration!=payload)
+                throw std::invalid_argument("reconstruction asset differs from registration");
+        }
         const bool frozen_search_policy=policy=="task25-h0-p0"||
-            (task31_fixed_control&&
+            ((task31_fixed_control||task32_source_reconstruction)&&
              policy=="task25-h0-p0-sourceyaw");
         // Research yaw must fail closed even when the extended CLI is absent.
         // The external-stack guard below alone does not cover short argv.
         if (task18_yaw_objective==
                 gf::Task18YawObjective::SourceCvtSoftCbfSecondOrder &&
-            (!task31_fixed_control||!task31_triangular||!anchor_scene||
+            !fixed_mode.enabled&&!task32_source_reconstruction&&(!task31_fixed_control||!task31_triangular||!anchor_scene||
              policy!="task25-h0-p0-sourceyaw"))
             throw std::invalid_argument(
                 "source yaw requires explicit frozen fixed H0/Pinball research configuration");
@@ -562,9 +721,76 @@ int main(int argc,char** argv) {
             !frozen_search_policy||tau!=14.0||acceleration_half_box_mps2!=4.0||
             rows_mode!="vaug-speed29p9"||target_homotopy_enabled))
             throw std::invalid_argument("external reconstruction requires frozen Task18-P0 stack");
+        if(information_snapshot_enabled&&
+            (information_snapshot_path.empty()||!task31_fixed_control||task31_fixed_code!=0||
+             policy!="task25-h0-p0-sourceyaw"||!explicit_range_model||range_noise_std_m!=0.5||
+             range_dropout_probability!=0||range_random_seed!=137029||range_availability.link_seed!=138029||
+             venue_width_m!=4500||venue_height_m!=2250||window_s>340.0))
+            throw std::invalid_argument("information snapshot requires registered fixed H0 diagnostic replay");
+        const bool reduced_entry=reduced_field&&(fixed_mode.enabled||task32_source_reconstruction);
+        if(contraction_explicit&&(!task32_source_reconstruction||!reduced_entry||
+            fixed_mode.enabled||task31_fixed_control||range_noise_std_m!=0.0||
+            range_random_seed!=2027||range_availability.link_seed!=154001||window_s>(mode_transition?900.0:420.0)))
+            throw std::invalid_argument("centered bow limited to registered zero reconstruction window");
+        if(mechanism_explicit&&!reduced_entry&&
+            (information_snapshot_enabled||!task31_fixed_control||task31_fixed_code!=0||
+             policy!="task25-h0-p0-sourceyaw"||!anchor_scene||!explicit_range_model||
+             venue_width_m!=4500||venue_height_m!=2250||tau!=14.0||
+             acceleration_half_box_mps2!=4.0||rows_mode!="vaug-speed29p9"||
+             target_homotopy_enabled||range_dropout_probability!=0.0||
+             !(gf::task32RegisteredTargetExperiment(range_noise_std_m,range_random_seed,
+                 range_availability.link_seed) ||
+               gf::task32RegisteredTargetConfirmation(task32_target_mechanism,
+                 range_noise_std_m,range_random_seed,range_availability.link_seed))))
+            throw std::invalid_argument("target mechanism requires frozen fixed H0 research stack");
+        if(mechanism_explicit&&!reduced_entry) {
+            std::ifstream registered("docs/evidence/task31-triangular-common-bridge/anchor-scene-terminal-port-r1.json");
+            std::ifstream proposed(argv[28]);json registration,payload;
+            if(!registered||!proposed)throw std::invalid_argument("missing registered target mechanism scene");
+            registered>>registration;proposed>>payload;
+            if(registration!=payload)throw std::invalid_argument("target mechanism scene identity mismatch");
+        }
+        if(information_snapshot_enabled) {
+            const auto diagnostic=std::filesystem::weakly_canonical(information_snapshot_path);
+            if(!std::filesystem::is_fifo(diagnostic))
+                throw std::invalid_argument("information snapshot requires a dedicated new FIFO, never a regular evidence file");
+            for(const auto& other:std::vector<std::filesystem::path>{argv[2],argv[4],
+                    std::filesystem::path(argv[3])/"gridworld-delta.jsonl",argv[28],trailing.substr(range_prefix.size())})
+                if(diagnostic==std::filesystem::weakly_canonical(other))
+                    throw std::invalid_argument("information snapshot path conflicts with existing input/output");
+            std::ifstream registered("docs/evidence/task31-triangular-common-bridge/anchor-scene-terminal-port-r1.json");
+            std::ifstream proposed(argv[28]);json registration,payload;
+            if(!registered||!proposed)throw std::invalid_argument("missing registered diagnostic anchor payload");
+            registered>>registration;proposed>>payload;
+            if(registration!=payload)throw std::invalid_argument("diagnostic anchor payload differs from registration");
+        }
         if (policy_task19_switch&&template_id!="origin")
             throw std::invalid_argument(
                 "Task 19 switcher must start from production origin DAG");
+        if(transition_preflight) {
+            json library=json::object(),orders=json::array();
+            for(const auto& [mode,asset]:mode_transition->modes)
+                library[std::to_string(mode)]=asset.identity;
+            int previous=mode_transition->start_mode;
+            std::vector<gf::NodeId> anchors;
+            for(const auto& [id,p]:mode_transition->start().fixed)anchors.push_back(id);
+            for(int target:mode_transition->target_modes) {
+                const auto order=gf::task26ReplacementPlan(mode_transition->mode(previous).contract.reference_edges,
+                    mode_transition->mode(target).contract.reference_edges,anchors);
+                if(!order.valid)throw std::invalid_argument(order.reason);
+                json pairs=json::array();
+                for(const auto& [add,remove]:order.replacements)
+                    pairs.push_back({{"add",{add.reference,add.owner}},{"remove",{remove.reference,remove.owner}}});
+                orders.push_back({{"from_mode",previous},{"to_mode",target},{"replacements",pairs}});
+                previous=target;
+            }
+            std::cout<<json({{"schema","task32-transition-preflight-v1"},{"valid",true},
+                {"plan",mode_transition->identity},{"registered_library",library},{"replacement_orders",orders},
+                {"configured_start_mode",task20_lattice_mode},{"target_mechanism",task32_target_mechanism},
+                {"plant_advances",0},{"fixture_constructed",false},{"runtime_qualified",false},
+                {"boundary","Pure dispatch/graph order check only; not initialization, dynamic safety or completion."}}).dump(2)<<'\n';
+            return 0;
+        }
         auto fixture=makeFixture(def,tau,policy_v2,
             velocity_augmented_rows,policy_v3,policy_v6,
             leader_reachability_filter,policy_h2,gamma_selection,
@@ -593,7 +819,12 @@ int main(int argc,char** argv) {
             policy_task24?(task20_lattice_mode==9?560.0:650.0):
             task20_target_policy==4
                 ?(task20_lattice_mode==0?220.0:450.0):190.0,
-            venue_width_m,venue_height_m,anchor_scene,range_availability);
+            venue_width_m,venue_height_m,anchor_scene,range_availability,task32_target_mechanism,
+            fixed_mode.enabled?&fixed_mode:nullptr);
+        if(fixed_mode.enabled) {
+            fixture->controller.registerExternalCoverageContract(task20_lattice_mode,fixed_mode.asset->contract);
+            fixture->controller.commitExternalCoverageMode(task20_lattice_mode,fixed_mode.asset->contract);
+        }
         // P5 selects its pass spacing at runtime from the hole-free rule,
         // so the configured band width is recorded but unused for -p5.
         if (!fixture->adapter.initializeStageZero().initialized) {
@@ -604,6 +835,7 @@ int main(int argc,char** argv) {
                 {"tau_mps2",tau},{"qualified",false},
                 {"boundary_reason","stage_zero_initialization_failed"},
                 {"complete",true}};
+            if(mode_transition)boundary["task32_mode_transition_plan"]=mode_transition->identity;
             gf::writeTask10p11vJson(argv[2],boundary);
             std::cout<<boundary.dump(2)<<'\n';
             return 0;
@@ -612,7 +844,7 @@ int main(int argc,char** argv) {
         std::unique_ptr<gf::Task26ExternalReconstructor> external_reconstructor;
         if (external_reconstruction_enabled)
             external_reconstructor=std::make_unique<gf::Task26ExternalReconstructor>(
-                fixture->adapter,fixture->controller,argv[24],60.0,bridge_scale,old_bridge_only,task31_triangular,task31_common,anchor_scene,task31_fixed_control,task31_fixed_code);
+                fixture->adapter,fixture->controller,argv[24],60.0,bridge_scale,old_bridge_only,task31_triangular,task31_common,anchor_scene,task31_fixed_control,task31_fixed_code,contraction_explicit,mode_transition);
         if (policy_task19_switch)
             task19_switcher=
                 std::make_unique<gf::Task19OriginMicrofixSwitcher>(
@@ -878,6 +1110,25 @@ int main(int argc,char** argv) {
             {"evaluations",json::array()},
             {"complete",false}};
         std::filesystem::create_directories(argv[3]);
+        if(fixed_mode.enabled||mode_transition) {
+            if(fixed_mode.enabled) {
+                const auto prepared=gf::task32FixedModeScenario(fixed_mode,gf::task10p11rFixedBaselineScenario());
+                record["task32_fixed_mode"]=gf::task32FixedModeGeometryIdentity(fixed_mode,prepared);
+            }
+            auto initial_snapshot=gf::task32InformationSnapshot(fixture->adapter,0);
+            json undefined_fields=json::array();
+            // Some speed/input rows have no hdot/psi1 definition. Preserve
+            // the field as explicit null, never alter the actual QP row.
+            for(auto& row:initial_snapshot["rows"])
+                for(const char* key:{"h","psi1","hdot"})
+                    if(row.at(key).is_number()&&!std::isfinite(row.at(key).get<double>())) {
+                        undefined_fields.push_back({{"row",row.at("id")},{"field",key}});
+                        row[key]=nullptr;
+                    }
+            initial_snapshot["undefined_optional_barrier_fields"]=undefined_fields;
+            gf::writeTask10p11vJson(std::filesystem::path(argv[3])/
+                (mode_transition?"task32-transition-initial-state.json":"task32-fixed-initial-state.json"),initial_snapshot);
+        }
         if (external_reconstructor)
             record["external_reconstruction_plan"]=external_reconstructor->report();
         if(argc>=26)record["task30_bridge_scale"]=bridge_scale;
@@ -888,11 +1139,27 @@ int main(int argc,char** argv) {
         if(explicit_range_model)record["range_availability"]=range_asset;
         if(task31_fixed_control)record["task31_fixed_mode_control"]=true;
         if(task31_fixed_control&&task31_fixed_code==0)record["task31_fixed_mode_code"]=0;
+        if(task32_source_reconstruction)record["task32_source_reconstruction_admission"]="identity-window-v1";
+        if(mode_transition) {
+            record["task32_mode_transition_plan"]=mode_transition->identity;
+            record["task32_registered_library"]=json::object();
+            for(const auto& [mode,asset]:mode_transition->modes)
+                record["task32_registered_library"][std::to_string(mode)]=asset.identity;
+        }
+        if(mechanism_explicit||mode_transition)record["task32_target_mechanism"]={
+            {"code",task32_target_mechanism},{"name",mechanism_explicit?mechanism_name:"direct-P0"},
+            {"front_rate_mps",config.task32_front_rate_mps},
+            {"initialization","first-real-assignment; never fabricates missing unit reference"}};
         gf::writeTask10p11vJson(
             std::filesystem::path(argv[3])/"00-config.json",record);
         std::ofstream telemetry(argv[4]);
         if (!telemetry) throw std::runtime_error(
             "cannot open telemetry stream");
+        std::ofstream information_snapshot_stream;
+        if(information_snapshot_enabled) {
+            information_snapshot_stream.open(information_snapshot_path);
+            if(!information_snapshot_stream)throw std::runtime_error("cannot open information snapshot stream");
+        }
         const std::filesystem::path grid_delta_path=
             std::filesystem::path(argv[3])/"gridworld-delta.jsonl";
         std::ofstream grid_delta(grid_delta_path);
@@ -983,6 +1250,19 @@ int main(int argc,char** argv) {
                 if (static_cast<gf::NodeId>(robot->id)==id) return *robot;
             throw std::runtime_error("unknown robot id");
         };
+        if(mechanism_explicit||fixed_mode.enabled||mode_transition) {
+            const auto initial=fixture->adapter.runtimeSnapshot();
+            json owners=json::array();
+            for(std::size_t index=0;index<initial.estimate.mobile_ids.size();++index) {
+                const auto id=initial.estimate.mobile_ids[index];
+                const auto state=initial.estimate.mean.segment<4>(4*index);
+                owners.push_back({{"id",id},{"est",{state[0],state[1],state[2],state[3]}},
+                    {"yaw_rad",robot_by_id(id).model->getStateVariable("yawRad")}});
+            }
+            gf::writeTask10p11vJson(std::filesystem::path(argv[3])/"task32-initial-observation.json",
+                {{"schema","task32-before-first-allocation-v1"},{"runtime_s",initial.runtime_s},
+                 {"owners",owners},{"note","observed pre-state; not a restart checkpoint"}});
+        }
         while (fixture->adapter.runtimeSnapshot().runtime_s<window_s) {
             if (external_reconstructor) external_reconstructor->beforeStep();
             if (fixture->adapter.config().speed_initial_set_truth_gate) {
@@ -1024,6 +1304,13 @@ int main(int argc,char** argv) {
                 pre_positions[id]={robot->model->getStateVariable("x"),
                     robot->model->getStateVariable("y")};
                 }
+            if(information_snapshot_enabled) {
+                const double diagnostic_time=fixture->adapter.runtimeSnapshot().runtime_s;
+                if(tick==0||(diagnostic_time>=330.0-1e-8&&diagnostic_time<=340.0+1e-8)) {
+                    information_snapshot_stream<<gf::task32InformationSnapshot(fixture->adapter,tick).dump()<<'\n'<<std::flush;
+                    if(!information_snapshot_stream)throw std::runtime_error("information diagnostic stream write failed");
+                }
+            }
             last_step=fixture->controller.advance();
             if (last_step.step.advanced)
                 squared_control_energy_proxy+=
@@ -1488,7 +1775,7 @@ int main(int argc,char** argv) {
                     {"pass_epoch",assignment.state.pass_epoch},
                     {"same_band_rescans",assignment.state.same_band_rescans}});
             }
-            telemetry<<json({{"tick",tick},
+            json tick_record={{"tick",tick},
                 {"external_reconstruction",external_reconstructor
                     ?external_reconstructor->telemetry():json(nullptr)},
                 {"runtime_s",snapshot.runtime_s},
@@ -1622,7 +1909,24 @@ int main(int argc,char** argv) {
                     {"reason",task19_switch_event.reason}}},
                 {"throttle",{{"active",throttle.active},
                     {"s",throttle.s}}},
-                {"owners",std::move(owners)}}).dump()<<'\n';
+                {"owners",std::move(owners)}};
+            if(mechanism_explicit||mode_transition) {
+                json units=json::object();
+                for(const auto& [id,ledger]:fixture->controller.task32UnitFrontLedger())
+                    units[id]={{"task_id",ledger.task.id()},
+                        {"task_center",{ledger.task.center.x(),ledger.task.center.y()}},
+                        {"active",ledger.active},
+                        {"applied_front",{ledger.applied_front.x(),ledger.applied_front.y()}}};
+                tick_record["task32"]={{"code",task32_target_mechanism},
+                    {"motion_evaluated",last_step.task32_motion_evaluated},
+                    {"motion_valid",last_step.task32_motion.valid},
+                    {"reason",last_step.task32_motion.reason},{"units",units}};
+            }
+            if(fixed_mode.enabled)tick_record["task32_fixed_mode"]={
+                {"mode_code",task20_lattice_mode},{"contract_id",fixed_mode.asset->contract.id},
+                {"current_information",gf::task31InformationTelemetry(fixture->adapter)},
+                {"external_reconstruction",false}};
+            telemetry<<tick_record.dump()<<'\n';
             if (tick%100==0||hard_stop)
                 record["evaluations"].push_back({{"tick",tick},
                     {"advanced",last_step.step.advanced},
@@ -1635,6 +1939,10 @@ int main(int argc,char** argv) {
             if (t100_tick.has_value()) break;
         }
         telemetry.close();
+        if(information_snapshot_enabled) {
+            information_snapshot_stream.close();
+            if(information_snapshot_stream.fail())throw std::runtime_error("information diagnostic stream close failed");
+        }
         if (external_reconstructor)
             record["external_reconstruction"]=external_reconstructor->report();
         const auto final_grid=gf::task17GridSnapshot(

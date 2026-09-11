@@ -12,6 +12,8 @@
 #include "grand_finale/Task16Cbf2026CoveragePolicy.hpp"
 #include "grand_finale/Task16FormationGovernor.hpp"
 #include "grand_finale/Task20CoveragePolicy.hpp"
+#include "grand_finale/Task32UnitFrontLedger.hpp"
+#include "grand_finale/Task32ReconstructionFrontResume.hpp"
 #include "grand_finale/Task21PersistentRibbon.hpp"
 #include "grand_finale/Task22FootprintInsetSweep.hpp"
 #include "grand_finale/Task24PersistentRasterSweep.hpp"
@@ -100,6 +102,8 @@ struct SimpleCoverageControlStep {
     Task16CoverageResult task18_allocation;
     bool task20_allocation_evaluated=false;
     Task20CoverageResult task20_allocation;
+    bool task32_motion_evaluated=false;
+    Task32UnitFrontResult task32_motion;
     bool task21_allocation_evaluated=false;
     Task21AllocationResult task21_allocation;
     bool task22_allocation_evaluated=false;
@@ -232,6 +236,7 @@ public:
                 advanceTask20Targets(runtime,result);
             if ((result.task20_allocation_evaluated&&
                  !result.task20_allocation.valid)||
+                (result.task32_motion_evaluated&&!result.task32_motion.valid)||
                 (result.task21_allocation_evaluated&&
                  !result.task21_allocation.valid)||
                 (result.task22_allocation_evaluated&&
@@ -709,12 +714,38 @@ public:
                 if (!reference->count(id)||!reference->at(id).allFinite())
                     throw std::invalid_argument("external reference incomplete");
         } else if (external_reconstruction_reference_) {
+            if(adapter_.config().task32_target_mechanism==2) {
+                const auto& config=adapter_.config();
+                const int mode=external_coverage_mode_.value_or(config.task20_lattice_mode);
+                const auto contract=external_coverage_contract_.value_or(mode>=10
+                    ?task25DagContractFromCode(mode)
+                    :task20DagLatticeContract(static_cast<Task20LatticeMode>(mode)));
+                std::map<std::string,FrontierCell> historical;
+                for(const auto& unit:contract.coverage_units) {
+                    const NodeId member=*std::min_element(unit.members.begin(),unit.members.end());
+                    const auto id=targets_.at(member).id();
+                    const auto cell=std::find_if(denominator_cells_.begin(),denominator_cells_.end(),
+                        [&](const FrontierCell& c){return c.id()==id;});
+                    if(cell==denominator_cells_.end())
+                        throw std::logic_error("resume requires historical real cell identity");
+                    historical[unit.id]=*cell;
+                }
+                const auto resumed=task32ResumeFrontLedger(contract,
+                    adapter_.runtimeSnapshot().estimate.fixed_positions,
+                    *external_reconstruction_reference_,historical);
+                if(!resumed.valid)throw std::logic_error("continuous front resume: "+resumed.reason);
+                task32_unit_front_ledger_=resumed.units;
+                targets_=resumed.targets;
+            }
             external_force_reallocate_=true;
         }
         external_reconstruction_reference_=std::move(reference);
     }
     // Explicit request-time mode library, sealed before the first plant step.
     // Registering a target mapping never activates its reference edges.
+    const std::map<std::string,Task32UnitFrontLedger>& task32UnitFrontLedger() const {
+        return task32_unit_front_ledger_;
+    }
     void registerExternalCoverageContract(int mode,Task20DagLatticeContract contract) {
         const auto r=adapter_.runtimeSnapshot();
         if(!adapter_.config().target_policy_task20_dag_lattice||r.runtime_s!=0||target_epoch_!=0||
@@ -833,6 +864,7 @@ public:
         task17_last_allocation_cycle_=0;
         task20_last_allocation_cycle_=0;
         task20_initial_distance_m_.clear();
+        task32_unit_front_ledger_.clear();
         task21_plan_=Task21RibbonPlan{};
         task21_cursors_.clear();
         task21_active_segments_.clear();
@@ -886,7 +918,7 @@ private:
         const bool periodic=external_force_reallocate_||targets_.empty()||
             control_boundaries_>=task20_last_allocation_cycle_+
                 config.task20_update_period_cycles;
-        if (!periodic) return;
+        if (!periodic&&config.task32_target_mechanism==0) return;
         const auto uncovered=currentCertifiedUncoveredCells();
         // T100 retains the final real ledger; no synthetic terminal target.
         if (uncovered.empty()&&!targets_.empty()) return;
@@ -897,6 +929,11 @@ private:
             :task20DagLatticeContract(
                 static_cast<Task20LatticeMode>(mode));
         if(external_coverage_contract_)request.contract=*external_coverage_contract_;
+        if(config.task32_target_mechanism!=0&&!periodic) {
+            advanceTask32Motion(runtime,request.contract,uncovered,{},false,result);
+            return;
+        }
+        request.config.empty_share_inactive=config.task32_target_mechanism==1;
         request.policy=static_cast<Task20TargetPolicy>(
             config.task20_target_policy);
         request.uncovered_cells=uncovered;
@@ -924,14 +961,21 @@ private:
                 currentYaw(owner),error});
         }
         result.task20_allocation_evaluated=true;
+        const auto motion_contract=request.contract;
         result.task20_allocation=allocateTask20Coverage(std::move(request));
         if (!result.task20_allocation.valid) {
             result.reason=result.task20_allocation.reason;
             return;
         }
         if (!result.task20_allocation.complete) {
-            for (const auto& [owner,target]:result.task20_allocation.targets)
-                targets_[owner]=target;
+            if(config.task32_target_mechanism!=0) {
+                advanceTask32Motion(runtime,motion_contract,uncovered,
+                    result.task20_allocation.assignments,true,result);
+                if(!result.task32_motion.valid)return;
+            } else {
+                for (const auto& [owner,target]:result.task20_allocation.targets)
+                    targets_[owner]=target;
+            }
             if (targets_.size()!=runtime.estimate.mobile_ids.size()) {
                 result.reason="task20_incomplete_initial_target_ledger";
                 result.task20_allocation.valid=false;
@@ -942,6 +986,28 @@ private:
         task20_last_allocation_cycle_=control_boundaries_;
         external_force_reallocate_=false;
         consecutive_failures_=0;
+    }
+
+    void advanceTask32Motion(const GrandFinaleRuntimeSnapshot& runtime,
+        const Task20DagLatticeContract& contract,
+        const std::vector<FrontierCell>& uncovered,
+        const std::map<std::string,Task20CoverageAssignment>& assignments,
+        bool allocation_evaluated,SimpleCoverageControlStep& result) {
+        std::set<std::string> ids;
+        for(const auto& cell:uncovered)ids.insert(cell.id());
+        const auto& config=adapter_.config();
+        const std::optional<double> step=config.task32_target_mechanism==2
+            ?std::optional<double>(config.task32_front_rate_mps*config.dt_s):std::nullopt;
+        result.task32_motion_evaluated=true;
+        result.task32_motion=task32AdvanceUnitFrontLedger(contract,
+            runtime.estimate.fixed_positions,assignments,ids,
+            task32_unit_front_ledger_,allocation_evaluated,step);
+        if(!result.task32_motion.valid) {
+            result.reason=result.task32_motion.reason;
+            return;
+        }
+        task32_unit_front_ledger_=result.task32_motion.units;
+        targets_=result.task32_motion.targets;
     }
 
     Task20DagLatticeContract task21Contract() const {
@@ -2485,6 +2551,7 @@ private:
     std::size_t task17_last_allocation_cycle_=0;
     std::size_t task18_last_allocation_cycle_=0;
     std::size_t task20_last_allocation_cycle_=0;
+    std::map<std::string,Task32UnitFrontLedger> task32_unit_front_ledger_;
     std::vector<double> task20_initial_distance_m_;
     Task21RibbonPlan task21_plan_;
     std::map<std::string,std::size_t> task21_cursors_;

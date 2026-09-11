@@ -18,6 +18,8 @@ enum class Task20TargetPolicy {
 struct Task20CoverageConfig {
     double forward_focus_distance_m=400.0;
     double comparison_epsilon=1.0e-9;
+    // Research-only responsibility semantics. Default preserves Task18/25 P0.
+    bool empty_share_inactive=false;
 };
 
 struct Task20CoverageRequest {
@@ -44,6 +46,7 @@ struct Task20CoverageResult {
     std::map<std::string,Task20CoverageAssignment> assignments;
     std::map<std::string,Eigen::Vector2d> fronts;
     std::map<NodeId,FrontierCell> targets;
+    std::set<std::string> inactive_units;
     std::size_t active_band=0;
     std::size_t scanned_cells=0;
     double allocation_wall_s=0.0;
@@ -167,7 +170,9 @@ inline Task20CoverageResult allocateTask20Coverage(Task20CoverageRequest request
     };
     if (!request.contract.valid||request.agents.size()!=14||
         request.fixed_positions.size()<3||
-        request.config.forward_focus_distance_m<0.0) {
+        request.config.forward_focus_distance_m<0.0 ||
+        (request.config.empty_share_inactive &&
+         request.policy!=Task20TargetPolicy::Cbf2026Voronoi)) {
         result.reason="invalid_task20_request";
         return finish(std::move(result));
     }
@@ -320,6 +325,10 @@ inline Task20CoverageResult allocateTask20Coverage(Task20CoverageRequest request
          unit_index<request.contract.coverage_units.size();++unit_index) {
         const auto& unit=request.contract.coverage_units[unit_index];
         std::vector<const FrontierCell*> candidates=shares[unit.id];
+        if (candidates.empty() && request.config.empty_share_inactive) {
+            result.inactive_units.insert(unit.id);
+            continue;
+        }
         if (candidates.empty()) candidates=eligible;
         const auto front=task20_policy_detail::unitFront(unit,request.agents);
         Eigen::Vector2d focus=front.position+
@@ -329,10 +338,14 @@ inline Task20CoverageResult allocateTask20Coverage(Task20CoverageRequest request
                 request.contract.coverage_units.size());
         const FrontierCell* task=task20_policy_detail::nearest(candidates,focus,
             request.config.comparison_epsilon,used);
-        if (task==nullptr)
+        if (task==nullptr && !request.config.empty_share_inactive)
             task=task20_policy_detail::nearest(eligible,focus,
                 request.config.comparison_epsilon,used);
-        if (task==nullptr) continue;
+        if (task==nullptr) {
+            if(request.config.empty_share_inactive)
+                result.inactive_units.insert(unit.id);
+            continue;
+        }
         used.insert(task->id());
         result.assignments[unit.id]={unit.id,*task,task->center};
         result.fronts[unit.id]=task->center;
