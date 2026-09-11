@@ -150,6 +150,8 @@ struct GrandFinaleRuntimeSnapshot {
     bool pending_is_retreat = false;
     std::size_t transition_stack_size = 0;
     std::size_t union_control_cycles = 0;
+    double certified_shadow_single_position_support_m = 0.0;
+    double certified_shadow_relative_position_support_m = 0.0;
     std::map<std::string, RuntimeRangeLinkState> range_links;
 };
 
@@ -530,6 +532,24 @@ public:
     std::size_t unionControlCycles() const { return union_control_cycles_; }
     std::size_t transitionStackSize() const { return transition_stack_.size(); }
 
+    void setCertifiedShadowSupports(
+        double single_position_support_m,
+        double relative_position_support_m) {
+        if (!std::isfinite(single_position_support_m) ||
+            !std::isfinite(relative_position_support_m) ||
+            single_position_support_m <
+                config_.certified_shadow_single_position_support_m ||
+            relative_position_support_m <
+                config_.certified_shadow_relative_position_support_m) {
+            throw std::invalid_argument(
+                "certified shadow supports must be finite and monotone");
+        }
+        config_.certified_shadow_single_position_support_m =
+            single_position_support_m;
+        config_.certified_shadow_relative_position_support_m =
+            relative_position_support_m;
+    }
+
     HybridSupervisor& supervisor() { return supervisor_; }
     const HybridSupervisor& supervisor() const { return supervisor_; }
     InterimMasterDekf& estimator() { return estimator_; }
@@ -552,6 +572,10 @@ public:
         snapshot.pending_is_retreat = pending_is_retreat_;
         snapshot.transition_stack_size = transition_stack_.size();
         snapshot.union_control_cycles = union_control_cycles_;
+        snapshot.certified_shadow_single_position_support_m =
+            config_.certified_shadow_single_position_support_m;
+        snapshot.certified_shadow_relative_position_support_m =
+            config_.certified_shadow_relative_position_support_m;
         if (pending_proposal_.has_value()) {
             snapshot.freshness = supervisor_.mode() == SupervisorMode::Union
                 ? FreshnessRelation::UnionRequiresFreshBreak
@@ -599,13 +623,13 @@ public:
             audit.minimum_effective_reference_count = std::min(
                 audit.minimum_effective_reference_count,
                 effective_edges.size());
-            const double fim = effective_edges.size() < 2
-                ? -std::numeric_limits<double>::infinity()
-                : Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d>(
-                    referenceFim(
-                        owner, effective_edges, snapshot,
-                        context.range_variances_m2))
-                    .eigenvalues().minCoeff();
+            const auto robust_fim = robustReferenceFimLowerBound(
+                owner, effective_edges, snapshot,
+                context.range_variances_m2,
+                context.reference_direction_support_m);
+            const double fim = robust_fim.valid
+                ? robust_fim.lower_eigenvalue
+                : -std::numeric_limits<double>::infinity();
             audit.minimum_fim_eigenvalue = std::min(
                 audit.minimum_fim_eigenvalue, fim);
             const double posterior =
@@ -723,6 +747,7 @@ private:
             config_.maximum_posterior_eigenvalue_m2;
         context.gamma_accept = 0.05;
         context.estimate = snapshot;
+        context.require_robust_reference_fim = true;
         std::vector<DirectedEdge> edges = supervisor_.topology();
         edges.insert(edges.end(), additions.begin(), additions.end());
         edges = transition_certifier_detail::canonicalEdges(std::move(edges));
@@ -767,6 +792,13 @@ private:
             const auto variance = range_variance_m2_.find(range_id);
             if (variance != range_variance_m2_.end())
                 context.range_variances_m2[range_id] = variance->second;
+            const bool mobile_reference = std::find(
+                mobile_ids_.begin(), mobile_ids_.end(), edge.reference) !=
+                mobile_ids_.end();
+            context.reference_direction_support_m[edge.id()] =
+                mobile_reference
+                    ? config_.certified_shadow_relative_position_support_m
+                    : config_.certified_shadow_single_position_support_m;
         }
         context.hard_row_request = hardRowRequest(snapshot, edges);
         context.nominal_controls = nominalControls(supervisor_.mode());

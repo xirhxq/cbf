@@ -165,6 +165,36 @@ TEST_CASE("Distance FIM posterior and snapshot versions are fail-closed") {
     }
 }
 
+TEST_CASE("Exact certifier uses robust cone FIM rather than nominal directions") {
+    auto robust = context();
+    robust.require_robust_reference_fim = true;
+    for (const auto& [id, gate] : robust.edge_gates) {
+        (void)gate;
+        robust.reference_direction_support_m[id] = 0.0;
+    }
+    robust.reference_direction_support_m.at("10->2") = 1000.0;
+    const double nominal = Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d>(
+        gf::referenceFim(
+            2, {{10, 2}, {1, 2}}, robust.estimate,
+            robust.range_variances_m2))
+        .eigenvalues().minCoeff();
+    REQUIRE(nominal > robust.min_fim_eigenvalue);
+
+    const auto result = gf::TransitionCertifier{}.certify(
+        successfulProposal(), robust, false);
+    CHECK_FALSE(result.valid);
+    CHECK(result.old_state.reason == "fim");
+}
+
+TEST_CASE("Certified robust-FIM mode fails closed when direction support is absent") {
+    auto robust = context();
+    robust.require_robust_reference_fim = true;
+    const auto result = gf::TransitionCertifier{}.certify(
+        successfulProposal(), robust, false);
+    CHECK_FALSE(result.valid);
+    CHECK(result.old_state.reason == "fim_direction_support_missing");
+}
+
 TEST_CASE("Guaranteed certification requires the old edge to remain add-eligible") {
     auto reverse_blocked = context();
     reverse_blocked.edge_gates.at("10->2").add_valid = false;

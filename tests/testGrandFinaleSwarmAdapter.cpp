@@ -195,6 +195,28 @@ TEST_CASE("Runtime snapshot retains estimator factors range state timer and tran
     CHECK(snapshot.freshness == gf::FreshnessRelation::NoPending);
 }
 
+TEST_CASE("Certified shadow supports advance monotonically and are exposed in the runtime state") {
+    json settings = settings4p2();
+    Swarm swarm(settings);
+    gf::GrandFinaleSwarmAdapter adapter(
+        swarm, {1, 2, 3, 4}, {{10, {4.0, 4.0}}, {11, {4.0, 16.0}}},
+        topology(), adapterConfig(gf::SolverProfile::OpenSource));
+
+    adapter.setCertifiedShadowSupports(0.2, 0.35);
+    const auto updated = adapter.runtimeSnapshot();
+    CHECK(updated.certified_shadow_single_position_support_m ==
+          doctest::Approx(0.2));
+    CHECK(updated.certified_shadow_relative_position_support_m ==
+          doctest::Approx(0.35));
+    CHECK_THROWS_AS(
+        adapter.setCertifiedShadowSupports(0.19, 0.36),
+        std::invalid_argument);
+    CHECK_THROWS_AS(
+        adapter.setCertifiedShadowSupports(
+            std::numeric_limits<double>::infinity(), 0.36),
+        std::invalid_argument);
+}
+
 TEST_CASE("Actual union hard rows use the higher-covariance new endpoint tube") {
     json low_settings = settings4p2();
     json high_settings = settings4p2();

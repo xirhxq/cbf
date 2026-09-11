@@ -3,6 +3,7 @@
 #include "grand_finale/CanonicalHardRows.hpp"
 #include "grand_finale/ReferenceGeometry.hpp"
 #include "grand_finale/ProgressCompatibility.hpp"
+#include "grand_finale/RobustReferenceFim.hpp"
 #include "grand_finale/TopologyModel.hpp"
 
 #include <algorithm>
@@ -34,6 +35,10 @@ struct TransitionCertificationContext {
     double gamma_accept = 0.0;
     JointEstimateSnapshot estimate;
     std::map<std::string, double> range_variances_m2;
+    bool require_robust_reference_fim = false;
+    // When populated, certification uses an all-realization direction-cone
+    // lower bound instead of the nominal point-estimate FIM.
+    std::map<std::string, double> reference_direction_support_m;
     std::map<std::string, CertifiedEdgeGate> edge_gates;
     CanonicalHardRowRequest hard_row_request;
     std::map<NodeId, Eigen::Vector2d> nominal_controls;
@@ -145,12 +150,25 @@ inline CertifiedTopologyState evaluateState(
         std::vector<DirectedEdge> owner_edges;
         for (const DirectedEdge& edge : edges)
             if (edge.owner == owner) owner_edges.push_back(edge);
-        const Eigen::Matrix2d fim = referenceFim(
-            owner, owner_edges, context.estimate,
-            context.range_variances_m2);
-        const double minimum_fim =
-            Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d>(fim)
-                .eigenvalues().minCoeff();
+        double minimum_fim = 0.0;
+        if (context.require_robust_reference_fim) {
+            const auto robust_fim = robustReferenceFimLowerBound(
+                owner, owner_edges, context.estimate,
+                context.range_variances_m2,
+                context.reference_direction_support_m);
+            if (!robust_fim.valid) {
+                result.reason = "fim_" + robust_fim.reason;
+                return result;
+            }
+            minimum_fim = robust_fim.lower_eigenvalue;
+        } else {
+            const Eigen::Matrix2d fim = referenceFim(
+                owner, owner_edges, context.estimate,
+                context.range_variances_m2);
+            minimum_fim =
+                Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d>(fim)
+                    .eigenvalues().minCoeff();
+        }
         if (!std::isfinite(minimum_fim) ||
             minimum_fim < context.min_fim_eigenvalue) {
             result.reason = "fim";
