@@ -90,6 +90,7 @@ struct Task10p11ComputeSummary {
 };
 
 class Task10p11ComputeProfile {
+    friend class RunnerCheckpoint;
 public:
     void record(Task10p11ComputePhase phase,double seconds,bool steady) {
         if (!std::isfinite(seconds) || seconds < 0.0)

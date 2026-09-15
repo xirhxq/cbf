@@ -18,6 +18,7 @@ struct SupervisorThresholds {
 };
 
 class HybridSupervisor {
+    friend class FullStateCheckpoint;
 public:
     explicit HybridSupervisor(SupervisorThresholds thresholds)
         : thresholds_(thresholds) {

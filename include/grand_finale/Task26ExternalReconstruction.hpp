@@ -120,6 +120,7 @@ inline std::map<std::string,Eigen::Vector2d> task26CompactFronts(
 // External-command coordinator only: no efficiency signal, no autonomous
 // candidate selection, no estimator reset, no normal-search governor.
 class Task26ExternalReconstructor {
+    friend class ReconstructionCheckpoint;
 public:
     Task26ExternalReconstructor(GrandFinaleSwarmAdapter& adapter,
         Task10p11hSimpleCoverageController& controller,const std::string& action,

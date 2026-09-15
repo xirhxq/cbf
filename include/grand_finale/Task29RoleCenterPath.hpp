@@ -9,6 +9,7 @@ namespace gf {
 // final labelled contract. No state fitting, extra phase, target assignment,
 // online optimiser, or per-member governor. Actual feasibility is external.
 class Task29RoleCenterPath {
+    friend class ReconstructionCheckpoint;
 public:
     using Targets=Task28LayerPath::Targets;
     Task29RoleCenterPath(const Task20DagLatticeContract& goal,Targets from,Targets to)

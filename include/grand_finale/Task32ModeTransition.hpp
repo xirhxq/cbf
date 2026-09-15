@@ -68,6 +68,7 @@ inline Task32ModeTransitionPlan task32ModeTransitionPlan(const nlohmann::json& j
 // stop() records interruption at the coordinator; untriggered requests remain
 // in the denominator. No completion timer fires after the finite queue ends.
 class Task32RequestSequence {
+    friend class ReconstructionCheckpoint;
 public:
     Task32RequestSequence(std::vector<int> targets,double first,double after)
         :targets_(std::move(targets)),next_s_(first),after_s_(after) {

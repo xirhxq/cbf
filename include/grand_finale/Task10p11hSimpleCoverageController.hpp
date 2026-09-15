@@ -155,6 +155,7 @@ struct SimpleCoverageControllerRestartState {
 };
 
 class Task10p11hSimpleCoverageController {
+    friend class FullStateCheckpoint;
 public:
     using DevelopmentControlOverride = std::function<GrandFinaleSwarmStep(
         const GrandFinaleRuntimeSnapshot&,

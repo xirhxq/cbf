@@ -17,6 +17,7 @@ inline Task19ProductionDefaults task19ProductionDefaults() {
 }
 
 class Task19EfficiencyAccumulator {
+    friend class RunnerCheckpoint;
 public:
     Task19EfficiencyAccumulator(std::size_t valid_cells,double dt_s)
         : valid_cells_(valid_cells),dt_s_(dt_s) {

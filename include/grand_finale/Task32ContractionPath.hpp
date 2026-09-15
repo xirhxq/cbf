@@ -7,6 +7,7 @@
 namespace gf {
 // External motion-reference geometry only; no controller or task selection.
 class Task32ContractionPath {
+    friend class ReconstructionCheckpoint;
 public:
     using Targets=std::map<NodeId,Eigen::Vector2d>;
     Task32ContractionPath(Targets from,Targets to):from_(std::move(from)),to_(std::move(to)) {

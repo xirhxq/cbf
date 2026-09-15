@@ -547,6 +547,7 @@ inline RangeFieldSample sample(
 }  // namespace range_noise_detail
 
 class GrandFinaleSwarmAdapter {
+    friend class FullStateCheckpoint;
 public:
     GrandFinaleSwarmAdapter(
         Swarm& swarm,

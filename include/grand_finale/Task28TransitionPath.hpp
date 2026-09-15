@@ -8,6 +8,7 @@ namespace gf {
 // phase drives every member.  This does not advance a controller, gate safety,
 // assign tasks, change roles, or introduce a per-member governor.
 class Task28LayerPath {
+    friend class ReconstructionCheckpoint;
 public:
     using Targets=std::map<NodeId,Eigen::Vector2d>;
     enum class Kind {Serial,CommonFinish,CenteredFrame};
