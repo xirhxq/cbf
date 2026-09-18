@@ -81,11 +81,14 @@ inline Task31AnchorScene task31AnchorScene(const nlohmann::json& j) {
         if(observation=="terminal_port") {
             for(auto& unit:out.goal.coverage_units)
                 unit.search_observation_members={out.terminal_ports.at(unit.id)};
-            task20_lattice_detail::finish(out.goal);
-            if(!out.goal.valid)return reject(out.goal.reason);
             out.goal.id+="-port-observation";
             out.goal.structural_signature+=";search-observation=registered-port";
         }
+        // Adopted 2026-09-18: the final finish() is unconditional so the
+        // anchor-inclusive topological order is identical on every parse route
+        // (the applied fixed-mode contract and the role-program instance).
+        task20_lattice_detail::finish(out.goal);
+        if(!out.goal.valid)return reject(out.goal.reason);
         out.goal.id+="-anchor-asset";out.valid=true;out.reason="parsed_geometry_not_actual_qualification";
         return out;
     } catch(const std::exception& e){return reject(std::string("invalid_anchor_asset:")+e.what());}

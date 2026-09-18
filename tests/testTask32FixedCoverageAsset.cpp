@@ -6,7 +6,9 @@
 
 static nlohmann::json nativeAsset(int mode) {
     nlohmann::json frames;
-    if(mode==0||mode==11)frames={{"A",{2250,-50}},{"B",{2250,-50}}};
+    // Adopted 2026-09-18: DualLadder unit frames are the centroids of the
+    // anchors each unit's reference edges cite ({100,101} and {101,102}).
+    if(mode==0||mode==11)frames={{"A",{2025,-50}},{"B",{2475,-50}}};
     else if(mode==2)frames={{"L",{2025,-50}},{"C",{2475,-50}},{"R",{2250,-50}}};
     else frames={{"T",{2250,-50}}};
     return {{"schema","task32-fixed-coverage-asset-v1"},{"width_m",4500},{"height_m",2250},{"mode_code",mode},
@@ -20,7 +22,7 @@ TEST_CASE("Explicit native H0 asset preserves all fourteen original targets") {
         {"width_m",4500},{"height_m",2250},{"mode_code",0},
         {"physical_anchors",{{"100",{1800,-50}},{"101",{2250,-50}},{"102",{2700,-50}},
             {"103",{2025,-50}},{"104",{2475,-50}},{"105",{2925,-50}}}},
-        {"mapping",{{"kind","native-task25"},{"unit_frames",{{"A",{2250,-50}},{"B",{2250,-50}}}}}}};
+        {"mapping",{{"kind","native-task25"},{"unit_frames",{{"A",{2025,-50}},{"B",{2475,-50}}}}}}};
     const auto parsed=gf::task32FixedCoverageAsset(asset);
     REQUIRE(parsed.valid);CHECK(parsed.mode_code==0);CHECK(parsed.fixed.size()==6);
     const auto old=gf::task25DagContractFromCode(0);

@@ -68,7 +68,7 @@ TEST_CASE("native wrapper exactly reuses fixed asset and Cross only changes DAG"
 }
 
 TEST_CASE("registered Pinball embeds unchanged legacy mapping and observation") {
-    std::ifstream f("docs/evidence/task32-fixed-library/observation-r1-anchor-asset.json");REQUIRE(f.good());
+    std::ifstream f("docs/evidence/adopted-contract-library-r1/observation-r1-anchor-asset.json");REQUIRE(f.good());
     Json registered;f>>registered;auto input=request(0);
     input["coverage"]={{"mode_code",12},{"mapping",{{"kind","frozen-task31"},{"asset",registered}}}};
     input["physical_scene"]["physical_anchors"]=registered["physical_anchors"];
@@ -81,7 +81,10 @@ TEST_CASE("registered Pinball embeds unchanged legacy mapping and observation") 
         std::map<std::string,Eigen::Vector2d> fronts;for(const auto& u:old.goal.coverage_units)fronts[u.id]={105.+1000*k,205.+500*k};
         CHECK(gf::task20LiftTargets(parsed.contract,parsed.fixed,fronts).targets==gf::task20LiftTargets(old.goal,old.fixed,fronts).targets);
     }
-    input["coverage"]["mapping"]["asset"]["search_observation"]="legacy_front";
+    // Adopted 2026-09-18: the registered asset itself declares the front
+    // observation, so the drift case mutates the embedded copy to the former
+    // terminal-port declaration and must still be rejected.
+    input["coverage"]["mapping"]["asset"]["search_observation"]="terminal_port";
     CHECK_FALSE(gf::task32ModeContract(input,&registered).valid);
 }
 
@@ -99,7 +102,7 @@ TEST_CASE("unregistered overrides modes initializations and Strip reorder fail c
 }
 
 TEST_CASE("finite atlas inputs parse without claiming a missing registered scene") {
-    const std::string root="docs/evidence/task32-fixed-library/";
+    const std::string root="docs/evidence/adopted-contract-library-r1/";
     std::ifstream index_stream(root+"mode-contract-assets-index-r1.json");REQUIRE(index_stream.good());
     Json index;index_stream>>index;std::size_t parsed_count=0,missing_count=0;
     for(const auto& cell:index.at("cells")) {

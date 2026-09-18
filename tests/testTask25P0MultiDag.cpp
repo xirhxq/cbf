@@ -158,9 +158,19 @@ TEST_CASE("Task 25 H0 P0 is request-level equivalent to Task 18 allocation") {
         CHECK((assignment.front-legacy.endpoint).norm()<1.0e-12);
     }
     REQUIRE(expected.targets.size()==actual.targets.size());
+    // Adopted 2026-09-18: the DualLadder unit frames are the centroids of the
+    // anchors cited by each unit's reference edges (A: {100,101}, B: {101,102}),
+    // so the lifted member targets no longer coincide with the legacy Task 16
+    // centers.  The request-level equivalence still holds for the allocated
+    // tasks and fronts; the targets are checked against the adopted lattice
+    // lifting of those fronts.
+    std::map<std::string,Eigen::Vector2d> fronts;
+    for (const auto& [unit,assignment]:actual.assignments) fronts[unit]=assignment.front;
+    const auto lifted=gf::task20LiftTargets(generic.contract,generic.fixed_positions,fronts);
+    REQUIRE(lifted.valid);
     for (const auto& [owner,target]:actual.targets) {
         CHECK(target.id()==expected.targets.at(owner).id());
-        CHECK((target.center-expected.targets.at(owner).center).norm()<1.0e-12);
+        CHECK((target.center-lifted.targets.at(owner)).norm()<1.0e-12);
     }
 }
 

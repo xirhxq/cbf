@@ -57,8 +57,11 @@ inline Task20DagLatticeContract longTriangle() {
         result.reference_edges.emplace_back(owner-2,owner);
         result.reference_edges.emplace_back(owner-1,owner);
     }
+    // Adopted 2026-09-18 (head simplification): the unit head is the DAG sink;
+    // the LT unit's front and motion-observation member is role 14, replacing
+    // the former {13,14} terminal pair.
     result.coverage_units={{"T",task10p10MobileIds(14),
-        {100,101,102},14,{13,14}}};
+        {100,101,102},14,{14}}};
     std::vector<std::pair<double,double>> roles;
     roles.reserve(14);
     // p = base + axial*v +/- sqrt(3)/(2*13) R90(v).  The generic

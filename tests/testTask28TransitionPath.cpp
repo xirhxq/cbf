@@ -10,6 +10,9 @@ auto endpoints(const gf::Task20DagLatticeContract& c) {
 }
 }
 
+// Adopted 2026-09-18: the pinned scalars were recomputed for the adopted
+// DualLadder anchor-centroid frames; the internal analytic/sampling oracle
+// checks remain the substantive assertions.
 TEST_CASE("Task28 complete contract derives layers and preserves every endpoint role") {
     const auto old=gf::task25DagContractFromCode(0), goal=gf::task25DagContractFromCode(12);
     auto a=endpoints(old),b=endpoints(goal);
@@ -58,10 +61,10 @@ TEST_CASE("Task28 geometry covers all 14 mobile and fixed pairs and commutes wit
             analytic=std::min(analytic,(r+h*dr).norm());
         }
     }
-    CHECK(analytic==doctest::Approx(12.9613649733).epsilon(1e-10));
+    CHECK(analytic==doctest::Approx(9.156896945909708).epsilon(1e-10));
     CHECK(minimum>=analytic-1e-9);
     CHECK(minimum-analytic<.01); // Sampling is an upper approximation, not an exact minimizer.
-    CHECK(maximum_reference==doctest::Approx(790.0206928648051).epsilon(1e-11));
+    CHECK(maximum_reference==doctest::Approx(798.7962743318642).epsilon(1e-11));
     std::cout<<"TASK28_SCALAR_ALL_PHASE_MIN_M "<<std::setprecision(16)<<analytic<<'\n';
     std::cout<<"TASK28_SCALAR_ALL_PHASE_MAX_NOMINAL_REFERENCE_M "<<maximum_reference<<'\n';
     auto c=a,d=b;const Eigen::Rotation2Dd rotation(.71);const Eigen::Vector2d offset(113,-27);
@@ -112,7 +115,7 @@ TEST_CASE("Task28 common-finish path preserves layer starts without early termin
             maximum_reference=std::max(maximum_reference,(q.at(e.reference)-q.at(e.owner)).norm());
         if (tick%1000==0) for (const auto& [id,p]:path.evaluate(h)) CHECK((p-q.at(id)).norm()<1e-9);
     }
-    CHECK(minimum==doctest::Approx(11.2179554165421).epsilon(1e-5));
+    CHECK(minimum==doctest::Approx(9.156898628814014).epsilon(1e-5));
     CHECK(maximum_reference==doctest::Approx(754.75922466535).epsilon(1e-10));
     std::cout<<"TASK28_COMMON_FINISH_SCALAR_MIN "<<minimum<<" MAX_NOMINAL_REF "<<maximum_reference<<'\n';
 }
@@ -144,8 +147,8 @@ TEST_CASE("Task28 centered frame preserves serial relative geometry and linear f
             CHECK((center/a.size()-((1-h)*c0+h*c1)).norm()<1e-9);
         }
     }
-    CHECK(minimum==doctest::Approx(12.96136497327083).epsilon(1e-5));
-    CHECK(maximum_reference==doctest::Approx(790.0206928648051).epsilon(1e-10));
+    CHECK(minimum==doctest::Approx(9.156896945909708).epsilon(1e-5));
+    CHECK(maximum_reference==doctest::Approx(798.7962743318642).epsilon(1e-10));
     for(const auto& [id,p]:a){CHECK((path.evaluate(0).at(id)-p).norm()==0);CHECK((path.evaluate(1).at(id)-b.at(id)).norm()==0);}
     // Internal joins are C1. At endpoints the frozen outer smoothstep supplies
     // zero time derivative even when the geometric phase tangent is nonzero.

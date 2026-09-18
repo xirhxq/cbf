@@ -242,8 +242,11 @@ inline Task20DagLatticeContract task20DagLatticeContract(
         result.id="dual-ladder";
         result.structural_signature="units=7+7;rows=2x(2-2-2-1);ladder";
         result.reference_edges=task20_lattice_detail::dualLadderEdges();
-        result.coverage_units={{"A",{1,2,3,4,5,6,7},{101},7,{7}},
-                               {"B",{8,9,10,11,12,13,14},{101},14,{14}}};
+        // Adopted 2026-09-18: each unit's geometric origin is the centroid of
+        // the anchors its reference edges cite; A cites {100,101}, B cites
+        // {101,102}, so the two units pivot at (2025,-50) and (2475,-50).
+        result.coverage_units={{"A",{1,2,3,4,5,6,7},{100,101},7,{7}},
+                               {"B",{8,9,10,11,12,13,14},{101,102},14,{14}}};
         const std::vector<std::pair<double,double>> a{
             {0.25,0.0},{0.25,-0.25},{0.50,0.0},{0.50,-0.25},
             {0.75,0.0},{0.75,-0.25},{1.0,0.0}};

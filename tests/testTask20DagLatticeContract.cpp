@@ -15,26 +15,43 @@ TEST_CASE("Task 20 formal initial certified set reproduces the published mask") 
     CHECK(initial.truth_hash==13357789335370783887ULL);
 }
 
-TEST_CASE("Task 20 dual ladder is an exact Task 18 lifting special case") {
+TEST_CASE("Task 20 dual ladder lifts each unit about its anchor-centroid frame") {
+    // Adopted 2026-09-18: the DualLadder unit frames are the centroids of the
+    // anchors the unit's reference edges cite ({100,101} and {101,102}), so a
+    // unit's head role coincides with its front and every member is the
+    // triangular lattice image of that front about the unit's own frame.
     const auto contract=gf::task20DagLatticeContract(
         gf::Task20LatticeMode::DualLadder);
     CHECK(contract.valid);
     CHECK(contract.coverage_units.size()==2);
     CHECK(contract.reference_edges==gf::task10p11rFixedReferenceTopology());
+    CHECK(contract.coverage_units[0].base_anchors==std::vector<gf::NodeId>{100,101});
+    CHECK(contract.coverage_units[1].base_anchors==std::vector<gf::NodeId>{101,102});
     const auto fixed=gf::task10p11rFixedBaselineScenario().fixed_positions;
     const std::map<std::string,Eigen::Vector2d> fronts{
         {"A",{725.0,2125.0}},{"B",{2415.0,2735.0}}};
     const auto lifted=gf::task20LiftTargets(contract,fixed,fronts);
     REQUIRE(lifted.valid);
-    const auto squads=gf::task13UnifiedCoverageSquads();
-    const auto expected_a=gf::task15ForwardTargets(
-        squads[0],fixed.at(101),fronts.at("A"));
-    const auto expected_b=gf::task15ForwardTargets(
-        squads[1],fixed.at(101),fronts.at("B"));
-    for (const auto& [owner,target]:expected_a)
-        CHECK((lifted.targets.at(owner)-target).norm()<1.0e-12);
-    for (const auto& [owner,target]:expected_b)
-        CHECK((lifted.targets.at(owner)-target).norm()<1.0e-12);
+    for (const auto& unit:contract.coverage_units) {
+        Eigen::Vector2d origin=Eigen::Vector2d::Zero();
+        for (const auto anchor:unit.base_anchors) origin+=fixed.at(anchor);
+        origin/=static_cast<double>(unit.base_anchors.size());
+        const auto& head=contract.member_roles.at(unit.leader);
+        CHECK(head.axial_fraction==1.0);
+        CHECK(head.triangular_fraction==0.0);
+        CHECK((lifted.targets.at(unit.leader)-fronts.at(unit.id)).norm()<1.0e-12);
+        const Eigen::Vector2d displacement=fronts.at(unit.id)-origin;
+        for (const auto member:unit.members) {
+            const auto& role=contract.member_roles.at(member);
+            const double sign=role.triangular_fraction<0.0?-1.0:1.0;
+            const Eigen::Vector2d triangular{
+                0.5*displacement.x()-sign*std::sqrt(3.0)/2.0*displacement.y(),
+                sign*std::sqrt(3.0)/2.0*displacement.x()+0.5*displacement.y()};
+            const Eigen::Vector2d expected=origin+role.axial_fraction*displacement+
+                std::abs(role.triangular_fraction)*triangular;
+            CHECK((lifted.targets.at(member)-expected).norm()<1.0e-12);
+        }
+    }
 }
 
 TEST_CASE("Task 20 research modes are valid and structurally non-isomorphic") {
