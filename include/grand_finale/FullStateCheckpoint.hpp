@@ -79,7 +79,8 @@ class FullStateCheckpoint {
            p.target_policy_task15_forward||p.target_policy_task16_cbf2026||p.target_policy_task17_periodic||
            p.target_homotopy_enabled||p.task18_common_governor_enabled||p.task20_target_policy!=0||
            (p.task32_target_mechanism!=0&&p.task32_target_mechanism!=2)||
-           p.boundary.policy==BoundaryPolicy::SoftSearchRetention||p.solver_profile!=SolverProfile::Gurobi)
+           p.boundary.policy==BoundaryPolicy::SoftSearchRetention||
+           (p.solver_profile!=SolverProfile::Gurobi&&p.solver_profile!=SolverProfile::OpenSource))
             throw std::invalid_argument("unsupported checkpoint policy/solver; no partial restore");
     }
     static Json immutable(Swarm& s,GrandFinaleSwarmAdapter& a,Task10p11hSimpleCoverageController& c) {

@@ -143,6 +143,7 @@ inline const CanonicalHardRow& targetRowForOwner(
     throw std::invalid_argument("owner is outside selected mobile pair");
 }
 
+#ifdef ENABLE_GUROBI
 inline GRBLinExpr dynamicExpression(
     const CanonicalHardRow& row,
     const Task10p11tPairRows& pair,
@@ -161,6 +162,7 @@ inline GRBLinExpr dynamicExpression(
     }
     return expression;
 }
+#endif
 
 inline double dynamicResidual(
     const CanonicalHardRow& row,
@@ -278,6 +280,14 @@ inline Task10p11tLocalReplay localReplay(
     return result;
 }
 
+#else
+// Historical recovery experiments remain unavailable without their backend.
+// The frozen normal runner does not call this seam. Never synthesize a control.
+inline Task10p11tLocalReplay localReplay(
+    const std::vector<CanonicalHardRow>&,
+    const Task10p11tPairRows&,NodeId,double,double,const Eigen::Vector2d&) {
+    throw std::runtime_error("historical dynamic-pair replay requires Gurobi");
+}
 #endif
 
 }  // namespace task10p11t_detail
