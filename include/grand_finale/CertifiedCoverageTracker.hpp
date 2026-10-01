@@ -17,6 +17,18 @@ struct CertifiedCoverageRestartState {
 
 class CertifiedCoverageTracker {
 public:
+    // The task-domain mask is fixed before observations. History is not copied:
+    // certified and truth history still comes from the frozen sensing rules.
+    explicit CertifiedCoverageTracker(const GridWorld& domain)
+        : CertifiedCoverageTracker(domain.xLim,domain.xNum,
+                                   domain.yLim,domain.yNum) {
+        if (domain.valid.size()!=truth_.valid.size() || domain.validCount<=0 ||
+            domain.validCount!=std::count(domain.valid.begin(),domain.valid.end(),true))
+            throw std::invalid_argument("invalid coverage task-domain mask");
+        truth_.valid=domain.valid;certified_.valid=domain.valid;
+        truth_.validCount=domain.validCount;certified_.validCount=domain.validCount;
+    }
+
     CertifiedCoverageTracker(
         std::pair<double, double> x_limits,
         int x_cells,

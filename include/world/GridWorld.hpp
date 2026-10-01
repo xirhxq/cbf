@@ -2,6 +2,8 @@
 #define CBF_GRIDWORLD_HPP
 
 #include "utils.h"
+#include <limits>
+#include <stdexcept>
 
 class GridWorld {
 public:
@@ -37,9 +39,42 @@ public:
         valid.resize(xNum * yNum, false);
         validCount = 0;
 
-        initializeValidCells(tmpWorld.boundary);
+        const auto cellDomain=worldSettings.value("cell-domain",std::string("legacy"));
+        if (cellDomain=="closed-polygon-centers-v1") {
+            initializeValidCellCenters(tmpWorld.boundary);
+        } else if (cellDomain=="legacy") {
+            initializeValidCells(tmpWorld.boundary);
+        } else {
+            throw std::invalid_argument("unknown GridWorld cell-domain");
+        }
 
         reset();
+    }
+
+    // Explicit opt-in domain for convex search polygons. A boundary cell is
+    // included iff its center lies in the closed polygon; a partly intersecting
+    // cell with an outside center is not a task. Legacy construction is intact.
+    void initializeValidCellCenters(const Polygon& boundary) {
+        valid.assign(xNum*yNum,false);
+        validCount=0;
+        for (int ix=0;ix<xNum;++ix) for (int iy=0;iy<yNum;++iy) {
+            const Point center(getCellCenterX(ix),getCellCenterY(iy));
+            bool positive=false,negative=false;
+            for (int edge=1;edge<=boundary.n;++edge) {
+                const Point a=boundary.p[edge];
+                const Point b=boundary.p[edge==boundary.n?1:edge+1];
+                const double first=(b.x-a.x)*(center.y-a.y);
+                const double second=(b.y-a.y)*(center.x-a.x);
+                const double cross=first-second;
+                const double tolerance=16*std::numeric_limits<double>::epsilon()
+                    *(std::abs(first)+std::abs(second));
+                positive|=cross>tolerance;
+                negative|=cross<-tolerance;
+            }
+            const bool inside=!(positive&&negative);
+            valid[getIndex(ix,iy)]=inside;
+            validCount+=inside;
+        }
     }
 
     void initializeValidCells(Polygon boundary) {

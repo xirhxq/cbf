@@ -560,11 +560,7 @@ public:
           fixed_positions_(std::move(fixed_positions)),
           config_(config),
           estimator_(initialEstimates(), fixed_positions_),
-          coverage_(
-              swarm.gridWorldGroundTruth.xLim,
-              swarm.gridWorldGroundTruth.xNum,
-              swarm.gridWorldGroundTruth.yLim,
-              swarm.gridWorldGroundTruth.yNum),
+          coverage_(swarm.gridWorldGroundTruth),
           supervisor_({config_.minimum_dwell_s, 0.05, 0.1}) {
         if (mobile_ids_.size() != swarm_.robots.size())
             throw std::invalid_argument("mobile ids must match Swarm robots");
