@@ -1,0 +1,296 @@
+{
+  "bases": [
+    [
+      250.0,
+      1000.0
+    ],
+    [
+      250.0,
+      1510.0
+    ]
+  ],
+  "bridge": {
+    "enabled": true,
+    "nominal": {
+      "gamma-star-feedback": {
+        "analysis-role": "main",
+        "constraint-execution": "hard",
+        "enabled": true,
+        "homotopy-intervals": 8,
+        "lookahead-steps": 1,
+        "mode": "reserve-task-homotopy",
+        "predictive-gate": 10.0,
+        "selection-rule": "least-intervention"
+      },
+      "guard": {
+        "enabled": true,
+        "mode": "hocbf-feasible-projection",
+        "tolerance": 1e-09
+      },
+      "max-acceleration": 4.0,
+      "max-speed": 18.0,
+      "max-yaw-rate": 0.35
+    },
+    "response": {
+      "distance-m": 1218.8615965559725,
+      "dwell-time-s": 30.0,
+      "leader-id": 4,
+      "mode": "known-static-target-reach-and-dwell",
+      "target-radius-m": 50.0,
+      "terminal-communication-margin-m": 10.0
+    },
+    "row": "proposed",
+    "safety-filter": "second-order-hocbf",
+    "target": {
+      "radius": 50.0,
+      "x": 1468.8615965559725,
+      "y": 1255.0
+    },
+    "task-mode": "post-detection-response",
+    "topology": {
+      "certified-margin": 0.0,
+      "certified-only": true,
+      "fail-safe-hold": true,
+      "fixed-references": {
+        "1": {
+          "anchor-ids": [],
+          "base-ids": [
+            0,
+            1
+          ]
+        },
+        "2": {
+          "anchor-ids": [
+            1
+          ],
+          "base-ids": [
+            0
+          ]
+        },
+        "3": {
+          "anchor-ids": [
+            2,
+            1
+          ],
+          "base-ids": []
+        },
+        "4": {
+          "anchor-ids": [
+            3,
+            2
+          ],
+          "base-ids": []
+        }
+      },
+      "max-range": 850.0,
+      "uncertainty-multiplier": 0.0
+    },
+    "topology-policy": "fixed"
+  },
+  "cbfs": {
+    "high-order": {
+      "acceleration-bound": 4.0,
+      "enabled": true,
+      "feasibility-slack": {
+        "enabled": false
+      },
+      "lambda1": 1.0,
+      "lambda2": 1.0,
+      "sampled-data-reserve": 0.0
+    },
+    "objective-function": {
+      "k_delta": 10.0
+    },
+    "with-slack": {
+      "cvt": {
+        "on": false
+      },
+      "cvt-yaw": {
+        "on": false
+      },
+      "target-yaw": {
+        "on": false
+      }
+    },
+    "without-slack": {
+      "comm-auto": {
+        "on": false
+      },
+      "comm-fixed": {
+        "compensate-velocity": true,
+        "consider-uncertainty": false,
+        "k": 1.0,
+        "max-range": 850.0,
+        "on": true,
+        "range-tightening-margin": 1.0,
+        "state-dependent-reserve": {
+          "acceleration-gain": 0.0,
+          "enabled": false,
+          "max-reserve": 0.0,
+          "neighbor-acceleration-bound": 0.0,
+          "sample-time": 0.5,
+          "velocity-gain": 0.0
+        }
+      },
+      "energy": {
+        "on": false
+      },
+      "method": "all",
+      "safety": {
+        "consider-uncertainty": false,
+        "k": 1.0,
+        "on": true,
+        "pair-state-reserve": {
+          "acceleration-gain": 0.0,
+          "enabled": false,
+          "max-reserve": 0.0,
+          "neighbor-acceleration-bound": 0.0,
+          "sample-time": 0.5,
+          "velocity-gain": 0.0
+        },
+        "safe-distance": 10.0,
+        "safe-distance-tightening-margin": 0.0
+      }
+    }
+  },
+  "debug": {
+    "opt-cbc": false,
+    "write-centralized-optimization-model": false
+  },
+  "dim": 4,
+  "execute": {
+    "check-constraint-violation": false,
+    "execution-mode": "distributed",
+    "random-seed": 20262701,
+    "time-step": 0.5,
+    "time-total": 900.0
+  },
+  "formation": {
+    "bases-id": [
+      [
+        0,
+        1
+      ]
+    ],
+    "parts": 1
+  },
+  "independent-tau-study": "2026-10-23-fixed-tau-grid-v1",
+  "initial": {
+    "battery": {
+      "max": 4100.0,
+      "min": 4100.0
+    },
+    "position": {
+      "method": "specified",
+      "positions": [
+        [
+          685.6826632728694,
+          1244.6254624579724
+        ],
+        [
+          679.304625936501,
+          734.9858260690438
+        ],
+        [
+          1124.9364666383733,
+          985.7791924207744
+        ],
+        [
+          1118.5841162550048,
+          476.6232678578459
+        ]
+      ]
+    },
+    "velocity": {
+      "values": [
+        [
+          -0.166746827,
+          0.134315895
+        ],
+        [
+          -0.169748528,
+          0.194433197
+        ],
+        [
+          0.128819567,
+          -0.005898834
+        ],
+        [
+          0.109852359,
+          0.195216961
+        ]
+      ]
+    },
+    "yawDeg": 0.0
+  },
+  "model": "DoubleIntegrate2D",
+  "model-params": {
+    "discharge-rate": 0.0
+  },
+  "num": 4,
+  "optimiser": "Gurobi",
+  "output_path": "runs/robio2026_tau_supplement/05-I01-critical-proposed-tau10",
+  "position_covariance": {
+    "enable": false
+  },
+  "provenance": {
+    "admission_only_patch_sha256": "e10ee3c17757f304677bbfdf00605c0098073b04a410fee5a42fcf808b540424",
+    "campaign": "so-independent-multiuav-tau-20261023",
+    "canonical_template_sha256": "18d4797f92b81f4f063ca6f3c6f2b8c7fa62bd81e78aa378051f2b830cb97c4f",
+    "controller": "proposed",
+    "dra_design_revision": "1b547474d8749b8c6e060a7f6f2f381173de6f93",
+    "historical_algorithm_build_input_sha256": "9ed53ff1ab5de931868b4b1a8df112975a06884b8be46b6290de1835f4d47b46",
+    "historical_algorithm_revision": "4004343735dd95bc066fb95b586eb2973f9cc9c4",
+    "historical_origin_cell": 2,
+    "historical_origin_config_sha256": "99d46945310a132404795b654170cb58992cd09f832b5b1b3eb1d9debe199c22",
+    "r13_distance_m": 1218.8615965559725,
+    "r13_distance_role": "critical",
+    "r14_distance_m": 1218.8615965559725,
+    "r14_distance_role": "critical",
+    "r14_initialization_id": "R14-S2-I01",
+    "r14_pairing_sha256": "a76fbe585973230952acde57381c6c36ebd28f3d471aa25149bf192532cc7fa1",
+    "r14_registry_sha256": "24a1681dfb39ef22347d35b958fe880a88458731c736bcac4ace8ce9934c2b29",
+    "r14_seed": 20262701,
+    "r14_stage": "final-stage2-confirmation",
+    "scientific_hypothesis": "preventive-reserve-regulation",
+    "seed_registry": "2026-08-13-r14-final-stage2-initializations.json",
+    "source_tree_sha256": "0b328f501eaf4adde640426b83420e34a023bbfce57cf175bc4203c99672d50a",
+    "stage": "independent-supplement",
+    "task_stage": "known-static-target-response"
+  },
+  "run_suffix": "_independent_tau_05-I01-critical-proposed-tau10",
+  "searching": {
+    "downward": {
+      "radius": 150.0
+    },
+    "method": "downward"
+  },
+  "uncertainty": {
+    "const": {
+      "epsilon": 0.0
+    },
+    "method": "const"
+  },
+  "world": {
+    "boundary": [
+      [
+        0.0,
+        0.0
+      ],
+      [
+        1800.0,
+        0.0
+      ],
+      [
+        1800.0,
+        2000.0
+      ],
+      [
+        0.0,
+        2000.0
+      ]
+    ],
+    "charge": [],
+    "spacing": 100.0
+  }
+}
