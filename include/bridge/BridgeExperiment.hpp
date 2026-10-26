@@ -546,9 +546,18 @@ inline BridgeExperimentConfig loadBridgeExperimentConfig(const json &config) {
             throw std::invalid_argument(
                     "post-detection response target must be the exact frozen distance geometry");
         }
+        // Independent 2026-10-23 tau-only supplement; default historical contract unchanged.
+        const bool registeredTauSupplement =
+                config.value("independent-tau-study", std::string{})
+                        == "2026-10-23-fixed-tau-grid-v1"
+                && (bridge.gammaStarPredictiveGate == 10.0
+                    || bridge.gammaStarPredictiveGate == 12.0
+                    || bridge.gammaStarPredictiveGate == 14.0
+                    || bridge.gammaStarPredictiveGate == 16.0
+                    || bridge.gammaStarPredictiveGate == 18.0);
         if (bridge.gammaStarHomotopyIntervals != 8
             || bridge.gammaStarLookaheadSteps != 1
-            || bridge.gammaStarPredictiveGate != 14.0
+            || (bridge.gammaStarPredictiveGate != 14.0 && !registeredTauSupplement)
             || config.at("execute").value("time-step", 0.0) != 0.5) {
             throw std::invalid_argument(
                     "post-detection response freezes M=8, H=1, tau=14, and 0.5 s sampling");
