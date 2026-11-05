@@ -1,0 +1,379 @@
+{
+  "bases": [
+    [
+      750.0,
+      -1300.0
+    ],
+    [
+      0.0,
+      -1300.0
+    ],
+    [
+      -750.0,
+      -1300.0
+    ]
+  ],
+  "cbfs": {
+    "input-limits": {
+      "on": true,
+      "planar-component-max": 50.0,
+      "yaw-rate-max": 0.35
+    },
+    "objective-function": {
+      "k_delta": 10.0
+    },
+    "route1": {
+      "joint-resolve": false,
+      "on": true
+    },
+    "uncertainty-rate": {
+      "//mode": [
+        "off",
+        "backward-difference-positive"
+      ],
+      "mode": "off"
+    },
+    "with-slack": {
+      "cvt": {
+        "//exploration-mode": [
+          "centroid",
+          "intelligent",
+          "nearest-unexplored",
+          "cvt"
+        ],
+        "alpha": {
+          "coe": 1.0,
+          "pow": 1
+        },
+        "exploration-mode": "nearest-unexplored",
+        "front-focus-distance": 400.0,
+        "kp": 5.0,
+        "name": "cvtCBF",
+        "on": true
+      },
+      "cvt-yaw": {
+        "alpha": {
+          "coe": 1.0,
+          "pow": 1
+        },
+        "k_yaw": 1.0,
+        "name": "cvtYawCBF",
+        "on": true
+      },
+      "target-yaw": {
+        "alpha": {
+          "coe": 1.0,
+          "pow": 1
+        },
+        "kp": 1.0,
+        "name": "yawCBF",
+        "on": false
+      }
+    },
+    "without-slack": {
+      "//method": [
+        "all",
+        "min"
+      ],
+      "comm-auto": {
+        "alpha": {
+          "coe": 0.1,
+          "pow": 1
+        },
+        "k": 1.0,
+        "max-consider-range": 1200,
+        "max-range": 800,
+        "name": "commAutoCBF",
+        "on": false
+      },
+      "comm-fixed": {
+        "alpha": {
+          "coe": 0.1,
+          "pow": 1
+        },
+        "compensate-velocity": true,
+        "consider-uncertainty": false,
+        "k": 1.0,
+        "max-neighbour-id-offset": 0,
+        "max-range": 850.0,
+        "min-neighbour-id-offset": -2,
+        "mode": "scissor",
+        "name": "commFixedCBF",
+        "on": true
+      },
+      "energy": {
+        "//energy-value": [
+          "self",
+          "neighbour-min"
+        ],
+        "alpha": {
+          "coe": 0.1,
+          "pow": 1
+        },
+        "energy-value": "neighbour-min",
+        "k": 12.0,
+        "name": "energyCBF",
+        "normalize": {
+          "max": 100.0,
+          "on": false
+        },
+        "on": false
+      },
+      "method": "all",
+      "safety": {
+        "//mode": [
+          "minimum",
+          "pairwise"
+        ],
+        "alpha": {
+          "coe": 0.1,
+          "pow": 1
+        },
+        "consider-uncertainty": false,
+        "k": 1.0,
+        "mode": "pairwise",
+        "name": "safetyCBF",
+        "on": true,
+        "safe-distance": 10.0
+      }
+    }
+  },
+  "debug": {
+    "opt-cbc": false
+  },
+  "dim": 4,
+  "estimator-in-loop": {
+    "estimates-path": "__SET_BY_RUNNER__",
+    "on": true,
+    "state-path": "__SET_BY_RUNNER__",
+    "wait-timeout-s": 60.0
+  },
+  "execute": {
+    "//execution-mode": [
+      "distributed",
+      "centralized"
+    ],
+    "check-constraint-violation": false,
+    "execution-mode": "distributed",
+    "random-seed": 20260727,
+    "time-step": 0.1,
+    "time-total": 700.0,
+    "terminate-on-coverage-complete": true
+  },
+  "formation": {
+    "bases-id": [
+      [
+        0,
+        1
+      ],
+      [
+        2,
+        1
+      ]
+    ],
+    "parts": 2
+  },
+  "initial": {
+    "battery": {
+      "max": 4200,
+      "min": 4100
+    },
+    "position": {
+      "method": "specified",
+      "positions": [
+        [
+          120.0,
+          -1240.0
+        ],
+        [
+          164.641016,
+          -1237.320508
+        ],
+        [
+          140.0,
+          -1200.0
+        ],
+        [
+          184.641016,
+          -1197.320508
+        ],
+        [
+          160.0,
+          -1160.0
+        ],
+        [
+          204.641016,
+          -1157.320508
+        ],
+        [
+          180.0,
+          -1120.0
+        ],
+        [
+          -120.0,
+          -1240.0
+        ],
+        [
+          -164.641016,
+          -1237.320508
+        ],
+        [
+          -140.0,
+          -1200.0
+        ],
+        [
+          -184.641016,
+          -1197.320508
+        ],
+        [
+          -160.0,
+          -1160.0
+        ],
+        [
+          -204.641016,
+          -1157.320508
+        ],
+        [
+          -180.0,
+          -1120.0
+        ]
+      ]
+    },
+    "yawDeg": 90.0
+  },
+  "model": "SingleIntegrate2D",
+  "model-params": {
+    "discharge-rate": 0.5
+  },
+  "num": 14,
+  "optimiser": "Gurobi",
+  "output_path": "__SET_BY_RUNNER__",
+  "position_covariance": {
+    "//uncertainty-type": [
+      "std_avg",
+      "max_eigenvalue"
+    ],
+    "enable": true,
+    "ranging_sigma": 0.5,
+    "reference-selection": "dynamic-lower-index",
+    "uncertainty-type": "max_eigenvalue"
+  },
+  "run_suffix": "_dt01_original",
+  "searching": {
+    "//method": [
+      "downward",
+      "front-sector",
+      "front-cone"
+    ],
+    "downward": {
+      "radius": 200.0
+    },
+    "front-cone": {
+      "camera-pitch-deg": 30.0,
+      "downward-radius": 20.0,
+      "height": 50.0
+    },
+    "front-sector": {
+      "half-angle-deg": 60.0,
+      "inner-radius": 0.0,
+      "outer-radius": 400.0
+    },
+    "method": "front-sector"
+  },
+  "tvt-experiment": {
+    "condition": "bounded",
+    "controller-identity": "symmetric-l1-main-v1",
+    "ekf-epsilon-scale": 1.0,
+    "error-margin-mode": "ekf-covariance-heuristic",
+    "estimator-validation": "complete-finite-common-snapshot-v2",
+    "hierarchical-target-direct": true,
+    "implementation-identity": "symmetric-l1-main-target-v3",
+    "information-contract": "estimated-task-v1",
+    "interior-triangle-750": true,
+    "ladder-angle-deg": 60,
+    "node-error-bound-m": 0.5,
+    "protocol-status": "narrow750 bottom yaw90 original search and local QP, arm adaptive2p0sigma",
+    "record-protocol": true,
+    "refresh-before-solve": true,
+    "row-mode": "symmetric-l1",
+    "same-frame-leader-reuse": true,
+    "squared-alpha": 0.1,
+    "target-origin": "base-midpoint",
+    "target-protocol": "continuous-halfplane-grid-v3-exact-dyadic",
+    "task-evaluation": {
+      "author-window-s": 700.0,
+      "completion-rule": "first online task-map full coverage or hard time limit",
+      "identity": "true-grid-window350-terminal-v1",
+      "task-map-last-update": "last recorded estimator frame; no terminal estimate invented",
+      "terminal-true-update": "offline exact-ZOH only if full horizon executed"
+    },
+    "work2-link-alpha": 0.1
+  },
+  "uncertainty": {
+    "//method": [
+      "dist",
+      "const"
+    ],
+    "const": {
+      "epsilon": 100
+    },
+    "dist": {
+      "b": 1.0,
+      "k": 0.05
+    },
+    "method": "dist"
+  },
+  "world": {
+    "boundary": [
+      [
+        -1250.0,
+        -1250.0
+      ],
+      [
+        1250.0,
+        -1250.0
+      ],
+      [
+        1250.0,
+        1250.0
+      ],
+      [
+        -1250.0,
+        1250.0
+      ]
+    ],
+    "charge": [
+      {
+        "charge-rate": 5.0,
+        "position": [
+          -300,
+          100
+        ],
+        "radius": 10.0
+      },
+      {
+        "charge-rate": 5.0,
+        "position": [
+          0,
+          100
+        ],
+        "radius": 10.0
+      },
+      {
+        "charge-rate": 5.0,
+        "position": [
+          300,
+          100
+        ],
+        "radius": 10.0
+      }
+    ],
+    "spacing": 10.0
+  },
+  "work2": {
+    "arm": "original",
+    "response_tau_s": 0.0,
+    "frame_log": "__SET_BY_RUNNER__",
+    "terminal_path": "__SET_BY_RUNNER__"
+  }
+}

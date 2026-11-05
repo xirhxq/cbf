@@ -1,156 +1,36 @@
 cmake_minimum_required(VERSION 3.16)
-project(cbf)
-
-include(FeatureSummary)
-include(CTest)
-
-option(CXX "enable C++ compilation" ON)
-if(CXX)
-    enable_language(CXX)
-endif()
+project(cbf2026_numerics LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+option(CBF_MINIMUM_350_STOP "Build the historical stop policy requiring 350 s" OFF)
+set(CBF_EXTERNAL_INCLUDE "" CACHE PATH "Optional include root containing Eigen and nlohmann")
+set(GUROBI_HOME "$ENV{GUROBI_HOME}" CACHE PATH "Gurobi installation root")
+find_path(BOOST_INCLUDE_DIR boost/multiprecision/cpp_int.hpp HINTS "$ENV{BOOST_ROOT}/include" REQUIRED)
+find_path(EIGEN_INCLUDE_DIR Eigen/Dense HINTS "${CBF_EXTERNAL_INCLUDE}" PATH_SUFFIXES eigen3 REQUIRED)
+find_path(NLOHMANN_INCLUDE_DIR nlohmann/json.hpp HINTS "${CBF_EXTERNAL_INCLUDE}" REQUIRED)
+find_path(GUROBI_INCLUDE_DIR gurobi_c++.h HINTS "${GUROBI_HOME}/include" REQUIRED)
+find_library(GUROBI_CXX_LIBRARY NAMES gurobi_c++ HINTS "${GUROBI_HOME}/lib" REQUIRED)
+find_library(GUROBI_LIBRARY NAMES gurobi130 gurobi125 gurobi120 gurobi110 gurobi100 gurobi HINTS "${GUROBI_HOME}/lib" REQUIRED)
 
-option(ENABLE_GUROBI "Enable Gurobi Optimizer" ON)
-option(ENABLE_HIGHS "Enable HiGHS Optimizer" ON)
-option(ENABLE_OSQP "Enable OSQP Optimizer" ON)
-
-list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
-if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE "Release")
+add_executable(cbf2026_native src/native_main.cpp)
+if(CBF_MINIMUM_350_STOP)
+  target_include_directories(cbf2026_native BEFORE PRIVATE variants/min350)
 endif()
-message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
-
-add_library(cbf_deps INTERFACE)
-
-set_package_properties(GUROBI PROPERTIES
-    DESCRIPTION "Commercial high-performance optimizer"
-    TYPE RECOMMENDED)
-
-if(ENABLE_GUROBI)
-    message(STATUS "Looking for Gurobi...")
-    find_package(GUROBI)
-    if(GUROBI_FOUND)
-        message(STATUS "Found Gurobi: ${GUROBI_LIBRARY}")
-        target_compile_definitions(cbf_deps INTERFACE ENABLE_GUROBI)
-        target_include_directories(cbf_deps INTERFACE ${GUROBI_INCLUDE_DIRS})
-        target_link_libraries(cbf_deps INTERFACE ${GUROBI_CXX_LIBRARY} ${GUROBI_LIBRARY})
-    else()
-        message(STATUS "Gurobi not found - disabled")
-        set(ENABLE_GUROBI OFF CACHE BOOL "Enable Gurobi Optimizer" FORCE)
-    endif()
+target_include_directories(cbf2026_native PRIVATE include "${BOOST_INCLUDE_DIR}" "${EIGEN_INCLUDE_DIR}" "${NLOHMANN_INCLUDE_DIR}" "${GUROBI_INCLUDE_DIR}")
+target_compile_definitions(cbf2026_native PRIVATE ENABLE_GUROBI PROJECT_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+  target_compile_options(cbf2026_native PRIVATE -O1 -g0 -Wno-deprecated-declarations)
 endif()
+target_link_libraries(cbf2026_native PRIVATE "${GUROBI_CXX_LIBRARY}" "${GUROBI_LIBRARY}")
 
-set_package_properties(HIGHS PROPERTIES
-    DESCRIPTION "Open-source linear optimization solver"
-    TYPE RECOMMENDED)
-
-if(ENABLE_HIGHS)
-    message(STATUS "Looking for HiGHS...")
-    find_package(HIGHS)
-    if(HIGHS_FOUND)
-        message(STATUS "Found HiGHS: ${HIGHS_LIBRARY}")
-        target_compile_definitions(cbf_deps INTERFACE ENABLE_HIGHS)
-        target_include_directories(cbf_deps INTERFACE ${HIGHS_DIRS})
-        target_link_libraries(cbf_deps INTERFACE highs::highs)
-    else()
-        message(STATUS "HiGHS not found - disabled")
-        set(ENABLE_HIGHS OFF CACHE BOOL "Enable HiGHS Optimizer" FORCE)
-    endif()
-endif()
-
-set_package_properties(OsqpEigen PROPERTIES
-    DESCRIPTION "OSQP QP solver with Eigen wrapper"
-    TYPE RECOMMENDED)
-
-if(ENABLE_OSQP)
-    message(STATUS "Looking for OsqpEigen...")
-    find_package(OsqpEigen)
-    if(OsqpEigen_FOUND)
-        message(STATUS "Found OsqpEigen")
-        target_compile_definitions(cbf_deps INTERFACE ENABLE_OSQP)
-        target_link_libraries(cbf_deps INTERFACE OsqpEigen::OsqpEigen)
-    else()
-        message(STATUS "OsqpEigen not found - disabled")
-        set(ENABLE_OSQP OFF CACHE BOOL "Enable OSQP Optimizer" FORCE)
-    endif()
-endif()
-
-target_include_directories(cbf_deps INTERFACE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/external
-)
-
-include_directories(include external)
-
-file(GLOB SOURCES "src/*.cpp")
-foreach(SOURCE ${SOURCES})
-    get_filename_component(EXECUTABLE ${SOURCE} NAME_WE)
-    add_executable(${EXECUTABLE} ${SOURCE})
-    target_compile_definitions(${EXECUTABLE} PRIVATE PROJECT_ROOT="${CMAKE_SOURCE_DIR}")
-    target_link_libraries(${EXECUTABLE} PRIVATE cbf_deps)
+# Each historical comparison is a separate snapshot overlay.
+foreach(variant IN ITEMS cano gdms shared-main shared-gdms timing-main timing-margin immediate-margin timing-10 timing-21 immediate-cano)
+  add_executable(cbf2026_${variant} "variants/${variant}/native_main.cpp")
+  target_include_directories(cbf2026_${variant} BEFORE PRIVATE "variants/${variant}" include "${BOOST_INCLUDE_DIR}" "${EIGEN_INCLUDE_DIR}" "${NLOHMANN_INCLUDE_DIR}" "${GUROBI_INCLUDE_DIR}")
+  target_compile_definitions(cbf2026_${variant} PRIVATE ENABLE_GUROBI PROJECT_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(cbf2026_${variant} PRIVATE -O1 -g0 -Wno-deprecated-declarations)
+  endif()
+  target_link_libraries(cbf2026_${variant} PRIVATE "${GUROBI_CXX_LIBRARY}" "${GUROBI_LIBRARY}")
 endforeach()
-
-if(BUILD_TESTING)
-    target_compile_definitions(Swarm PRIVATE CBF_EVIDENCE_TEST_HOOKS)
-    add_executable(SwarmNoEvidenceTestHooks src/Swarm.cpp)
-    target_compile_definitions(
-        SwarmNoEvidenceTestHooks PRIVATE PROJECT_ROOT="${CMAKE_SOURCE_DIR}"
-    )
-    target_link_libraries(SwarmNoEvidenceTestHooks PRIVATE cbf_deps)
-endif()
-
-file(GLOB TEST_SOURCES "tests/*.cpp")
-foreach(TEST_SOURCE ${TEST_SOURCES})
-    get_filename_component(TEST_EXECUTABLE ${TEST_SOURCE} NAME_WE)
-    add_executable(${TEST_EXECUTABLE} ${TEST_SOURCE})
-    target_link_libraries(${TEST_EXECUTABLE} PRIVATE cbf_deps)
-endforeach()
-
-if(BUILD_TESTING AND ENABLE_GUROBI)
-    find_package(Python3 COMPONENTS Interpreter)
-    if(Python3_Interpreter_FOUND)
-        add_test(
-            NAME testSwarmFailureExit
-            COMMAND
-                ${CMAKE_COMMAND} -E env
-                CBF_SWARM_BINARY=$<TARGET_FILE:Swarm>
-                ${Python3_EXECUTABLE} -m unittest
-                tests.test_swarm_failure_exit -v
-        )
-        set_tests_properties(
-            testSwarmFailureExit
-            PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-        )
-    endif()
-endif()
-
-message(STATUS "")
-message(STATUS "=== Optimizer Summary ===")
-if(ENABLE_GUROBI)
-    message(STATUS "  Gurobi: ENABLED")
-else()
-    message(STATUS "  Gurobi: disabled (not found)")
-endif()
-if(ENABLE_HIGHS)
-    message(STATUS "  HiGHS:  ENABLED")
-else()
-    message(STATUS "  HiGHS:  disabled (not found)")
-endif()
-if(ENABLE_OSQP)
-    message(STATUS "  OSQP:   ENABLED")
-else()
-    message(STATUS "  OSQP:   disabled (not found)")
-endif()
-message(STATUS "")
-
-if(NOT ENABLE_GUROBI AND NOT ENABLE_HIGHS AND NOT ENABLE_OSQP)
-    message(WARNING "
-===============================================================================
-WARNING: No optimizer found! Please install at least one of:
-  - Gurobi (commercial): https://www.gurobi.com/
-  - HiGHS (open-source): brew install highs
-  - OSQP (open-source): brew install osqp && install osqp-eigen
-===============================================================================
-")
-endif()

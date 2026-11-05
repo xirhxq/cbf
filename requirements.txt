@@ -1,4 +1,1 @@
-tqdm~=4.66.2
-ffmpeg~=1.4
-numpy~=1.24.4
-matplotlib~=3.7.4
+numpy>=1.24,<3

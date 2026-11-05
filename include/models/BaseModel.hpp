@@ -11,6 +11,8 @@ protected:
     std::unordered_map<std::string, int> xMap;
     std::unordered_map<std::string, int> uMap;
     double dischargeRate;
+    double work2ResponseTau=0.;
+    Eigen::Vector2d work2PhysicalVelocity=Eigen::Vector2d::Zero();
     
 public:
     static constexpr double BATTERY_MIN = 3700.0;
@@ -19,6 +21,7 @@ public:
     BaseModel() : dischargeRate(0.1) {}
     
     BaseModel(json &settings) {
+        work2ResponseTau=settings.value("work2",json::object()).value("response_tau_s",0.);
         if (settings.contains("model-params") && settings["model-params"].contains("discharge-rate")) {
             dischargeRate = settings["model-params"]["discharge-rate"];
         } else {
@@ -204,10 +207,17 @@ public:
         return j;
     }
 
+    Eigen::Vector2d getWork2PhysicalVelocity() const {return work2PhysicalVelocity;}
     void stepTimeForward(double dt) {
         checkCharge();
 
+        const Eigen::Vector2d before=X.head<2>(),reference=u.head<2>();
         X += (f() + g() * u) * dt;
+        if(work2ResponseTau>0.) {
+            const double decay=std::exp(-dt/work2ResponseTau);
+            X.head<2>()=before+reference*dt+(work2PhysicalVelocity-reference)*work2ResponseTau*(1.-decay);
+            work2PhysicalVelocity=reference+(work2PhysicalVelocity-reference)*decay;
+        } else work2PhysicalVelocity=reference;
     }
 
     virtual void output() const = 0;

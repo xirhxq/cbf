@@ -1,104 +1,52 @@
-# CBF-Based Multi-UAV Search
+# CBF2026 numerical experiments
 
-## Introduction
+Numerical multi-UAV coverage experiments with control barrier functions, a range-only EKF, and comparisons based on Cano-inspired follower planning and GdMS. The main 14-UAV configuration uses a 0.1 s control interval, alpha = 0.1, signed `q = h_lower`, and the 3σ uncertainty scale. The package also includes alternative scenes, fixed and adaptive margins, and ranging perturbations. The controller used by the Gazebo simulation is maintained in the `mbzirc-simulation` branch and is used by the accompanying `cbf-ros2` package.
 
-This repository implements a multi-UAV search problem using a **Control Barrier Function (CBF)**-based approach. CBFs are a powerful mathematical tool used to ensure safety in dynamical systems by encoding safety constraints directly into the control laws of robots. For more information on CBFs, you can refer to the foundational paper: [*Control Barrier Functions: Theory and Applications*](https://arxiv.org/abs/1512.07873).
+## Requirements
 
-The algorithm is implemented in C++, and the results are stored in `.json` files, which can be visualized using a Python script.
+- C++17, CMake, Boost headers, Eigen 3.4, nlohmann/json 3.11, and a Gurobi C++/C installation and license. Gurobi and the other dependencies are not bundled.
+- Python 3.10+, NumPy (`requirements.txt`), `zstd` on `PATH`, and a POSIX environment with named pipes.
 
-We recommend using **CLion** for development, as it provides an intuitive interface for managing CMake projects and supports Python scripting for result visualization.
+## Build
 
-## Installation
+```sh
+cmake -S . -B build -DGUROBI_HOME="$GUROBI_HOME"
+cmake --build build -j 2
 
-### Solver Configuration
-
-This project supports three QP solvers for the CBF optimization:
-
-| Solver | Type | Speed | Stability | License |
-|--------|------|-------|-----------|---------|
-| **OSQP** | Open-source | Fastest | Excellent | Apache 2.0 |
-| **Gurobi** | Commercial | Fast | Excellent | Commercial |
-| **HiGHS** | Open-source | Moderate | Good | MIT |
-
-**Recommendation**: Use **OSQP** for best performance and numerical stability with CBF constraints.
-
-#### Enabling Solvers
-
-Each solver has a corresponding CMake option:
-
-```bash
-cmake -DENABLE_OSQP=ON -DENABLE_GUROBI=ON -DENABLE_HIGHS=ON ..
+# Historical main-method variant that permits coverage stopping after 350 s
+cmake -S . -B build-min350 -DGUROBI_HOME="$GUROBI_HOME" -DCBF_MINIMUM_350_STOP=ON
+cmake --build build-min350 --target cbf2026_native -j 2
 ```
 
-#### Installing OSQP
+If Eigen and nlohmann/json share a nonstandard include root, provide `-DCBF_EXTERNAL_INCLUDE=/path/to/include`; `EIGEN_INCLUDE_DIR`, `NLOHMANN_INCLUDE_DIR`, and `BOOST_INCLUDE_DIR` can also be specified individually. Builds create `cbf2026_native` and the comparison/scene executables named `cbf2026_<variant>`. The `min350` variant uses `build-min350/cbf2026_native`; all other variants use the correspondingly named executable from the default build.
 
-Install [OsqpEigen](https://github.com/robotology/osqp-eigen):
+## Run a configured case
 
-```bash
-# macOS
-brew install osqp-eigen
+`config/case-index.json` identifies each scene, sensitivity condition and comparison along with its configuration file, seed, random-field type and build variant. Inspect available cases with:
 
-# Ubuntu
-sudo apt install libosqp-eigen-dev
+```sh
+python scripts/run_case.py --help
+python scripts/run_range_error.py --help
 ```
 
-#### Installing Gurobi
+Supply `--case`, the matching `--binary`, and a new `--output` directory. Case indexes specify the variant; the driver records the supplied binary hash but does not verify its variant. For example:
 
-Download from [Gurobi website](https://www.gurobi.com/downloads/) and specify the installation path:
-
-```bash
-cmake -DGUROBI_ROOT=/Library/gurobi1200/macos_universal2 ..
+```sh
+python scripts/run_case.py --case paired-main--3sigma-seed2026102905 --binary build/cbf2026_native --output /path/to/new-output
 ```
 
-#### Installing HiGHS
+Some cases require a historical 700-frame random field supplied with `--field`. The normal field SHA-256 is `91a2a0da75e37efa217d6973879ec6545f49330030545aa510f772af19aea2fa`; the shared-base field SHA-256 is `296e44b1e3056ad01477f89762a596af7caa192d916b2f7261e11ed0759515cd`. These files are not included. Cases marked `counter` generate the measurement field from the configured seed and do not accept a frozen field.
 
-```bash
-# macOS
-brew install highs
+The drivers create a fresh output directory, monitor free space and an output-size limit, and do not retry failed runs. Select suitable limits and review the driver for the target environment. The adapted drivers have not been validated through end-to-end reproduction of the recorded trajectories.
 
-# Ubuntu
-sudo apt install libhighs-dev
-```
+## Ranging perturbations
 
-#### Selecting Solver
+`config/range-error-index.json` contains the 22 no-bias, +0.30 m fixed-bias, +3 m burst and dispersed conditions. Burst perturbations apply to available ranges during [50,55) s of each 100 s block. Dispersed cases require a matching schedule via `--schedule`; scheduled anomalies apply only to available ranges. A planned count need not equal the count observed on a new trajectory.
 
-Set the `optimiser` field in `config/config.json`:
+Build a matching schedule from a completed burst estimator log using `python scripts/build_matched_schedule.py --help`. The saved burst logs and schedules are not included. The driver verifies the historical schedule digest or a canonical digest excluding only its reference-run location. The EKF gate remains unchanged; the perturbation driver records gate decisions for injected outliers.
 
-```json
-"optimiser": "OSQP"
-```
+`scripts/run_experiment.py`, `scripts/run_cano.py`, and `scripts/run_comparison.py` provide additional interfaces for representative cases.
 
-#### Common Issues
-- **How to ensure CMake finds the correct shared libraries (`.so` or `.dylib`)?**
-  Please verify that the shared libraries (either `.so` or `.dylib` files) found by CMake match the required version for your platform. File names and paths may differ across platforms, so be sure to confirm that the versions are correct based on your system and the installed solver version.
+## License
 
-
-### Python Environment Setup
-
-#### 1. **Install Anaconda or Miniconda**
-Download [Anaconda](https://www.anaconda.com/download) (recommended for data science) or [Miniconda](https://docs.conda.io/en/latest/miniconda.html) (minimal installer), then follow default installation steps.
-
-#### 2. **Create Python 3.11 Environment**
-```bash
-conda create -n cbf_env python=3.11
-conda activate cbf_env
-```  
-This creates an isolated environment with Python 3.11.
-
-#### 3. **Install FFmpeg**
-```bash
-conda install -c conda-forge ffmpeg  # Handles codec dependencies automatically
-```
-
-#### 4. **Install Project Dependencies**
-```bash
-pip install -r requirements.txt  # Use --force-reinstall if conflicts occur
-```
-
-#### 5. **CLion Integration**
-- Open **File > Settings > Build > Python Interpreter**.
-- Click ⚙️ → **Add** → **Conda Environment** → Specify path:
-   - Unix: `conda_install_path/envs/cbf_env/bin/python`
-   - Windows: `...\envs\cbf_env\python.exe`.
-
-This streamlined workflow ensures dependency isolation and cross-platform compatibility. For advanced troubleshooting, refer to the original Chinese version.
+Project license: MIT; see `LICENSE`. Each external dependency is subject to its own license.

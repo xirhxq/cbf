@@ -2,6 +2,7 @@
 #define CBF_SWARM_HPP
 
 #include "Robot.hpp"
+#include "cbf/EstimatorSnapshot.hpp"
 #include "diagnostics/EvidenceStream.hpp"
 
 #ifdef CBF_EVIDENCE_TEST_HOOKS
@@ -18,6 +19,7 @@
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <functional>
 #include <numeric>
 #include <thread>
 
@@ -73,6 +75,8 @@ int runSimulationWithErrorGate(
     }
 }
 
+namespace shared_m1 {class ConsumerEvidenceError : public std::runtime_error {public: using std::runtime_error::runtime_error;};}
+
 class Swarm {
 public:
     int n;
@@ -87,7 +91,18 @@ public:
     int route1JointResolveCount = 0;
     double route1ChainLatencySeconds = 0.0;
     bool terminateOnCoverageComplete = false;
+    bool terminalOnlineObservationOnly = false;
     bool estimatorInLoop = false;
+    // Dedicated reviewed shared-M1 consumer sets these only after full replay.
+    // Empty hooks preserve the historical entry and mathematical workflow.
+    bool sharedReplayInitializationClosed = false;
+    std::string sharedGuardRawPath;
+    std::function<json(std::uint64_t)> sharedEstimatedInput;
+    std::function<void(std::uint64_t)> sharedAfterEstimatedMap;
+    std::function<void(std::uint64_t)> sharedAfterCompleteHold;
+    std::function<void(std::uint64_t)> sharedM3BeforeCompleteHold;
+    std::optional<std::chrono::steady_clock::time_point> periodicTargetControlStart;
+    std::function<std::string(std::uint64_t,double)> periodicAfterTargetControl;
     std::string estimatorStatePath;
     std::string estimatorEstimatesPath;
     double estimatorWaitTimeoutSeconds = 5.0;
@@ -98,6 +113,8 @@ public:
     std::string customOutputPath;
     std::string outputDir;
     std::vector<int> all_ids;
+    std::ofstream work2Frames;
+    std::vector<bool> work2PreviousTruth;
 
     std::unique_ptr<CentralizedModel> centralizedModel;
     std::unique_ptr<OptimiserBase> optimizer;
@@ -132,6 +149,7 @@ public:
                 "qualified hybrid distributed CBF configuration is invalid"
             );
         }
+        tvt2026::validateLocalSymmetricExecution(settings);
         validateEvidenceStreamConfig();
         if (evidenceMode()) {
             evidenceStream = std::make_unique<
@@ -176,6 +194,9 @@ public:
             return;
         }
         ofstream << std::fixed << std::setprecision(6) << data;
+        ofstream.flush();
+        if (!sharedGuardRawPath.empty() && !ofstream.good())
+            throw shared_m1::ConsumerEvidenceError("guarded raw persistence incomplete");
         ofstream.close();
     }
 
@@ -188,6 +209,26 @@ public:
     }
 
     void logOnce() {
+        if(config.contains("work2")) {
+            if(!work2Frames.is_open()){work2Frames.open(config.at("work2").at("frame_log").get<std::string>());if(!work2Frames)throw std::runtime_error("work2 frame log unavailable");}
+            if(work2PreviousTruth.empty())work2PreviousTruth.resize(gridWorldGroundTruth.vis.size(),false);
+            json record={{"time_s",robots.front()->runtime},{"robots",json::array()},{"new_true_visited",json::array()},
+                {"true_valid_count",gridWorldGroundTruth.validCount},{"true_coverage",gridWorldGroundTruth.getPercentage()},
+                {"estimated_coverage",robots.front()->gridWorld.getPercentage()}};
+            record["terminal_observation_only"]=terminalOnlineObservationOnly;
+            int count=0;
+            for(size_t j=0;j<gridWorldGroundTruth.vis.size();++j)if(gridWorldGroundTruth.valid[j]&&gridWorldGroundTruth.vis[j]){
+                ++count;if(!work2PreviousTruth[j])record["new_true_visited"].push_back(j);work2PreviousTruth[j]=true;}
+            record["true_visited_count"]=count;
+            for(const auto& r:robots){
+                const auto pos=r->model->xy();const auto vel=r->model->getWork2PhysicalVelocity();
+                json node={{"id",r->id},{"truth",{pos.x,pos.y}},{"estimate",{r->estimatorPosition.x,r->estimatorPosition.y}},
+                    {"epsilon3_m",r->estimatorEpsilon},{"physical_velocity",{vel[0],vel[1]}},{"yaw",r->model->getStateVariable("yawRad")},
+                    {"formation",r->myFormation},{"opt",r->opt}};
+                record["robots"].push_back(node);
+            }
+            work2Frames<<record.dump()<<'\n';work2Frames.flush();stepData.clear();return;
+        }
         if (evidenceMode()) {
             const bool complete = std::all_of(
                 robots.begin(), robots.end(),
@@ -233,6 +274,8 @@ public:
             stepData["covariance_formation"].push_back(robot->myCovarianceFormation);
         }
         stepData["update"] = updatedGridWorldGroundTruth;
+        stepData["estimated_map_update"] = robots.front()->updatedGridWorld;
+        stepData["estimated_map_rule"] = "ekf-own-scale-shrunk-point-sector-v1";
         if (route1Mode) {
             stepData["route1"] = {
                 {"on", true},
@@ -267,6 +310,12 @@ public:
     }
 
     void initLog() {
+        if (!sharedGuardRawPath.empty()) {
+            outputDir=customOutputPath;filename=sharedGuardRawPath;
+            ofstream.open(filename,std::ios::out);
+            if(!ofstream.good())throw shared_m1::ConsumerEvidenceError("guarded raw FIFO open failed");
+            return;
+        }
         if (evidenceMode()) {
             outputDir = "evidence-stream://stdout";
             filename.clear();
@@ -378,39 +427,60 @@ public:
             std::ifstream in(estimatorEstimatesPath);
             in >> estimates;
         }
+        const auto nodes=tvt2026::parseEstimatorSnapshot(estimates,frameIndex,n);
         std::remove(estimatorEstimatesPath.c_str());
-        if (estimates.value("frame_index", -1)
-            != static_cast<std::int64_t>(frameIndex)) {
-            throw std::runtime_error("estimator-in-loop frame mismatch");
+        installEstimatorNodes(nodes,frameIndex);
+    }
+
+    void installEstimatorSnapshot(const json& estimates,std::uint64_t frameIndex) {
+        const auto nodes=tvt2026::parseEstimatorSnapshot(estimates, frameIndex, n);
+        installEstimatorNodes(nodes,frameIndex);
+    }
+
+private:
+    void installEstimatorNodes(const std::vector<tvt2026::EstimatedNode>& nodes,std::uint64_t frameIndex) {
+        // All validation precedes mutation; malformed or incomplete packets
+        // never install a partial snapshot or substitute physical positions.
+        for (const auto& node : nodes) {
+            robots.at(node.id-1)->applyEstimatorInput(
+                Point(node.x,node.y),node.epsilon,true,frameIndex);
         }
-        for (const auto &entry : estimates.value("robots", json::array())) {
-            const int id = entry.value("id", -1);
-            const auto estimate = entry.value("estimate", json::array());
-            if (id < 1 || id > n || estimate.size() != 2) {
-                throw std::runtime_error(
-                    "estimator-in-loop estimate schema invalid"
-                );
-            }
-            const Point position(
-                estimate[0].get<double>(), estimate[1].get<double>()
-            );
-            const double epsilon = entry.value("epsilon", 0.0);
-            if (epsilon <= 0.0) {
-                throw std::runtime_error(
-                    "estimator-in-loop epsilon invalid"
-                );
-            }
-            auto &robot = robots.at(id - 1);
-            robot->applyEstimatorInput(position, epsilon, true);
-            for (auto &other : robots) {
-                other->comm->receivePosition2D(id, position);
+        for (const auto& node : nodes) for (auto& robot : robots)
+            robot->comm->receivePosition2D(node.id,Point(node.x,node.y));
+        for (auto& robot : robots) {
+            robot->tvtEstimatorEpsilons.clear();
+            for (const auto& node : nodes)
+                robot->tvtEstimatorEpsilons.emplace(node.id, node.epsilon);
+        }
+        validateCommonEstimatorSnapshot(frameIndex);
+
+    }
+
+public:
+    void validateCommonEstimatorSnapshot(std::uint64_t frameIndex) const {
+        for (const auto& robot : robots) {
+            if (!robot->estimatorInLoop || !robot->estimatorSnapshotFrame
+                || *robot->estimatorSnapshotFrame!=frameIndex
+                || robot->comm->_othersPos.size()!=static_cast<std::size_t>(n))
+                throw std::runtime_error("estimated task snapshot is incomplete or stale");
+            for (const auto& source : robots) {
+                const auto& p=robot->comm->_othersPos.at(source->id);
+                if (!std::isfinite(p.x) || !std::isfinite(p.y)
+                    || p.x!=source->estimatorPosition.x || p.y!=source->estimatorPosition.y)
+                    throw std::runtime_error("estimated task snapshot is not common across nodes");
+                if (robot->tvtEstimatorEpsilons.at(source->id) != source->estimatorEpsilon)
+                    throw std::runtime_error("estimator uncertainty snapshot is not common across nodes");
             }
         }
     }
 
     void estimatorFrameExchange(std::uint64_t frameIndex) {
-        writeEstimatorState(frameIndex);
-        readEstimatorEstimates(frameIndex);
+        if (sharedEstimatedInput) {
+            installEstimatorSnapshot(sharedEstimatedInput(frameIndex),frameIndex);
+        } else {
+            writeEstimatorState(frameIndex);
+            readEstimatorEstimates(frameIndex);
+        }
     }
 
     void restoreTruthPositions() {
@@ -1167,11 +1237,13 @@ public:
     }
 
     void run() {
+        canonical::forbid("Swarm.run trajectory entry");
         auto settings = config["execute"];
         double tTotal = settings["time-total"], tStep = settings["time-step"];
         terminateOnCoverageComplete =
             settings.value("terminate-on-coverage-complete", false);
 
+        if (!sharedReplayInitializationClosed) {
         exchangeData();
         if (evidenceMode()) {
             emitInitializationEvidence();
@@ -1227,6 +1299,9 @@ public:
             } catch (...) {
             }
             std::rethrow_exception(bootstrapFailure);
+        }
+        } else if (!sharedEstimatedInput || !sharedAfterEstimatedMap || !sharedAfterCompleteHold) {
+            throw std::runtime_error("incomplete shared replay/consumer hooks");
         }
         checkInformationExchange();
         initLog();
@@ -1289,7 +1364,9 @@ public:
                     }
                 }
                 checkInformationExchange();
-                for (auto &robot: robots) robot->checkRobotsInsideWorld();
+                if(config.value("tvt-experiment",json::object()).value("interior-triangle-750",false)) {
+                    for(const auto& robot:robots) {const auto p=robot->model->xy();if(!std::isfinite(p.x)||!std::isfinite(p.y))throw std::runtime_error("nonfinite aircraft position");}
+                } else for (auto &robot: robots) robot->checkRobotsInsideWorld();
                 if (evidenceMode()) {
                     std::cerr
                         << std::fixed << std::setprecision(2)
@@ -1300,17 +1377,54 @@ public:
                 } else {
                     printf("\r%.2lf seconds elapsed... %.2lf%%", robots[0]->runtime, gridWorldGroundTruth.getPercentage() * 100);
                 }
-                for (auto &robot: robots) robot->updateGridWorld();
-                updateGridWorld();
-                checkUpdatedGridWorld();
-                if (estimatorInLoop) {
-                    estimatorFrameExchange(
-                        static_cast<std::uint64_t>(
-                            std::llround(robots[0]->runtime / tStep)
-                        )
-                    );
+                const bool estimatedTasks = config.value("tvt-experiment", json::object())
+                    .value("information-contract", "legacy-task-truth") == "estimated-task-v1";
+                if (estimatedTasks && !estimatorInLoop)
+                    throw std::invalid_argument("estimated task contract requires estimator exchange");
+                if (estimatedTasks && (config["cbfs"]["without-slack"]["energy"]["on"].get<bool>()
+                    || config["cbfs"]["without-slack"]["comm-auto"]["on"].get<bool>()
+                    || config["cbfs"]["with-slack"]["target-yaw"]["on"].get<bool>()
+                    || usesTheoremAlignedCertificates()))
+                    throw std::invalid_argument("estimated-task-v1 pilot excludes un-audited optional task architectures");
+                if (estimatedTasks) {
+                    estimatorFrameExchange(static_cast<std::uint64_t>(std::llround(robots[0]->runtime / tStep)));
+                    validateCommonEstimatorSnapshot(static_cast<std::uint64_t>(std::llround(robots[0]->runtime / tStep)));
+                    for (auto &robot: robots) robot->updateGridWorld();
+                    for (auto &robot: robots) if (robot->gridWorld.vis != robots.front()->gridWorld.vis)
+                        throw std::runtime_error("estimated task maps are not common");
+                    if(config.contains("periodic-target-interface"))
+                        periodicTargetControlStart=std::chrono::steady_clock::now();
+                    if (sharedAfterEstimatedMap)
+                        sharedAfterEstimatedMap(static_cast<std::uint64_t>(std::llround(robots[0]->runtime / tStep)));
+                    stepData["tvt_information"] = {{"contract", "estimated-task-v1"},
+                        {"snapshot_time_s", robots.front()->runtime},
+                        {"snapshot_frame_index", *robots.front()->estimatorSnapshotFrame},
+                        {"validation", "complete-finite-common-snapshot-v2"},
+                        {"task_map_coverage", robots.front()->gridWorld.getPercentage()},
+                        {"oracle_task_position", false}, {"own_yaw_battery", "exact onboard measurements assumed"},
+                        {"covariance_graph", "legacy diagnostic only; not consumed by task/hard rows"}};
+                    updateGridWorld(); // Ground truth is isolated to coverage evaluation.
+                    if(terminateOnCoverageComplete && robots.front()->gridWorld.getPercentage()>=1.0-1e-12) {
+                        restoreTruthPositions();
+                        terminalOnlineObservationOnly=true;
+                        frameLogAttempted=true;
+                        logOnce();
+                        break; // online terminal observation; no QP or physical hold at this sample
+                    }
+                } else {
+                    for (auto &robot: robots) robot->updateGridWorld();
+                    updateGridWorld();
+                    checkUpdatedGridWorld();
+                    if (estimatorInLoop) estimatorFrameExchange(static_cast<std::uint64_t>(std::llround(robots[0]->runtime / tStep)));
                 }
-                for (auto &robot: robots) robot->postsetCBF();
+                const auto tvt = config.value("tvt-experiment", json::object());
+                if(tvt.value("same-frame-leader-reuse",false)) {
+                    if(!estimatedTasks || !robots.front()->estimatorSnapshotFrame) throw std::runtime_error("leader reuse requires estimated frame");
+                    leader_reuse::beginFrame(*robots.front()->estimatorSnapshotFrame);
+                }
+                const bool refreshLocalRows = tvt.value("refresh-before-solve", false);
+                stepData["tvt_protocol"] = json::array();
+                if (!refreshLocalRows) for (auto &robot: robots) robot->postsetCBF();
 
                 if (isCentralizedExecution()) {
                     postsetCBFs();
@@ -1332,17 +1446,39 @@ public:
                             continue;
                         }
                         auto &robot = robots[robotIndex];
+                        if (refreshLocalRows) robot->postsetCBF();
+                        stepData["tvt_protocol"].push_back({{"robot", robot->id},
+                            {"stage", "rows_constructed"}, {"runtime", robot->runtime}});
                         try {
+                            if(robot->usesCommandBallRows()) {
+                                const auto frame=robot->estimatorSnapshotFrame;
+                                for(const auto& row:robot->tvtLiteratureRows)if(!row["edge"]["is_base"].get<bool>()) {
+                                    const int peer=row["edge"]["peer"];
+                                    if(peer>=robot->id||robots.at(peer-1)->tvtCommandBallCommandFrame!=frame)throw std::runtime_error("missing same-batch predecessor command");
+                                    const auto actual=robots.at(peer-1)->model->getControlInput();
+                                    if(actual[0]!=row["other_command"][0].get<double>()||actual[1]!=row["other_command"][1].get<double>())throw std::runtime_error("predecessor command mismatch");
+                                }
+                            }
                             robot->optimise();
+                            stepData["tvt_protocol"].push_back({{"robot", robot->id},
+                                {"stage", "local_success"},
+                                {"command", robot->model->control2Json(robot->model->getControlInput())}});
                         } catch (...) {
+                            stepData["tvt_protocol"].push_back({{"robot", robot->id},
+                                {"stage", "local_failure"}, {"opt", robot->opt}});
+                            if (robot->usesSymmetricL1Rows() || robot->usesCommandBallRows()) throw; // Main local controller fails closed.
                             if (!route1JointResolve
                                 || !attemptJointRoute1Resolve(
                                     robotIndex, jointSolved
                                 )) {
                                 throw;
                             }
+                            stepData["tvt_protocol"].push_back({{"robot", robot->id},
+                                {"stage", "joint_resolve_success"}});
                             continue;
                         }
+                        stepData["tvt_protocol"].push_back({{"robot", robot->id},
+                            {"stage", "broadcast"}});
                         for (auto &otherRobot: robots) {
                             otherRobot->comm->receiveVelocity2D(
                                 robot->id,
@@ -1350,12 +1486,30 @@ public:
                             );
                         }
                     }
+                    if(tvt.value("same-frame-leader-reuse",false)) std::cerr << "LEADER_REUSE frame=" << *robots.front()->estimatorSnapshotFrame << " hits=" << leader_reuse::hits() << " misses=" << leader_reuse::misses() << "\n";
                     route1ChainLatencySeconds =
                         std::chrono::duration<double>(
                             std::chrono::steady_clock::now() - route1Start
                         ).count();
                 } else {
                     for (auto &robot: robots) robot->optimise();
+                }
+                if(config.contains("periodic-target-interface")){
+                    if(!periodicTargetControlStart || !periodicAfterTargetControl)
+                        throw std::runtime_error("unbound periodic planning/full-batch timing consumer");
+                    const auto targetFrameSHA=periodicAfterTargetControl(static_cast<std::uint64_t>(std::llround(robots[0]->runtime/tStep)),
+                        std::chrono::duration<double>(std::chrono::steady_clock::now()-*periodicTargetControlStart).count());
+                    // Ends AFTER all required target-consumption checks, hashing
+                    // and native emit have returned. Full raw persistence/outer
+                    // audit are separate scopes and may still fail closed.
+                    stepData["periodic_target_control_ready"]={{"frame",static_cast<std::uint64_t>(std::llround(robots[0]->runtime/tStep))},
+                        {"target_frame_sha256",targetFrameSHA},
+                        {"after_required_consumption_and_emit_wall_s",std::chrono::duration<double>(std::chrono::steady_clock::now()-*periodicTargetControlStart).count()}};
+                    periodicTargetControlStart.reset();
+                }
+                if(config.contains("work2"))for(auto& robot:robots){
+                    Eigen::VectorXd ref=robot->model->getControlInput();
+                    robot->opt["work2_applied_reference"]=robot->model->control2Json(ref);
                 }
                 if (estimatorInLoop) {
                     restoreTruthPositions();
@@ -1379,17 +1533,10 @@ public:
 
                 frameLogAttempted = true;
                 logOnce();
-                if (terminateOnCoverageComplete
-                    && gridWorldGroundTruth.getPercentage()
-                       >= 1.0 - 1e-12) {
-                    std::ostream& termination = evidenceMode()
-                        ? std::cerr : std::cout;
-                    termination
-                        << "\n[Simulation Terminated] Coverage complete at t="
-                        << robots[0]->runtime << "s" << std::endl;
-                    break;
-                }
+                if (sharedM3BeforeCompleteHold) sharedM3BeforeCompleteHold(static_cast<std::uint64_t>(std::llround(robots[0]->runtime / tStep)));
                 for (auto &robot: robots) robot->stepTimeForward(tStep);
+                if (sharedAfterCompleteHold)
+                    sharedAfterCompleteHold(static_cast<std::uint64_t>(std::llround(robots[0]->runtime / tStep))-1);
             }
             catch (...) {
                 const std::exception_ptr currentFailure =
@@ -1408,12 +1555,14 @@ public:
                     } catch (...) {
                     }
                 }
+                if (estimatorInLoop) restoreTruthPositions();
                 loopFailure = recoverFailedIteration(
                     currentFailure,
                     evidenceMode() ? true : frameLogAttempted,
                     [&]() {
-                        for (auto &robot: robots) {
-                            robot->updateGridWorld();
+                        if (config.value("tvt-experiment", json::object())
+                            .value("information-contract", "legacy-task-truth") != "estimated-task-v1") {
+                            for (auto &robot: robots) robot->updateGridWorld();
                         }
                     },
                     [&]() {
@@ -3029,6 +3178,7 @@ private:
         }
 
         if (config.contains("cbfs") && config["cbfs"].contains("objective-function")) {
+            if(canonical::active)++canonical::environmentFactoryAttempts;
             optimizer = createOptimiser(config["optimiser"], config["cbfs"]["objective-function"]);
         } else {
             printf("Warning: missing objective-function config\n");
