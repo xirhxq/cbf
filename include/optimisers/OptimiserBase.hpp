@@ -20,6 +20,15 @@ public:
     virtual void clear() = 0;
     virtual void start(int total_size, int u_size) = 0;
 
+    virtual void setAuxiliaryVariableCount(int count) {
+        if (count != 0) throw std::invalid_argument("auxiliary variables are not supported by this optimiser");
+    }
+    virtual void addPlanarNormCone(int auxiliaryIndex, const Eigen::Vector2d& offset) {
+        throw std::invalid_argument("planar norm cones are not supported by this optimiser");
+    }
+    virtual void addConcaveAuxiliaryRow(const Eigen::VectorXd&, double, int, double) {
+        throw std::invalid_argument("convex auxiliary quadratic rows are not supported by this optimiser");
+    }
     virtual void setObjective(Eigen::VectorXd &uNominal) = 0;
     virtual void addLinearConstraint(Eigen::VectorXd coe, double rhs) = 0;
 

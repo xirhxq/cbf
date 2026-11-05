@@ -10,6 +10,7 @@
 
 class OSQP : public OptimiserBase {
     mutable OsqpEigen::Solver solver;
+    int auxiliaryCount = 0;
     int var_count = 0;
     int u_size = 0;
     int user_constraint_count = 0;  // Constraints added by user
@@ -33,17 +34,17 @@ public:
         // Configure OSQP settings for robustness
         solver.settings()->setVerbosity(false);
         solver.settings()->setAlpha(1.6);
-        solver.settings()->setAbsoluteTolerance(1e-3);
-        solver.settings()->setRelativeTolerance(1e-3);
-        solver.settings()->setPrimalInfeasibilityTolerance(1e-3);
-        solver.settings()->setDualInfeasibilityTolerance(1e-3);
+        solver.settings()->setAbsoluteTolerance(1e-8);
+        solver.settings()->setRelativeTolerance(1e-9);
+        solver.settings()->setPrimalInfeasibilityTolerance(1e-8);
+        solver.settings()->setDualInfeasibilityTolerance(1e-8);
         solver.settings()->setMaxIteration(100000);
         solver.settings()->setPolish(true);  // Enable polish for better accuracy
         solver.settings()->setScaling(100);  // More aggressive scaling
         solver.settings()->setAdaptiveRho(true);
-        solver.settings()->setAdaptiveRhoInterval(100);  // Update rho more frequently
+        solver.settings()->setAdaptiveRhoInterval(25);  // Update rho more frequently
         solver.settings()->setAdaptiveRhoTolerance(5);  // More aggressive rho adaptation
-        solver.settings()->setRho(10.0);  // Larger rho for constraint-heavy problems
+        solver.settings()->setRho(0.1);  // Larger rho for constraint-heavy problems
         solver.settings()->setSigma(1e-6);
     }
 
@@ -66,6 +67,11 @@ public:
         // Clear the data to allow re-setting the hessian and constraints
         solver.data()->clearHessianMatrix();
         solver.data()->clearLinearConstraintsMatrix();
+    }
+
+    void setAuxiliaryVariableCount(int count) override {
+        if(count < 0) throw std::invalid_argument("negative auxiliary count");
+        auxiliaryCount=count;
     }
 
     void start(int total_size, int u_sz) override {
@@ -95,7 +101,7 @@ public:
         }
         for (int i = u_size; i < var_count; i++) {
             // Slack variables: linear term k_delta, no quadratic term
-            gradient[i] = k_delta;
+            gradient[i] = i < var_count-auxiliaryCount ? k_delta : 0.;
         }
 
         // Compute constant offset for objective value calculation
@@ -105,6 +111,8 @@ public:
     }
 
     void addLinearConstraint(Eigen::VectorXd coe, double rhs_value) override {
+        const double rowScale=std::max(1.0,coe.norm());
+        coe/=rowScale;rhs_value/=rowScale;
         if (user_constraint_count == 0) {
             A.resize(1, var_count);
             lowerBound.resize(1);
@@ -285,22 +293,7 @@ public:
                 std::string status_str;
                 switch (status) {
                     case OsqpEigen::Status::MaxIterReached:
-                        {
-                            bool has_nan_or_inf = false;
-                            for (int i = 0; i < solution.size(); i++) {
-                                if (std::isnan(solution[i]) || std::isinf(solution[i])) {
-                                    has_nan_or_inf = true;
-                                    break;
-                                }
-                            }
-                            if (!has_nan_or_inf && solution.size() > 0) {
-                                std::cerr << "[OSQP] MaxIterReached but solution is valid, accepting approximate solution" << std::endl;
-                                status = OsqpEigen::Status::SolvedInaccurate;
-                            } else {
-                                status_str = "max_iter_reached (invalid solution)";
-                            }
-                        }
-                        break;
+                        status_str="max_iter_reached"; break;
                     case OsqpEigen::Status::PrimalInfeasible:
                     case OsqpEigen::Status::PrimalInfeasibleInaccurate:
                         status_str = "primal_infeasible";

@@ -21,6 +21,10 @@ endif()
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 
 add_library(cbf_deps INTERFACE)
+find_package(Eigen3 REQUIRED)
+find_package(nlohmann_json REQUIRED)
+find_package(Boost REQUIRED)
+target_link_libraries(cbf_deps INTERFACE Eigen3::Eigen nlohmann_json::nlohmann_json Boost::boost)
 
 set_package_properties(GUROBI PROPERTIES
     DESCRIPTION "Commercial high-performance optimizer"
@@ -77,10 +81,9 @@ endif()
 
 target_include_directories(cbf_deps INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/external
 )
 
-include_directories(include external)
+include_directories(include)
 
 file(GLOB SOURCES "src/*.cpp")
 foreach(SOURCE ${SOURCES})
@@ -90,12 +93,16 @@ foreach(SOURCE ${SOURCES})
     target_link_libraries(${EXECUTABLE} PRIVATE cbf_deps)
 endforeach()
 
-file(GLOB TEST_SOURCES "tests/*.cpp")
-foreach(TEST_SOURCE ${TEST_SOURCES})
-    get_filename_component(TEST_EXECUTABLE ${TEST_SOURCE} NAME_WE)
-    add_executable(${TEST_EXECUTABLE} ${TEST_SOURCE})
-    target_link_libraries(${TEST_EXECUTABLE} PRIVATE cbf_deps)
-endforeach()
+option(CBF_BUILD_TESTS "Build historical doctest targets" OFF)
+if(CBF_BUILD_TESTS)
+    find_package(doctest CONFIG REQUIRED)
+    file(GLOB TEST_SOURCES "tests/*.cpp")
+    foreach(TEST_SOURCE ${TEST_SOURCES})
+        get_filename_component(TEST_EXECUTABLE ${TEST_SOURCE} NAME_WE)
+        add_executable(${TEST_EXECUTABLE} ${TEST_SOURCE})
+        target_link_libraries(${TEST_EXECUTABLE} PRIVATE cbf_deps doctest::doctest)
+    endforeach()
+endif()
 
 message(STATUS "")
 message(STATUS "=== Optimizer Summary ===")
