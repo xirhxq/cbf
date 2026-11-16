@@ -45,6 +45,7 @@ public:
 
 inline std::vector<std::string> getAvailableOptimisers() {
     std::vector<std::string> available;
+    available.push_back("PIQP");
 #ifdef ENABLE_GUROBI
     available.push_back("Gurobi");
 #endif

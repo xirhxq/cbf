@@ -1,6 +1,7 @@
 #include "LocalViewpoint.hpp"
 #include "LeaderReuse.hpp"
 #include "Triangle750.hpp"
+#include "Triangle5.hpp"
 #include "ShrunkSector.hpp"
 #include <cstring>
 #ifndef CBF_ROBOT_HPP
@@ -69,6 +70,9 @@ public:
     double estimatorEpsilon = 0.0;
     // Shared same-frame EKF covariance-derived scales; heuristics, not bounds.
     std::map<int, double> tvtEstimatorEpsilons;
+    // Frozen at the start of each control frame before any same-frame broadcasts.
+    std::unordered_map<int, Eigen::Vector2d> oneEndPreviousCommands;
+    std::unordered_map<int, std::uint64_t> sameFrameCommandVersions;
     std::uint64_t certificateSnapshotVersion = 0;
     std::uint64_t certificateAllocationVersion = 0;
     std::optional<cbf2026::EndpointCertificateSnapshot>
@@ -707,6 +711,12 @@ public:
     std::optional<std::uint64_t> canoPcgNominalFrame;
     json canoPcgNominalRecord;
     json tvtSymmetricRows = json::array();
+    json oneEndOriginalSoftScoreRows = json::array();
+    json signedReserveInputs = json::array();
+    json signedReserveGuards = json::array();
+    bool signedReserveEnabled() const {
+        return settings.value("tvt-experiment",json::object()).value("signed-reserve-enabled",false);
+    }
     json tvtLiteratureRows = json::array();
     json tvtBaselineTask = json::object();
     std::optional<std::uint64_t> tvtCommandBallCommandFrame;
@@ -1673,6 +1683,7 @@ public:
     json periodicFollowerTarget = json::object();
     json periodicTaskTargetRecord = json::object();
     json tvtTargetSelection = json::object();
+    json comparatorTarget = json::object();
 
     Point getEndTargetPoint() {
         cvt = CVT(endIds.size(), world.boundary);
@@ -1818,17 +1829,29 @@ public:
                 {"zero_mass_rule","hold estimated self; finite zero task"},{"zero_mass_applied",mass<=0},
                 {"tie_rule","smallest node ID"}};
         } else if (directHierarchicalTarget && settings.at("tvt-experiment").value("interior-triangle-750",false)) {
-            if(!usesEstimatedTaskContract() || !estimatorSnapshotFrame || n!=14 || myBasesId.size()!=2 || idsInMyPart.size()!=7)
-                throw std::invalid_argument("triangle750 requires two 7-member squads and current common estimate");
+            if(!usesEstimatedTaskContract() || !estimatorSnapshotFrame || myBasesId.size()!=2)
+                throw std::invalid_argument("hierarchical triangle target requires two bases and current common estimate");
             const Point goal=getEndTargetPoint();
             const Point outer=bases.at(myBasesId.at(1)),shared=bases.at(myBasesId.at(0));
-            const auto triangle=triangle750(outer,shared,goal);
-            cvt.ct[id]=triangle.points.at(idInMyPart-1);
-            json points=json::array();for(const auto& p:triangle.points)points.push_back({p.x,p.y});
-            tvtTargetSelection["triangle750"]={{"group_goal",{goal.x,goal.y}},{"outer_base",{outer.x,outer.y}},
-              {"shared_base",{shared.x,shared.y}},{"step_m",triangle.step},{"first_distance_m",triangle.first_distance},
-              {"side",triangle.side},{"angle_degrees",triangle.angle_degrees},{"offset_m",triangle.offset},{"geometric_interval_feasible",triangle.feasible},{"member_targets",points},{"member_index",idInMyPart},
-              {"target_rule","fixed-beacon-narrow-retract-v1; infeasible interval uses page saturation; no clipping or smoothing"}};
+            if(n==10 && numParts==2 && idsInMyPart.size()==5) {
+                const auto triangle=triangle5(outer,shared,goal);
+                cvt.ct[id]=triangle.points.at(idInMyPart-1);
+                json points=json::array();for(std::size_t i=0;i<idsInMyPart.size();++i){const auto& p=triangle.points[i];points.push_back({p.x,p.y});}
+                tvtTargetSelection["triangle750"]={{"group_goal",{goal.x,goal.y}},{"outer_base",{outer.x,outer.y}},
+                  {"shared_base",{shared.x,shared.y}},{"step_m",triangle.step},{"first_distance_m",triangle.first_distance},
+                  {"side",triangle.side},{"angle_degrees",triangle.angle_degrees},{"offset_m",triangle.offset},{"geometric_interval_feasible",triangle.feasible},{"member_targets",points},{"member_index",idInMyPart},
+                  {"target_rule","five-node-fixed-beacon-narrow-retract-v1; infeasible interval uses page saturation; no clipping or smoothing"}};
+            } else if((n==14 || n==21) && idsInMyPart.size()==7) {
+                const auto triangle=triangle750(outer,shared,goal);
+                cvt.ct[id]=triangle.points.at(idInMyPart-1);
+                json points=json::array();for(const auto& p:triangle.points)points.push_back({p.x,p.y});
+                tvtTargetSelection["triangle750"]={{"group_goal",{goal.x,goal.y}},{"outer_base",{outer.x,outer.y}},
+                  {"shared_base",{shared.x,shared.y}},{"step_m",triangle.step},{"first_distance_m",triangle.first_distance},
+                  {"side",triangle.side},{"angle_degrees",triangle.angle_degrees},{"offset_m",triangle.offset},{"geometric_interval_feasible",triangle.feasible},{"member_targets",points},{"member_index",idInMyPart},
+                  {"target_rule","fixed-beacon-narrow-retract-v1; infeasible interval uses page saturation; no clipping or smoothing"}};
+            } else {
+                throw std::invalid_argument("triangle target requires 5-member (n=10) or 7-member (n=14,21) squads");
+            }
         } else if (directHierarchicalTarget && settings.at("tvt-experiment").value("near-observation-local",false)) {
             const auto marginMode=settings.at("tvt-experiment").value("error-margin-mode","");
             if(!usesEstimatedTaskContract() || !estimatorSnapshotFrame || n!=14 || myBasesId.size()!=2 ||
@@ -1908,6 +1931,14 @@ public:
             if(periodicTaskTargetRecord.dump().size()>2048)
                 throw std::runtime_error("whole native target record cap exceeded; no truncation");
         }
+        if(!comparatorTarget.empty()) {
+            if(!estimatorSnapshotFrame || comparatorTarget.at("frame")!=*estimatorSnapshotFrame)throw std::runtime_error("stale comparator target");
+            const auto raw=comparatorTarget.at("position");Point q(raw.at(0).get<double>(),raw.at(1).get<double>());
+            if(comparatorTarget.value("clip",false))q=world.boundary.clip(q);
+            if(!std::isfinite(q.x)||!std::isfinite(q.y))throw std::runtime_error("nonfinite comparator target");
+            cvt.ct[id]=q;tvtTargetSelection["comparator_target"]=comparatorTarget;
+            tvtTargetSelection["applied_comparator_target"]={q.x,q.y};
+        }
         Point cvtCenter = cvt.ct[this->id];
         Point cvtYawTarget=cvtCenter;
         if(settings.at("tvt-experiment").value("near-observation-local",false) && id==endInMyPart && tvtTargetSelection.contains("near_observation")) {
@@ -1980,7 +2011,10 @@ public:
         if (cbfConfig["without-slack"]["safety"]["on"]) setSafetyCBF(cbfConfig["without-slack"]["safety"]);
         const auto experiment = settings.value("tvt-experiment", json::object());
         const std::string rowMode = experiment.value("row-mode", "legacy");
-        if (rowMode == "symmetric-l1") setTvtSymmetricRows();
+        if (rowMode == "symmetric-l1") {
+            setTvtSymmetricRows();
+            if (signedReserveEnabled()) setSignedReserveRows();
+        }
         else if (usesLiteratureRows()) setTvtLiteratureRows(rowMode);
         else if (rowMode != "legacy") setTvtFixedErrorRows(rowMode);
         if (experiment.value("record-protocol", false)) {
@@ -2085,7 +2119,7 @@ public:
         const std::string marginMode = experiment.value("error-margin-mode", "fixed");
         const double epsilonScale = experiment.value("ekf-epsilon-scale", 1.0);
         if ((marginMode != "fixed" && marginMode != "ekf-covariance-heuristic") ||
-            !std::isfinite(epsilonScale) || epsilonScale <= 0.0)
+            !std::isfinite(epsilonScale) || epsilonScale < 0.0)
             throw std::invalid_argument("invalid symmetric L1 margin mode or scale");
         if (marginMode == "ekf-covariance-heuristic" &&
             (tvtEstimatorEpsilons.size() != static_cast<std::size_t>(n) ||
@@ -2111,6 +2145,19 @@ public:
             else ++it;
         }
         tvtSymmetricRows = json::array();
+        // Keep the original all-pair scoring input for the optional work2
+        // soft-task selection, independently of one-end hard-row ownership.
+        oneEndOriginalSoftScoreRows = json::array();
+        for (int peer = 1; peer <= n; ++peer) {
+            if (peer == id) continue;
+            const Point relative = estimatorPosition - comm->_othersPos.at(peer);
+            const double E = marginMode == "fixed" ? 2.0 * error
+                : epsilonScale * (estimatorEpsilon + tvtEstimatorEpsilons.at(peer));
+            const double q = std::pow(relative.len() - E, 2) - D * D;
+            oneEndOriginalSoftScoreRows.push_back({{"edge", {{"kind", "collision"}, {"peer", peer}}},
+                {"coe", {{"vx", 2 * relative.x}, {"vy", 2 * relative.y}}},
+                {"const", alpha * q}, {"aux_coe", {-2 * E, -2 * E}}});
+        }
         auto install = [&](const std::string& name, const Point& other, bool isBase, bool collision, int peer) {
             const Point relative = estimatorPosition - other;
             const double E = marginMode == "fixed"
@@ -2120,31 +2167,85 @@ public:
             if (!std::isfinite(E) || E < 0.0)
                 throw std::invalid_argument("invalid per-edge uncertainty scale");
             const double B = U * (isBase ? 1.0 : 2.0);
-            const double hLower = collision ? std::pow(std::max(0.0, relative.len() - E), 2) - D * D
+            if (collision && relative.len() < E)
+                throw std::runtime_error("sampled-hold collision domain s < E");
+            const double hLower = collision ? std::pow(relative.len() - E, 2) - D * D
                 : R * R - std::pow(relative.len() + E, 2);
             const double q = hLower;
-            const double beta = isBase ? 1.0 : 0.5;
+            const double beta = 1.0;
             const double rowAlpha=collision?alpha:linkAlpha;
             const double sign = collision ? 1.0 : -1.0;
             const double reserve = 2.0 * E + (collision ? 0.0 : T * B);
+            if (!isBase && (peer >= id || !estimatorSnapshotFrame ||
+                !sameFrameCommandVersions.count(peer) || sameFrameCommandVersions.at(peer)!=*estimatorSnapshotFrame))
+                throw std::runtime_error("sampled-hold predecessor command missing current frame");
+            const Eigen::Vector2d previous = isBase ? Eigen::Vector2d::Zero().eval() : comm->_othersVel.at(peer).head<2>().eval();
+            if (!previous.allFinite() || previous.cwiseAbs().maxCoeff() > U + 1e-7)
+                throw std::invalid_argument("previous command outside declared component bound");
+            const int auxIndex = 2 * static_cast<int>(tvtSymmetricRows.size());
             tvtSymmetricRows.push_back({{"name", name}, {"coe", {{"vx", sign * 2 * relative.x},
-                {"vy", sign * 2 * relative.y}, {"yawRateRad", 0.0}}}, {"const", rowAlpha * beta * q},
-                {"aux_coe", {-reserve, -reserve}}, {"row_mode", "symmetric-l1"},
+                {"vy", sign * 2 * relative.y}, {"yawRateRad", 0.0}}},
+                {"const", rowAlpha * beta * q - sign * 2 * (relative.x * previous[0] + relative.y * previous[1])},
+                {"norm_coefficient", -reserve}, {"aux_index", auxIndex},
+                {"previous_command", {previous[0], previous[1]}}, {"row_mode", "one-end-current-l1"},
+                {"owner",id},{"peer_command_frame",isBase?json(nullptr):json(*estimatorSnapshotFrame)},
                 {"edge", {{"kind", collision ? "collision" : "link"}, {"peer", peer}, {"is_base", isBase}}},
                 {"relative_estimate", {relative.x, relative.y}}, {"E", E}, {"B", B},
-                {"alpha", rowAlpha}, {"T", T}, {"beta", beta}, {"h_lower", hLower}, {"q", q}});
+                {"alpha", rowAlpha}, {"T", T}, {"beta", beta}, {"h_lower", hLower}, {"q", q}, {"q_used", q}});
         };
         for (int peer = 1; peer <= n; ++peer) {
-            if (peer != id) install("safetyCBF(#" + std::to_string(peer) + ")", comm->_othersPos.at(peer), false, true, peer);
+            if (peer < id) install("safetyCBF(#" + std::to_string(peer) + ")", comm->_othersPos.at(peer), false, true, peer);
         }
-        const json incident = incidentFixedLocalizationReferences();
-        for (const auto& base : incident.at("baseIds")) {
+        for (const auto& base : myFormation.at("baseIds")) {
             const int peer = base.get<int>();
             install("fixedCommCBF(base-" + std::to_string(peer) + ")", bases.at(peer), true, false, peer);
         }
-        for (const auto& anchor : incident.at("anchorIds")) {
+        for (const auto& anchor : myFormation.at("anchorIds")) {
             const int peer = anchor.get<int>();
             install("fixedCommCBF(#" + std::to_string(peer) + ")", comm->_othersPos.at(peer), false, false, peer);
+        }
+        for (auto& row : tvtSymmetricRows) {
+            std::vector<double> coefficients(2 * tvtSymmetricRows.size(), 0.0);
+            const int index = row.at("aux_index");
+            coefficients[index] = row.at("norm_coefficient");
+            coefficients[index + 1] = row.at("norm_coefficient");
+            row["aux_coe"] = coefficients;
+        }
+    }
+
+    // Inputs are built from a frozen common certificate snapshot by Swarm.
+    // Every future owner retains its zero command as this node is committed.
+    void setSignedReserveRows() {
+        if (!signedReserveInputs.is_array() || signedReserveInputs.empty())
+            throw std::invalid_argument("signed-reserve inputs missing");
+        tvtSymmetricRows = json::array(); signedReserveGuards = json::array();
+        for (const auto& e : signedReserveInputs) {
+            const bool own=e.at("own"), collision=e.at("collision"), base=e.at("base");
+            const double variableSign=own?1.0:-1.0, barrierSign=collision?1.0:-1.0;
+            const double rx=e.at("relative")[0],ry=e.at("relative")[1];
+            const double ux=e.at("neighbor_committed")[0],uy=e.at("neighbor_committed")[1];
+            const double q=e.at("q"), E=e.at("E"), B=e.at("B"), reserve=e.at("reserve");
+            const int index=2*static_cast<int>(tvtSymmetricRows.size());
+            const std::string role=own?"owner":"successor-zero-witness";
+            json row={{"name","signed-reserve-F-"+std::to_string(e.at("edge_index").get<int>())},
+                {"edge_index",e.at("edge_index")},{"owner",e.at("owner")},{"role",role},
+                {"coe",{{"vx",variableSign*barrierSign*2*rx},{"vy",variableSign*barrierSign*2*ry},{"yawRateRad",0.0}}},
+                {"const",.1*q-(own?barrierSign*2*(rx*ux+ry*uy):0.)},
+                {"norm_coefficient",-reserve},{"aux_index",index},{"previous_command",{ux,uy}},
+                {"row_mode","signed-reserve-F"},{"edge",{{"kind",collision?"collision":"link"},{"peer",e.at("peer")},{"is_base",base}}},
+                {"relative_estimate",{rx,ry}},{"E",E},{"B",B},{"alpha",.1},{"T",.1},{"beta",1.0},{"h_lower",q},{"q",q},{"q_used",q}};
+            tvtSymmetricRows.push_back(row);
+            int face=0;
+            for (const auto& f:e.at("faces")) {
+                const double ax=f.at("a")[0],ay=f.at("a")[1],gamma=f.at("gamma");
+                signedReserveGuards.push_back({{"edge_index",e.at("edge_index")},{"face",face++},{"owner",e.at("owner")},{"role",role},
+                    {"coeff",{-.1*variableSign*ax,-.1*variableSign*ay}},
+                    {"const",gamma+(own?.1*(ax*ux+ay*uy):0.)}});
+            }
+        }
+        for (auto& row:tvtSymmetricRows) {
+            std::vector<double> coeff(2*tvtSymmetricRows.size(),0.0);const int index=row.at("aux_index");
+            coeff[index]=row.at("norm_coefficient");coeff[index+1]=row.at("norm_coefficient");row["aux_coe"]=coeff;
         }
     }
 
@@ -2973,7 +3074,7 @@ public:
             Eigen::Vector2d work2Task=Eigen::Vector2d::Zero(),work2Tangent=Eigen::Vector2d::Zero();
             if(work2Distance>1e-12)work2Task=work2Speed*work2Delta/work2Distance;
             int work2Peer=-1;double work2Best=-1.;
-            for(const auto& row:tvtSymmetricRows) {
+            for(const auto& row:oneEndOriginalSoftScoreRows) {
                 if(row.at("edge").at("kind")!="collision")continue;
                 const Eigen::Vector2d a(row.at("coe").at("vx"),row.at("coe").at("vy"));
                 const double norm=a.norm(),F=a.dot(work2Task)+row.at("aux_coe")[0].get<double>()*std::abs(work2Task[0])
@@ -2987,22 +3088,27 @@ public:
                 {"slack_index",work2Soft?originalSlackSize:-1},{"original_slack_count",originalSlackSize}};
             if(!uNominal.isZero(0.))throw std::runtime_error("work2 expects original zero nominal");
             int slackSize = originalSlackSize + (work2Soft?1:0);
-            const int auxiliarySize = usesSymmetricL1Rows() ? 2 : usesNormConeRows() ? tvtLiteratureRows.size() : 0;
+            const int auxiliarySize = usesSymmetricL1Rows() ? 2 * tvtSymmetricRows.size() : usesNormConeRows() ? tvtLiteratureRows.size() : 0;
             int totalSize = uSize + slackSize + auxiliarySize;
             optimiser->setAuxiliaryVariableCount(auxiliarySize);
             optimiser->start(totalSize, uSize);
             if (usesSymmetricL1Rows()) {
-                for (int axis = 0; axis < 2; ++axis) {
-                    const int z = uSize + slackSize + axis;
-                    for (double sign : {-1.0, 1.0}) {
-                        VectorXd coefficient = VectorXd::Zero(totalSize);
-                        coefficient[z] = 1; coefficient[axis] = sign;
-                        optimiser->addLinearConstraint(coefficient, 0);
+                for (const auto& row : tvtSymmetricRows) {
+                    const int index = row.at("aux_index");
+                    const double capValue = row.at("B");
+                    for (int axis = 0; axis < 2; ++axis) {
+                        const int z = uSize + slackSize + index + axis;
+                        const double previous = row.at("previous_command")[axis];
+                        for (double sign : {-1.0, 1.0}) {
+                            VectorXd coefficient = VectorXd::Zero(totalSize);
+                            coefficient[z] = 1; coefficient[axis] = sign;
+                            optimiser->addLinearConstraint(coefficient, sign * previous);
+                        }
+                        VectorXd cap = VectorXd::Zero(totalSize); cap[z] = -1;
+                        optimiser->addLinearConstraint(cap, -capValue);
+                        opt["auxiliary_variable_layout"].push_back(row.at("name").get<std::string>() + (axis == 0 ? "_relative_x" : "_relative_y"));
                     }
-                    VectorXd cap = VectorXd::Zero(totalSize); cap[z] = -1;
-                    optimiser->addLinearConstraint(cap, -planarComponentMax);
                 }
-                opt["auxiliary_variable_layout"] = {"z_x", "z_y"};
             } else if (usesNormConeRows()) {
                 opt["auxiliary_variable_layout"]=json::array();opt["norm_cones"]=json::array();
                 for(size_t index=0;index<tvtLiteratureRows.size();++index) {
@@ -3121,11 +3227,19 @@ public:
                     VectorXd control = VectorXd::Zero(uSize);
                     control[0] = row["coe"]["vx"]; control[1] = row["coe"]["vy"];
                     coefficient.head(uSize) = control;
-                    coefficient[uSize + slackSize] = row["aux_coe"][0];
-                    coefficient[uSize + slackSize + 1] = row["aux_coe"][1];
+                    for (int index = 0; index < auxiliarySize; ++index)
+                        coefficient[uSize + slackSize + index] = row["aux_coe"][index];
                     optimiser->addLinearConstraint(coefficient, -row["const"].get<double>());
                     jsonCBFNoSlack.push_back(row);
                     hardConstraintCoefficients.push_back(control);
+                }
+                if (signedReserveEnabled()) {
+                    for (const auto& guard:signedReserveGuards) {
+                        VectorXd coefficient=VectorXd::Zero(totalSize);
+                        coefficient[0]=guard.at("coeff")[0];coefficient[1]=guard.at("coeff")[1];
+                        optimiser->addLinearConstraint(coefficient,-guard.at("const").get<double>());
+                    }
+                    opt["signed_reserve_guard_count"]=signedReserveGuards.size();
                 }
             } else if (usesLiteratureRows()) {
                 for(auto row:tvtLiteratureRows) {
@@ -3213,6 +3327,23 @@ public:
             }
             opt["solver_info"] = solverStatus;
             const std::string status = solverStatus.value("status", "unknown");
+            opt["qp_solver_optimal"] = status == "optimal";
+            opt["diagnostic_primal"] = json::array();
+            if(status == "optimal") {
+                for(int i=0;i<result.size();++i)
+                    opt["diagnostic_primal"].push_back(std::isfinite(result[i]) ? json(result[i]) : json(nullptr));
+                opt["diagnostic_primal_finite"] = result.allFinite();
+#ifdef ENABLE_GUROBI
+                if(auto* gurobiSolver=dynamic_cast<Gurobi*>(optimiser.get()))
+                    opt["diagnostic_qp"] = gurobiSolver->sampledHoldPrimalDiagnostics();
+                else
+#endif
+                if(auto* piqpSolver=dynamic_cast<PIQP*>(optimiser.get()))
+                    opt["diagnostic_qp"] = piqpSolver->sampledHoldPrimalDiagnostics(result);
+                else
+                    throw std::runtime_error("diagnostic solver instance unavailable");
+                if(!result.allFinite())throw std::runtime_error("nonfinite QP primal");
+            }
             if (status != "optimal") {
                 opt["status"] = "failed";
                 opt["error"] = solverStatus.value("error", status);
@@ -3227,6 +3358,21 @@ public:
                 }
             }
             auto u = result.head(uSize);
+            if(inputLimitsEnabled && (!u.allFinite() || std::abs(u[0])>planarComponentMax+1e-7 ||
+               std::abs(u[1])>planarComponentMax+1e-7 || std::abs(u[2])>yawRateMax+1e-7))
+                throw std::runtime_error("command outside common input limits");
+            if (signedReserveEnabled()) {
+                double minGuard=std::numeric_limits<double>::infinity();
+                for(const auto& guard:signedReserveGuards) {
+                    const double residual=guard.at("const").get<double>()+guard.at("coeff")[0].get<double>()*u[0]+guard.at("coeff")[1].get<double>()*u[1];
+                    minGuard=std::min(minGuard,residual);
+                    if(!std::isfinite(residual)||residual < -1e-7) {
+                        opt["status"]="failed";opt["error"]="signed-reserve G numerical residual";
+                        throw std::runtime_error("signed-reserve G numerical residual");
+                    }
+                }
+                opt["signed_reserve_guard_min_residual"]=minGuard;
+            }
             if (inputLimitsEnabled) {
                 const bool vxSaturated =
                     std::abs(u[0]) >= planarComponentMax - saturationTolerance;
@@ -3260,6 +3406,32 @@ public:
                 }catch(const std::exception&e){opt["status"]="failed";opt["error"]=e.what();opt["cano_certificate"]={{"status","rejected"},{"reason",e.what()},{"command_installed",false}};throw;}
             }
             if(settings.contains("cano-pcg")){opt["M3_certificate_nominal"]=model->control2Json(uNominal);opt["M3_certificate_nominal_frame"]=*canoPcgNominalFrame;}
+            if(usesSymmetricL1Rows()) {
+                if(!u.allFinite() || std::abs(u[0])>planarComponentMax+1e-7 ||
+                   std::abs(u[1])>planarComponentMax+1e-7 || std::abs(u[2])>yawRateMax+1e-7)
+                    throw std::runtime_error("sampled-hold command outside bounds");
+                double minimum=std::numeric_limits<double>::infinity();
+                for(size_t j=0;j<tvtSymmetricRows.size();++j) {
+                    const auto& row=tvtSymmetricRows[j];
+                    const double dx=u[0]-row["previous_command"][0].get<double>();
+                    const double dy=u[1]-row["previous_command"][1].get<double>();
+                    const double rx=row["relative_estimate"][0].get<double>();
+                    const double ry=row["relative_estimate"][1].get<double>();
+                    const double sign=row["edge"]["kind"]=="collision"?1.:-1.;
+                    const double F=sign*2*(rx*dx+ry*dy)+row["norm_coefficient"].get<double>()*(std::abs(dx)+std::abs(dy))
+                        +row["alpha"].get<double>()*row["q"].get<double>();
+                    opt["cbfNoSlack"][j]["original_F"]=F;
+                    minimum=std::min(minimum,F);
+                    if(!std::isfinite(F)||F < -1e-6) {
+                        opt["status"]="failed";opt["error"]="sampled-hold original F residual";
+                        throw std::runtime_error("sampled-hold original F residual");
+                    }
+                }
+                opt["sampled_hold_min_F"]=minimum;
+                opt["original_F_pass_1e_minus_6"]=minimum>=-1e-6;
+                opt["original_F_strict_nonnegative"]=minimum>=0.;
+                opt["command_batch_frame_index"]=*estimatorSnapshotFrame;
+            }
             model->setControlInput(u);
             if(settings.contains("cano-pcg"))opt["cano_certificate"]["command_installed"]=true;
             opt["result"] = model->control2Json(u);

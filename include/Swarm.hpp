@@ -2,6 +2,7 @@
 #define CBF_SWARM_HPP
 
 #include "Robot.hpp"
+#include "SignedReserve.hpp"
 #include "cbf/EstimatorSnapshot.hpp"
 #include "diagnostics/EvidenceStream.hpp"
 
@@ -80,6 +81,7 @@ namespace shared_m1 {class ConsumerEvidenceError : public std::runtime_error {pu
 class Swarm {
 public:
     int n;
+    std::function<bool(std::uint64_t)> comparatorControl;
     std::vector<std::unique_ptr<Robot>> robots;
     std::ofstream ofstream;
     json data;
@@ -90,9 +92,14 @@ public:
     bool route1JointResolve = false;
     int route1JointResolveCount = 0;
     double route1ChainLatencySeconds = 0.0;
+    double localMapUpdateSeconds = 0.0;
+    double truthMapUpdateSeconds = 0.0;
     bool terminateOnCoverageComplete = false;
     bool terminalOnlineObservationOnly = false;
     bool estimatorInLoop = false;
+    signed_reserve::State signedReserveState;
+    std::vector<signed_reserve::V> signedReserveCommands;
+    double signedReserveBuildSeconds = 0.;
     // Dedicated reviewed shared-M1 consumer sets these only after full replay.
     // Empty hooks preserve the historical entry and mathematical workflow.
     bool sharedReplayInitializationClosed = false;
@@ -216,6 +223,15 @@ public:
                 {"true_valid_count",gridWorldGroundTruth.validCount},{"true_coverage",gridWorldGroundTruth.getPercentage()},
                 {"estimated_coverage",robots.front()->gridWorld.getPercentage()}};
             record["terminal_observation_only"]=terminalOnlineObservationOnly;
+            record["local_map_update_wall_s"]=localMapUpdateSeconds;
+            record["truth_map_update_wall_s"]=truthMapUpdateSeconds;
+            record["route1_chain_latency_s"]=route1Mode ? json(route1ChainLatencySeconds) : json(nullptr);
+            if(config.value("tvt-experiment",json::object()).value("signed-reserve-enabled",false)) {
+                record["signed_reserve"]=signedReserveState.record(signedReserveCommands);
+                record["signed_reserve"]["snapshot_build_seconds"]=signedReserveBuildSeconds;
+                record["signed_reserve"]["numeric_residual_tolerance"]=signed_reserve::State::TOL;
+                record["signed_reserve"]["numeric_scope"]="floating-point checks; not strict interval certification";
+            }
             int count=0;
             for(size_t j=0;j<gridWorldGroundTruth.vis.size();++j)if(gridWorldGroundTruth.valid[j]&&gridWorldGroundTruth.vis[j]){
                 ++count;if(!work2PreviousTruth[j])record["new_true_visited"].push_back(j);work2PreviousTruth[j]=true;}
@@ -1389,7 +1405,9 @@ public:
                 if (estimatedTasks) {
                     estimatorFrameExchange(static_cast<std::uint64_t>(std::llround(robots[0]->runtime / tStep)));
                     validateCommonEstimatorSnapshot(static_cast<std::uint64_t>(std::llround(robots[0]->runtime / tStep)));
+                    const auto localMapStart=std::chrono::steady_clock::now();
                     for (auto &robot: robots) robot->updateGridWorld();
+                    localMapUpdateSeconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-localMapStart).count();
                     for (auto &robot: robots) if (robot->gridWorld.vis != robots.front()->gridWorld.vis)
                         throw std::runtime_error("estimated task maps are not common");
                     if(config.contains("periodic-target-interface"))
@@ -1403,13 +1421,37 @@ public:
                         {"task_map_coverage", robots.front()->gridWorld.getPercentage()},
                         {"oracle_task_position", false}, {"own_yaw_battery", "exact onboard measurements assumed"},
                         {"covariance_graph", "legacy diagnostic only; not consumed by task/hard rows"}};
+                    const auto truthMapStart=std::chrono::steady_clock::now();
                     updateGridWorld(); // Ground truth is isolated to coverage evaluation.
+                    truthMapUpdateSeconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-truthMapStart).count();
+                    const auto signedTvt=config.value("tvt-experiment",json::object());
+                    if(signedTvt.value("signed-reserve-enabled",false)) {
+                        const auto started=std::chrono::steady_clock::now();
+                        if(!route1Mode||route1JointResolve||route1SquadFirst!=0||!estimatorInLoop||
+                           config.at("model")!="SingleIntegrate2D"||config.at("work2").value("response_tau_s",0.)!=0.||
+                           tStep!=signed_reserve::State::T||
+                           config.at("cbfs").at("input-limits").at("planar-component-max").get<double>()!=signed_reserve::State::U||
+                           config.at("cbfs").at("without-slack").at("safety").at("safe-distance").get<double>()!=signed_reserve::State::D||
+                           config.at("cbfs").at("without-slack").at("comm-fixed").at("max-range").get<double>()!=signed_reserve::State::R||
+                           signedTvt.at("ekf-epsilon-scale").get<double>()!=1.||
+                           signedTvt.at("error-margin-mode").get<std::string>()!="ekf-covariance-heuristic"||
+                           !signedTvt.value("refresh-before-solve",false)||
+                           signedTvt.at("squared-alpha").get<double>()!=signed_reserve::State::ALPHA||
+                           signedTvt.at("work2-link-alpha").get<double>()!=signed_reserve::State::ALPHA)
+                            throw std::invalid_argument("signed-reserve execution contract violated");
+                        std::vector<signed_reserve::Node> nodes;std::vector<signed_reserve::V> basePositions;
+                        for(const auto& r:robots)nodes.push_back({{r->estimatorPosition.x,r->estimatorPosition.y},r->estimatorEpsilon,r->myFormation});
+                        for(const auto& b:config.at("bases"))basePositions.push_back({b.at(0).get<double>(),b.at(1).get<double>()});
+                        signedReserveCommands.assign(robots.size(),signed_reserve::V{0.,0.});
+                        signedReserveState.begin(nodes,basePositions,*robots.front()->estimatorSnapshotFrame);
+                        signedReserveBuildSeconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
+                    }
                     if(terminateOnCoverageComplete && robots.front()->gridWorld.getPercentage()>=1.0-1e-12) {
                         restoreTruthPositions();
                         terminalOnlineObservationOnly=true;
                         frameLogAttempted=true;
                         logOnce();
-                        break; // online terminal observation; no QP or physical hold at this sample
+                        break; // terminal observation, no current-sample QP or hold
                     }
                 } else {
                     for (auto &robot: robots) robot->updateGridWorld();
@@ -1422,14 +1464,31 @@ public:
                     if(!estimatedTasks || !robots.front()->estimatorSnapshotFrame) throw std::runtime_error("leader reuse requires estimated frame");
                     leader_reuse::beginFrame(*robots.front()->estimatorSnapshotFrame);
                 }
+                // Preserve refresh/target/broadcast order while freezing the
+                // prior held command before any current-frame solve/broadcast.
+                for (auto& robot : robots) {
+                    robot->sameFrameCommandVersions.clear();
+                    robot->oneEndPreviousCommands.clear();
+                    for (const auto& entry : robot->comm->_othersVel) {
+                        if (entry.second.size() < 2 || !entry.second.allFinite())
+                            throw std::runtime_error("invalid previous command snapshot");
+                        robot->oneEndPreviousCommands.emplace(entry.first, entry.second.head<2>());
+                    }
+                    if (robot->oneEndPreviousCommands.size() != robots.size())
+                        throw std::runtime_error("incomplete previous command snapshot");
+                }
                 const bool refreshLocalRows = tvt.value("refresh-before-solve", false);
                 stepData["tvt_protocol"] = json::array();
                 if (!refreshLocalRows) for (auto &robot: robots) robot->postsetCBF();
 
-                if (isCentralizedExecution()) {
+                if(comparatorControl && comparatorControl(static_cast<std::uint64_t>(std::llround(robots[0]->runtime/tStep)))) {
+                    // External controller has installed the complete command batch.
+                } else if (isCentralizedExecution()) {
                     postsetCBFs();
                     centralizedOptimise();
                 } else if (route1Mode) {
+                    if(route1SquadFirst!=0 || route1JointResolve || !estimatedTasks || !refreshLocalRows)
+                        throw std::invalid_argument("sampled-hold requires ascending local QP with same-frame snapshot");
                     const auto route1Start = std::chrono::steady_clock::now();
                     std::vector<size_t> solveOrder(robots.size());
                     std::iota(solveOrder.begin(), solveOrder.end(), 0);
@@ -1446,6 +1505,10 @@ public:
                             continue;
                         }
                         auto &robot = robots[robotIndex];
+                        if(tvt.value("signed-reserve-enabled",false)) {
+                            if(robotIndex+1!=static_cast<size_t>(robot->id))throw std::runtime_error("signed-reserve requires ascending ID order");
+                            robot->signedReserveInputs=signedReserveState.inputFor(static_cast<int>(robotIndex),signedReserveCommands);
+                        }
                         if (refreshLocalRows) robot->postsetCBF();
                         stepData["tvt_protocol"].push_back({{"robot", robot->id},
                             {"stage", "rows_constructed"}, {"runtime", robot->runtime}});
@@ -1460,6 +1523,11 @@ public:
                                 }
                             }
                             robot->optimise();
+                            if(tvt.value("signed-reserve-enabled",false)) {
+                                const auto command=robot->model->getControlInput();
+                                signedReserveCommands.at(robotIndex)={command[0],command[1]};
+                                signedReserveState.prefix(static_cast<int>(robotIndex),signedReserveCommands);
+                            }
                             stepData["tvt_protocol"].push_back({{"robot", robot->id},
                                 {"stage", "local_success"},
                                 {"command", robot->model->control2Json(robot->model->getControlInput())}});
@@ -1484,6 +1552,20 @@ public:
                                 robot->id,
                                 robot->model->getVelocity()
                             );
+                            otherRobot->sameFrameCommandVersions[robot->id]=*robot->estimatorSnapshotFrame;
+                        }
+                    }
+                    for(const auto& owner:robots) {
+                        if(!owner->usesSymmetricL1Rows())continue;
+                        for(const auto& row:owner->opt.at("cbfNoSlack")) {
+                            if(row.at("edge").at("is_base").get<bool>())continue;
+                            const int peer=row.at("edge").at("peer").get<int>();
+                            if(peer>=owner->id || row.at("peer_command_frame")!=*owner->estimatorSnapshotFrame)
+                                throw std::runtime_error("sampled-hold owner order or version mismatch");
+                            const auto actual=robots.at(peer-1)->model->getControlInput();
+                            if(actual[0]!=row.at("previous_command")[0].get<double>() ||
+                               actual[1]!=row.at("previous_command")[1].get<double>())
+                                throw std::runtime_error("sampled-hold committed command changed");
                         }
                     }
                     if(tvt.value("same-frame-leader-reuse",false)) std::cerr << "LEADER_REUSE frame=" << *robots.front()->estimatorSnapshotFrame << " hits=" << leader_reuse::hits() << " misses=" << leader_reuse::misses() << "\n";
@@ -1535,6 +1617,7 @@ public:
                 logOnce();
                 if (sharedM3BeforeCompleteHold) sharedM3BeforeCompleteHold(static_cast<std::uint64_t>(std::llround(robots[0]->runtime / tStep)));
                 for (auto &robot: robots) robot->stepTimeForward(tStep);
+                if(tvt.value("signed-reserve-enabled",false))signedReserveState.commit(signedReserveCommands);
                 if (sharedAfterCompleteHold)
                     sharedAfterCompleteHold(static_cast<std::uint64_t>(std::llround(robots[0]->runtime / tStep))-1);
             }

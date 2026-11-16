@@ -1,0 +1,36 @@
+{
+  "tag": "nikou",
+  "method": "nikou",
+  "seed": 2026102801,
+  "parameters": {
+    "horizon_steps": 20,
+    "ancillary_gain": 0.5,
+    "terminal_gain": 0.5,
+    "error_bound_m": 5.0,
+    "physical_disturbance_mps": 0.0,
+    "terminal_radius_m": 5.0,
+    "state_weight": 1.0,
+    "input_weight": 0.1,
+    "maxiter": 80,
+    "replan_every_steps": 10,
+    "reference_fractions": [
+      1.0,
+      0.5,
+      0.25,
+      0.125,
+      0.0625,
+      0.03125,
+      0.015625,
+      0.0078125,
+      0.00390625
+    ]
+  },
+  "output_directory": "output/mpc",
+  "max_time_s": 700.0,
+  "wall_limit_s": 7200,
+  "category": "science",
+  "no_retry": true,
+  "physical_dt_s": 0.1,
+  "baseline": "configs/main14-1200m-piqp.json",
+  "common": "14 UAV; SCI; extended ranging; signed q; alpha_c=alpha_l=.1;400m/120deg;exact ZOH; same frozen seed2801 field"
+}

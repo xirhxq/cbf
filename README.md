@@ -1,52 +1,49 @@
-# CBF2026 numerical experiments
+# CBF2026 Numerical Experiments (`ugdms-cbf`)
 
-Numerical multi-UAV coverage experiments with control barrier functions, a range-only EKF, and comparisons based on Cano-inspired follower planning and GdMS. The main 14-UAV configuration uses a 0.1 s control interval, alpha = 0.1, signed `q = h_lower`, and the 3σ uncertainty scale. The package also includes alternative scenes, fixed and adaptive margins, and ranging perturbations. The controller used by the Gazebo simulation is maintained in the `mbzirc-simulation` branch and is used by the accompanying `cbf-ros2` package.
+Numerical multi-UAV coverage experiments with control barrier functions, range-only EKF + Split Covariance Intersection (SCI) fusion, finite-range active-set ranging (`d_range <= 1200 m`), and finite-range comparator baselines (Oruganti, Cano, Goudar, and Artificial-Reference Tube DMPC). The Gazebo/ROS 2 closed-loop simulation package is maintained separately in `xirhxq/cbf-ros2` on branch `ugdms-cbf` and consumes this repository as its `cbf` submodule.
 
 ## Requirements
 
-- C++17, CMake, Boost headers, Eigen 3.4, nlohmann/json 3.11, and a Gurobi C++/C installation and license. Gurobi and the other dependencies are not bundled.
-- Python 3.10+, NumPy (`requirements.txt`), `zstd` on `PATH`, and a POSIX environment with named pipes.
+- C++17 toolchain, CMake >= 3.16, Boost headers, and Eigen >= 3.3 (tested with Eigen 3.4). Header-only **PIQP 0.6.1** (`BSD-2-Clause`) and **nlohmann/json** (`MIT`) are bundled under `vendor/`.
+- Python 3.8+ with NumPy (`requirements.txt`). Optional finite-range comparators additionally require SciPy and Clarabel (`requirements-comparators.txt`).
+- POSIX environment with named pipes (`zstd` optional for streaming compression; falls back to `gzip` if `zstd` is absent).
+- Optional: Gurobi C++/C solver only if passing `-DENABLE_GUROBI=ON` (and `-DBUILD_HISTORICAL_VARIANTS=ON` for Round-1 legacy comparison snapshots).
 
-## Build
-
-```sh
-cmake -S . -B build -DGUROBI_HOME="$GUROBI_HOME"
-cmake --build build -j 2
-
-# Historical main-method variant that permits coverage stopping after 350 s
-cmake -S . -B build-min350 -DGUROBI_HOME="$GUROBI_HOME" -DCBF_MINIMUM_350_STOP=ON
-cmake --build build-min350 --target cbf2026_native -j 2
-```
-
-If Eigen and nlohmann/json share a nonstandard include root, provide `-DCBF_EXTERNAL_INCLUDE=/path/to/include`; `EIGEN_INCLUDE_DIR`, `NLOHMANN_INCLUDE_DIR`, and `BOOST_INCLUDE_DIR` can also be specified individually. Builds create `cbf2026_native` and the comparison/scene executables named `cbf2026_<variant>`. The `min350` variant uses `build-min350/cbf2026_native`; all other variants use the correspondingly named executable from the default build.
-
-## Run a configured case
-
-`config/case-index.json` identifies each scene, sensitivity condition and comparison along with its configuration file, seed, random-field type and build variant. Inspect available cases with:
+## Build (Default PIQP Header-Only Backend)
 
 ```sh
-python scripts/run_case.py --help
-python scripts/run_range_error.py --help
+cmake -S . -B build
+cmake --build build -j4
 ```
 
-Supply `--case`, the matching `--binary`, and a new `--output` directory. Case indexes specify the variant; the driver records the supplied binary hash but does not verify its variant. For example:
+If Eigen lives in a nonstandard prefix (e.g. multiple Eigen versions installed via Homebrew), pass `-DEIGEN_INCLUDE_DIR=/path/to/eigen3`. The default build produces `build/cbf2026_native`, which supports `n=10`, `n=14`, and `n=21` multi-squad configurations, all convex scene geometries, range-perturbation schedules, and the external comparator IPC interface.
+
+## Run 1200 m Finite-Range SCI & Ablation Cases
+
+`scripts/run_hard_cutoff.py` runs the proposed SCI estimator-in-the-loop controller and all finite-range sensitivity/perturbation ablations (`--duration 700.0` for full 700 s runs, or a short smoke duration such as `--duration 0.5`):
 
 ```sh
-python scripts/run_case.py --case paired-main--3sigma-seed2026102905 --binary build/cbf2026_native --output /path/to/new-output
+python3 scripts/run_hard_cutoff.py --case main14 --binary build/cbf2026_native --output /tmp/cbf_main14 --duration 0.5
 ```
 
-Some cases require a historical 700-frame random field supplied with `--field`. The normal field SHA-256 is `91a2a0da75e37efa217d6973879ec6545f49330030545aa510f772af19aea2fa`; the shared-base field SHA-256 is `296e44b1e3056ad01477f89762a596af7caa192d916b2f7261e11ed0759515cd`. These files are not included. Cases marked `counter` generate the measurement field from the configured seed and do not accept a frozen field.
+Available `--case` values:
+- Core swarm & scenes: `main14`, `n10`, `squad21`, `square2000`, `square2500`, `triangle`, `trapezoid`
+- Margin & fusion ablations: `fixed1m`, `fixed3m`, `fixed9m`, `cr3`
+- Ranging perturbations (1200 m active set): `bias`, `burst`, `dispersed20`, `dispersed40`, `dispersed100`
 
-The drivers create a fresh output directory, monitor free space and an output-size limit, and do not retry failed runs. Select suitable limits and review the driver for the target environment. The adapted drivers have not been validated through end-to-end reproduction of the recorded trajectories.
+## Run 1200 m Finite-Range Comparator Baselines
 
-## Ranging perturbations
+`scripts/comparators/run_finite_comparator.py` runs the finite-range (`d <= 1200 m`, common EKF + SCI estimator) comparator baselines (`oruganti`, `cano`, `goudar`, `mpc`):
 
-`config/range-error-index.json` contains the 22 no-bias, +0.30 m fixed-bias, +3 m burst and dispersed conditions. Burst perturbations apply to available ranges during [50,55) s of each 100 s block. Dispersed cases require a matching schedule via `--schedule`; scheduled anomalies apply only to available ranges. A planned count need not equal the count observed on a new trajectory.
+```sh
+pip install -r requirements-comparators.txt
+python3 scripts/comparators/run_finite_comparator.py --method mpc --binary build/cbf2026_native --output /tmp/cbf_mpc --duration 0.5
+```
 
-Build a matching schedule from a completed burst estimator log using `python scripts/build_matched_schedule.py --help`. The saved burst logs and schedules are not included. The driver verifies the historical schedule digest or a canonical digest excluding only its reference-run location. The EKF gate remains unchanged; the perturbation driver records gate decisions for injected outliers.
+## Historical Round-1 Configuration Archive
 
-`scripts/run_experiment.py`, `scripts/run_cano.py`, and `scripts/run_comparison.py` provide additional interfaces for representative cases.
+Sanitized Round-1 JSON cases (`cases/`, `range-cases/`, `config/`) and source drivers (`scripts/run_case.py`, `scripts/run_range_error.py`, `variants/`) are retained for provenance alongside the updated 1200 m PIQP + SCI implementation above. Historical Round-1 frozen random-field digests are documented in `scripts/run_case.py`.
 
 ## License
 
-Project license: MIT; see `LICENSE`. Each external dependency is subject to its own license.
+Project source code is licensed under the MIT License (`LICENSE`). Bundled third-party headers carry their own licenses (`vendor/PIQP-LICENSE`, `vendor/include/nlohmann/json.hpp`).

@@ -5,6 +5,7 @@
 #include "OptimiserBase.hpp"
 #include "gurobi_c++.h"
 #include <chrono>
+#include <memory>
 #include "diagnostics/CanonicalCaptureAudit.hpp"
 
 class Gurobi : public OptimiserBase{
@@ -116,6 +117,21 @@ public:
 
     double canoExpressionAtPrimal() const {return obj.getValue();}
     double canoModelExpressionAtPrimal() const {return model->getObjective().getValue();}
+    json sampledHoldPrimalDiagnostics() const {
+        json d={{"linear_rows",json::array()},
+                {"linear_residual_definition","nonnegative is feasible; solver row order"},
+                {"feasibility_tol",model->getEnv().get(GRB_DoubleParam_FeasibilityTol)}};
+        const int count=model->get(GRB_IntAttr_NumConstrs);
+        std::unique_ptr<GRBConstr[]> rows(model->getConstrs());
+        for(int i=0;i<count;++i) {
+            const char sense=rows[i].get(GRB_CharAttr_Sense);
+            const double slack=rows[i].get(GRB_DoubleAttr_Slack);
+            const double residual=sense=='>'?-slack:(sense=='<'?slack:-std::abs(slack));
+            if(!std::isfinite(residual))throw std::runtime_error("nonfinite diagnostic QP row residual");
+            d["linear_rows"].push_back(residual);
+        }
+        return d;
+    }
     double getObjectiveValue() const override {
         try {
             if (model && model->get(GRB_IntAttr_Status) == GRB_OPTIMAL) {
