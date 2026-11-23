@@ -80,6 +80,12 @@ public:
         ancestry_["branch"]=ReconstructionCheckpoint::replaceFutureRequests(*r,future_.at("target_modes").get<std::vector<int>>(),first);
         ancestry_["kind"]="future-request-branch";future_applied_=true;
     }
+    template<class Replace>void applyRoleFutureAtBoundary(std::size_t tick,Replace replace){
+        if(future_.is_null()||future_applied_||tick!=seek_tick_)return;
+        std::optional<double> first;if(future_.contains("first_request_s"))first=future_.at("first_request_s").get<double>();
+        ancestry_["branch"]=replace(future_.at("target_modes").get<std::vector<int>>(),first);
+        ancestry_["kind"]="future-role-request-branch";future_applied_=true;
+    }
     bool shouldSave(std::size_t tick,bool force=false)const{return enabled_&&(!last_written_||*last_written_!=tick)&&(force||tick%interval_==0||tick==seek_tick_);}
     static Json captureEngine(Swarm& s,GrandFinaleSwarmAdapter& a,Task10p11hSimpleCoverageController& c,Task26ExternalReconstructor* r,const Json& id){
         return r?ReconstructionCheckpoint::capture(s,a,c,*r,id):FullStateCheckpoint::capture(s,a,c,id);

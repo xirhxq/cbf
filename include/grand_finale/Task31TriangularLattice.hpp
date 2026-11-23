@@ -23,7 +23,8 @@ struct Task31Lattice {
 // the shared front. Fixed anchors are not outputs and are never transformed.
 inline Task31Lattice task31TriangularLattice(const Task20DagLatticeContract& input,
     const std::map<NodeId,Eigen::Vector2d>& fixed,const Eigen::Vector2d& direction,
-    double anchor_ranking_span_m=0,double front_similarity_gain=1.0) {
+    double anchor_ranking_span_m=0,double front_similarity_gain=1.0,
+    const std::map<NodeId,double>& final_lateral_ties={}) {
     Task31Lattice out;out.contract=input;
     auto reject=[&](const std::string& reason){out.reason=reason;return out;};
     if(!input.valid||!direction.allFinite()||direction.norm()<1e-12||fixed.empty()||
@@ -47,6 +48,18 @@ inline Task31Lattice task31TriangularLattice(const Task20DagLatticeContract& inp
         }
     }
     if(mobiles.size()!=input.member_roles.size())return reject("incomplete_membership");
+    // Optional request-time tie key. It does not override a distinct parent
+    // key, change identities, or certify the resulting dynamic transition.
+    std::map<NodeId,double> tie_keys;
+    if(!final_lateral_ties.empty()) {
+        if(final_lateral_ties.size()!=mobiles.size())return reject("incomplete_final_lateral_ties");
+        for(auto id:mobiles) {
+            if(!final_lateral_ties.count(id))return reject("incomplete_final_lateral_ties");
+            const double key=std::round(final_lateral_ties.at(id)/1e-10);
+            if(!std::isfinite(key))return reject("nonfinite_final_lateral_tie");
+            tie_keys[id]=key;
+        }
+    }
     std::set<std::pair<NodeId,NodeId>> seen;
     for(const auto& e:input.reference_edges) {
         if(!mobiles.count(e.owner)||(!mobiles.count(e.reference)&&!fixed.count(e.reference))||
@@ -94,7 +107,11 @@ inline Task31Lattice task31TriangularLattice(const Task20DagLatticeContract& inp
                 if(!std::isfinite(key))return reject("nonfinite_parent_order_key");
                 keys[id]=key;
             }
-            std::stable_sort(members.begin(),members.end(),[&](auto a,auto b){return keys.at(a)<keys.at(b);});
+            std::stable_sort(members.begin(),members.end(),[&](auto a,auto b){
+                if(keys.at(a)!=keys.at(b))return keys.at(a)<keys.at(b);
+                if(!tie_keys.empty())return tie_keys.at(a)<tie_keys.at(b);
+                return false;
+            });
             const double parity=(row%2==0)?0.5:0.0;
             const double start=std::round(-0.5*(members.size()-1)-parity)+parity;
             for(size_t k=0;k<members.size();++k) {
@@ -116,6 +133,7 @@ inline Task31Lattice task31TriangularLattice(const Task20DagLatticeContract& inp
     }
     out.contract.id=input.id+"-triangular-v1";
     out.contract.structural_signature=input.structural_signature+";dag-depth-staggered-slots-v1";
+    if(!tie_keys.empty())out.contract.structural_signature+=";goal-lateral-parent-ties-v1";
     if(front_similarity_gain!=1.0)
         out.contract.structural_signature+=";front_similarity="+std::to_string(front_similarity_gain);
     out.contract.topological_order=sorted;

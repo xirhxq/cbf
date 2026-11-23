@@ -85,8 +85,8 @@ inline Task31AnchorScene task31AnchorScene(const nlohmann::json& j) {
             out.goal.structural_signature+=";search-observation=registered-port";
         }
         // Adopted 2026-09-18: the final finish() is unconditional so the
-        // anchor-inclusive topological order is identical on every parse route
-        // (the applied fixed-mode contract and the role-program instance).
+        // anchor-inclusive topological order is identical for every parse
+        // route (the applied contract and the role-program instance).
         task20_lattice_detail::finish(out.goal);
         if(!out.goal.valid)return reject(out.goal.reason);
         out.goal.id+="-anchor-asset";out.valid=true;out.reason="parsed_geometry_not_actual_qualification";

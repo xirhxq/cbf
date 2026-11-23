@@ -12,6 +12,8 @@
 #include "grand_finale/Task31CommonBridge.hpp"
 #include "grand_finale/Task32ContractionPath.hpp"
 #include "grand_finale/Task32ModeTransition.hpp"
+#include "grand_finale/Task32FormationEndpoint.hpp"
+#include "grand_finale/Task33SharedPhase.hpp"
 #include "grand_finale/Task31AnchorScene.hpp"
 #include "grand_finale/TransitionCertifier.hpp"
 #include "grand_finale/Task10p11hSimpleCoverageController.hpp"
@@ -127,8 +129,20 @@ public:
         double request_s=60.0,double bridge_scale=1.0,bool old_bridge_only=false,bool triangular_final=false,bool common_bridge=false,
         std::optional<Task31AnchorScene> anchor_scene=std::nullopt,bool fixed_mode_observer=false,int fixed_mode_code=12,
         bool centered_bow_contraction=false,
-        std::optional<Task32ModeTransitionPlan> mode_plan=std::nullopt)
+        std::optional<Task32ModeTransitionPlan> mode_plan=std::nullopt,
+        bool goal_lateral_bridge_ties=false,bool registered_shape_endpoint=false,bool reference_legal_endpoint=false,
+        bool shared_phase_speed=false)
         :adapter_(adapter),controller_(controller),action_(action),next_request_s_(request_s),bridge_scale_(bridge_scale),old_bridge_only_(old_bridge_only),triangular_final_(triangular_final),common_bridge_(common_bridge),anchor_scene_(std::move(anchor_scene)),fixed_mode_observer_(fixed_mode_observer),fixed_mode_code_(fixed_mode_code),mode_plan_(std::move(mode_plan)) {
+        goal_lateral_bridge_ties_=goal_lateral_bridge_ties;
+        registered_shape_endpoint_=registered_shape_endpoint;
+        reference_legal_endpoint_=reference_legal_endpoint;
+        shared_phase_speed_=shared_phase_speed;
+        if(shared_phase_speed_&&(!reference_legal_endpoint_||!goal_lateral_bridge_ties_))
+            throw std::invalid_argument("shared-phase arm requires v3 and current bridge; no combined ablation");
+        if(reference_legal_endpoint_&&!registered_shape_endpoint_)
+            throw std::invalid_argument("reference legal endpoint requires the registered moving contract");
+        if(goal_lateral_bridge_ties_&&(!common_bridge_||fixed_mode_observer_))
+            throw std::invalid_argument("goal lateral bridge ties require external common bridge");
         if(action_=="pinball-qualified-layered-centeredframe-moving-linearphase-rolecenter-continuingfront"||
             action_=="cross-roundtrip-qualified-layered-centeredframe-moving-linearphase-rolecenter-continuingfront") {
             continuing_front_=true;action_.erase(action_.size()-std::string("-continuingfront").size());
@@ -212,7 +226,7 @@ public:
         }
         if(mode_plan_) {
             const auto r=adapter_.runtimeSnapshot();
-            if(!common_bridge_||!centered_bow_contraction_||!continuing_front_||
+            if(!common_bridge_||!continuing_front_||
                 !moving_completion_||fixed_mode_observer_||bridge_scale_!=1||
                 old_bridge_only_||projected_compact_||!anchor_scene_||
                 anchor_scene_->identity!=mode_plan_->pinball_scene.identity||
@@ -230,6 +244,17 @@ public:
             sequence_=std::make_unique<Task32RequestSequence>(mode_plan_->target_modes,
                 mode_plan_->first_request_s,mode_plan_->after_restore_s);
         }
+        if(registered_shape_endpoint_&&(!mode_plan_||!common_bridge_||!qualified_contraction_||
+            !moving_completion_||!role_center_expansion_||!continuing_front_||fixed_mode_observer_))
+            throw std::invalid_argument("registered shape endpoint requires the explicit moving common-bridge protocol");
+        if(reference_legal_endpoint_) {
+            int prior=mode_plan_->start_mode;
+            for(int next:mode_plan_->target_modes) {
+                if(!task27SameTargetMapping(mode_plan_->mode(prior).contract,mode_plan_->mode(next).contract))
+                    throw std::invalid_argument("reference legal endpoint currently requires the frozen zero-continuation mapping contract");
+                prior=next;
+            }
+        }
     }
 
     void beforeStep() {
@@ -240,21 +265,54 @@ public:
         if (adapter_.coverage().certifiedFraction()>=1.0-1e-12) return;
         if (stage_=="search" && (sequence_?sequence_->due(now):now+1e-9>=next_request_s_)) start(runtime);
         if (stage_=="search"||stage_=="blocked_partial") return;
+        if (stage_=="recovering") {
+            // Deadline-triggered recovery ladder (researcher-approved 2026-09-11).
+            // Level 1: hold the takeover reference frozen (advancing continuing
+            // fronts stop) and let stragglers converge; restore only through the
+            // unchanged moving-v1 audit. Level 2 after the grace window:
+            // degraded search resume under the already-committed contract.
+            controller_.setExternalReconstructionReference(reference_);
+            tracking(runtime);
+            if (fraction_>=1.0&&shape_ready_) {
+                restore(now,"recovery_hold_shape_converged");
+                return;
+            }
+            if (now-recovery_started_>=180.0) {
+                nlohmann::json slot_errors=nlohmann::json::object();
+                for (std::size_t i=0;i<runtime.estimate.mobile_ids.size();++i) {
+                    const NodeId id=runtime.estimate.mobile_ids[i];
+                    slot_errors[std::to_string(id)]=
+                        (runtime.estimate.mean.segment<2>(4*i)-reference_.at(id)).norm();
+                }
+                event("restored","degraded_search_resume_after_recovery_grace");
+                requests_.back()["outcome"]="restored_degraded";
+                requests_.back()["restored_s"]=now;
+                requests_.back()["degraded_slot_errors_m"]=slot_errors;
+                if(sequence_)sequence_->stop();
+                controller_.setExternalReconstructionReference(std::nullopt);
+                stage_="search";next_request_s_=std::numeric_limits<double>::infinity();
+            }
+            return;
+        }
         if (now-request_started_>=360.0) {
-            if(sequence_)sequence_->stop();
             if (edge_index_==0&&!runtime.adapter_transition_pending) {
+                if(sequence_)sequence_->stop();
                 event("rejected","compact_or_first_edge_deadline");
                 requests_.back()["outcome"]="rejected";
                 controller_.setExternalReconstructionReference(std::nullopt);
                 stage_="search";next_request_s_=std::numeric_limits<double>::infinity();
             } else {
                 event("incomplete","partial_handoff_or_shape_deadline");
-                requests_.back()["outcome"]="incomplete";stage_="blocked_partial";
+                requests_.back()["outcome"]="incomplete";
+                stage_="recovering";recovery_started_=now;
             }
             return;
         }
         if (stage_=="contracting") {
-            fraction_=task26SmoothStep((now-request_started_)/60.0);
+            if(shared_phase_speed_) {
+                fraction_=contraction_clock_->advanceLocal(fraction_,std::max(0.,now-phase_clock_s_),29.9);
+                phase_clock_s_=now;
+            } else fraction_=task26SmoothStep((now-request_started_)/60.0);
             auto fronts=from_fronts_;
             for (auto& [unit,p]:fronts) p=(1.0-fraction_)*p+fraction_*compact_fronts_.at(unit);
             reference_=task20LiftTargets(old_contract_,runtime.estimate.fixed_positions,fronts).targets;
@@ -298,9 +356,55 @@ public:
                                 {"phase_duration_s",60.0},{"source","unscaled_final_and_canonical_old_at_actual_admission"}};
                         }
                     }
-                    if (task27SameTargetMapping(old_contract_,new_contract_))
-                        new_compact_targets_=task20LiftTargets(new_contract_,
-                            runtime.estimate.fixed_positions,fronts).targets;
+                    if (task27SameTargetMapping(old_contract_,new_contract_)) {
+                        if(!registered_shape_endpoint_)
+                            new_compact_targets_=task20LiftTargets(new_contract_,
+                                runtime.estimate.fixed_positions,fronts).targets;
+                        else {
+                            auto selected=task32SelectFormationEndpoint(new_contract_,
+                                runtime.estimate.fixed_positions,fronts,registered_endpoint_fronts_,
+                                adapter_.config().reference_distance_m,180.0);
+                            auto selected_fronts=selected.selected_source=="proposed_endpoint"?
+                                fronts:registered_endpoint_fronts_;
+                            if(reference_legal_endpoint_) {
+                                const auto geometry=task32SelectReferenceLegalEndpoint(new_contract_,
+                                    runtime.estimate.fixed_positions,fronts,registered_endpoint_fronts_,
+                                    adapter_.config().reference_distance_m,adapter_.config().collision_distance_m);
+                                selected.endpoint=geometry.endpoint;selected.selected_source=geometry.selected_source;
+                                selected_fronts=geometry.fronts;
+                                recordEndpointGeometry(geometry);
+                            }
+                            const auto& endpoint=selected.endpoint;
+                            formation_endpoint_telemetry_["selected_source"]=selected.selected_source;
+                            formation_endpoint_telemetry_["proposed_reason"]=selected.proposed_reason;
+                            formation_endpoint_telemetry_["necessary_valid"]=endpoint.valid;
+                            formation_endpoint_telemetry_["reason"]=endpoint.reason;
+                            formation_endpoint_telemetry_["maximum_target_reference_m"]=endpoint.maximum_target_reference_m;
+                            formation_endpoint_telemetry_["minimum_necessary_reference_slack_m"]=endpoint.minimum_necessary_reference_slack_m;
+                            formation_endpoint_telemetry_["fronts"]=nlohmann::json::object();
+                            formation_endpoint_telemetry_["targets"]=nlohmann::json::object();
+                            formation_endpoint_telemetry_["proposed_fronts"]=nlohmann::json::object();
+                            for(const auto& [u,p]:fronts)formation_endpoint_telemetry_["proposed_fronts"][u]={p.x(),p.y()};
+                            for(const auto& [u,p]:selected_fronts)formation_endpoint_telemetry_["fronts"][u]={p.x(),p.y()};
+                            for(const auto& [id,p]:endpoint.targets)formation_endpoint_telemetry_["targets"][std::to_string(id)]={p.x(),p.y()};
+                            if(!endpoint.valid) {
+                                requests_.back()["formation_endpoint"]=formation_endpoint_telemetry_;
+                                requests_.back()["outcome"]="rejected";
+                                event("rejected",endpoint.reason);
+                                if(sequence_)sequence_->stop();
+                                controller_.setExternalReconstructionReference(std::nullopt);
+                                stage_="search";next_request_s_=std::numeric_limits<double>::infinity();return;
+                            }
+                            new_compact_targets_=endpoint.targets;
+                            // Legacy same-mapping continuation has zero
+                            // displacement. Preserve it independently of the
+                            // newly registered acceptance endpoint, rather
+                            // than silently deriving a new front velocity.
+                            continuation_from_=new_compact_targets_;
+                            formation_endpoint_telemetry_["continuation_basis"]="selected_endpoint_preserves_legacy_zero_displacement";
+                            requests_.back()["formation_endpoint"]=formation_endpoint_telemetry_;
+                        }
+                    }
                     stage_="handoff";
                     event("contracted",plan_reason_);
                     requests_.back()["contraction_fraction_at_admission"]=fraction_;
@@ -331,8 +435,26 @@ public:
                     else expansion_path_=std::make_unique<Task28LayerPath>(
                             new_contract_,old_compact_targets_,new_compact_targets_,expansion_kind_);
                 }
+                if(shared_phase_speed_) {
+                    phase_clock_s_=now;
+                    std::vector<double> knots;
+                    for(std::size_t k=0;k<=role_center_path_->layerCount();++k)
+                        knots.push_back(k/double(role_center_path_->layerCount()));
+                    expansion_clock_=std::make_unique<Task33SharedPhase>(
+                        [this](double s){return role_center_path_->evaluate(s);},knots);
+                    auto continuing=[this](double s) {
+                        if(!task31_continuation_rates_.empty())
+                            return role_center_path_->evaluateContinuingFrontWithRates(s,task31_continuation_rates_);
+                        return (old_bridge_only_||common_bridge_)?
+                            role_center_path_->evaluateContinuingFront(s,continuation_from_):
+                            role_center_path_->evaluateContinuingFront(s);
+                    };
+                    const auto a=continuing(1),b=continuing(2);continuation_bound_=0;
+                    for(const auto& [id,p]:a)continuation_bound_=std::max(continuation_bound_,(b.at(id)-p).norm());
+                    if(continuation_bound_>0)continuation_bound_=std::nextafter(continuation_bound_*(1+1e-12),INFINITY);
+                }
                 event("graph_handoff","full_dag_roles_lifting_pair_committed");
-                if (qualified_contraction_&&
+                if (!registered_shape_endpoint_&&qualified_contraction_&&
                     task27SameTargetMapping(old_contract_,new_contract_)&&
                     task27SameMotionReference(reference_,new_compact_targets_)&&informationReady()) {
                     // No geometric change exists to demonstrate. The normal
@@ -359,10 +481,15 @@ public:
                 event("edge_make",pair.first.id(),certificate.minimum_gamma);
             else {last_reason_=adapter_.lastCertificationReason();++rejections_[last_reason_];}
         } else if (stage_=="expanding") {
-            fraction_=linear_expansion_phase_?task29LinearExpansionPhase(now-expansion_started_):
+            if(shared_phase_speed_) {
+                const double dt=std::max(0.,now-phase_clock_s_);phase_clock_s_=now;
+                if(motion_phase_<1)motion_phase_=expansion_clock_->advanceLocal(motion_phase_,dt,29.9);
+                else if(continuation_bound_>0)motion_phase_+=dt*29.9/continuation_bound_;
+                fraction_=std::min(1.,motion_phase_);
+            } else fraction_=linear_expansion_phase_?task29LinearExpansionPhase(now-expansion_started_):
                 task26SmoothStep((now-expansion_started_)/60.0);
             if (continuing_front_) {
-                motion_phase_=std::max(0.0,(now-expansion_started_)/60.0);
+                if(!shared_phase_speed_)motion_phase_=std::max(0.0,(now-expansion_started_)/60.0);
                 if(!task31_continuation_rates_.empty())
                     reference_=role_center_path_->evaluateContinuingFrontWithRates(motion_phase_,task31_continuation_rates_);
                 else reference_=(old_bridge_only_||common_bridge_)?role_center_path_->evaluateContinuingFront(motion_phase_,continuation_from_):
@@ -405,6 +532,7 @@ public:
             {"layers",role_center_expansion_?(role_center_path_?role_center_path_->layerCount():0):(expansion_path_?expansion_path_->layerCount():0)},
             {"search_governor",false},{"expansion_duration_s",60.0}};
         if (moving_completion_) result["task29"]=moving_telemetry_;
+        if (registered_shape_endpoint_) result["formation_endpoint"]=formation_endpoint_telemetry_;
         if (projected_compact_) result["task29_compact"]=compact_telemetry_;
         if (linear_expansion_phase_) result["task29_timing"]={{"common_phase","linear"},{"duration_s",60.0}};
         if (role_center_expansion_) result["task29_path"]={{"common_correction","final_role_matrix"},
@@ -412,6 +540,18 @@ public:
         if (continuing_front_) result["task29_front"]={{"terminal_behavior","continue_final_role_tangent"},
             {"unclamped_motion_phase",motion_phase_},{"applicable",stage_=="expanding"},
             {"shape_phase_clamped",true},{"duration_s",60.0}};
+        if(shared_phase_speed_) {
+            result["task33_timing"]={{"policy","shared-member-speed-local-v2"},{"target_speed_budget_mps",29.9},
+                {"phase",stage_=="expanding"?motion_phase_:fraction_},{"clock_s",phase_clock_s_},
+                {"derivative_bound_method","local-subinterval-Bernstein-fixed48-with-roundoff-pad"},
+                {"continuation_derivative_bound",continuation_bound_},{"search_governor",false},
+                {"contraction_bounds",contraction_clock_?contraction_clock_->bounds():std::vector<double>{}},
+                {"expansion_bounds",expansion_clock_?expansion_clock_->bounds():std::vector<double>{}}};
+            result["contraction_path"]["duration_s"]=nullptr;
+            result["task28"]["expansion_duration_s"]=nullptr;
+            result["task29_timing"]={{"common_phase","shared-member-speed-local-v2"},{"duration_s",nullptr}};
+            result["task29_front"]["duration_s"]=nullptr;
+        }
         if(old_bridge_only_)result["task30_old_bridge"]={{"old_scale",bridge_scale_},{"new_scale",1.0},
             {"center_id",101},{"continuation_basis","unscaled_old_at_actual_admission_fraction"},
             {"fixed_anchors_scaled",false},{"normal_search_scaled",false}};
@@ -467,6 +607,16 @@ public:
             {"untriggered_request_count",sequence_?sequence_->untriggered():(fixed_mode_observer_?0:action_=="cross-roundtrip"?2:1)-requests_.size()}};
     }
 private:
+    void recordEndpointGeometry(const Task32ReferenceLegalSelection& geometry) {
+        formation_endpoint_telemetry_["static_reference_legal"]=geometry.endpoint.valid;
+        formation_endpoint_telemetry_["classification"]=geometry.classification;
+        formation_endpoint_telemetry_["adjustment_fraction"]=geometry.adjustment_fraction;
+        formation_endpoint_telemetry_["reference_margin_m"]=geometry.reference_margin_m;
+        formation_endpoint_telemetry_["minimum_target_separation_m"]=std::isfinite(geometry.minimum_target_separation_m)?
+            nlohmann::json(geometry.minimum_target_separation_m):nlohmann::json(nullptr);
+        formation_endpoint_telemetry_["selection_interval"]={geometry.interval_lower,geometry.interval_upper};
+        formation_endpoint_telemetry_["numerical_method"]=geometry.numerical_method;
+    }
     void restore(double now,const std::string& reason) {
         event("restored",reason);requests_.back()["outcome"]="realized";
         requests_.back()["restored_s"]=now;
@@ -496,7 +646,7 @@ private:
         rms_=std::sqrt(rms_/14.0);
         const bool info=informationReady();
         const bool ok=rms_<=100.0&&max_error_<=180.0&&max_speed_<=3.0&&info;
-        if (moving_completion_&&stage_=="expanding") {
+        if (moving_completion_&&(stage_=="expanding"||stage_=="recovering")) {
             std::map<NodeId,Task29MotionState> states;
             nlohmann::json inputs=nlohmann::json::object(),fronts=nlohmann::json::object();
             for (std::size_t i=0;i<r.estimate.mobile_ids.size();++i) {
@@ -627,9 +777,12 @@ private:
         }
         old_compact_targets_=task20LiftTargets(old_contract_,r.estimate.fixed_positions,compact_fronts_).targets;
         if(common_bridge_) {
+            const std::map<NodeId,Eigen::Vector2d> final_ties=goal_lateral_bridge_ties_?
+                task20LiftTargets(new_contract_,r.estimate.fixed_positions,new_bridge_fronts).targets:
+                std::map<NodeId,Eigen::Vector2d>{};
             const auto bridge=anchor_scene_?task31CommonBridge(old_contract_,new_contract_,r.estimate.fixed_positions,
-                anchor_scene_->direction,anchor_scene_->bridge_spacing_m,anchor_scene_->ranking_span_m,anchor_scene_->frame_origin):
-                task31CommonBridge(old_contract_,new_contract_,r.estimate.fixed_positions,{0,1});
+                anchor_scene_->direction,anchor_scene_->bridge_spacing_m,anchor_scene_->ranking_span_m,anchor_scene_->frame_origin,final_ties):
+                task31CommonBridge(old_contract_,new_contract_,r.estimate.fixed_positions,{0,1},0,0,std::nullopt,final_ties);
             if(!bridge.valid)throw std::logic_error(bridge.reason);
             initial_motion_targets_=task20LiftTargets(old_contract_,r.estimate.fixed_positions,from_fronts_).targets;
             if(mode_plan_) {
@@ -647,11 +800,49 @@ private:
             common_bridge_metadata_={{"geometry_edges",edges},{"temporary_roles",roles},{"spacing_m",bridge.spacing_m},
                 {"continuation_basis","canonical_old_at_actual_admission_fraction"},{"executed_as_union_graph",false},
                 {"reference_only_FIM_is_gate",false},{"interpolation","original_60s_smoothstep_shared_phase"}};
+            if(goal_lateral_bridge_ties_)
+                common_bridge_metadata_["slot_order"]="goal-lateral-parent-ties-v1";
         }
         new_compact_targets_=task20LiftTargets(new_contract_,r.estimate.fixed_positions,
             new_bridge_fronts).targets;
+        if(registered_shape_endpoint_) {
+            registered_endpoint_fronts_=new_bridge_fronts;
+            const auto endpoint=task32FormationEndpoint(new_contract_,r.estimate.fixed_positions,
+                new_bridge_fronts,adapter_.config().reference_distance_m,180.0);
+            formation_endpoint_telemetry_={{"policy",reference_legal_endpoint_?"reference-legal-shape-endpoint-v3":"contract-aware-shape-endpoint-v2"},
+                {"selected_source","registered_pending_admission"},
+                {"necessary_valid",endpoint.valid},{"reason",endpoint.reason},
+                {"runtime_qualified",false},{"position_error_limit_m",180.0},
+                {"maximum_target_reference_m",endpoint.maximum_target_reference_m},
+                {"minimum_necessary_reference_slack_m",endpoint.minimum_necessary_reference_slack_m},
+                {"continuation_basis","legacy_nonidentical_mapping"},
+                {"fronts",nlohmann::json::object()},{"targets",nlohmann::json::object()},
+                {"actual_completion_required",true},{"unchanged_mapping_shortcut",false}};
+            if(reference_legal_endpoint_)
+                recordEndpointGeometry(task32SelectReferenceLegalEndpoint(new_contract_,
+                    r.estimate.fixed_positions,new_bridge_fronts,new_bridge_fronts,
+                    adapter_.config().reference_distance_m,adapter_.config().collision_distance_m));
+            for(const auto& [u,p]:new_bridge_fronts)formation_endpoint_telemetry_["fronts"][u]={p.x(),p.y()};
+            for(const auto& [id,p]:endpoint.targets)formation_endpoint_telemetry_["targets"][std::to_string(id)]={p.x(),p.y()};
+            if(!endpoint.valid) {
+                request_started_=r.runtime_s;stage_="search";
+                requests_.push_back({{"from_mode",active_mode_},{"to_mode",pending_mode_},{"received_s",r.runtime_s},
+                    {"outcome","rejected"},{"history_ledger",ledger},{"formation_endpoint",formation_endpoint_telemetry_},
+                    {"estimator_version_at_request",r.estimator_token},{"topology_version_at_request",r.topology_token}});
+                event("accepted","external_pre_registered_request");event("rejected",endpoint.reason);
+                if(sequence_)sequence_->stop();next_request_s_=std::numeric_limits<double>::infinity();return;
+            }
+            new_compact_targets_=endpoint.targets;
+        }
         if(centered_bow_contraction_)contraction_path_=std::make_unique<Task32ContractionPath>(
             initial_motion_targets_,old_compact_targets_);
+        if(shared_phase_speed_) {
+            if(!contraction_path_||!role_center_expansion_||!continuing_front_)
+                throw std::logic_error("shared phase requires the registered polynomial path family");
+            contraction_clock_=std::make_unique<Task33SharedPhase>(
+                [this](double s){return contraction_path_->evaluate(s);},std::vector<double>{0,1});
+            fraction_=0;motion_phase_=0;phase_clock_s_=r.runtime_s;
+        }
         request_started_=r.runtime_s;edge_index_=0;shape_dwell_=0;stage_="contracting";
         requests_.push_back({{"from_mode",active_mode_},{"to_mode",pending_mode_},
             {"received_s",r.runtime_s},{"outcome","pending"},{"history_ledger",ledger},
@@ -663,6 +854,7 @@ private:
             requests_.back()["registered_goal_mapping"]=mode_plan_->mode(pending_mode_).identity;
         }
         if(common_bridge_)requests_.back()["common_bridge"]=common_bridge_metadata_;
+        if(registered_shape_endpoint_)requests_.back()["formation_endpoint"]=formation_endpoint_telemetry_;
         if(projected_compact_)requests_.back()["compact_projection"]=compact_inputs;
         if(bridge_scale_!=1||old_bridge_only_) {
             nlohmann::json old_fronts=nlohmann::json::object(),new_fronts=nlohmann::json::object();
@@ -686,11 +878,18 @@ private:
     Task10p11hSimpleCoverageController& controller_;
     std::string action_,stage_="search",last_reason_;
     int active_mode_=0,pending_mode_=0;
-    double next_request_s_,request_started_=0,expansion_started_=0,fraction_=0,motion_phase_=0;
+    double next_request_s_,request_started_=0,expansion_started_=0,fraction_=0,motion_phase_=0,recovery_started_=0;
     double bridge_scale_=1.0;
     bool old_bridge_only_=false;
     bool triangular_final_=false;
     bool common_bridge_=false;
+    bool goal_lateral_bridge_ties_=false;
+    bool registered_shape_endpoint_=false;
+    bool reference_legal_endpoint_=false;
+    bool shared_phase_speed_=false;
+    double phase_clock_s_=0,continuation_bound_=0;
+    std::unique_ptr<Task33SharedPhase> contraction_clock_,expansion_clock_;
+    nlohmann::json formation_endpoint_telemetry_=nlohmann::json::object();
     std::optional<Task31AnchorScene> anchor_scene_;
     bool fixed_mode_observer_=false;
     int fixed_mode_code_=12;
@@ -721,6 +920,7 @@ private:
     Task20DagLatticeContract old_contract_,new_contract_;
     Task26ReplacementPlan plan_;
     std::map<std::string,Eigen::Vector2d> from_fronts_,compact_fronts_,canonical_compact_fronts_;
+    std::map<std::string,Eigen::Vector2d> registered_endpoint_fronts_;
     std::map<std::string,Eigen::Vector2d> task31_continuation_rates_;
     std::map<NodeId,Eigen::Vector2d> reference_,old_compact_targets_,new_compact_targets_,continuation_from_,initial_motion_targets_;
     nlohmann::json requests_=nlohmann::json::array(),events_=nlohmann::json::array();

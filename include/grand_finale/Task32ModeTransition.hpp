@@ -36,7 +36,7 @@ inline Task32ModeTransitionPlan task32ModeTransitionPlan(const nlohmann::json& j
         p.start_mode=j.at("start_mode").get<int>();
         p.first_request_s=j.at("first_request_s").get<double>();
         p.after_restore_s=j.at("after_restore_s").get<double>();
-        if(p.first_request_s!=60||p.after_restore_s!=60)throw std::invalid_argument("frozen_request_timing");
+        if((p.first_request_s!=60&&p.first_request_s!=150)||p.after_restore_s!=60)throw std::invalid_argument("frozen_request_timing");
         p.pinball_scene=task31AnchorScene(independently_registered_pinball);
         if(!p.pinball_scene.valid)throw std::invalid_argument("invalid_pinball_registration");
         if(!j.at("modes").is_array()||j.at("modes").empty())throw std::invalid_argument("empty_mode_registry");

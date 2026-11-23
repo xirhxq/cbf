@@ -4,7 +4,7 @@ if(checkpoints.enabled()&&task19_switcher)throw std::invalid_argument("dynamic s
 const auto checkpoint_metrics=[&](json data,bool loading){
     gf::checkpoint::Fields f{data,loading,{}};
 #define F(x) f(#x,x)
-    F(max_truth_overspeed);F(max_interval_overspeed);F(truth_overspeed_ticks);F(interval_overspeed_ticks);
+    F(role_motion_history_state);F(role_handoff_state);F(role_program_state);F(role_last_applied);F(role_control_motion_state);F(max_truth_overspeed);F(max_interval_overspeed);F(truth_overspeed_ticks);F(interval_overspeed_ticks);
     F(t95_tick);F(t100_tick);F(certified_checkpoint_500_count);F(truth_checkpoint_500_count);F(tick);
     F(hard_stop);F(truth_gate_violation);F(runtime_safety_violation);F(runtime_safety_reason);F(truth_gate_max_speed);
     F(maximum_actual_reference_m);F(maximum_target_reference_m);F(minimum_actual_separation_m);F(minimum_target_separation_m);
@@ -38,6 +38,7 @@ if(checkpoints.restoring()) {
 std::optional<json> checkpoint_boundary_key;
 const auto save_checkpoint=[&](bool force=false){
     if(!checkpoints.enabled())return;
+    if(role_program)force=force||role_program->completionCheckpointDue();
     if(external_reconstructor) {
         const auto key=gf::ReconstructionCheckpoint::boundaryKey(*external_reconstructor);
         force=force||!checkpoint_boundary_key||key!=*checkpoint_boundary_key||

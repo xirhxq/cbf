@@ -20,6 +20,9 @@ struct Task20CoverageConfig {
     double comparison_epsilon=1.0e-9;
     // Research-only responsibility semantics. Default preserves Task18/25 P0.
     bool empty_share_inactive=false;
+    // Research-only ablation 3: replace forward-focus P0 cell selection with
+    // the Voronoi-share centroid (classic CVT). Default preserves P0.
+    bool cvt_centroid_targets=false;
 };
 
 struct Task20CoverageRequest {
@@ -330,6 +333,22 @@ inline Task20CoverageResult allocateTask20Coverage(Task20CoverageRequest request
             continue;
         }
         if (candidates.empty()) candidates=eligible;
+        if (request.config.cvt_centroid_targets) {
+            // CVT target = nearest real uncovered cell to the Voronoi-share
+            // centroid (discretized centroid). front must equal task.center
+            // exactly: the Task32 unit-front ledger and resume path key the
+            // ledger off real cell identities and that invariant.
+            Eigen::Vector2d centroid=Eigen::Vector2d::Zero();
+            for (const FrontierCell* cell:candidates) centroid+=cell->center;
+            centroid/=static_cast<double>(candidates.size());
+            const FrontierCell* carrier=task20_policy_detail::nearest(
+                candidates,centroid,request.config.comparison_epsilon,used);
+            if (carrier==nullptr) continue;
+            used.insert(carrier->id());
+            result.assignments[unit.id]={unit.id,*carrier,carrier->center};
+            result.fronts[unit.id]=carrier->center;
+            continue;
+        }
         const auto front=task20_policy_detail::unitFront(unit,request.agents);
         Eigen::Vector2d focus=front.position+
             request.config.forward_focus_distance_m*front.direction;

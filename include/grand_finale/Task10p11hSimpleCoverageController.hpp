@@ -1,5 +1,8 @@
+#include "grand_finale/Task34RegisteredRoles.hpp"
+#include "grand_finale/Task34FrontMotion.hpp"
 #pragma once
 
+#include <cstdlib>
 #include "grand_finale/GrandFinaleSwarmAdapter.hpp"
 #include "grand_finale/Task10p11gFrozenModel.hpp"
 #include "grand_finale/Task10p11hLeaderCoveragePolicy.hpp"
@@ -739,11 +742,17 @@ public:
                 targets_=resumed.targets;
             }
             external_force_reallocate_=true;
+            external_coverage_restored_=true;
         }
         external_reconstruction_reference_=std::move(reference);
     }
     // Explicit request-time mode library, sealed before the first plant step.
     // Registering a target mapping never activates its reference edges.
+    Task20DagLatticeContract task34AppliedCoverageContract() const {
+        const int mode=external_coverage_mode_.value_or(adapter_.config().task20_lattice_mode);
+        return external_coverage_contract_.value_or(mode>=10?task25DagContractFromCode(mode):
+            task20DagLatticeContract(static_cast<Task20LatticeMode>(mode)));
+    }
     const std::map<std::string,Task32UnitFrontLedger>& task32UnitFrontLedger() const {
         return task32_unit_front_ledger_;
     }
@@ -798,6 +807,7 @@ public:
         external_coverage_contract_=mapping;
         external_force_reallocate_=true;
     }
+#include "grand_finale/Task34RoleCommit.inc"
     std::size_t targetEpoch() const { return target_epoch_; }
     std::size_t successfulControlCycles() const {
         return successful_control_cycles_;
@@ -935,6 +945,10 @@ private:
             return;
         }
         request.config.empty_share_inactive=config.task32_target_mechanism==1;
+        // Ablation 3: CVT centroids replace P0 targets only after a
+        // reconstruction has restored search (GRAND_FINALE_TASK20_CVT_ABLATION).
+        request.config.cvt_centroid_targets=external_coverage_restored_&&
+            std::getenv("GRAND_FINALE_TASK20_CVT_ABLATION")!=nullptr;
         request.policy=static_cast<Task20TargetPolicy>(
             config.task20_target_policy);
         request.uncovered_cells=uncovered;
@@ -2523,6 +2537,9 @@ private:
     std::vector<FrontierCell> denominator_cells_;
     std::map<NodeId,FrontierCell> targets_;
     std::optional<std::map<NodeId,Eigen::Vector2d>> external_reconstruction_reference_;
+    // Research-only ablation 3: true once an external reconstruction
+    // reference has been released (post-restore), gating CVT activation.
+    bool external_coverage_restored_=false;
     std::optional<int> external_coverage_mode_;
     std::optional<Task20DagLatticeContract> external_coverage_contract_;
     std::map<int,Task20DagLatticeContract> registered_external_contracts_;

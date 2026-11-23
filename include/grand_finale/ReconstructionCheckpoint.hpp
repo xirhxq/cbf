@@ -21,31 +21,6 @@ class ReconstructionCheckpoint {
     using Targets=Task28LayerPath::Targets;
     template<class T,class Fn>static Json component(T& v,Fn fn){Json j=Json::object();Fields f{j,false,{}};fn(f,v);f.finish();return j;}
     template<class T,class Fn>static void loadComponent(T& v,const Json& j,Fn fn){Json copy=j;Fields f{copy,true,{}};fn(f,v);f.finish();}
-    // Compile against the committed coordinator as well as the independently
-    // frozen endpoint overlay, without importing that overlay into production.
-    // A compiled-in extension is always captured; absent source fields are not
-    // invented. Exact binary identity still prohibits cross-version restoration.
-    template<class T,class=void>struct HasSlotOrder:std::false_type{};
-    template<class T>struct HasSlotOrder<T,std::void_t<decltype(std::declval<T&>().goal_lateral_bridge_ties_)>>:std::true_type{};
-    template<class T,class=void>struct HasEndpoint:std::false_type{};
-    template<class T>struct HasEndpoint<T,std::void_t<decltype(std::declval<T&>().reference_legal_endpoint_)>>:std::true_type{};
-    template<class T>static void extensionConfig(Fields& f,T& v){
-        if constexpr(HasSlotOrder<T>::value)f("goal_lateral_bridge_ties_",v.goal_lateral_bridge_ties_);
-        if constexpr(HasEndpoint<T>::value){
-            f("registered_shape_endpoint_",v.registered_shape_endpoint_);
-            f("reference_legal_endpoint_",v.reference_legal_endpoint_);
-        }
-    }
-    template<class T>static void extensionState(Fields& f,T& v){
-        if constexpr(HasEndpoint<T>::value){
-            f("formation_endpoint_telemetry_",v.formation_endpoint_telemetry_);
-            f("registered_endpoint_fronts_",v.registered_endpoint_fronts_);
-        }
-    }
-    template<class T>static bool referenceLegalEndpoint(const T& v){
-        if constexpr(HasEndpoint<T>::value)return v.reference_legal_endpoint_;
-        return false;
-    }
     static void layer(Fields& f,Task28LayerPath& v){
 #define F(x) f(#x,v.x)
         F(from_);F(to_);F(depth_);F(layers_);F(kind_);
@@ -86,7 +61,7 @@ class ReconstructionCheckpoint {
     static void config(Fields& f,Task26ExternalReconstructor& v){
 #define F(x) f(#x,v.x)
         F(action_);F(bridge_scale_);F(old_bridge_only_);F(triangular_final_);F(common_bridge_);
-        extensionConfig(f,v);
+        F(goal_lateral_bridge_ties_);F(registered_shape_endpoint_);F(reference_legal_endpoint_);
         F(anchor_scene_);F(fixed_mode_observer_);F(fixed_mode_code_);F(mode_plan_);
         F(qualified_contraction_);F(layered_expansion_);F(centered_bow_contraction_);F(moving_completion_);
         F(projected_compact_);F(linear_expansion_phase_);F(role_center_expansion_);F(continuing_front_);F(expansion_kind_);
@@ -98,10 +73,10 @@ class ReconstructionCheckpoint {
     static void state(Fields& f,Task26ExternalReconstructor& v){
 #define F(x) f(#x,v.x)
         F(stage_);F(last_reason_);F(active_mode_);F(pending_mode_);F(next_request_s_);F(request_started_);F(expansion_started_);F(fraction_);F(motion_phase_);
-        extensionState(f,v);F(common_bridge_metadata_);F(triangular_roles_);F(rms_);F(max_error_);F(max_speed_);
+        F(formation_endpoint_telemetry_);F(common_bridge_metadata_);F(triangular_roles_);F(rms_);F(max_error_);F(max_speed_);
         F(edge_index_);F(shape_dwell_);F(qualification_attempts_);F(shape_ready_);F(compact_telemetry_);F(legacy_shadow_dwell_);F(moving_telemetry_);
         F(plan_audits_);F(plan_prefix_);F(plan_reason_);F(old_contract_);F(new_contract_);F(plan_);
-        F(from_fronts_);F(compact_fronts_);F(canonical_compact_fronts_);F(task31_continuation_rates_);
+        F(from_fronts_);F(compact_fronts_);F(canonical_compact_fronts_);F(registered_endpoint_fronts_);F(task31_continuation_rates_);
         F(reference_);F(old_compact_targets_);F(new_compact_targets_);F(continuation_from_);F(initial_motion_targets_);
         F(requests_);F(events_);F(rejections_);
         pointer(f,"sequence",v.sequence_,sequence,[&](const Json&){
@@ -151,7 +126,7 @@ public:
             if(from.fixed!=r.adapter_.runtimeSnapshot().estimate.fixed_positions||to.fixed!=from.fixed||
                !from.valid||!to.valid)
                 throw std::invalid_argument("future target changes physical scene or invalid contract");
-            if(referenceLegalEndpoint(r)&&!task27SameTargetMapping(from.contract,to.contract))
+            if(r.reference_legal_endpoint_&&!task27SameTargetMapping(from.contract,to.contract))
                 throw std::invalid_argument("future target violates frozen zero-continuation endpoint admission");
             prior=mode;
         }

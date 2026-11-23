@@ -20,7 +20,8 @@ struct Task31CommonBridge {
 inline Task31CommonBridge task31CommonBridge(const Task20DagLatticeContract& old,
     const Task20DagLatticeContract& goal,const std::map<NodeId,Eigen::Vector2d>& fixed,
     const Eigen::Vector2d& direction,double spacing_m=0,double anchor_ranking_span_m=0,
-    std::optional<Eigen::Vector2d> frame_origin=std::nullopt) {
+    std::optional<Eigen::Vector2d> frame_origin=std::nullopt,
+    const std::map<NodeId,Eigen::Vector2d>& final_targets={}) {
     Task31CommonBridge out;
     auto reject=[&](const std::string& reason){out.reason=reason;return out;};
     if(!old.valid||!goal.valid||fixed.size()<2||!direction.allFinite()||direction.norm()<1e-12||
@@ -68,7 +69,17 @@ inline Task31CommonBridge task31CommonBridge(const Task20DagLatticeContract& old
         if(spacing_m==0)for(auto b=std::next(a);b!=fixed.end();++b)out.spacing_m=std::min(out.spacing_m,(a->second-b->second).norm()/3.0);
     }
     if(!std::isfinite(out.spacing_m)||out.spacing_m<=1e-12)return reject("degenerate_anchor_spacing");
-    out.lattice=task31TriangularLattice(temporary,fixed,direction,anchor_ranking_span_m);
+    std::map<NodeId,double> tie_keys;
+    if(!final_targets.empty()) {
+        if(final_targets.size()!=members.size())return reject("incomplete_final_targets");
+        const Eigen::Vector2d e=direction.normalized(),n(-e.y(),e.x());
+        const Eigen::Vector2d origin=frame_origin?*frame_origin:fixed.begin()->second;
+        for(auto id:members) {
+            if(!final_targets.count(id)||!final_targets.at(id).allFinite())return reject("invalid_final_target");
+            tie_keys[id]=n.dot(final_targets.at(id)-origin)/out.spacing_m;
+        }
+    }
+    out.lattice=task31TriangularLattice(temporary,fixed,direction,anchor_ranking_span_m,1.0,tie_keys);
     if(!out.lattice.valid)return reject(out.lattice.reason);
     constexpr double h=0.86602540378443864676;
     const Eigen::Vector2d e=direction.normalized(),n(-e.y(),e.x());

@@ -1,3 +1,9 @@
+#include "grand_finale/CloudSolverProfile.hpp"
+#include "grand_finale/SearchPolygonDomain.hpp"
+#include "grand_finale/Task34RoleReconstruction.hpp"
+#include "grand_finale/Task34FreshRoleHandoff.hpp"
+#include "grand_finale/Task34FrontMotion.hpp"
+#include "grand_finale/RunnerCheckpoint.hpp"
 #include "grand_finale/Task11aDynamicTopologyCoordinator.hpp"
 #include "grand_finale/PlantSpeedAppliedControl.hpp"
 #include "grand_finale/Task17GridTelemetry.hpp"
@@ -227,7 +233,8 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     const std::optional<gf::Task31AnchorScene>& anchor_scene=std::nullopt,
     gf::DistanceRangeAvailability range_availability={},
     int task32_target_mechanism=0,
-    const gf::Task32FixedModeDispatch* fixed_mode=nullptr) {
+    const gf::Task32FixedModeDispatch* fixed_mode=nullptr,
+    const std::optional<json>& search_site=std::nullopt) {
     auto scenario=gf::task10p11rFixedBaselineScenario();
     if(fixed_mode&&fixed_mode->enabled) {
         scenario=gf::task32FixedModeScenario(*fixed_mode,scenario);
@@ -263,7 +270,8 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
     }
     }
     auto settings=gf::task10p11pSwarmSettings(scenario,
-        gf::SolverProfile::Gurobi);
+        gf::cloudSolverProfile());
+    if(search_site)settings=gf::searchPolygonSettings(settings,*search_site);
     if (def.id=="task24-pinball"||def.id=="task24-triangle")
         settings["initial"]["yawDeg"]=0.0;
     // Rung B'' speed domain: single nominal row @30, gain 7, no
@@ -305,6 +313,7 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
         target_policy_task20_dag_lattice,
         task20_lattice_mode,task20_target_policy,
         task20_update_period_cycles,task20_wavefront_band_width_m);
+    launch_config.solver_profile=gf::cloudSolverProfile();
     launch_config.distance_range_availability=range_availability;
     launch_config.task32_target_mechanism=task32_target_mechanism;
     return std::make_unique<gf::Task10p11rFixedBaselineFixture>(
@@ -316,13 +325,97 @@ std::unique_ptr<gf::Task10p11rFixedBaselineFixture> makeFixture(
 // GrandFinale production/search evidence runner.  Historical policies remain
 // explicit; an omitted policy selects the researcher-frozen Task 18 baseline.
 int main(int argc,char** argv) {
+    const auto checkpoint_original_argv=gf::RunnerCheckpoint::originalArguments(argc,argv);
+    std::optional<json> search_site;
+    int site_argc=1;
+    for(int read=1;read<argc;++read) {
+        const std::string argument=argv[read];
+        if(argument.rfind("search-polygon=",0)==0) {
+            if(search_site)throw std::invalid_argument("duplicate search polygon");
+            std::ifstream input(argument.substr(15));
+            if(!input)throw std::invalid_argument("missing search polygon input");
+            json payload;input>>payload;search_site=std::move(payload);
+        } else argv[site_argc++]=argv[read];
+    }
+    argc=site_argc;argv[argc]=nullptr;
+    std::optional<std::string> role_program_file;int role_program_argc=1;
+    for(int read=1;read<argc;++read) {
+        const std::string argument=argv[read];
+        if(argument.rfind("role-program=",0)==0) {
+            if(role_program_file)throw std::invalid_argument("duplicate_role_program");
+            role_program_file=argument.substr(std::string("role-program=").size());
+        } else argv[role_program_argc++]=argv[read];
+    }
+    argc=role_program_argc;argv[argc]=nullptr;
+
+    std::optional<std::string> role_handoff_file;int role_handoff_argc=1;
+    for(int read=1;read<argc;++read) {
+        const std::string argument=argv[read];
+        if(argument.rfind("role-handoff-probe=",0)==0) {
+            if(role_handoff_file)throw std::invalid_argument("duplicate_role_handoff_probe");
+            role_handoff_file=argument.substr(std::string("role-handoff-probe=").size());
+        } else argv[role_handoff_argc++]=argv[read];
+    }
+    argc=role_handoff_argc;argv[argc]=nullptr;
+
+    std::optional<std::string> role_probe_file;int role_probe_argc=1;
+    for(int read=1;read<argc;++read) {
+        const std::string argument=argv[read];
+        if(argument.rfind("role-commit-probe=",0)==0) {
+            if(role_probe_file)throw std::invalid_argument("duplicate_role_probe");
+            role_probe_file=argument.substr(std::string("role-commit-probe=").size());
+        } else argv[role_probe_argc++]=argv[read];
+    }
+    argc=role_probe_argc;argv[argc]=nullptr;
+
+    bool role_motion_history=false,role_motion_option_seen=false;
+    int role_motion_argc=1;
+    for(int read=1;read<argc;++read) {
+        const std::string argument=argv[read];
+        if(argument.rfind("role-motion-history=",0)==0) {
+            if(role_motion_option_seen||(argument!="role-motion-history=on"&&argument!="role-motion-history=off"))
+                throw std::invalid_argument("invalid passive motion history option");
+            role_motion_option_seen=true;role_motion_history=argument=="role-motion-history=on";
+        } else argv[role_motion_argc++]=argv[read];
+    }
+    argc=role_motion_argc;argv[argc]=nullptr;
+
     const bool transition_preflight=argc>1&&std::string(argv[argc-1])=="--check-reconstruction-plan";
     if(transition_preflight)--argc;
+    const std::string timing_tail=argc>1?argv[argc-1]:"";
+    const bool timing_option=timing_tail.rfind("reconstruction-timing=",0)==0;
+    if(timing_option&&timing_tail!="reconstruction-timing=shared-member-speed-local-v2") {
+        std::cerr<<"unknown reconstruction timing policy\n";return 2;
+    }
+    if(timing_option)--argc;
+    const std::string endpoint_tail=argc>1?argv[argc-1]:"";
+    const bool endpoint_option=endpoint_tail.rfind("formation-endpoint=",0)==0;
+    if(endpoint_option&&endpoint_tail!="formation-endpoint=contract-aware-shape-endpoint-v2"&&endpoint_tail!="formation-endpoint=reference-legal-shape-endpoint-v3") {
+        std::cerr<<"unknown formation endpoint policy\n";return 2;
+    }
+    const bool reference_legal_endpoint=endpoint_tail=="formation-endpoint=reference-legal-shape-endpoint-v3";
+    if(endpoint_option)--argc;
+    const std::string bridge_tail=argc>1?argv[argc-1]:"";
+    const bool bridge_option=bridge_tail.rfind("bridge-slot-order=",0)==0;
+    if(bridge_option&&bridge_tail!="bridge-slot-order=goal-lateral-parent-ties-v1") {
+        std::cerr<<"unknown bridge slot order\n";return 2;
+    }
+    const bool goal_lateral_bridge_ties=bridge_option;
+    if(timing_option&&(!reference_legal_endpoint||!goal_lateral_bridge_ties)) {
+        std::cerr<<"shared-phase arm requires v3 and current bridge; combined arms forbidden\n";return 2;
+    }
+    if(bridge_option)--argc;
     const std::string transition_prefix="reconstruction-plan=";
     const std::string transition_tail=argc>1?argv[argc-1]:"";
     const bool transition_explicit=transition_tail.rfind(transition_prefix,0)==0;
     if(transition_preflight&&!transition_explicit) {
         std::cerr<<"plan preflight requires explicit reconstruction plan\n";return 2;
+    }
+    if(goal_lateral_bridge_ties&&!transition_explicit) {
+        std::cerr<<"bridge slot experiment requires a registered transition plan\n";return 2;
+    }
+    if(endpoint_option&&!transition_explicit) {
+        std::cerr<<"formation endpoint requires a registered reconstruction plan\n";return 2;
     }
     if(transition_explicit)--argc;
     const std::string contraction_prefix="contraction-path=";
@@ -375,7 +468,7 @@ int main(int argc,char** argv) {
             if(fixed_request.enabled||std::getenv("GRANDFINALE_START_MODE")||
                 std::getenv("GRANDFINALE_TARGET_SEQ")||std::getenv("GRANDFINALE_RECON_SEQUENCE"))
                 throw std::invalid_argument("explicit transition plan rejects fixed observer and legacy environment overrides");
-            const std::filesystem::path root="docs/evidence/task32-fixed-library";
+            const std::filesystem::path root="docs/evidence/adopted-contract-library-r1";
             std::ifstream source(transition_tail.substr(transition_prefix.size()));
             std::ifstream registry(root/"observation-r1-anchor-asset.json");
             json payload,pinball;
@@ -424,7 +517,7 @@ int main(int argc,char** argv) {
         const std::string template_id=argv[1];
         gf::Task32FixedModeDispatch fixed_mode;
         if(fixed_request.enabled) {
-            const std::filesystem::path root="docs/evidence/task32-fixed-library";
+            const std::filesystem::path root="docs/evidence/adopted-contract-library-r1";
             std::ifstream index_stream(root/"mode-contract-assets-index-r1.json");
             std::ifstream proposed(fixed_request.asset_path);json index,payload,registered,registry;
             if(!index_stream||!proposed)throw std::invalid_argument("missing registered fixed-mode inputs");
@@ -648,15 +741,38 @@ int main(int argc,char** argv) {
         const bool reduced_field=gf::task32RegisteredReducedBatch(task32_target_mechanism,
             range_noise_std_m,range_random_seed,range_availability.link_seed);
         if(fixed_mode.enabled) {
-            if(argc!=24||template_id!="origin"||policy!="task25-h0-p0-sourceyaw"||
-               (!reduced_field&&(mechanism_explicit||range_noise_std_m!=0.0||range_random_seed!=2027||
-                 range_availability.link_seed!=134001))||information_snapshot_enabled||!explicit_range_model||
-               range_dropout_probability!=0.0||tau!=14.0||acceleration_half_box_mps2!=4.0||
-               rows_mode!="vaug-speed29p9"||target_homotopy_enabled||window_s>900.0||
-               !std::isfinite(window_s)||window_s<0||
-               (reduced_field&&(venue_width_m!=4500||venue_height_m!=2250))||
-               venue_width_m!=fixed_mode.asset->width_m||venue_height_m!=fixed_mode.asset->height_m)
-                throw std::invalid_argument("fixed-mode requires preregistered zero-noise 10s dispatch gate");
+            // rr1 (2026-10-09): the absolute window_s>1800.0 term of this admission
+            // guard is removed. It capped legitimate same-binary complete-CP
+            // continuation of registered transition plans (fixed-mode-asset runs)
+            // and contradicted the frozen 900s+300s legal-continuation contract;
+            // cloud and local r4i runs structurally could not exceed 1800s.
+            // Every remaining preregistration condition (zero-noise identity,
+            // frozen policy/rows/tau/venue, nonnegative finite window) is kept
+            // and now reported by name instead of one misleading message.
+            const std::pair<const char*,bool> fixed_admission_checks[]={
+                {"positional_argc_24",argc==24},
+                {"origin_template",template_id=="origin"},
+                {"frozen_policy_task25_h0_p0_sourceyaw",policy=="task25-h0-p0-sourceyaw"},
+                {"reference_model_explicit",explicit_range_model},
+                {"information_snapshot_disabled",!information_snapshot_enabled},
+                {"zero_range_dropout",range_dropout_probability==0.0},
+                {"tau_14",tau==14.0},
+                {"acceleration_half_box_4",acceleration_half_box_mps2==4.0},
+                {"rows_vaug_speed29p9",rows_mode=="vaug-speed29p9"},
+                {"target_homotopy_disabled",!target_homotopy_enabled},
+                {"window_finite_nonnegative",std::isfinite(window_s)&&window_s>=0},
+                {"reduced_batch_venue_4500x2250",
+                    !(reduced_field&&(venue_width_m!=4500||venue_height_m!=2250))},
+                {"venue_matches_fixed_mode_asset",
+                    venue_width_m==fixed_mode.asset->width_m&&venue_height_m==fixed_mode.asset->height_m},
+                {"unreduced_zero_noise_identity",
+                    !(!reduced_field&&(mechanism_explicit||range_noise_std_m!=0.0||
+                       range_random_seed!=2027||range_availability.link_seed!=134001))},
+            };
+            for(const auto& admission:fixed_admission_checks)
+                if(!admission.second)
+                    throw std::invalid_argument(
+                        std::string("fixed-mode admission contract violated: ")+admission.first);
             const auto prepared=gf::task32FixedModeScenario(fixed_mode,gf::task10p11rFixedBaselineScenario());
             def.topology=prepared.initial_topology;def.positions=prepared.mobile_positions;
             def.description="Task32 explicit fixed DAG-coverage asset; no external request";
@@ -682,9 +798,15 @@ int main(int argc,char** argv) {
             policy=="task25-h0-p0-sourceyaw";
         if(mode_transition&&(!task32_source_reconstruction||!contraction_explicit||
             !anchor_scene||anchor_scene->identity!=mode_transition->pinball_scene.identity||
-            range_noise_std_m!=0.0||range_random_seed!=2027||range_availability.link_seed!=154001||
-            window_s>900.0))
-            throw std::invalid_argument("mode transition package admits only the frozen zero field and <=900s watchdog");
+            !(range_noise_std_m==0.0&&range_random_seed==2027&&range_availability.link_seed==154001)&&
+                 !(range_noise_std_m==0.5&&
+                   ((task32_target_mechanism==2&&((range_random_seed==211011&&range_availability.link_seed==212011)||(range_random_seed==211029&&range_availability.link_seed==212029)||(range_random_seed==211047&&range_availability.link_seed==212047)||(range_random_seed==217011&&range_availability.link_seed==218011)||(range_random_seed==217029&&range_availability.link_seed==218029)||(range_random_seed==217047&&range_availability.link_seed==218047)))||
+                    (range_random_seed==183011&&range_availability.link_seed==184011)||
+                    (range_random_seed==183029&&range_availability.link_seed==184029)||
+                    (range_random_seed==183047&&range_availability.link_seed==184047)||
+                    (task32_target_mechanism==2&&((range_random_seed==193011&&range_availability.link_seed==194011)||(range_random_seed==193029&&range_availability.link_seed==194029)||(range_random_seed==193047&&range_availability.link_seed==194047)))||(task32_target_mechanism==2&&((range_random_seed==153011&&range_availability.link_seed==154011)||(range_random_seed==153029&&range_availability.link_seed==154029)||(range_random_seed==153047&&range_availability.link_seed==154047)))))||
+            window_s>1800.0))
+            throw std::invalid_argument("mode transition package admits only the frozen zero field and <=1800s watchdog");
         if(task32_source_reconstruction) {
             const bool registered_field=reduced_field||
                 (range_noise_std_m==0.0&&range_random_seed==2027&&range_availability.link_seed==134001)||
@@ -697,9 +819,9 @@ int main(int argc,char** argv) {
                bridge_scale!=1.0||(mechanism_explicit&&!reduced_field)||information_snapshot_enabled||
                !explicit_range_model||!registered_field||range_dropout_probability!=0.0||
                venue_width_m!=4500||venue_height_m!=2250||!std::isfinite(window_s)||
-               window_s<0||window_s>900.0)
+               window_s<0||window_s>1800.0)
                 throw std::invalid_argument("source-yaw reconstruction outside registered identity gate");
-            std::ifstream registered("docs/evidence/task32-fixed-library/observation-r1-anchor-asset.json");
+            std::ifstream registered("docs/evidence/adopted-contract-library-r1/observation-r1-anchor-asset.json");
             std::ifstream proposed(argv[28]);json registration,payload;
             if(!registered||!proposed)throw std::invalid_argument("missing registered reconstruction asset");
             registered>>registration;proposed>>payload;
@@ -728,9 +850,15 @@ int main(int argc,char** argv) {
              venue_width_m!=4500||venue_height_m!=2250||window_s>340.0))
             throw std::invalid_argument("information snapshot requires registered fixed H0 diagnostic replay");
         const bool reduced_entry=reduced_field&&(fixed_mode.enabled||task32_source_reconstruction);
-        if(contraction_explicit&&(!task32_source_reconstruction||!reduced_entry||
-            fixed_mode.enabled||task31_fixed_control||range_noise_std_m!=0.0||
-            range_random_seed!=2027||range_availability.link_seed!=154001||window_s>(mode_transition?900.0:420.0)))
+        if(contraction_explicit&&(!(task32_source_reconstruction||mode_transition)||
+            fixed_mode.enabled||task31_fixed_control||
+            !(range_noise_std_m==0.0&&range_random_seed==2027&&range_availability.link_seed==154001)&&
+                 !(range_noise_std_m==0.5&&
+                   ((task32_target_mechanism==2&&((range_random_seed==211011&&range_availability.link_seed==212011)||(range_random_seed==211029&&range_availability.link_seed==212029)||(range_random_seed==211047&&range_availability.link_seed==212047)||(range_random_seed==217011&&range_availability.link_seed==218011)||(range_random_seed==217029&&range_availability.link_seed==218029)||(range_random_seed==217047&&range_availability.link_seed==218047)))||
+                    (range_random_seed==183011&&range_availability.link_seed==184011)||
+                    (range_random_seed==183029&&range_availability.link_seed==184029)||
+                    (range_random_seed==183047&&range_availability.link_seed==184047)||
+                    (task32_target_mechanism==2&&((range_random_seed==193011&&range_availability.link_seed==194011)||(range_random_seed==193029&&range_availability.link_seed==194029)||(range_random_seed==193047&&range_availability.link_seed==194047)))||(task32_target_mechanism==2&&((range_random_seed==153011&&range_availability.link_seed==154011)||(range_random_seed==153029&&range_availability.link_seed==154029)||(range_random_seed==153047&&range_availability.link_seed==154047)))))||window_s>(mode_transition?1800.0:420.0)))
             throw std::invalid_argument("centered bow limited to registered zero reconstruction window");
         if(mechanism_explicit&&!reduced_entry&&
             (information_snapshot_enabled||!task31_fixed_control||task31_fixed_code!=0||
@@ -786,7 +914,7 @@ int main(int argc,char** argv) {
             }
             std::cout<<json({{"schema","task32-transition-preflight-v1"},{"valid",true},
                 {"plan",mode_transition->identity},{"registered_library",library},{"replacement_orders",orders},
-                {"configured_start_mode",task20_lattice_mode},{"target_mechanism",task32_target_mechanism},
+                {"configured_start_mode",task20_lattice_mode},{"target_mechanism",task32_target_mechanism},{"formation_endpoint_policy",endpoint_option?endpoint_tail:"legacy"},{"reference_legal_endpoint",reference_legal_endpoint},
                 {"plant_advances",0},{"fixture_constructed",false},{"runtime_qualified",false},
                 {"boundary","Pure dispatch/graph order check only; not initialization, dynamic safety or completion."}}).dump(2)<<'\n';
             return 0;
@@ -820,7 +948,9 @@ int main(int argc,char** argv) {
             task20_target_policy==4
                 ?(task20_lattice_mode==0?220.0:450.0):190.0,
             venue_width_m,venue_height_m,anchor_scene,range_availability,task32_target_mechanism,
-            fixed_mode.enabled?&fixed_mode:nullptr);
+            fixed_mode.enabled?&fixed_mode:nullptr,search_site);
+        if(search_site&&(!fixed_mode.enabled||mode_transition||role_program_file==std::nullopt))
+            throw std::invalid_argument("polygon pilot requires frozen fixed mode and explicit role program");
         if(fixed_mode.enabled) {
             fixture->controller.registerExternalCoverageContract(task20_lattice_mode,fixed_mode.asset->contract);
             fixture->controller.commitExternalCoverageMode(task20_lattice_mode,fixed_mode.asset->contract);
@@ -844,7 +974,17 @@ int main(int argc,char** argv) {
         std::unique_ptr<gf::Task26ExternalReconstructor> external_reconstructor;
         if (external_reconstruction_enabled)
             external_reconstructor=std::make_unique<gf::Task26ExternalReconstructor>(
-                fixture->adapter,fixture->controller,argv[24],60.0,bridge_scale,old_bridge_only,task31_triangular,task31_common,anchor_scene,task31_fixed_control,task31_fixed_code,contraction_explicit,mode_transition);
+                fixture->adapter,fixture->controller,argv[24],150.0,bridge_scale,old_bridge_only,task31_triangular,task31_common,anchor_scene,task31_fixed_control,task31_fixed_code,contraction_explicit,mode_transition,goal_lateral_bridge_ties,endpoint_option,reference_legal_endpoint,timing_option);
+        std::unique_ptr<gf::Task34RoleReconstruction> role_program;
+        if(role_program_file) {
+            if(!role_motion_history||role_handoff_file||role_probe_file||policy_task19_switch)
+                throw std::invalid_argument("role_program_requires_C_passive_history_without_other_probes");
+            std::ifstream input(*role_program_file);json spec;input>>spec;
+            role_program=std::make_unique<gf::Task34RoleReconstruction>(fixture->adapter,fixture->controller,spec);
+            // The original coordinator registered its sealed contracts above,
+            // but must not also dispatch a competing motion/task protocol.
+            external_reconstructor.reset();
+        }
         if (policy_task19_switch)
             task19_switcher=
                 std::make_unique<gf::Task19OriginMicrofixSwitcher>(
@@ -1137,6 +1277,14 @@ int main(int argc,char** argv) {
         if(task31_common)record["task31_bridge"]="union-depth-nearest-anchor-third";
         if(anchor_scene)record["task31_anchor_asset"]=anchor_scene->identity;
         if(explicit_range_model)record["range_availability"]=range_asset;
+        if(search_site)record["search_domain"]={{"input",*search_site},
+            {"cell_membership","closed-polygon-centers-v1"},
+            {"valid_count",fixture->adapter.coverage().certifiedGrid().validCount},
+            {"bounds",{fixture->adapter.coverage().certifiedGrid().xLim.first,
+                        fixture->adapter.coverage().certifiedGrid().xLim.second,
+                        fixture->adapter.coverage().certifiedGrid().yLim.first,
+                        fixture->adapter.coverage().certifiedGrid().yLim.second}},
+            {"physical_scene_unchanged",true}};
         if(task31_fixed_control)record["task31_fixed_mode_control"]=true;
         if(task31_fixed_control&&task31_fixed_code==0)record["task31_fixed_mode_code"]=0;
         if(task32_source_reconstruction)record["task32_source_reconstruction_admission"]="identity-window-v1";
@@ -1172,21 +1320,6 @@ int main(int argc,char** argv) {
             previous_certified,previous_truth);
         gf::Task19EfficiencyAccumulator efficiency(
             initial_grid.valid_count,fixture->adapter.config().dt_s);
-        grid_delta<<json({{"kind","initial"},
-            {"x_cells",initial_grid.x_cells},
-            {"y_cells",initial_grid.y_cells},
-            {"valid_count",initial_grid.valid_count},
-            {"x_limits",{previous_certified.xLim.first,
-                         previous_certified.xLim.second}},
-            {"y_limits",{previous_certified.yLim.first,
-                         previous_certified.yLim.second}},
-            {"valid_bits_hex",initial_grid.valid_bits_hex},
-            {"certified_bits_hex",initial_grid.certified_bits_hex},
-            {"truth_bits_hex",initial_grid.truth_bits_hex},
-            {"certified_count",initial_grid.certified_count},
-            {"truth_count",initial_grid.truth_count},
-            {"certified_hash",initial_grid.certified_hash},
-            {"truth_hash",initial_grid.truth_hash}}).dump()<<'\n';
         double max_truth_overspeed=0.0,max_interval_overspeed=0.0;
         std::size_t truth_overspeed_ticks=0,interval_overspeed_ticks=0;
         std::optional<std::size_t> t95_tick,t100_tick;
@@ -1263,8 +1396,73 @@ int main(int argc,char** argv) {
                 {{"schema","task32-before-first-allocation-v1"},{"runtime_s",initial.runtime_s},
                  {"owners",owners},{"note","observed pre-state; not a restart checkpoint"}});
         }
-        while (fixture->adapter.runtimeSnapshot().runtime_s<window_s) {
+        std::optional<json> role_motion_history_state;
+        std::optional<json> role_handoff_state;
+        std::map<gf::NodeId,Eigen::Vector2d> role_last_applied;
+        std::optional<json> role_control_motion_state;
+        std::optional<json> role_program_state;
+        if(role_motion_history&&(!fixture->adapter.config().target_policy_task20_dag_lattice||
+            fixture->adapter.config().task32_target_mechanism!=2))
+            throw std::invalid_argument("passive role motion requires frozen C path");
+#include "grand_finale/RunnerCheckpointLocals.inc"
+        if(role_program&&role_program_state)role_program->restore(*role_program_state);
+        const auto stream_initial_grid=gf::task17GridSnapshot(previous_certified,previous_truth);
+        grid_delta<<json({{"kind","initial"},{"runtime_s",fixture->adapter.runtimeSnapshot().runtime_s},
+            {"x_cells",stream_initial_grid.x_cells},
+            {"y_cells",stream_initial_grid.y_cells},
+            {"valid_count",stream_initial_grid.valid_count},
+            {"x_limits",{previous_certified.xLim.first,
+                         previous_certified.xLim.second}},
+            {"y_limits",{previous_certified.yLim.first,
+                         previous_certified.yLim.second}},
+            {"valid_bits_hex",stream_initial_grid.valid_bits_hex},
+            {"certified_bits_hex",stream_initial_grid.certified_bits_hex},
+            {"truth_bits_hex",stream_initial_grid.truth_bits_hex},
+            {"certified_count",stream_initial_grid.certified_count},
+            {"truth_count",stream_initial_grid.truth_count},
+            {"certified_hash",stream_initial_grid.certified_hash},
+            {"truth_hash",stream_initial_grid.truth_hash}}).dump()<<'\n';
+        std::unique_ptr<gf::Task34RegisteredRoles> role_fixture_registry;
+        std::unique_ptr<gf::Task34FreshRoleHandoff> role_fixture_handoff;
+        if(role_handoff_file) {
+
+            if(window_s>10)throw std::invalid_argument("MBB fixture limited to ten seconds");
+            std::ifstream input(*role_handoff_file);json spec;input>>spec;
+            role_fixture_registry=std::make_unique<gf::Task34RegisteredRoles>(spec.at("modes"),spec.at("registered_asset"));
+            if(role_handoff_state)role_fixture_handoff=std::make_unique<gf::Task34FreshRoleHandoff>(
+                gf::Task34FreshRoleHandoff::restore(fixture->adapter,fixture->controller,*role_fixture_registry,*role_handoff_state));
+        }
+        while (fixture->adapter.runtimeSnapshot().runtime_s<window_s && !t100_tick.has_value()) {
+            if(role_program) {
+                checkpoints.applyRoleFutureAtBoundary(tick,[&](const std::vector<int>& targets,std::optional<double> first){
+                    return role_program->replaceFutureRequests(targets,first);
+                });
+                role_program_state=role_program->snapshot();
+            } else checkpoints.applyFutureAtBoundary(tick,external_reconstructor.get());
+            if(checkpoints.restoring())record["checkpoint_lineage"]=checkpoints.ancestry();
+            save_checkpoint();
             if (external_reconstructor) external_reconstructor->beforeStep();
+            if(role_program) {
+                role_program->beforeStep(role_control_motion_state,role_last_applied,tick);
+                role_program_state=role_program->snapshot();
+            }
+            if(role_fixture_registry&&tick==2) {
+                const auto source=fixture->controller.task34AppliedCoverageContract();
+                std::map<gf::NodeId,gf::NodeId> identity;for(int i=1;i<=14;++i)identity[i]=i;
+                const auto abstract=role_fixture_registry->instantiate(11,identity);
+                std::map<gf::NodeId,gf::NodeId> mapping;
+                std::vector<gf::NodeId> physical,roles;
+                for(auto id:source.topological_order)if(source.member_roles.count(id))physical.push_back(id);
+                for(auto id:abstract.contract.topological_order)if(abstract.contract.member_roles.count(id))roles.push_back(id);
+                if(physical.size()!=14||roles.size()!=14)throw std::logic_error("incomplete_mobile_topological_order");
+                for(size_t i=0;i<physical.size();++i)mapping[roles.at(i)]=physical.at(i);
+                fixture->controller.setExternalReconstructionReference(last_step.applied_target_centers);
+                role_fixture_handoff=std::make_unique<gf::Task34FreshRoleHandoff>(fixture->adapter,
+                    fixture->controller,*role_fixture_registry,role_fixture_registry->freeze(11,mapping));
+            }
+            if(role_fixture_handoff) {
+                role_fixture_handoff->advance();role_handoff_state=role_fixture_handoff->snapshot();
+            }
             if (fixture->adapter.config().speed_initial_set_truth_gate) {
                 truth_gate_max_speed=0.0;
                 for (const auto& robot:fixture->swarm.robots) {
@@ -1312,6 +1510,69 @@ int main(int argc,char** argv) {
                 }
             }
             last_step=fixture->controller.advance();
+            if(role_program&&last_step.step.advanced)role_last_applied=last_step.applied_target_centers;
+            if(role_probe_file&&tick==0&&last_step.step.advanced) {
+                std::ifstream input(*role_probe_file);json spec;input>>spec;
+                gf::Task34RegisteredRoles registry(spec.at("modes"),spec.at("registered_asset"));
+                std::map<gf::NodeId,gf::NodeId> pi;for(int i=1;i<=14;++i)pi[i]=i;
+                const auto state=fixture->adapter.runtimeSnapshot();
+                const auto ledger=fixture->controller.committedTargets();
+                const auto ids=[&](){json j=json::object();for(const auto& [id,c]:fixture->controller.committedTargets())j[std::to_string(id)]=c.id();return j;};
+                const auto before_ids=ids();
+                json report={{"schema","task34-role-commit-probe-v1"},{"physical_members",state.estimate.mobile_ids.size()},
+                    {"runtime_s",state.runtime_s},{"arbitrary_identity_rejected",false},
+                    {"unestablished_graph_rejected",false},{"current_registered_identity_accepted",false}};
+                auto corrupt=registry.freeze(0,pi);corrupt["identity"]["coverage_contract"]["reference_edges"][0][0]=999;
+                try{fixture->controller.commitExternalRoleCoverageMode(registry,corrupt);}
+                catch(const std::exception& e){report["arbitrary_identity_rejected"]=true;report["corrupt_reason"]=e.what();}
+                try{fixture->controller.commitExternalRoleCoverageMode(registry,registry.freeze(11,pi));}
+                catch(const std::exception& e){report["unestablished_graph_rejected"]=true;report["graph_reason"]=e.what();}
+                try{fixture->controller.commitExternalRoleCoverageMode(registry,registry.freeze(0,pi));report["current_registered_identity_accepted"]=true;}
+                catch(const std::exception& e){report["identity_reason"]=e.what();}
+                const auto after=fixture->adapter.runtimeSnapshot();
+                report["real_task_ids_unchanged"]=ids()==before_ids;
+                report["actual_graph_unchanged"]=gf::task25_detail::edgeSet(state.topology)==gf::task25_detail::edgeSet(after.topology);
+                report["estimate_mean_unchanged"]=(state.estimate.mean-after.estimate.mean).squaredNorm()==0;
+                report["formation_completed"]=false;
+                std::ofstream output(spec.at("report").get<std::string>());output<<report.dump(2)<<'\n';
+            }
+            json role_motion_telemetry={{"ready",false},{"semantics","discrete_applied_reference_secant_not_plant_velocity"}};
+            if(role_motion_history) {
+                if(last_step.step.advanced&&last_step.task32_motion_evaluated&&last_step.task32_motion.valid) {
+                    const auto contract=fixture->controller.task34AppliedCoverageContract();
+                    gf::Task34FrontMotionHistory history(contract);
+                    if(role_motion_history_state&&role_motion_history_state->at("contract")==history.snapshot().at("contract"))
+                        history.restore(*role_motion_history_state);
+                    gf::Task34FrontMotionHistory::Fronts fronts;
+                    for(const auto& [id,ledger]:fixture->controller.task32UnitFrontLedger())fronts[id]=ledger.applied_front;
+                    history.observe(fixture->adapter.runtimeSnapshot().runtime_s-config.dt_s,fronts);
+                    role_motion_history_state=history.snapshot();
+                    if(role_program) {
+                        gf::Task34ControlFrontMotionHistory clocked(contract,config.dt_s);
+                        std::string disposition="first_sample";
+                        if(role_control_motion_state) {
+                            if(role_control_motion_state->at("history").at("contract")==history.snapshot().at("contract")) {
+                                clocked.restore(*role_control_motion_state);disposition="same_contract_adjacent_tick";
+                            } else disposition="contract_changed_history_reset";
+                        }
+                        clocked.observeAdvanced(tick,fixture->adapter.runtimeSnapshot().runtime_s-config.dt_s,fronts,true);
+                        role_control_motion_state=clocked.snapshot();
+                        role_motion_telemetry["control_clock"]={{"tick",tick},{"dt_s",config.dt_s},
+                            {"ready",clocked.ready()},{"disposition",disposition}};
+                        if(clocked.ready())role_motion_telemetry["control_clock"]["front_reference_velocity"]=
+                            gf::checkpoint::encode(clocked.frontReferenceVelocity());
+                    }
+                    role_motion_telemetry["ready"]=history.ready();
+                    if(history.ready())for(const auto& [id,v]:history.memberReferenceVelocity())
+                        role_motion_telemetry["member_reference_velocity"][std::to_string(id)]={v.x(),v.y()};
+                } else {
+                    role_motion_history_state.reset();
+                    if(role_program) {
+                        role_control_motion_state.reset();
+                        role_motion_telemetry["control_clock"]={{"ready",false},{"disposition","not_advanced_or_no_valid_front"}};
+                    }
+                }
+            }
             if (last_step.step.advanced)
                 squared_control_energy_proxy+=
                     gf::task19SquaredControlEnergyIncrement(
@@ -1926,6 +2187,12 @@ int main(int argc,char** argv) {
                 {"mode_code",task20_lattice_mode},{"contract_id",fixed_mode.asset->contract.id},
                 {"current_information",gf::task31InformationTelemetry(fixture->adapter)},
                 {"external_reconstruction",false}};
+            if(role_motion_history)tick_record["task34_reference_motion"]=role_motion_telemetry;
+            if(role_fixture_handoff)tick_record["task34_role_handoff_fixture"]=role_fixture_handoff->report();
+            if(role_program) {
+                tick_record["task34_role_program"]=role_program->report();
+                tick_record["task34_current_information"]=gf::task31InformationTelemetry(fixture->adapter);
+            }
             telemetry<<tick_record.dump()<<'\n';
             if (tick%100==0||hard_stop)
                 record["evaluations"].push_back({{"tick",tick},
@@ -1938,11 +2205,14 @@ int main(int argc,char** argv) {
             ++tick;
             if (t100_tick.has_value()) break;
         }
+        save_checkpoint(true);
         telemetry.close();
         if(information_snapshot_enabled) {
             information_snapshot_stream.close();
             if(information_snapshot_stream.fail())throw std::runtime_error("information diagnostic stream close failed");
         }
+        if(role_program)record["task34_role_program"]=role_program->report();
+        if(role_fixture_handoff)record["task34_role_handoff_fixture"]=role_fixture_handoff->report();
         if (external_reconstructor)
             record["external_reconstruction"]=external_reconstructor->report();
         const auto final_grid=gf::task17GridSnapshot(
