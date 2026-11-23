@@ -12,3 +12,5 @@ __pycache__/
 _*
 papers/
 config/generated_*
+
+build-*/
