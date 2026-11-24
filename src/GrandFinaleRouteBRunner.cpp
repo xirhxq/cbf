@@ -931,35 +931,305 @@ json runTdd10NonuniformPentagon() {
     return payload;
 }
 
-json runTdd7Breakeven() {
-    json payload;
-    payload["provenance"] = provenanceHeader("route-b-wave3-tdd7-breakeven", json(20261123));
-
-    gf::RouteBConvexDomainSpec dom;
-    dom.name = "wide_broad_regime2";
-    dom.description = "Broad convex coastal trapezoid exceeding critical area where parallel multi-unit expansion achieves net T95 and T100 breakeven";
-    dom.vertices = {
+void buildTdd7Setup(
+    double d_r,
+    double sig0,
+    gf::RouteBConvexDomainSpec& out_dom,
+    std::vector<double>& out_b_xs,
+    json& out_verts,
+    gf::RouteBMissionConfig& out_mcfg) {
+    out_dom.name = "wide_broad_regime2";
+    out_dom.description = "Broad convex coastal trapezoid exceeding critical area where parallel multi-unit expansion achieves net T95 and T100 breakeven";
+    out_dom.vertices = {
         {-2050.0, 120.0},
         {4050.0, 120.0},
         {2950.0, 2050.0},
         {-950.0, 2050.0}
     };
-    const std::vector<double> b_xs = {0.0, 400.0, 800.0, 1200.0, 1600.0, 2000.0};
-    dom.initial_tri = gf::buildStaggeredTriangulation(
-        b_xs, {{}, {}, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, {}, {}},
+    out_b_xs = {0.0, 400.0, 800.0, 1200.0, 1600.0, 2000.0};
+    out_dom.initial_tri = gf::buildStaggeredTriangulation(
+        out_b_xs, {{}, {}, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, {}, {}},
         380.0, 90.0, 100.0, 140.0);
-    dom.target_tri = gf::buildStaggeredTriangulation(
-        b_xs, {{1, 2, 3, 4, 5}, {}, {}, {}, {6, 7, 8, 9, 10}},
+    out_dom.target_tri = gf::buildStaggeredTriangulation(
+        out_b_xs, {{1, 2, 3, 4, 5}, {}, {}, {}, {6, 7, 8, 9, 10}},
         380.0, 90.0, 100.0, 140.0);
-    dom.use_direct_matched = true;
+    out_dom.use_direct_matched = true;
 
-    json verts = json::array();
-    for (const auto& v : dom.vertices) {
-        verts.push_back(json::array({v.x(), v.y()}));
+    out_verts = json::array();
+    for (const auto& v : out_dom.vertices) {
+        out_verts.push_back(json::array({v.x(), v.y()}));
     }
-    payload["domain_name"] = dom.name;
-    payload["vertices_m"] = verts;
-    payload["beacon_xs_m"] = b_xs;
+
+    out_mcfg = gf::RouteBMissionConfig{};
+    out_mcfg.domain_name = out_dom.name;
+    out_mcfg.custom_domain = out_dom;
+    out_mcfg.cell_size_m = 10.0;
+    out_mcfg.sensor_radius_m = 400.0;
+    out_mcfg.dynamic_chain_sweep = true;
+    out_mcfg.search_speed_cap_mps = 5.0;
+    out_mcfg.patrol_radius_m = 2600.0;
+    out_mcfg.v_cruise_mps = 23.5;
+    out_mcfg.accel_mps2 = 3.5;
+    out_mcfg.d_pipe_m = 45.0;
+    out_mcfg.t_settle_s = 0.2;
+    out_mcfg.t_fork_s = 10.0;
+    out_mcfg.max_mission_s = 2800.0;
+    out_mcfg.uwb_d_r_m = d_r;
+    out_mcfg.uwb_sigma0_m = sig0;
+    out_mcfg.uwb_d_max_m = 1200.0;
+    out_mcfg.link_seed = 20261123;
+    out_mcfg.curve_sample_interval_s = 10.0;
+    out_mcfg.record_trajectory_samples = true;
+    out_mcfg.trajectory_sample_interval_s = 20.0;
+}
+
+json snapshotBundleToJson(
+    const gf::RouteBMissionComparison& res,
+    const std::vector<double>& b_xs,
+    const json& verts,
+    const gf::RouteBMissionConfig& mcfg) {
+    const auto& gm = res.grid_metadata;
+    const auto& sw = res.switch_arm;
+    auto rleToJson = [](const std::vector<std::pair<int, int>>& rle) {
+        json arr = json::array();
+        for (const auto& [st, len] : rle) {
+            arr.push_back(json::array({st, len}));
+        }
+        return arr;
+    };
+
+    const double cell_dx = gm.x_num > 0 ? (gm.x_max_m - gm.x_min_m) / static_cast<double>(gm.x_num) : gm.cell_size_m;
+    const double cell_dy = gm.y_num > 0 ? (gm.y_max_m - gm.y_min_m) / static_cast<double>(gm.y_num) : gm.cell_size_m;
+
+    json snaps = json::array();
+    json top_beacons = json::object();
+    for (const auto& s : sw.mission_snapshots) {
+        json pos = json::object();
+        for (const auto& [id, p] : s.positions) {
+            pos[std::to_string(id)] = json::array({p.x(), p.y()});
+        }
+        json bpos = json::object();
+        for (const auto& [id, p] : s.beacons) {
+            bpos[std::to_string(id)] = json::array({p.x(), p.y()});
+        }
+        if (top_beacons.empty()) top_beacons = bpos;
+
+        json edges = json::array();
+        for (const auto& [p, c] : s.active_edges) {
+            edges.push_back(json::array({p, c}));
+        }
+        snaps.push_back({
+            {"time_s", s.time_s},
+            {"tick", s.tick},
+            {"stage", s.stage},
+            {"truth_coverage", s.truth_coverage},
+            {"certified_coverage", s.certified_coverage},
+            {"certified_count", s.certified_count},
+            {"positions", std::move(pos)},
+            {"beacons", std::move(bpos)},
+            {"active_edges", std::move(edges)},
+            {"certified_rle", rleToJson(s.certified_rle)},
+        });
+    }
+
+    return {
+        {"domain_name", res.domain_name},
+        {"uwb_channel_group", "nominal"},
+        {"uwb_d_r_m", mcfg.uwb_d_r_m},
+        {"uwb_sigma0_m", mcfg.uwb_sigma0_m},
+        {"uwb_d_max_m", mcfg.uwb_d_max_m},
+        {"vertices_m", verts},
+        {"beacon_xs_m", b_xs},
+        {"beacons", top_beacons},
+        {"grid_origin_m", json::array({gm.x_min_m, gm.y_min_m})},
+        {"x_lim_m", json::array({gm.x_min_m, gm.x_max_m})},
+        {"y_lim_m", json::array({gm.y_min_m, gm.y_max_m})},
+        {"x_num", gm.x_num},
+        {"y_num", gm.y_num},
+        {"cell_size_m", gm.cell_size_m},
+        {"cell_dx_m", cell_dx},
+        {"cell_dy_m", cell_dy},
+        {"linear_index_order", "ix * y_num + iy"},
+        {"valid_cells", res.valid_cells},
+        {"area_m2", res.area_m2},
+        {"valid_cell_bbox", {
+            {"ix_min", gm.bbox_ix_min},
+            {"iy_min", gm.bbox_iy_min},
+            {"ix_max", gm.bbox_ix_max},
+            {"iy_max", gm.bbox_iy_max},
+            {"x_min_m", gm.x_min_m + static_cast<double>(gm.bbox_ix_min) * cell_dx},
+            {"y_min_m", gm.y_min_m + static_cast<double>(gm.bbox_iy_min) * cell_dy},
+            {"x_max_m", gm.x_min_m + static_cast<double>(gm.bbox_ix_max + 1) * cell_dx},
+            {"y_max_m", gm.y_min_m + static_cast<double>(gm.bbox_iy_max + 1) * cell_dy},
+        }},
+        {"valid_rle", rleToJson(gm.valid_rle)},
+        {"switch_summary", {
+            {"reconfig_completed", sw.reconfig_completed},
+            {"status_reason", sw.status_reason},
+            {"reconfig_entry_s", sw.reconfig_entry_s},
+            {"reconfig_complete_s", sw.reconfig_complete_s},
+            {"final_time_s", sw.final_time_s},
+            {"reached_t95", sw.reached_t95},
+            {"reached_t100", sw.reached_t100},
+            {"t95_certified_s", sw.t95_certified_s.has_value() ? json(*sw.t95_certified_s) : json(nullptr)},
+            {"t100_certified_s", sw.t100_certified_s.has_value() ? json(*sw.t100_certified_s) : json(nullptr)},
+            {"final_truth_coverage", sw.final_truth_coverage},
+            {"final_certified_coverage", sw.final_certified_coverage},
+            {"false_certified_count", sw.false_certified_count},
+            {"certified_subset_of_truth", sw.certified_subset_of_truth},
+            {"static_parent_violations", sw.static_parent_violations},
+            {"dag_violations", sw.dag_violations},
+            {"total_mbb_swaps", sw.total_mbb_swaps},
+            {"audit", auditToJson(sw.audit)},
+        }},
+        {"snapshots", std::move(snaps)},
+    };
+}
+
+json runTdd7SingleArm(const std::string& arm_key) {
+    std::string ch_name;
+    double d_r = 850.0;
+    double sig0 = 0.5;
+    bool is_stay = false;
+    bool with_snaps = false;
+
+    if (arm_key == "nom_stay") {
+        ch_name = "nominal"; d_r = 850.0; sig0 = 0.5; is_stay = true;
+    } else if (arm_key == "nom_switch") {
+        ch_name = "nominal"; d_r = 850.0; sig0 = 0.5; is_stay = false; with_snaps = true;
+    } else if (arm_key == "deg_stay") {
+        ch_name = "degraded"; d_r = 600.0; sig0 = 1.0; is_stay = true;
+    } else if (arm_key == "deg_switch") {
+        ch_name = "degraded"; d_r = 600.0; sig0 = 1.0; is_stay = false;
+    } else {
+        throw std::invalid_argument("unknown --arm value: " + arm_key);
+    }
+
+    gf::RouteBConvexDomainSpec dom;
+    std::vector<double> b_xs;
+    json verts;
+    gf::RouteBMissionConfig mcfg;
+    buildTdd7Setup(d_r, sig0, dom, b_xs, verts, mcfg);
+    mcfg.skip_stay_arm = !is_stay;
+    mcfg.skip_switch_arm = is_stay;
+    if (with_snaps) {
+        mcfg.record_mission_snapshots = true;
+        mcfg.snapshot_times_s = {10.0, 160.0, 260.0, 380.0, 480.0, 950.0, 1250.0};
+    }
+
+    const auto res = gf::runTwoRegimeMissionComparison(mcfg);
+    const auto& arm_res = is_stay ? res.stay : res.switch_arm;
+    std::cout << "[Wave5 TDD-7 Arm " << arm_key << "] cells=" << res.valid_cells
+              << " wall=" << arm_res.wall_clock_s << "s"
+              << " reconf=" << arm_res.reconfig_complete_s
+              << " t95=" << arm_res.t95_certified_s.value_or(-1.0)
+              << " t100=" << arm_res.t100_certified_s.value_or(-1.0)
+              << " snaps=" << arm_res.mission_snapshots.size() << std::endl;
+
+    json out = {
+        {"arm_key", arm_key},
+        {"channel_group", ch_name},
+        {"uwb_d_r_m", d_r},
+        {"uwb_sigma0_m", sig0},
+        {"domain_name", res.domain_name},
+        {"vertices_m", verts},
+        {"beacon_xs_m", b_xs},
+        {"cell_size_m", mcfg.cell_size_m},
+        {"sensor_radius_m", mcfg.sensor_radius_m},
+        {"valid_cells", res.valid_cells},
+        {"area_m2", res.area_m2},
+        {"fork_time_s", res.fork_time_s},
+        {"checkpoint_byte_identical", res.checkpoint_byte_identical},
+        {"fork_truth_coverage", res.fork_truth_coverage},
+        {"fork_certified_coverage", res.fork_certified_coverage},
+        {"arm_result", missionArmToJson(arm_res)},
+    };
+    if (with_snaps) {
+        out["snapshot_bundle"] = snapshotBundleToJson(res, b_xs, verts, mcfg);
+    }
+    return out;
+}
+
+void mergeTdd7Parts(const std::filesystem::path& out_dir) {
+    auto readJson = [](const std::filesystem::path& p) {
+        std::ifstream in(p);
+        if (!in.is_open()) {
+            throw std::runtime_error("missing TDD-7 partial file: " + p.string());
+        }
+        json j;
+        in >> j;
+        return j;
+    };
+
+    const std::filesystem::path p_ns = out_dir / "tdd7_part_nom_stay.json";
+    const std::filesystem::path p_nw = out_dir / "tdd7_part_nom_switch.json";
+    const std::filesystem::path p_ds = out_dir / "tdd7_part_deg_stay.json";
+    const std::filesystem::path p_dw = out_dir / "tdd7_part_deg_switch.json";
+
+    const json nom_stay = readJson(p_ns);
+    const json nom_sw = readJson(p_nw);
+    const json deg_stay = readJson(p_ds);
+    const json deg_sw = readJson(p_dw);
+
+    auto makeMissionRow = [](const json& stay_part, const json& sw_part) {
+        const json& st_arm = stay_part.at("arm_result");
+        const json& sw_arm = sw_part.at("arm_result");
+        const json t95_gain = (!st_arm["t95_certified_s"].is_null() && !sw_arm["t95_certified_s"].is_null())
+            ? json(st_arm["t95_certified_s"].get<double>() - sw_arm["t95_certified_s"].get<double>())
+            : json(nullptr);
+        const json t100_gain = (!st_arm["t100_certified_s"].is_null() && !sw_arm["t100_certified_s"].is_null())
+            ? json(st_arm["t100_certified_s"].get<double>() - sw_arm["t100_certified_s"].get<double>())
+            : json(nullptr);
+        return json{
+            {"domain_name", stay_part.at("domain_name")},
+            {"regime_label", "regime_2_positive_breakeven"},
+            {"channel_group", stay_part.at("channel_group")},
+            {"uwb_d_r_m", stay_part.at("uwb_d_r_m")},
+            {"uwb_sigma0_m", stay_part.at("uwb_sigma0_m")},
+            {"vertices_m", stay_part.at("vertices_m")},
+            {"beacon_xs_m", stay_part.at("beacon_xs_m")},
+            {"cell_size_m", stay_part.at("cell_size_m")},
+            {"sensor_radius_m", stay_part.at("sensor_radius_m")},
+            {"valid_cells", stay_part.at("valid_cells")},
+            {"area_m2", stay_part.at("area_m2")},
+            {"fork_time_s", stay_part.at("fork_time_s")},
+            {"checkpoint_byte_identical",
+             stay_part.at("checkpoint_byte_identical").get<bool>() &&
+                 sw_part.at("checkpoint_byte_identical").get<bool>()},
+            {"fork_truth_coverage", stay_part.at("fork_truth_coverage")},
+            {"fork_certified_coverage", stay_part.at("fork_certified_coverage")},
+            {"net_t95_gain_s", t95_gain},
+            {"net_t100_gain_s", t100_gain},
+            {"stay", st_arm},
+            {"switch", sw_arm},
+        };
+    };
+
+    json breakeven;
+    breakeven["provenance"] = provenanceHeader("route-b-wave5-tdd7-10m-breakeven", json(20261123));
+    breakeven["domain_name"] = nom_stay.at("domain_name");
+    breakeven["vertices_m"] = nom_stay.at("vertices_m");
+    breakeven["beacon_xs_m"] = nom_stay.at("beacon_xs_m");
+    breakeven["missions"] = json::array({
+        makeMissionRow(nom_stay, nom_sw),
+        makeMissionRow(deg_stay, deg_sw),
+    });
+    writeJsonFile(out_dir / "tdd7_regime2_positive_breakeven.json", breakeven);
+
+    json snap_doc = nom_sw.at("snapshot_bundle");
+    snap_doc["provenance"] = provenanceHeader("route-b-wave5-tdd11-10m-mission-snapshots", json(20261123));
+    writeJsonFile(out_dir / "tdd7_mission_snapshots.json", snap_doc);
+
+    for (const auto& p : {p_ns, p_nw, p_ds, p_dw}) {
+        std::filesystem::remove(p);
+    }
+    std::cout << "[Wave5 TDD-7 Merge] wrote tdd7_regime2_positive_breakeven.json + tdd7_mission_snapshots.json"
+              << std::endl;
+}
+
+json runTdd7Breakeven() {
+    json payload;
+    payload["provenance"] = provenanceHeader("route-b-wave5-tdd7-10m-breakeven", json(20261123));
 
     const std::vector<std::tuple<std::string, double, double>> uwb_groups = {
         {"nominal", 850.0, 0.5},
@@ -967,28 +1237,15 @@ json runTdd7Breakeven() {
     };
 
     json missions = json::array();
+    json verts_saved, b_xs_saved;
     for (const auto& [ch_name, d_r, sig0] : uwb_groups) {
+        gf::RouteBConvexDomainSpec dom;
+        std::vector<double> b_xs;
+        json verts;
         gf::RouteBMissionConfig mcfg;
-        mcfg.domain_name = dom.name;
-        mcfg.custom_domain = dom;
-        mcfg.cell_size_m = 40.0;
-        mcfg.sensor_radius_m = 400.0;
-        mcfg.dynamic_chain_sweep = true;
-        mcfg.search_speed_cap_mps = 5.0;
-        mcfg.patrol_radius_m = 2600.0;
-        mcfg.v_cruise_mps = 23.5;
-        mcfg.accel_mps2 = 3.5;
-        mcfg.d_pipe_m = 45.0;
-        mcfg.t_settle_s = 0.2;
-        mcfg.t_fork_s = 10.0;
-        mcfg.max_mission_s = 2800.0;
-        mcfg.uwb_d_r_m = d_r;
-        mcfg.uwb_sigma0_m = sig0;
-        mcfg.uwb_d_max_m = 1200.0;
-        mcfg.link_seed = 20261123;
-        mcfg.curve_sample_interval_s = 10.0;
-        mcfg.record_trajectory_samples = true;
-        mcfg.trajectory_sample_interval_s = 20.0;
+        buildTdd7Setup(d_r, sig0, dom, b_xs, verts, mcfg);
+        verts_saved = verts;
+        b_xs_saved = b_xs;
 
         const auto res = gf::runTwoRegimeMissionComparison(mcfg);
         const json t95_gain = (res.stay.t95_certified_s.has_value() && res.switch_arm.t95_certified_s.has_value())
@@ -998,7 +1255,7 @@ json runTdd7Breakeven() {
             ? json(*res.stay.t100_certified_s - *res.switch_arm.t100_certified_s)
             : json(nullptr);
 
-        std::cout << "[Wave3 Regime2 Breakeven " << ch_name << "] area_km2="
+        std::cout << "[Wave5 Regime2 Breakeven " << ch_name << "] area_km2="
                   << (res.area_m2 / 1.0e6)
                   << " stay_t100=" << res.stay.t100_certified_s.value_or(-1.0)
                   << " sw_reconf=" << res.switch_arm.reconfig_complete_s
@@ -1026,7 +1283,34 @@ json runTdd7Breakeven() {
             {"switch", missionArmToJson(res.switch_arm)},
         });
     }
+    payload["domain_name"] = "wide_broad_regime2";
+    payload["vertices_m"] = verts_saved;
+    payload["beacon_xs_m"] = b_xs_saved;
     payload["missions"] = std::move(missions);
+    return payload;
+}
+
+json runTdd7Snapshots() {
+    gf::RouteBConvexDomainSpec dom;
+    std::vector<double> b_xs;
+    json verts;
+    gf::RouteBMissionConfig mcfg;
+    buildTdd7Setup(850.0, 0.5, dom, b_xs, verts, mcfg);
+    mcfg.skip_stay_arm = true;
+    mcfg.record_mission_snapshots = true;
+    mcfg.snapshot_times_s = {10.0, 160.0, 260.0, 380.0, 480.0, 950.0, 1250.0};
+
+    const auto res = gf::runTwoRegimeMissionComparison(mcfg);
+    const auto& sw = res.switch_arm;
+    std::cout << "[Wave5 TDD-11 Snapshots] count=" << sw.mission_snapshots.size()
+              << " reconf=" << sw.reconfig_complete_s
+              << " t95=" << sw.t95_certified_s.value_or(-1.0)
+              << " t100=" << sw.t100_certified_s.value_or(-1.0)
+              << " swaps=" << sw.total_mbb_swaps
+              << " false_cert=" << sw.false_certified_count << std::endl;
+
+    json payload = snapshotBundleToJson(res, b_xs, verts, mcfg);
+    payload["provenance"] = provenanceHeader("route-b-wave5-tdd11-10m-mission-snapshots", json(20261123));
     return payload;
 }
 
@@ -1036,12 +1320,15 @@ int main(int argc, char** argv) {
     std::filesystem::path out_dir =
         "/Users/xirhxq/Documents/Clones/GrandFinale2027-ast-exploration/experiments/route-b-20261123/sim-outputs";
     std::string mode = "all";
+    std::string arm;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--output-dir" && i + 1 < argc) {
             out_dir = argv[++i];
         } else if (arg == "--mode" && i + 1 < argc) {
             mode = argv[++i];
+        } else if (arg == "--arm" && i + 1 < argc) {
+            arm = argv[++i];
         }
     }
 
@@ -1065,6 +1352,18 @@ int main(int argc, char** argv) {
     }
     if (mode == "all" || mode == "wave3" || mode == "tdd10") {
         writeJsonFile(out_dir / "tdd10_nonuniform_beacon_pentagon.json", runTdd10NonuniformPentagon());
+    }
+    if (mode == "tdd7_snapshots") {
+        writeJsonFile(out_dir / "tdd7_mission_snapshots.json", runTdd7Snapshots());
+    }
+    if (mode == "tdd7_arm") {
+        if (arm.empty()) {
+            throw std::invalid_argument("--mode tdd7_arm requires --arm <nom_stay|nom_switch|deg_stay|deg_switch>");
+        }
+        writeJsonFile(out_dir / ("tdd7_part_" + arm + ".json"), runTdd7SingleArm(arm));
+    }
+    if (mode == "tdd7_merge") {
+        mergeTdd7Parts(out_dir);
     }
     return 0;
 }

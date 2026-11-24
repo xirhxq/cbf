@@ -45,6 +45,10 @@ struct RouteBMissionConfig {
     double search_speed_cap_mps = 0.0;
     bool record_trajectory_samples = false;
     double trajectory_sample_interval_s = 10.0;
+    bool record_mission_snapshots = false;
+    std::vector<double> snapshot_times_s;
+    bool skip_stay_arm = false;
+    bool skip_switch_arm = false;
     double dt_s = 0.1;
     double t_fork_s = 15.0;
     double max_mission_s = 1350.0;
@@ -72,6 +76,35 @@ struct RouteBCoverageSample {
     double certified_coverage = 0.0;
 };
 
+struct RouteBMissionSnapshot {
+    double time_s = 0.0;
+    std::size_t tick = 0;
+    std::string stage;
+    double truth_coverage = 0.0;
+    double certified_coverage = 0.0;
+    int certified_count = 0;
+    std::map<NodeId, Eigen::Vector2d> positions;
+    std::map<NodeId, Eigen::Vector2d> beacons;
+    std::vector<std::pair<NodeId, NodeId>> active_edges;
+    std::vector<std::pair<int, int>> certified_rle;
+};
+
+struct RouteBGridMetadata {
+    double x_min_m = 0.0;
+    double x_max_m = 0.0;
+    double y_min_m = 0.0;
+    double y_max_m = 0.0;
+    int x_num = 0;
+    int y_num = 0;
+    double cell_size_m = 0.0;
+    int valid_cells = 0;
+    int bbox_ix_min = 0;
+    int bbox_iy_min = 0;
+    int bbox_ix_max = -1;
+    int bbox_iy_max = -1;
+    std::vector<std::pair<int, int>> valid_rle;
+};
+
 struct RouteBMissionArmResult {
     std::string arm_name;
     bool reconfig_completed = true;
@@ -94,6 +127,7 @@ struct RouteBMissionArmResult {
     RouteBClosedLoopAuditSummary audit;
     std::vector<RouteBCoverageSample> coverage_curve;
     std::vector<RouteBTrajectorySample> trajectory_samples;
+    std::vector<RouteBMissionSnapshot> mission_snapshots;
 };
 
 struct RouteBMissionComparison {
@@ -104,6 +138,7 @@ struct RouteBMissionComparison {
     bool checkpoint_byte_identical = false;
     double fork_truth_coverage = 0.0;
     double fork_certified_coverage = 0.0;
+    RouteBGridMetadata grid_metadata;
     RouteBMissionArmResult stay;
     RouteBMissionArmResult switch_arm;
 };
@@ -167,6 +202,30 @@ inline RouteBConvexDomainSpec findRouteBDomain(const std::string& name) {
 }
 
 namespace route_b_mission_detail {
+
+inline std::vector<std::pair<int, int>> encodeGridMaskRle(
+    const GridWorld& grid,
+    bool certified_only) {
+    std::vector<std::pair<int, int>> rle;
+    const int total = grid.xNum * grid.yNum;
+    int run_start = -1;
+    for (int idx = 0; idx < total; ++idx) {
+        const std::size_t uidx = static_cast<std::size_t>(idx);
+        const bool bit = certified_only
+            ? (grid.valid[uidx] && grid.vis[uidx])
+            : grid.valid[uidx];
+        if (bit) {
+            if (run_start < 0) run_start = idx;
+        } else if (run_start >= 0) {
+            rle.emplace_back(run_start, idx - run_start);
+            run_start = -1;
+        }
+    }
+    if (run_start >= 0) {
+        rle.emplace_back(run_start, total - run_start);
+    }
+    return rle;
+}
 
 class FrontierSweepPolicy {
 public:
@@ -283,25 +342,50 @@ public:
         }
     }
 
+    std::size_t cachedUnsearchedCount() const { return unsearched_indices_.size(); }
+
 private:
     void updateTargets(
         const GridWorld& cert_grid,
         const std::map<NodeId, Eigen::Vector2d>& est_pos) {
         std::vector<Eigen::Vector2d> uncovered;
-        const double x0 = cert_grid.xLim.first;
-        const double x1 = cert_grid.xLim.second;
-        const double y0 = cert_grid.yLim.first;
-        const double y1 = cert_grid.yLim.second;
-        for (int ix = 0; ix < cert_grid.xNum; ++ix) {
-            const double rx = (static_cast<double>(ix) + 0.5) / static_cast<double>(cert_grid.xNum);
-            const double cx = x0 * (1.0 - rx) + x1 * rx;
-            for (int iy = 0; iy < cert_grid.yNum; ++iy) {
-                const int idx = cert_grid.getIndex(ix, iy);
-                if (cert_grid.valid[idx] && !cert_grid.vis[idx]) {
-                    const double ry = (static_cast<double>(iy) + 0.5) / static_cast<double>(cert_grid.yNum);
-                    uncovered.emplace_back(cx, y0 * (1.0 - ry) + y1 * ry);
+        if (!unsearched_initialized_) {
+            const double x0 = cert_grid.xLim.first;
+            const double x1 = cert_grid.xLim.second;
+            const double y0 = cert_grid.yLim.first;
+            const double y1 = cert_grid.yLim.second;
+            unsearched_indices_.reserve(
+                static_cast<std::size_t>(std::max(0, cert_grid.validCount)));
+            unsearched_centers_.reserve(
+                static_cast<std::size_t>(std::max(0, cert_grid.validCount)));
+            for (int ix = 0; ix < cert_grid.xNum; ++ix) {
+                const double rx = (static_cast<double>(ix) + 0.5) / static_cast<double>(cert_grid.xNum);
+                const double cx = x0 * (1.0 - rx) + x1 * rx;
+                for (int iy = 0; iy < cert_grid.yNum; ++iy) {
+                    const int idx = cert_grid.getIndex(ix, iy);
+                    if (cert_grid.valid[idx] && !cert_grid.vis[idx]) {
+                        const double ry = (static_cast<double>(iy) + 0.5) / static_cast<double>(cert_grid.yNum);
+                        unsearched_indices_.push_back(idx);
+                        unsearched_centers_.emplace_back(cx, y0 * (1.0 - ry) + y1 * ry);
+                    }
                 }
             }
+            uncovered = unsearched_centers_;
+            unsearched_initialized_ = true;
+        } else {
+            std::size_t write = 0;
+            uncovered.reserve(unsearched_indices_.size());
+            for (std::size_t k = 0; k < unsearched_indices_.size(); ++k) {
+                const int idx = unsearched_indices_[k];
+                if (!cert_grid.vis[static_cast<std::size_t>(idx)]) {
+                    unsearched_indices_[write] = idx;
+                    unsearched_centers_[write] = unsearched_centers_[k];
+                    uncovered.push_back(unsearched_centers_[k]);
+                    ++write;
+                }
+            }
+            unsearched_indices_.resize(write);
+            unsearched_centers_.resize(write);
         }
         if (uncovered.empty()) {
             for (NodeId id : mobile_ids_) {
@@ -312,7 +396,7 @@ private:
         }
 
         if (dynamic_chain_sweep_) {
-            const double edge_step_m = 0.855 * d_dep_m_;
+            const double edge_step_m = 0.858 * d_dep_m_;
             auto projectOntoTwoDisks = [](const Eigen::Vector2d& w,
                                           const Eigen::Vector2d& c1,
                                           const Eigen::Vector2d& c2,
@@ -489,7 +573,7 @@ private:
                         aim_points_[id] = best_pt;
                         const Eigen::Vector2d diff = best_pt - cur;
                         const double dist = diff.norm();
-                        const double standoff = std::max(0.0, sensor_radius_ - 110.0);
+                        const double standoff = std::max(0.0, sensor_radius_ - 170.0);
                         Eigen::Vector2d w = (dist <= standoff)
                             ? best_pt
                             : (cur + diff * ((dist - standoff) / dist)).eval();
@@ -626,7 +710,20 @@ private:
                     }
                 }
                 q.y() = std::max(q.y(), 120.0);
-                targets_[id] = projectOntoTwoDisks(q, c1, c2, edge_step_m);
+                q = projectOntoTwoDisks(q, c1, c2, edge_step_m);
+                const double alt = (q - c1).dot(perp_dc);
+                if (dc.norm() > 1.0e-6 && std::abs(alt) < 120.0) {
+                    const double sign = (std::abs(alt) > 15.0)
+                        ? (alt >= 0.0 ? 1.0 : -1.0)
+                        : (perp_dc.y() >= 0.0 ? 1.0 : -1.0);
+                    Eigen::Vector2d q_lifted = q + perp_dc * (sign * 125.0 - alt);
+                    if (q_lifted.y() < 120.0) {
+                        q_lifted = q + perp_dc * (-sign * 125.0 - alt);
+                    }
+                    q_lifted.y() = std::max(q_lifted.y(), 120.0);
+                    q = projectOntoTwoDisks(q_lifted, c1, c2, edge_step_m);
+                }
+                targets_[id] = q;
             }
             return;
         }
@@ -698,6 +795,9 @@ private:
     double search_speed_cap_mps_ = 0.0;
     double d_dep_m_ = 850.0;
     bool targets_initialized_ = false;
+    bool unsearched_initialized_ = false;
+    std::vector<int> unsearched_indices_;
+    std::vector<Eigen::Vector2d> unsearched_centers_;
     std::map<NodeId, Eigen::Vector2d> targets_;
     std::map<NodeId, Eigen::Vector2d> aim_points_;
 };
@@ -820,6 +920,7 @@ inline RouteBMissionComparison runTwoRegimeMissionComparison(
     prefix_curve.push_back({0.0, adapter_prefix.coverage().truthFraction(),
                             adapter_prefix.coverage().certifiedFraction()});
     std::vector<RouteBTrajectorySample> prefix_traj;
+    std::vector<RouteBMissionSnapshot> prefix_snapshots;
     auto capture_traj = [&](const Swarm& sw, double t_s, std::vector<RouteBTrajectorySample>& dest) {
         RouteBTrajectorySample ts;
         ts.time_s = t_s;
@@ -829,12 +930,55 @@ inline RouteBMissionComparison runTwoRegimeMissionComparison(
         }
         dest.push_back(std::move(ts));
     };
+    auto should_capture_snapshot = [&](double t_s, bool force_event) -> bool {
+        if (!mcfg.record_mission_snapshots) return false;
+        if (force_event) return true;
+        for (double req_t : mcfg.snapshot_times_s) {
+            if (std::abs(t_s - req_t) <= 0.5 * mcfg.dt_s + 1.0e-9) {
+                return true;
+            }
+        }
+        return false;
+    };
+    auto capture_snapshot = [&](const Swarm& sw,
+                                const GrandFinaleSwarmAdapter& ad,
+                                double t_s,
+                                std::size_t tick_idx,
+                                const std::string& stg,
+                                std::vector<RouteBMissionSnapshot>& dest) {
+        if (!dest.empty() && dest.back().tick == tick_idx &&
+            std::abs(dest.back().time_s - t_s) <= 1.0e-9) {
+            return;
+        }
+        RouteBMissionSnapshot ms;
+        ms.time_s = t_s;
+        ms.tick = tick_idx;
+        ms.stage = stg;
+        ms.truth_coverage = ad.coverage().truthFraction();
+        ms.certified_coverage = ad.coverage().certifiedFraction();
+        ms.certified_count = ad.coverage().certifiedCoveredCount();
+        for (std::size_t i = 0; i < scen.mobile_ids.size(); ++i) {
+            const Point pt = sw.robots[i]->model->xy();
+            ms.positions[scen.mobile_ids[i]] = Eigen::Vector2d(pt.x, pt.y);
+        }
+        ms.beacons = scen.fixed_positions;
+        for (const auto& edge : ad.supervisor().topology()) {
+            ms.active_edges.emplace_back(edge.reference, edge.owner);
+        }
+        std::sort(ms.active_edges.begin(), ms.active_edges.end());
+        ms.certified_rle = route_b_mission_detail::encodeGridMaskRle(
+            ad.coverage().certifiedGrid(), true);
+        dest.push_back(std::move(ms));
+    };
     const std::size_t sample_every = std::max<std::size_t>(
         1, static_cast<std::size_t>(std::llround(mcfg.curve_sample_interval_s / mcfg.dt_s)));
     const std::size_t traj_every = std::max<std::size_t>(
         1, static_cast<std::size_t>(std::llround(mcfg.trajectory_sample_interval_s / mcfg.dt_s)));
     if (mcfg.record_trajectory_samples) {
         capture_traj(swarm_prefix, 0.0, prefix_traj);
+    }
+    if (should_capture_snapshot(0.0, false)) {
+        capture_snapshot(swarm_prefix, adapter_prefix, 0.0, 0, "prefix", prefix_snapshots);
     }
 
     for (std::size_t tick = 0; tick < fork_ticks; ++tick) {
@@ -854,15 +998,19 @@ inline RouteBMissionComparison runTwoRegimeMissionComparison(
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("prefix_step: ") + e.what());
         }
+        const double t_s = static_cast<double>(tick + 1) * mcfg.dt_s;
         if ((tick + 1) % sample_every == 0 || tick + 1 == fork_ticks) {
             prefix_curve.push_back({
-                static_cast<double>(tick + 1) * mcfg.dt_s,
+                t_s,
                 adapter_prefix.coverage().truthFraction(),
                 adapter_prefix.coverage().certifiedFraction()});
         }
         if (mcfg.record_trajectory_samples &&
             ((tick + 1) % traj_every == 0 || tick + 1 == fork_ticks)) {
-            capture_traj(swarm_prefix, static_cast<double>(tick + 1) * mcfg.dt_s, prefix_traj);
+            capture_traj(swarm_prefix, t_s, prefix_traj);
+        }
+        if (should_capture_snapshot(t_s, false)) {
+            capture_snapshot(swarm_prefix, adapter_prefix, t_s, tick + 1, "prefix", prefix_snapshots);
         }
     }
 
@@ -902,6 +1050,36 @@ inline RouteBMissionComparison runTwoRegimeMissionComparison(
     out.checkpoint_byte_identical = (dump_stay == dump_sw && dump_stay == saved_ckpt.dump());
     out.fork_truth_coverage = adapter_prefix.coverage().truthFraction();
     out.fork_certified_coverage = adapter_prefix.coverage().certifiedFraction();
+    if (mcfg.record_mission_snapshots) {
+        const GridWorld& vg = adapter_prefix.coverage().truthGrid();
+        out.grid_metadata.x_min_m = vg.xLim.first;
+        out.grid_metadata.x_max_m = vg.xLim.second;
+        out.grid_metadata.y_min_m = vg.yLim.first;
+        out.grid_metadata.y_max_m = vg.yLim.second;
+        out.grid_metadata.x_num = vg.xNum;
+        out.grid_metadata.y_num = vg.yNum;
+        out.grid_metadata.cell_size_m = mcfg.cell_size_m;
+        out.grid_metadata.valid_cells = vg.validCount;
+        out.grid_metadata.valid_rle = route_b_mission_detail::encodeGridMaskRle(vg, false);
+        int ix_min = vg.xNum;
+        int iy_min = vg.yNum;
+        int ix_max = -1;
+        int iy_max = -1;
+        for (int ix = 0; ix < vg.xNum; ++ix) {
+            for (int iy = 0; iy < vg.yNum; ++iy) {
+                if (vg.valid[static_cast<std::size_t>(vg.getIndex(ix, iy))]) {
+                    ix_min = std::min(ix_min, ix);
+                    iy_min = std::min(iy_min, iy);
+                    ix_max = std::max(ix_max, ix);
+                    iy_max = std::max(iy_max, iy);
+                }
+            }
+        }
+        out.grid_metadata.bbox_ix_min = (ix_max >= ix_min) ? ix_min : 0;
+        out.grid_metadata.bbox_iy_min = (iy_max >= iy_min) ? iy_min : 0;
+        out.grid_metadata.bbox_ix_max = ix_max;
+        out.grid_metadata.bbox_iy_max = iy_max;
+    }
 
     const std::size_t max_ticks = static_cast<std::size_t>(
         std::llround(mcfg.max_mission_s / mcfg.dt_s));
@@ -926,7 +1104,7 @@ inline RouteBMissionComparison runTwoRegimeMissionComparison(
     };
 
     // 3. Arm A: Stay in initial formation
-    {
+    if (!mcfg.skip_stay_arm) {
         const auto wt0 = std::chrono::steady_clock::now();
         out.stay.arm_name = "stay";
         out.stay.reconfig_completed = true;
@@ -990,7 +1168,7 @@ inline RouteBMissionComparison runTwoRegimeMissionComparison(
     }
 
     // 4. Arm B: Polar Entry -> Pipelined Reconfiguration -> Post-Switch Search
-    {
+    if (!mcfg.skip_switch_arm) {
         const auto wt0 = std::chrono::steady_clock::now();
         out.switch_arm.arm_name = "switch";
         out.switch_arm.reconfig_completed = false;
@@ -999,6 +1177,11 @@ inline RouteBMissionComparison runTwoRegimeMissionComparison(
         if (mcfg.record_trajectory_samples) {
             out.switch_arm.trajectory_samples = prefix_traj;
         }
+        if (mcfg.record_mission_snapshots) {
+            out.switch_arm.mission_snapshots = prefix_snapshots;
+        }
+        bool t95_snap_captured = out.switch_arm.reached_t95;
+        bool t100_snap_captured = out.switch_arm.reached_t100;
 
         RouteBClosedLoopAuditor auditor(
             scen.mobile_ids, scen.fixed_positions, mcfg.d_safe_m, mcfg.d_dep_m, 25.0, 3.0);
@@ -1096,6 +1279,13 @@ inline RouteBMissionComparison runTwoRegimeMissionComparison(
                 }
                 entry_elapsed_s += mcfg.dt_s;
                 record_coverage_milestones(out.switch_arm, adapter_sw.coverage(), t_s, tick + 1);
+                const bool t95_event = out.switch_arm.reached_t95 && !t95_snap_captured;
+                if (t95_event) t95_snap_captured = true;
+                const bool t100_event = out.switch_arm.reached_t100 && !t100_snap_captured;
+                if (t100_event) t100_snap_captured = true;
+                if (should_capture_snapshot(t_s, t95_event || t100_event)) {
+                    capture_snapshot(swarm_sw, adapter_sw, t_s, tick + 1, "entry", out.switch_arm.mission_snapshots);
+                }
                 if (entry_exec.arrived(adapter_sw.runtimeSnapshot().estimate, entry_elapsed_s)) {
                     stage = SwitchStage::Reconfig;
                     try {
@@ -1120,6 +1310,13 @@ inline RouteBMissionComparison runTwoRegimeMissionComparison(
                     break;
                 }
                 record_coverage_milestones(out.switch_arm, adapter_sw.coverage(), t_s, tick + 1);
+                const bool t95_event = out.switch_arm.reached_t95 && !t95_snap_captured;
+                if (t95_event) t95_snap_captured = true;
+                const bool t100_event = out.switch_arm.reached_t100 && !t100_snap_captured;
+                if (t100_event) t100_snap_captured = true;
+                if (should_capture_snapshot(t_s, done || t95_event || t100_event)) {
+                    capture_snapshot(swarm_sw, adapter_sw, t_s, tick + 1, "reconfig", out.switch_arm.mission_snapshots);
+                }
                 if (done) {
                     out.switch_arm.reconfig_completed = true;
                     out.switch_arm.reconfig_complete_s = t_s;
@@ -1159,6 +1356,13 @@ inline RouteBMissionComparison runTwoRegimeMissionComparison(
                     throw std::runtime_error(std::string("post_sweep_obs: ") + e.what());
                 }
                 record_coverage_milestones(out.switch_arm, adapter_sw.coverage(), t_s, tick + 1);
+                const bool t95_event = out.switch_arm.reached_t95 && !t95_snap_captured;
+                if (t95_event) t95_snap_captured = true;
+                const bool t100_event = out.switch_arm.reached_t100 && !t100_snap_captured;
+                if (t100_event) t100_snap_captured = true;
+                if (should_capture_snapshot(t_s, t95_event || t100_event)) {
+                    capture_snapshot(swarm_sw, adapter_sw, t_s, tick + 1, "sweep", out.switch_arm.mission_snapshots);
+                }
                 if (out.switch_arm.reached_t100) {
                     if (out.switch_arm.coverage_curve.empty() ||
                         std::abs(out.switch_arm.coverage_curve.back().time_s - t_s) > 1.0e-9) {

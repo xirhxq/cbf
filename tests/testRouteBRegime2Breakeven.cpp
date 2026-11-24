@@ -28,7 +28,7 @@ TEST_CASE("TDD-7 Regime 2 broad convex domain achieves positive net T95 and T100
         gf::RouteBMissionConfig mcfg;
         mcfg.domain_name = dom.name;
         mcfg.custom_domain = dom;
-        mcfg.cell_size_m = 40.0;
+        mcfg.cell_size_m = 10.0;
         mcfg.sensor_radius_m = 400.0;
         mcfg.dynamic_chain_sweep = true;
         mcfg.search_speed_cap_mps = 5.0;
