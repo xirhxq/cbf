@@ -4,6 +4,7 @@
 #include "grand_finale/GrandFinaleSwarmAdapter.hpp"
 #include "grand_finale/ReferenceEligibility.hpp"
 #include "grand_finale/Types.hpp"
+#include "models/DoubleIntegrate2D.hpp"
 
 #include <Eigen/Core>
 
@@ -34,6 +35,10 @@ struct RouteBClosedLoopAuditSummary {
     double peak_position_covariance_trace_m2 = 0.0;
     double overall_envelope_coverage = 0.0;
     double overall_velocity_envelope_coverage = 0.0;
+    double mean_cumulative_abs_yaw_rad = 0.0;
+    double max_cumulative_abs_yaw_rad = 0.0;
+    double mean_abs_yaw_rate_radps = 0.0;
+    double max_abs_yaw_rate_radps = 0.0;
     std::map<NodeId, double> per_agent_position_rmse_m;
     std::map<NodeId, double> per_agent_velocity_rmse_mps;
     std::map<NodeId, double> per_agent_peak_position_scale_radius_m;
@@ -50,19 +55,22 @@ public:
         double reference_distance_m,
         double axis_velocity_limit_mps,
         double uncertainty_sigma = 3.0,
-        UncertaintyScaleMode scale_mode = UncertaintyScaleMode::TraceRoot)
+        UncertaintyScaleMode scale_mode = UncertaintyScaleMode::TraceRoot,
+        double dt_s = 0.1)
         : mobile_ids_(std::move(mobile_ids)),
           fixed_positions_(std::move(fixed_positions)),
           collision_distance_m_(collision_distance_m),
           reference_distance_m_(reference_distance_m),
           axis_velocity_limit_mps_(axis_velocity_limit_mps),
           uncertainty_sigma_(uncertainty_sigma),
-          scale_mode_(scale_mode) {
+          scale_mode_(scale_mode),
+          dt_s_(dt_s) {
         if (mobile_ids_.empty() ||
             !std::isfinite(collision_distance_m_) || collision_distance_m_ <= 0.0 ||
             !std::isfinite(reference_distance_m_) || reference_distance_m_ <= 0.0 ||
             !std::isfinite(axis_velocity_limit_mps_) || axis_velocity_limit_mps_ <= 0.0 ||
-            !std::isfinite(uncertainty_sigma_) || uncertainty_sigma_ < 0.0) {
+            !std::isfinite(uncertainty_sigma_) || uncertainty_sigma_ < 0.0 ||
+            !std::isfinite(dt_s_) || dt_s_ <= 0.0) {
             throw std::invalid_argument("invalid RouteBClosedLoopAuditor configuration");
         }
         std::sort(mobile_ids_.begin(), mobile_ids_.end());
@@ -73,18 +81,21 @@ public:
             pos_scale_peak_[id] = 0.0;
             pos_envelope_hits_[id] = 0;
             vel_envelope_hits_[id] = 0;
+            cumulative_abs_yaw_rad_[id] = 0.0;
         }
     }
 
     void observe(const Swarm& swarm, const GrandFinaleRuntimeSnapshot& snapshot) {
         std::map<NodeId, Eigen::Vector2d> truth_pos;
         std::map<NodeId, Eigen::Vector2d> truth_vel;
+        std::map<NodeId, double> truth_yaw;
         for (const auto& robot : swarm.robots) {
             const NodeId id = static_cast<NodeId>(robot->id);
             const Point pt = robot->model->xy();
             const Eigen::VectorXd vel = robot->model->getVelocity();
             truth_pos[id] = Eigen::Vector2d(pt.x, pt.y);
             truth_vel[id] = Eigen::Vector2d(vel(0), vel(1));
+            truth_yaw[id] = robot->model->getStateVariable("yawRad");
         }
 
         auto truth_node_pos = [&](NodeId id) -> const Eigen::Vector2d& {
@@ -101,6 +112,13 @@ public:
             const NodeId id = mobile_ids_[i];
             const Eigen::Vector2d p = truth_pos.at(id);
             const Eigen::Vector2d v = truth_vel.at(id);
+            const double yaw_rad = truth_yaw.at(id);
+            if (const auto pit = prev_yaw_rad_.find(id); pit != prev_yaw_rad_.end()) {
+                const double dyaw = std::abs(wrapDoubleIntegratorYawRad(yaw_rad - pit->second));
+                cumulative_abs_yaw_rad_[id] += dyaw;
+                max_abs_yaw_rate_radps_ = std::max(max_abs_yaw_rate_radps_, dyaw / dt_s_);
+            }
+            prev_yaw_rad_[id] = yaw_rad;
 
             const double axis_speed = std::max(std::abs(v.x()), std::abs(v.y()));
             max_axis_speed_mps_ = std::max(max_axis_speed_mps_, axis_speed);
@@ -221,6 +239,21 @@ public:
             static_cast<double>(total_pos_hits) / total_samples;
         summary.overall_velocity_envelope_coverage =
             static_cast<double>(total_vel_hits) / total_samples;
+        double total_cum_yaw = 0.0;
+        double max_cum_yaw = 0.0;
+        for (NodeId id : mobile_ids_) {
+            const double cy = cumulative_abs_yaw_rad_.at(id);
+            total_cum_yaw += cy;
+            max_cum_yaw = std::max(max_cum_yaw, cy);
+        }
+        summary.mean_cumulative_abs_yaw_rad =
+            total_cum_yaw / static_cast<double>(mobile_ids_.size());
+        summary.max_cumulative_abs_yaw_rad = max_cum_yaw;
+        summary.mean_abs_yaw_rate_radps = (observation_count_ > 1)
+            ? (summary.mean_cumulative_abs_yaw_rad /
+               (static_cast<double>(observation_count_ - 1) * dt_s_))
+            : 0.0;
+        summary.max_abs_yaw_rate_radps = max_abs_yaw_rate_radps_;
         return summary;
     }
 
@@ -242,6 +275,7 @@ private:
     double axis_velocity_limit_mps_ = 25.0;
     double uncertainty_sigma_ = 3.0;
     UncertaintyScaleMode scale_mode_ = UncertaintyScaleMode::TraceRoot;
+    double dt_s_ = 0.1;
 
     std::size_t observation_count_ = 0;
     std::size_t collision_violations_ = 0;
@@ -257,12 +291,15 @@ private:
     double last_max_pos_scale_m_ = 0.0;
     double last_mean_pos_scale_m_ = 0.0;
     double step_sq_err_sum_ = 0.0;
+    double max_abs_yaw_rate_radps_ = 0.0;
     std::map<NodeId, double> pos_sq_err_sum_;
     std::map<NodeId, double> vel_sq_err_sum_;
     std::map<NodeId, double> pos_scale_sum_;
     std::map<NodeId, double> pos_scale_peak_;
     std::map<NodeId, std::size_t> pos_envelope_hits_;
     std::map<NodeId, std::size_t> vel_envelope_hits_;
+    std::map<NodeId, double> prev_yaw_rad_;
+    std::map<NodeId, double> cumulative_abs_yaw_rad_;
 };
 
 }  // namespace gf

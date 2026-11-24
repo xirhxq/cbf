@@ -56,7 +56,7 @@ struct RouteBMissionConfig {
     double v_cruise_mps = 15.0;
     double accel_mps2 = 2.0;
     double a_max_mps2 = 4.0;
-    double max_yaw_rate_radps = 1.8;
+    double max_yaw_rate_radps = 1.0;
     double d_safe_m = 10.0;
     double d_dep_m = 850.0;
     double d_pipe_m = 60.0;
@@ -143,6 +143,30 @@ struct RouteBMissionComparison {
     RouteBMissionArmResult switch_arm;
 };
 
+/**
+ * Computes bounded velocity-aligned yaw rate with speed and angular deadbands
+ * to eliminate constant spinning and stationary heading chatter.
+ */
+inline double computeVelocityAlignedYawRate(
+    const Eigen::Vector2d& vel,
+    double yaw_rad,
+    double max_yaw_rate_radps,
+    double speed_deadband_mps = 2.0,
+    double yaw_gain = 1.8,
+    double angle_deadband_rad = 0.05) {
+    if (!std::isfinite(vel.x()) || !std::isfinite(vel.y()) ||
+        !std::isfinite(yaw_rad) || !std::isfinite(max_yaw_rate_radps) ||
+        max_yaw_rate_radps <= 0.0 || vel.norm() < speed_deadband_mps) {
+        return 0.0;
+    }
+    const double desired = std::atan2(vel.y(), vel.x());
+    const double err = wrapDoubleIntegratorYawRad(desired - yaw_rad);
+    if (std::abs(err) < angle_deadband_rad) {
+        return 0.0;
+    }
+    return std::clamp(yaw_gain * err, -max_yaw_rate_radps, max_yaw_rate_radps);
+}
+
 inline std::vector<RouteBConvexDomainSpec> standardRouteBConvexDomains() {
     std::vector<RouteBConvexDomainSpec> domains;
 
@@ -202,6 +226,35 @@ inline RouteBConvexDomainSpec findRouteBDomain(const std::string& name) {
 }
 
 namespace route_b_mission_detail {
+
+struct UncoveredCell {
+    int index = -1;
+    Eigen::Vector2d center = Eigen::Vector2d::Zero();
+};
+
+/**
+ * Computes bounded target-aiming yaw rate with distance and angular deadbands
+ * so approaching an aim cell never triggers the 1/r atan2 spin singularity.
+ */
+inline double computeTargetAlignedYawRate(
+    const Eigen::Vector2d& aim_vec,
+    double yaw_rad,
+    double max_yaw_rate_radps,
+    double dist_deadband_m = 5.0,
+    double yaw_gain = 1.8,
+    double angle_deadband_rad = 0.05) {
+    if (!std::isfinite(aim_vec.x()) || !std::isfinite(aim_vec.y()) ||
+        !std::isfinite(yaw_rad) || !std::isfinite(max_yaw_rate_radps) ||
+        max_yaw_rate_radps <= 0.0 || aim_vec.norm() < dist_deadband_m) {
+        return 0.0;
+    }
+    const double desired = std::atan2(aim_vec.y(), aim_vec.x());
+    const double err = wrapDoubleIntegratorYawRad(desired - yaw_rad);
+    if (std::abs(err) < angle_deadband_rad) {
+        return 0.0;
+    }
+    return std::clamp(yaw_gain * err, -max_yaw_rate_radps, max_yaw_rate_radps);
+}
 
 inline std::vector<std::pair<int, int>> encodeGridMaskRle(
     const GridWorld& grid,
@@ -329,26 +382,74 @@ public:
 
             const double yaw = swarm.robots[i]->model->getStateVariable("yawRad");
             const Eigen::Vector2d aim_vec = aim_points_.at(id) - p;
-            double rate = max_yaw_rate_;
-            if (aim_vec.norm() > 1.0) {
-                const double desired = std::atan2(aim_vec.y(), aim_vec.x());
-                const double err = wrapDoubleIntegratorYawRad(desired - yaw);
-                rate = std::clamp(2.5 * err, -max_yaw_rate_, max_yaw_rate_);
-                if (std::abs(err) < 0.08 && (w - p).norm() < 15.0) {
-                    rate = 0.6 * max_yaw_rate_;
-                }
-            }
-            out_yaw_rates[id] = rate;
+            out_yaw_rates[id] = computeTargetAlignedYawRate(
+                aim_vec, yaw, max_yaw_rate_,
+                kSearchYawDistDeadbandM, kSearchYawGain, kSearchYawAngleDeadbandRad);
         }
     }
 
+    static constexpr double kLookaheadMinDistM = 30.0;
+    static constexpr double kSearchYawDistDeadbandM = 5.0;
+    static constexpr double kSearchYawAngleDeadbandRad = 0.05;
+    static constexpr double kSearchYawGain = 1.8;
+
     std::size_t cachedUnsearchedCount() const { return unsearched_indices_.size(); }
+    double searchAimDistanceDeadbandM() const { return kSearchYawDistDeadbandM; }
+    std::optional<Eigen::Vector2d> aimPoint(NodeId id) const {
+        const auto it = aim_points_.find(id);
+        if (it == aim_points_.end()) return std::nullopt;
+        return it->second;
+    }
 
 private:
+    bool hasValidUncertifiedAim(NodeId id, const GridWorld& cert_grid) const {
+        const auto it = aim_cell_indices_.find(id);
+        if (it == aim_cell_indices_.end()) return false;
+        const int prev_idx = it->second;
+        return prev_idx >= 0 &&
+               static_cast<std::size_t>(prev_idx) < cert_grid.vis.size() &&
+               cert_grid.valid[static_cast<std::size_t>(prev_idx)] &&
+               !cert_grid.vis[static_cast<std::size_t>(prev_idx)];
+    }
+
+    void selectAimPointWithHysteresis(
+        NodeId id,
+        const std::vector<UncoveredCell>& pool,
+        const GridWorld& cert_grid,
+        const Eigen::Vector2d& cur) {
+        if (hasValidUncertifiedAim(id, cert_grid)) {
+            return;
+        }
+        if (pool.empty()) {
+            aim_cell_indices_.erase(id);
+            return;
+        }
+        constexpr double kLookaheadMinDist2 = kLookaheadMinDistM * kLookaheadMinDistM;
+        const UncoveredCell* best_far = nullptr;
+        double best_far_d2 = std::numeric_limits<double>::infinity();
+        const UncoveredCell* best_near = nullptr;
+        double best_near_d2 = std::numeric_limits<double>::infinity();
+        for (const auto& cell : pool) {
+            const double d2 = (cell.center - cur).squaredNorm();
+            if (d2 >= kLookaheadMinDist2) {
+                if (d2 < best_far_d2) {
+                    best_far_d2 = d2;
+                    best_far = &cell;
+                }
+            } else if (d2 < best_near_d2) {
+                best_near_d2 = d2;
+                best_near = &cell;
+            }
+        }
+        const UncoveredCell& chosen = (best_far != nullptr) ? *best_far : *best_near;
+        aim_cell_indices_[id] = chosen.index;
+        aim_points_[id] = chosen.center;
+    }
+
     void updateTargets(
         const GridWorld& cert_grid,
         const std::map<NodeId, Eigen::Vector2d>& est_pos) {
-        std::vector<Eigen::Vector2d> uncovered;
+        std::vector<UncoveredCell> uncovered;
         if (!unsearched_initialized_) {
             const double x0 = cert_grid.xLim.first;
             const double x1 = cert_grid.xLim.second;
@@ -367,10 +468,10 @@ private:
                         const double ry = (static_cast<double>(iy) + 0.5) / static_cast<double>(cert_grid.yNum);
                         unsearched_indices_.push_back(idx);
                         unsearched_centers_.emplace_back(cx, y0 * (1.0 - ry) + y1 * ry);
+                        uncovered.push_back({idx, unsearched_centers_.back()});
                     }
                 }
             }
-            uncovered = unsearched_centers_;
             unsearched_initialized_ = true;
         } else {
             std::size_t write = 0;
@@ -380,7 +481,7 @@ private:
                 if (!cert_grid.vis[static_cast<std::size_t>(idx)]) {
                     unsearched_indices_[write] = idx;
                     unsearched_centers_[write] = unsearched_centers_[k];
-                    uncovered.push_back(unsearched_centers_[k]);
+                    uncovered.push_back({idx, unsearched_centers_[k]});
                     ++write;
                 }
             }
@@ -389,6 +490,7 @@ private:
         }
         if (uncovered.empty()) {
             for (NodeId id : mobile_ids_) {
+                aim_cell_indices_.erase(id);
                 targets_[id] = slots_.at(id);
                 aim_points_[id] = slots_.at(id) + Eigen::Vector2d(0.0, 200.0);
             }
@@ -461,7 +563,7 @@ private:
                 group_origin[gid] = org / static_cast<double>(gids.size());
             }
 
-            std::map<int, std::vector<Eigen::Vector2d>> group_cells;
+            std::map<int, std::vector<UncoveredCell>> group_cells;
             for (const auto& cell : uncovered) {
                 int best_g = groups.begin()->first;
                 double best_d2 = std::numeric_limits<double>::infinity();
@@ -470,9 +572,9 @@ private:
                     int max_hop = 1;
                     for (NodeId id : gids) max_hop = std::max(max_hop, beacon_hop_.at(id));
                     const double g_reach = static_cast<double>(max_hop) * edge_step_m + sensor_radius_ - 30.0;
-                    const double d_org = (cell - group_origin.at(gid)).norm();
+                    const double d_org = (cell.center - group_origin.at(gid)).norm();
                     const bool feas = d_org <= g_reach;
-                    const double d2 = (cell - group_origin.at(gid)).squaredNorm();
+                    const double d2 = (cell.center - group_origin.at(gid)).squaredNorm();
                     if (feas && (!found_feas || d2 < best_d2)) {
                         found_feas = true;
                         best_d2 = d2;
@@ -491,13 +593,13 @@ private:
                 // Sweep along the leftmost remaining angular sector (monotonic bearing sweep)
                 double min_ang = std::numeric_limits<double>::infinity();
                 for (const auto& c : gpool) {
-                    const double ang = std::atan2(c.x() - org.x(), std::max(50.0, c.y()));
+                    const double ang = std::atan2(c.center.x() - org.x(), std::max(50.0, c.center.y()));
                     min_ang = std::min(min_ang, ang);
                 }
-                std::vector<Eigen::Vector2d> sector_pool;
+                std::vector<UncoveredCell> sector_pool;
                 const double ang_band = 0.28;
                 for (const auto& c : gpool) {
-                    const double ang = std::atan2(c.x() - org.x(), std::max(50.0, c.y()));
+                    const double ang = std::atan2(c.center.x() - org.x(), std::max(50.0, c.center.y()));
                     if (ang <= min_ang + ang_band) {
                         sector_pool.push_back(c);
                     }
@@ -518,16 +620,16 @@ private:
                 }
                 double sum_ang = 0.0;
                 for (const auto& c : sector_pool) {
-                    sum_ang += std::atan2(c.x() - org.x(), std::max(50.0, c.y()));
+                    sum_ang += std::atan2(c.center.x() - org.x(), std::max(50.0, c.center.y()));
                 }
                 const double mean_ang = sector_pool.empty()
                     ? min_ang + 0.12
                     : (sum_ang / static_cast<double>(sector_pool.size()));
 
-                std::map<NodeId, std::vector<Eigen::Vector2d>> band_cells;
+                std::map<NodeId, std::vector<UncoveredCell>> band_cells;
                 for (const auto& c : sector_pool) {
-                    const double r = (c - org).norm();
-                    const double ang = std::atan2(c.x() - org.x(), std::max(50.0, c.y()));
+                    const double r = (c.center - org).norm();
+                    const double ang = std::atan2(c.center.x() - org.x(), std::max(50.0, c.center.y()));
                     NodeId best_id = hop_sorted.front();
                     double best_score = std::numeric_limits<double>::infinity();
                     for (NodeId id : hop_sorted) {
@@ -561,16 +663,16 @@ private:
                     const double max_r = static_cast<double>(beacon_hop_.at(id)) * edge_step_m;
                     if (!band_cells[id].empty()) {
                         const auto& pool = band_cells[id];
-                        Eigen::Vector2d best_pt = pool.front();
+                        Eigen::Vector2d best_pt = pool.front().center;
                         double best_d = std::numeric_limits<double>::infinity();
                         for (const auto& c : pool) {
-                            const double d = (c - cur).norm();
+                            const double d = (c.center - cur).norm();
                             if (d < best_d) {
                                 best_d = d;
-                                best_pt = c;
+                                best_pt = c.center;
                             }
                         }
-                        aim_points_[id] = best_pt;
+                        selectAimPointWithHysteresis(id, pool, cert_grid, cur);
                         const Eigen::Vector2d diff = best_pt - cur;
                         const double dist = diff.norm();
                         const double standoff = std::max(0.0, sensor_radius_ - 170.0);
@@ -607,20 +709,23 @@ private:
                             desired = (span_len > 1.0e-6)
                                 ? (root_anchor_.at(id) + span_vec * (want_r / span_len)).eval()
                                 : cur;
-                            aim_points_[id] = child_avg;
+                            if (!hasValidUncertifiedAim(id, cert_grid)) {
+                                aim_cell_indices_.erase(id);
+                                aim_points_[id] = child_avg;
+                            }
                         } else {
                             const auto& pool = sector_pool.empty() ? gpool : sector_pool;
-                            Eigen::Vector2d best_pt = pool.front();
+                            Eigen::Vector2d best_pt = pool.front().center;
                             double best_d = std::numeric_limits<double>::infinity();
                             for (const auto& c : pool) {
-                                const double d = (c - cur).norm();
+                                const double d = (c.center - cur).norm();
                                 if (d < best_d) {
                                     best_d = d;
-                                    best_pt = c;
+                                    best_pt = c.center;
                                 }
                             }
                             desired = best_pt;
-                            aim_points_[id] = best_pt;
+                            selectAimPointWithHysteresis(id, pool, cert_grid, cur);
                         }
                         const double parity_shift = (id % 2 == 0) ? 45.0 : -45.0;
                         desired += parity_shift * sector_perp;
@@ -729,12 +834,12 @@ private:
         }
 
         // Voronoi assignment by slot position so each UAV sweeps its local neighborhood first
-        std::map<NodeId, std::vector<Eigen::Vector2d>> owned;
+        std::map<NodeId, std::vector<UncoveredCell>> owned;
         for (const auto& cell : uncovered) {
             NodeId best_id = mobile_ids_.front();
             double best_d2 = std::numeric_limits<double>::infinity();
             for (NodeId id : mobile_ids_) {
-                const double d2 = (cell - slots_.at(id)).squaredNorm();
+                const double d2 = (cell.center - slots_.at(id)).squaredNorm();
                 if (d2 < best_d2) {
                     best_d2 = d2;
                     best_id = id;
@@ -749,24 +854,24 @@ private:
             const Eigen::Vector2d& slot = slots_.at(id);
             const Eigen::Vector2d& cur = est_pos.at(id);
             const double reach_limit = patrol_radius_m_ + sensor_radius_;
-            Eigen::Vector2d best_pt = pool.front();
+            Eigen::Vector2d best_pt = pool.front().center;
             double best_score = std::numeric_limits<double>::infinity();
             bool found_reachable = false;
             for (const auto& c : pool) {
-                const double d_slot = (c - slot).norm();
-                const double d_cur = (c - cur).norm();
+                const double d_slot = (c.center - slot).norm();
+                const double d_cur = (c.center - cur).norm();
                 if (d_slot <= reach_limit) {
                     if (!found_reachable || d_cur < best_score) {
                         found_reachable = true;
                         best_score = d_cur;
-                        best_pt = c;
+                        best_pt = c.center;
                     }
                 } else if (!found_reachable && d_cur < best_score) {
                     best_score = d_cur;
-                    best_pt = c;
+                    best_pt = c.center;
                 }
             }
-            aim_points_[id] = best_pt;
+            selectAimPointWithHysteresis(id, pool, cert_grid, cur);
             // Stand off slightly so sensor footprint comfortably covers cell center
             const Eigen::Vector2d diff = best_pt - slot;
             const double dist = diff.norm();
@@ -789,7 +894,7 @@ private:
     double kp_ = 0.8;
     double kd_ = 1.8;
     double a_max_ = 4.0;
-    double max_yaw_rate_ = 1.8;
+    double max_yaw_rate_ = 1.0;
     double sensor_radius_ = 400.0;
     bool dynamic_chain_sweep_ = false;
     double search_speed_cap_mps_ = 0.0;
@@ -800,6 +905,7 @@ private:
     std::vector<Eigen::Vector2d> unsearched_centers_;
     std::map<NodeId, Eigen::Vector2d> targets_;
     std::map<NodeId, Eigen::Vector2d> aim_points_;
+    std::map<NodeId, int> aim_cell_indices_;
 };
 
 }  // namespace route_b_mission_detail
@@ -1113,7 +1219,8 @@ inline RouteBMissionComparison runTwoRegimeMissionComparison(
             out.stay.trajectory_samples = prefix_traj;
         }
         RouteBClosedLoopAuditor auditor(
-            scen.mobile_ids, scen.fixed_positions, mcfg.d_safe_m, mcfg.d_dep_m, 25.0, 3.0);
+            scen.mobile_ids, scen.fixed_positions, mcfg.d_safe_m, mcfg.d_dep_m, 25.0,
+            3.0, UncertaintyScaleMode::TraceRoot, mcfg.dt_s);
         route_b_mission_detail::FrontierSweepPolicy stay_sweep(
             dom.initial_tri, mcfg.patrol_radius_m, 0.8, 1.8, mcfg.a_max_mps2,
             mcfg.max_yaw_rate_radps, acfg.sensor_radius_m,
@@ -1184,7 +1291,24 @@ inline RouteBMissionComparison runTwoRegimeMissionComparison(
         bool t100_snap_captured = out.switch_arm.reached_t100;
 
         RouteBClosedLoopAuditor auditor(
-            scen.mobile_ids, scen.fixed_positions, mcfg.d_safe_m, mcfg.d_dep_m, 25.0, 3.0);
+            scen.mobile_ids, scen.fixed_positions, mcfg.d_safe_m, mcfg.d_dep_m, 25.0,
+            3.0, UncertaintyScaleMode::TraceRoot, mcfg.dt_s);
+
+        auto compute_vel_yaw_rates = [&](const GrandFinaleRuntimeSnapshot& snap) {
+            std::map<NodeId, double> cur_yaw;
+            for (const auto& robot : swarm_sw.robots) {
+                cur_yaw[robot->id] = robot->model->getStateVariable("yawRad");
+            }
+            std::map<NodeId, double> yaw;
+            for (std::size_t i = 0; i < snap.estimate.mobile_ids.size(); ++i) {
+                const NodeId id = snap.estimate.mobile_ids[i];
+                const Eigen::Vector2d v_est =
+                    snap.estimate.mean.segment<2>(4 * static_cast<Eigen::Index>(i) + 2);
+                yaw[id] = computeVelocityAlignedYawRate(
+                    v_est, cur_yaw.at(id), mcfg.max_yaw_rate_radps);
+            }
+            return yaw;
+        };
 
         // Compute transfer plan (direct-matched or berth-mediated)
         std::vector<RouteBMove> sw_moves;
@@ -1265,8 +1389,7 @@ inline RouteBMissionComparison runTwoRegimeMissionComparison(
                 } catch (const std::exception& e) {
                     throw std::runtime_error(std::string("entry_nom: ") + e.what());
                 }
-                std::map<NodeId, double> yaw;
-                for (NodeId id : scen.mobile_ids) yaw[id] = 0.6 * mcfg.max_yaw_rate_radps;
+                const auto yaw = compute_vel_yaw_rates(snap);
                 try {
                     const auto step = adapter_sw.stepWithNominalAndYawRates(nom, yaw);
                     if (!step.advanced) {
@@ -1297,8 +1420,7 @@ inline RouteBMissionComparison runTwoRegimeMissionComparison(
                     }
                 }
             } else if (stage == SwitchStage::Reconfig) {
-                std::map<NodeId, double> yaw;
-                for (NodeId id : scen.mobile_ids) yaw[id] = 0.5 * mcfg.max_yaw_rate_radps;
+                auto yaw = compute_vel_yaw_rates(adapter_sw.runtimeSnapshot());
                 bool done = false;
                 try {
                     done = pipe_session->stepOnce(&yaw);

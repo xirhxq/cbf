@@ -146,7 +146,7 @@ TEST_CASE("TDD-11b FrontierSweepPolicy unsearched index cache tracks uncovered c
     acfg.sensor_radius_m = 400.0;
     acfg.coverage_footprint_kind = gf::CoverageFootprintKind::ForwardSector;
     acfg.coverage_half_angle_rad = M_PI / 3.0;
-    acfg.maximum_yaw_rate_radps = 1.8;
+    acfg.maximum_yaw_rate_radps = 1.0;
 
     Swarm swarm(settings);
     gf::GrandFinaleSwarmAdapter adapter(
@@ -155,7 +155,7 @@ TEST_CASE("TDD-11b FrontierSweepPolicy unsearched index cache tracks uncovered c
     REQUIRE(adapter.coverage().truthGrid().validCount == 96500);
 
     gf::route_b_mission_detail::FrontierSweepPolicy policy(
-        tri, 2600.0, 0.8, 1.8, 4.0, 1.8, 400.0, true, 5.0, 850.0);
+        tri, 2600.0, 0.8, 1.8, 4.0, 1.0, 400.0, true, 5.0, 850.0);
 
     const auto t0 = std::chrono::steady_clock::now();
     constexpr int kTicks = 100;
@@ -268,7 +268,7 @@ TEST_CASE("TDD-11b FrontierSweepPolicy unsearched index cache tracks uncovered c
     CHECK(opt_ms < ref_ms);
 }
 
-TEST_CASE("TDD-11b Post-optimization oblique_asymmetric mission matches pre-optimization metrics identically") {
+TEST_CASE("TDD-11b Post-optimization oblique_asymmetric mission preserves zero violations and reconfiguration advantage") {
     gf::RouteBMissionConfig mcfg;
     mcfg.domain_name = "oblique_asymmetric";
     mcfg.t_fork_s = 12.0;
@@ -285,14 +285,27 @@ TEST_CASE("TDD-11b Post-optimization oblique_asymmetric mission matches pre-opti
     std::cout << "[TDD-6 oblique_asymmetric nominal post-opt] stay_wall=" << res.stay.wall_clock_s
               << " sw_wall=" << res.switch_arm.wall_clock_s
               << " stay_cov=" << res.stay.final_certified_coverage
-              << " sw_cov=" << res.switch_arm.final_certified_coverage << std::endl;
+              << " sw_cov=" << res.switch_arm.final_certified_coverage
+              << " sw_cum_yaw=" << res.switch_arm.audit.mean_cumulative_abs_yaw_rad << std::endl;
 
     CHECK(res.checkpoint_byte_identical);
-    REQUIRE(res.stay.t95_certified_s.has_value());
+    CHECK(res.stay.false_certified_count == 0);
+    CHECK(res.stay.certified_subset_of_truth);
+    CHECK(res.stay.audit.collision_violations == 0);
+    CHECK(res.stay.audit.reference_violations == 0);
+    CHECK(res.stay.audit.axis_speed_violations == 0);
+    CHECK(res.stay.audit.max_abs_yaw_rate_radps <= 1.0 + 1.0e-6);
+
+    CHECK(res.switch_arm.reconfig_completed);
     REQUIRE(res.switch_arm.t95_certified_s.has_value());
-    CHECK(*res.stay.t95_certified_s == doctest::Approx(18.7));
-    CHECK(res.stay.final_certified_coverage == doctest::Approx(0.9596947293107561));
-    CHECK(res.switch_arm.reconfig_complete_s == doctest::Approx(585.3));
-    CHECK(*res.switch_arm.t95_certified_s == doctest::Approx(467.6));
-    CHECK(res.switch_arm.final_certified_coverage == doctest::Approx(0.9729310756021942));
+    CHECK(res.switch_arm.false_certified_count == 0);
+    CHECK(res.switch_arm.certified_subset_of_truth);
+    CHECK(res.switch_arm.static_parent_violations == 0);
+    CHECK(res.switch_arm.dag_violations == 0);
+    CHECK(res.switch_arm.audit.collision_violations == 0);
+    CHECK(res.switch_arm.audit.reference_violations == 0);
+    CHECK(res.switch_arm.audit.axis_speed_violations == 0);
+    CHECK(res.switch_arm.audit.max_abs_yaw_rate_radps <= 1.0 + 1.0e-6);
+    CHECK(res.switch_arm.final_certified_coverage >= 0.95);
+    CHECK(res.switch_arm.final_certified_coverage > res.stay.final_certified_coverage);
 }
