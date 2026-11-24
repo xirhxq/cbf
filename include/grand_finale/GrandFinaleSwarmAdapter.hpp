@@ -73,15 +73,21 @@ inline bool referenceEdgeInitialSetAudited(
 inline double posteriorPairPositionTube(
     const JointEstimateSnapshot& snapshot,
     const DirectedEdge& edge,
-    double uncertainty_sigma) {
+    double uncertainty_sigma,
+    UncertaintyScaleMode scale_mode = UncertaintyScaleMode::MaxEigenvalue) {
     if (!std::isfinite(uncertainty_sigma) || uncertainty_sigma < 0.0)
         throw std::invalid_argument("uncertainty sigma must be non-negative");
-    const double owner = std::sqrt(std::max(
-        0.0, detail::maximumPositionEigenvalue(snapshot, edge.owner)));
-    const double reference = std::sqrt(std::max(
-        0.0, detail::maximumPositionEigenvalue(snapshot, edge.reference)));
-    return uncertainty_sigma * (owner + reference);
+    const double owner = detail::positionScaleRadius(
+        snapshot, edge.owner, uncertainty_sigma, scale_mode);
+    const double reference = detail::positionScaleRadius(
+        snapshot, edge.reference, uncertainty_sigma, scale_mode);
+    return owner + reference;
 }
+
+enum class RangeMeasurementScope {
+    AllWithinCutoff,
+    ActiveTopologyAndAuxiliary
+};
 
 struct GrandFinaleSwarmAdapterConfig {
     SolverProfile solver_profile = SolverProfile::OpenSource;
@@ -264,6 +270,15 @@ struct GrandFinaleSwarmAdapterConfig {
     double range_noise_std_m = 0.0;
     double range_dropout_probability = 0.0;
     DistanceRangeAvailability distance_range_availability;
+    Cbf2026UwbChannelConfig cbf2026_uwb_channel;
+    UncertaintyScaleMode uncertainty_scale_mode =
+        UncertaintyScaleMode::MaxEigenvalue;
+    double axis_velocity_limit_mps = 0.0;
+    double axis_velocity_cbf_gain = 5.0;
+    double normalized_range_innovation_gate_sigma = 0.0;
+    bool minimal_runtime_gating = false;
+    RangeMeasurementScope range_measurement_scope =
+        RangeMeasurementScope::AllWithinCutoff;
     double sensor_radius_m = 1.6;
     CoverageFootprintKind coverage_footprint_kind =
         CoverageFootprintKind::Circular;
@@ -696,6 +711,16 @@ public:
             config_.range_dropout_probability > 1.0 ||
             (config_.distance_range_availability.enabled &&
              config_.range_dropout_probability != 0.0) ||
+            (config_.cbf2026_uwb_channel.enabled &&
+             config_.range_dropout_probability != 0.0) ||
+            (config_.distance_range_availability.enabled &&
+             config_.cbf2026_uwb_channel.enabled) ||
+            !std::isfinite(config_.axis_velocity_limit_mps) ||
+            config_.axis_velocity_limit_mps < 0.0 ||
+            !std::isfinite(config_.axis_velocity_cbf_gain) ||
+            config_.axis_velocity_cbf_gain <= 0.0 ||
+            !std::isfinite(config_.normalized_range_innovation_gate_sigma) ||
+            config_.normalized_range_innovation_gate_sigma < 0.0 ||
             !std::isfinite(config_.position_gain) ||
             config_.position_gain < 0.0 ||
             !std::isfinite(config_.velocity_gain) ||
@@ -711,6 +736,7 @@ public:
              !config_.predictive_gamma_tau_mps2.has_value())) {
             throw std::invalid_argument("invalid GrandFinale safety configuration");
         }
+        config_.cbf2026_uwb_channel.validate();
         supervisor_.initializeTopology(std::move(initial_topology), 1);
     }
 
@@ -1478,7 +1504,8 @@ public:
             supervisor_.topology(),new_edge,old_edge,
             supervisor_.topologyVersion(),estimator_.version()};
         return TransitionCertifier{}.certify(
-            proposal,certificationContext(snapshot,{new_edge}),true);
+            proposal,certificationContext(snapshot,{new_edge}),
+            !config_.minimal_runtime_gating);
     }
 
     // Read-only necessary admission test for a finite conversion plan at ONE
@@ -1495,7 +1522,8 @@ public:
         for (const auto& pair:replacements) {
             result.push_back(TransitionCertifier{}.certify(
                 {edges,pair.first,pair.second,context.topology_version,
-                 context.estimator_version},context,true));
+                 context.estimator_version},context,
+                !config_.minimal_runtime_gating));
             if (!result.back().valid) break;
             edges=result.back().successor_edges;
         }
@@ -1573,7 +1601,7 @@ public:
         const JointEstimateSnapshot snapshot = estimator_.reconstructForAudit();
         const TransitionCertificate certificate = TransitionCertifier{}.certify(
             refreshed, certificationContext(snapshot, {refreshed.new_edge}),
-            true);
+            !config_.minimal_runtime_gating);
         last_certification_reason_ = certificate.reason;
         if (defer_invalid_certificate&&!certificate.valid) return false;
         if (!supervisor_.finishMakeBeforeBreak(
@@ -1614,7 +1642,8 @@ public:
             supervisor_.topology(), *previous.old_edge, *previous.new_edge,
             supervisor_.topologyVersion(), estimator_.version()};
         const TransitionCertificate certificate = TransitionCertifier{}.certify(
-            reverse, certificationContext(snapshot, {reverse.new_edge}), true);
+            reverse, certificationContext(snapshot, {reverse.new_edge}),
+            !config_.minimal_runtime_gating);
         if (!certificate.valid ||
             !supervisor_.beginMakeBeforeBreak(
                 certificate, supervisor_.topologyVersion(),
@@ -1664,6 +1693,15 @@ public:
     const std::string& lastCertificationReason() const {
         return last_certification_reason_;
     }
+    void setAuxiliaryRangeEdges(std::vector<DirectedEdge> edges) {
+        auxiliary_range_edges_ = std::move(edges);
+    }
+    void clearAuxiliaryRangeEdges() {
+        auxiliary_range_edges_.clear();
+    }
+    const std::vector<DirectedEdge>& auxiliaryRangeEdges() const {
+        return auxiliary_range_edges_;
+    }
     GrandFinaleFixedRestartState fixedRestartState() const {
         if (supervisor_.mode()!=SupervisorMode::Search ||
             supervisor_.transitionPending() || pending_proposal_.has_value() ||
@@ -1683,6 +1721,7 @@ public:
         if (config_.range_noise_std_m!=0.0 ||
             config_.range_dropout_probability!=0.0 ||
             config_.distance_range_availability.enabled ||
+            config_.cbf2026_uwb_channel.enabled ||
             !state.stage_zero_initialized ||
             state.mode!=SupervisorMode::Search ||
             supervisor_.mode()!=SupervisorMode::Search ||
@@ -1912,9 +1951,9 @@ private:
             const double coverage_error = std::max(
                 config_.certified_shadow_single_position_support_m,
                 std::max(config_.certified_error_bound_m,
-                    config_.uncertainty_sigma*std::sqrt(std::max(
-                        0.0,detail::maximumPositionEigenvalue(
-                            snapshot,mobile_ids_[index])))));
+                    detail::positionScaleRadius(
+                        snapshot,mobile_ids_[index],config_.uncertainty_sigma,
+                        config_.uncertainty_scale_mode)));
             if (config_.coverage_footprint_kind ==
                 CoverageFootprintKind::ForwardSector) {
                 coverage_.observeSector(
@@ -2046,6 +2085,8 @@ private:
             config_.workspace_braking_acceleration_mps2;
         request.workspace_braking_regularization_m=
             config_.workspace_braking_regularization_m;
+        request.axis_velocity_limit_mps = config_.axis_velocity_limit_mps;
+        request.axis_velocity_cbf_gain = config_.axis_velocity_cbf_gain;
         if (config_.speed_limit_mps > 0.0 && config_.speed_row_nominal &&
             !config_.speed_rows_removed) {
             for (NodeId id : mobile_ids_) {
@@ -2053,13 +2094,24 @@ private:
                     0.0,0.0,
                     SnapshotTubeProvenance::CovarianceSigmaDevelopment};
             }
+        } else if (config_.axis_velocity_limit_mps > 0.0) {
+            for (NodeId id : mobile_ids_) {
+                request.speed_snapshot_tubes[id] = {
+                    0.0,
+                    detail::velocityScaleRadius(
+                        snapshot,id,config_.uncertainty_sigma,
+                        config_.uncertainty_scale_mode)+
+                        config_.certified_shadow_single_velocity_support_mps,
+                    SnapshotTubeProvenance::CovarianceSigmaDevelopment};
+            }
         }
         if (config_.speed_limit_mps > 0.0) {
             for (NodeId id : mobile_ids_) {
                 request.plant_speed_snapshot_tubes[id] = {
                     0.0,
-                    config_.uncertainty_sigma*std::sqrt(std::max(
-                        0.0,detail::maximumVelocityEigenvalue(snapshot,id)))+
+                    detail::velocityScaleRadius(
+                        snapshot,id,config_.uncertainty_sigma,
+                        config_.uncertainty_scale_mode)+
                         config_.certified_shadow_single_velocity_support_mps,
                     SnapshotTubeProvenance::CovarianceSigmaDevelopment};
             }
@@ -2071,11 +2123,13 @@ private:
             request.workspace_facets=boundary.hard_facets;
             for (NodeId id : mobile_ids_) {
                 request.workspace_snapshot_tubes[id] = {
-                    config_.uncertainty_sigma*std::sqrt(std::max(
-                        0.0,detail::maximumPositionEigenvalue(snapshot,id)))+
+                    detail::positionScaleRadius(
+                        snapshot,id,config_.uncertainty_sigma,
+                        config_.uncertainty_scale_mode)+
                         config_.certified_shadow_single_position_support_m,
-                    config_.uncertainty_sigma*std::sqrt(std::max(
-                        0.0,detail::maximumVelocityEigenvalue(snapshot,id))),
+                    detail::velocityScaleRadius(
+                        snapshot,id,config_.uncertainty_sigma,
+                        config_.uncertainty_scale_mode),
                     SnapshotTubeProvenance::CovarianceSigmaDevelopment};
             }
         }
@@ -2114,11 +2168,13 @@ private:
         request.facets=blueprint.soft_facets;
         for (NodeId id : mobile_ids_)
             request.snapshot_tubes[id]={
-                config_.uncertainty_sigma*std::sqrt(std::max(
-                    0.0,detail::maximumPositionEigenvalue(snapshot,id)))+
+                detail::positionScaleRadius(
+                    snapshot,id,config_.uncertainty_sigma,
+                    config_.uncertainty_scale_mode)+
                     config_.certified_shadow_single_position_support_m,
-                config_.uncertainty_sigma*std::sqrt(std::max(
-                    0.0,detail::maximumVelocityEigenvalue(snapshot,id)))+
+                detail::velocityScaleRadius(
+                    snapshot,id,config_.uncertainty_sigma,
+                    config_.uncertainty_scale_mode)+
                     config_.certified_shadow_single_velocity_support_mps,
                 SnapshotTubeProvenance::CovarianceSigmaDevelopment};
         return buildBoundarySoftRows(request);
@@ -2142,6 +2198,7 @@ private:
             config_.maximum_posterior_eigenvalue_m2;
         context.gamma_accept = 0.05;
         context.estimate = snapshot;
+        context.disable_fim_and_posterior_gates = config_.minimal_runtime_gating;
         std::vector<NodeId> information_references=mobile_ids_;
         for (const auto& [id,position]:fixed_positions_) {
             (void)position;
@@ -2191,7 +2248,9 @@ private:
             config_.maximum_range_aoi_s,
             config_.maximum_reference_position_eigenvalue_m2,
             config_.minimum_range_quality,
-            config_.uncertainty_sigma};
+            config_.uncertainty_sigma,
+            config_.uncertainty_scale_mode,
+            config_.minimal_runtime_gating};
         const EligibilitySnapshot keep_eligibility = buildEligibility(
             snapshot, links, thresholds, supervisor_.topology());
         const EligibilitySnapshot add_eligibility = buildEligibility(
@@ -2221,7 +2280,9 @@ private:
                 context.range_variances_m2[range_id] = variance->second;
         }
         context.hard_row_request = hardRowRequest(snapshot, edges);
-        context.nominal_controls = nominalControls(supervisor_.mode(), snapshot);
+        if (!config_.minimal_runtime_gating) {
+            context.nominal_controls = nominalControls(supervisor_.mode(), snapshot);
+        }
         context.progress_compatibility = config_.progress_compatibility;
         return context;
     }
@@ -2244,7 +2305,8 @@ private:
         for (const DirectedEdge& edge : edges) {
             maximum = std::max(
                 maximum, posteriorPairPositionTube(
-                    snapshot, edge, config_.uncertainty_sigma));
+                    snapshot, edge, config_.uncertainty_sigma,
+                    config_.uncertainty_scale_mode));
         }
         return maximum;
     }
@@ -2253,18 +2315,22 @@ private:
         const JointEstimateSnapshot& snapshot,
         NodeId first,
         NodeId second) const {
-        const double first_position = std::sqrt(std::max(
-            0.0, detail::maximumPositionEigenvalue(snapshot, first)));
-        const double second_position = std::sqrt(std::max(
-            0.0, detail::maximumPositionEigenvalue(snapshot, second)));
-        const double first_velocity = std::sqrt(std::max(
-            0.0, detail::maximumVelocityEigenvalue(snapshot, first)));
-        const double second_velocity = std::sqrt(std::max(
-            0.0, detail::maximumVelocityEigenvalue(snapshot, second)));
+        const double first_position = detail::positionScaleRadius(
+            snapshot, first, config_.uncertainty_sigma,
+            config_.uncertainty_scale_mode);
+        const double second_position = detail::positionScaleRadius(
+            snapshot, second, config_.uncertainty_sigma,
+            config_.uncertainty_scale_mode);
+        const double first_velocity = detail::velocityScaleRadius(
+            snapshot, first, config_.uncertainty_sigma,
+            config_.uncertainty_scale_mode);
+        const double second_velocity = detail::velocityScaleRadius(
+            snapshot, second, config_.uncertainty_sigma,
+            config_.uncertainty_scale_mode);
         return PairwiseSnapshotTube{
-            config_.uncertainty_sigma * (first_position + second_position) +
+            first_position + second_position +
                 config_.certified_shadow_relative_position_support_m,
-            config_.uncertainty_sigma * (first_velocity + second_velocity) +
+            first_velocity + second_velocity +
                 config_.certified_shadow_relative_velocity_support_mps,
             SnapshotTubeProvenance::CovarianceSigmaDevelopment};
     }
@@ -2273,21 +2339,17 @@ private:
         const JointEstimateSnapshot& snapshot) const {
         double maximum = 0.0;
         for (std::size_t first = 0; first < mobile_ids_.size(); ++first) {
-            const double first_sigma = std::sqrt(std::max(
-                0.0, detail::maximumPositionEigenvalue(
-                    snapshot, mobile_ids_[first])));
+            const double first_tube = detail::positionScaleRadius(
+                snapshot, mobile_ids_[first], config_.uncertainty_sigma,
+                config_.uncertainty_scale_mode);
             for (std::size_t second = first + 1;
                  second < mobile_ids_.size(); ++second) {
-                const double second_sigma = std::sqrt(std::max(
-                    0.0, detail::maximumPositionEigenvalue(
-                        snapshot, mobile_ids_[second])));
-                maximum = std::max(
-                    maximum,
-                    config_.uncertainty_sigma *
-                        (first_sigma + second_sigma));
+                const double second_tube = detail::positionScaleRadius(
+                    snapshot, mobile_ids_[second], config_.uncertainty_sigma,
+                    config_.uncertainty_scale_mode);
+                maximum = std::max(maximum, first_tube + second_tube);
             }
-            maximum = std::max(
-                maximum, config_.uncertainty_sigma * first_sigma);
+            maximum = std::max(maximum, first_tube);
         }
         return maximum;
     }
@@ -2309,24 +2371,47 @@ private:
         std::vector<RangeMeasurement> measurements;
         const std::int64_t timestamp = static_cast<std::int64_t>(
             std::llround(swarm_.robots.front()->runtime * 1.0e9));
-        for (std::size_t first = 0; first < mobile_ids_.size(); ++first) {
-            for (std::size_t second = first + 1;
-                 second < mobile_ids_.size(); ++second) {
-                const auto edge = UndirectedEdge::canonical(
-                    mobile_ids_[first], mobile_ids_[second]);
+        if (config_.range_measurement_scope ==
+            RangeMeasurementScope::ActiveTopologyAndAuxiliary) {
+            std::set<std::pair<NodeId, NodeId>> scheduled;
+            for (const DirectedEdge& edge : supervisor_.topology()) {
+                const auto ue =
+                    UndirectedEdge::canonical(edge.owner, edge.reference);
+                scheduled.insert({ue.first, ue.second});
+            }
+            for (const DirectedEdge& edge : auxiliary_range_edges_) {
+                if (edge.owner == edge.reference) continue;
+                const auto ue =
+                    UndirectedEdge::canonical(edge.owner, edge.reference);
+                scheduled.insert({ue.first, ue.second});
+            }
+            for (const auto& [first_id, second_id] : scheduled) {
+                const auto edge = UndirectedEdge::canonical(first_id, second_id);
                 measurements.push_back({
                     timestamp, edge,
                     (truthPosition(edge.first) - truthPosition(edge.second)).norm(),
                     1.0});
             }
-            for (const auto& [fixed, point] : fixed_positions_) {
-                (void)point;
-                const auto edge = UndirectedEdge::canonical(
-                    mobile_ids_[first], fixed);
-                measurements.push_back({
-                    timestamp, edge,
-                    (truthPosition(edge.first) - truthPosition(edge.second)).norm(),
-                    1.0});
+        } else {
+            for (std::size_t first = 0; first < mobile_ids_.size(); ++first) {
+                for (std::size_t second = first + 1;
+                     second < mobile_ids_.size(); ++second) {
+                    const auto edge = UndirectedEdge::canonical(
+                        mobile_ids_[first], mobile_ids_[second]);
+                    measurements.push_back({
+                        timestamp, edge,
+                        (truthPosition(edge.first) - truthPosition(edge.second)).norm(),
+                        1.0});
+                }
+                for (const auto& [fixed, point] : fixed_positions_) {
+                    (void)point;
+                    const auto edge = UndirectedEdge::canonical(
+                        mobile_ids_[first], fixed);
+                    measurements.push_back({
+                        timestamp, edge,
+                        (truthPosition(edge.first) - truthPosition(edge.second)).norm(),
+                        1.0});
+                }
             }
         }
         for (const RangeMeasurement& measurement :
@@ -2344,12 +2429,30 @@ private:
                 last_range_generation_audit_.push_back({range_batch_count_,measurement.edge,
                     measurement.range_m,model.acquisitionProbability(measurement.range_m),uniform,acquired});
                 dropped=!acquired;
+            } else if (config_.cbf2026_uwb_channel.enabled) {
+                const auto& model = config_.cbf2026_uwb_channel;
+                const double uniform = range_noise_detail::openUnit(
+                    range_noise_detail::keyedBits(model.link_seed, range_batch_count_,
+                        measurement.edge, 0x6a09e667f3bcc909ULL));
+                const bool acquired = model.acquired(measurement.range_m, uniform);
+                last_range_generation_audit_.push_back({
+                    range_batch_count_, measurement.edge, measurement.range_m,
+                    model.acquisitionProbability(measurement.range_m), uniform, acquired});
+                dropped = !acquired;
             }
             if (dropped) {
                 continue;
             }
             RangeMeasurement accepted = measurement;
-            if (config_.range_noise_std_m > 0.0) {
+            if (config_.cbf2026_uwb_channel.enabled) {
+                const double true_sigma =
+                    config_.cbf2026_uwb_channel.rangingStdM(measurement.range_m);
+                accepted.range_m += true_sigma * field.standard_normal;
+                const double causal_range_m = std::max(0.0, accepted.range_m);
+                const double causal_sigma =
+                    config_.cbf2026_uwb_channel.rangingStdM(causal_range_m);
+                accepted.variance_m2 = causal_sigma * causal_sigma;
+            } else if (config_.range_noise_std_m > 0.0) {
                 accepted.range_m += config_.range_noise_std_m *
                     field.standard_normal;
                 accepted.variance_m2 = std::max(
@@ -2363,7 +2466,15 @@ private:
                 ? measurement.edge.first : measurement.edge.second;
             const InterimMasterMessage update =
                 estimator_.makeUpdate(master, accepted);
-            if (std::abs(update.innovation) >
+            if (config_.normalized_range_innovation_gate_sigma > 0.0) {
+                if (!std::isfinite(update.innovation_variance) ||
+                    update.innovation_variance <= 0.0 ||
+                    std::abs(update.innovation) >
+                        config_.normalized_range_innovation_gate_sigma *
+                            std::sqrt(update.innovation_variance)) {
+                    continue;
+                }
+            } else if (std::abs(update.innovation) >
                 config_.maximum_accepted_range_innovation_m) {
                 continue;
             }
@@ -2408,6 +2519,7 @@ private:
     std::map<std::string, double> range_variance_m2_;
     std::vector<AcceptedRangeUpdateAudit> last_accepted_range_batch_audit_;
     std::vector<RangeGenerationAudit> last_range_generation_audit_;
+    std::vector<DirectedEdge> auxiliary_range_edges_;
     std::optional<std::map<NodeId, Eigen::Vector2d>> nominal_override_;
     std::optional<Swarm::CertifiedYawRateBatch> yaw_rate_override_;
     std::size_t range_batch_count_ = 0;

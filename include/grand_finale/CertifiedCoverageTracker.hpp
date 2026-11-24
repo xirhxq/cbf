@@ -107,38 +107,55 @@ public:
                 std::sin(bearing-heading_rad),
                 std::cos(bearing-heading_rad)));
         };
+        const double r_bound = outer_radius_m + 1.0e-6;
+        const double x_min_box = std::min(truth_position.x, estimated_position.x) - r_bound;
+        const double x_max_box = std::max(truth_position.x, estimated_position.x) + r_bound;
+        const double y_min_box = std::min(truth_position.y, estimated_position.y) - r_bound;
+        const double y_max_box = std::max(truth_position.y, estimated_position.y) + r_bound;
         for (int x=0; x<truth_.xNum; ++x) {
+            const double cx = truth_.getCellCenterX(x);
+            if (cx < x_min_box || cx > x_max_box) continue;
             for (int y=0; y<truth_.yNum; ++y) {
-                const Point cell(
-                    truth_.getCellCenterX(x),truth_.getCellCenterY(y));
-                const double truth_dx = cell.x-truth_position.x;
-                const double truth_dy = cell.y-truth_position.y;
-                const double truth_distance = std::hypot(truth_dx,truth_dy);
-                const bool truth_angle = truth_distance <= 1e-12 ||
-                    angular_error(truth_dy,truth_dx) <= half_angle_rad+1e-12;
-                if (truth_distance >= inner_radius_m-1e-12 &&
-                    truth_distance <= outer_radius_m+1e-12 && truth_angle) {
-                    truth_.setValue(x,y,true);
+                const int idx = truth_.getIndex(x, y);
+                if (!truth_.valid[idx] || (truth_.vis[idx] && certified_.vis[idx])) continue;
+                const double cy = truth_.getCellCenterY(y);
+                if (cy < y_min_box || cy > y_max_box) continue;
+
+                const double truth_dx = cx-truth_position.x;
+                const double truth_dy = cy-truth_position.y;
+                const double truth_d2 = truth_dx*truth_dx + truth_dy*truth_dy;
+                if (truth_d2 <= (outer_radius_m+1e-12)*(outer_radius_m+1e-12)) {
+                    const double truth_distance = std::sqrt(truth_d2);
+                    if (truth_distance >= inner_radius_m-1e-12 &&
+                        truth_distance <= outer_radius_m+1e-12) {
+                        const bool truth_angle = truth_distance <= 1e-12 ||
+                            angular_error(truth_dy,truth_dx) <= half_angle_rad+1e-12;
+                        if (truth_angle) truth_.setValue(x,y,true);
+                    }
                 }
 
-                const double estimated_dx = cell.x-estimated_position.x;
-                const double estimated_dy = cell.y-estimated_position.y;
-                const double estimated_distance =
-                    std::hypot(estimated_dx,estimated_dy);
-                bool angular_containment = half_angle_rad >= M_PI-1e-12;
-                if (!angular_containment && estimated_distance > reserve) {
-                    const double angular_reserve = std::asin(std::min(
-                        1.0,reserve/estimated_distance));
-                    angular_containment =
-                        angular_error(estimated_dy,estimated_dx)+angular_reserve
-                        <= half_angle_rad+1e-12;
+                const double estimated_dx = cx-estimated_position.x;
+                const double estimated_dy = cy-estimated_position.y;
+                const double max_est = outer_radius_m + 1e-12 - reserve;
+                if (max_est >= 0.0 &&
+                    estimated_dx*estimated_dx + estimated_dy*estimated_dy <= max_est*max_est) {
+                    const double estimated_distance = std::hypot(estimated_dx,estimated_dy);
+                    const bool radial_containment =
+                        estimated_distance+reserve <= outer_radius_m+1e-12 &&
+                        (inner_radius_m <= 1e-12 ||
+                         estimated_distance-reserve >= inner_radius_m-1e-12);
+                    if (radial_containment) {
+                        bool angular_containment = half_angle_rad >= M_PI-1e-12;
+                        if (!angular_containment && estimated_distance > reserve) {
+                            const double angular_reserve = std::asin(std::min(
+                                1.0,reserve/estimated_distance));
+                            angular_containment =
+                                angular_error(estimated_dy,estimated_dx)+angular_reserve
+                                <= half_angle_rad+1e-12;
+                        }
+                        if (angular_containment) certified_.setValue(x,y,true);
+                    }
                 }
-                const bool radial_containment =
-                    estimated_distance+reserve <= outer_radius_m+1e-12 &&
-                    (inner_radius_m <= 1e-12 ||
-                     estimated_distance-reserve >= inner_radius_m-1e-12);
-                if (radial_containment && angular_containment)
-                    certified_.setValue(x,y,true);
             }
         }
     }

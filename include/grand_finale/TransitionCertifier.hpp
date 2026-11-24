@@ -42,6 +42,7 @@ struct TransitionCertificationContext {
     CanonicalHardRowRequest hard_row_request;
     std::map<NodeId, Eigen::Vector2d> nominal_controls;
     ProgressCompatibilityConfig progress_compatibility;
+    bool disable_fim_and_posterior_gates = false;
 };
 
 struct TransitionProposal {
@@ -139,30 +140,32 @@ inline CertifiedTopologyState evaluateState(
             return result;
         }
     }
-    for (NodeId owner : context.mobile_ids) {
-        if (!posteriorPositionHealthy(
-                context.estimate, owner,
-                context.max_posterior_eigenvalue_m2)) {
-            result.reason = "posterior";
-            return result;
-        }
-        std::vector<DirectedEdge> owner_edges;
-        for (const DirectedEdge& edge : context.information_edges)
-            if (edge.owner == owner) owner_edges.push_back(edge);
-        if (owner_edges.size()<2) {
-            result.reason = "information_edges";
-            return result;
-        }
-        const Eigen::Matrix2d fim = referenceFim(
-            owner, owner_edges, context.estimate,
-            context.information_range_variances_m2);
-        const double minimum_fim =
-            Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d>(fim)
-                .eigenvalues().minCoeff();
-        if (!std::isfinite(minimum_fim) ||
-            minimum_fim < context.min_fim_eigenvalue) {
-            result.reason = "fim";
-            return result;
+    if (!context.disable_fim_and_posterior_gates) {
+        for (NodeId owner : context.mobile_ids) {
+            if (!posteriorPositionHealthy(
+                    context.estimate, owner,
+                    context.max_posterior_eigenvalue_m2)) {
+                result.reason = "posterior";
+                return result;
+            }
+            std::vector<DirectedEdge> owner_edges;
+            for (const DirectedEdge& edge : context.information_edges)
+                if (edge.owner == owner) owner_edges.push_back(edge);
+            if (owner_edges.size()<2) {
+                result.reason = "information_edges";
+                return result;
+            }
+            const Eigen::Matrix2d fim = referenceFim(
+                owner, owner_edges, context.estimate,
+                context.information_range_variances_m2);
+            const double minimum_fim =
+                Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d>(fim)
+                    .eigenvalues().minCoeff();
+            if (!std::isfinite(minimum_fim) ||
+                minimum_fim < context.min_fim_eigenvalue) {
+                result.reason = "fim";
+                return result;
+            }
         }
     }
     CanonicalHardRowRequest hard_row_request = context.hard_row_request;

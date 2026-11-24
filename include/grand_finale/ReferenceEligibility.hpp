@@ -19,6 +19,11 @@ struct RangeLinkState {
     double quality;
 };
 
+enum class UncertaintyScaleMode {
+    MaxEigenvalue,
+    TraceRoot
+};
+
 struct EligibilityThresholds {
     double add_distance_m;
     double keep_distance_m;
@@ -26,6 +31,8 @@ struct EligibilityThresholds {
     double max_reference_position_eigenvalue_m2;
     double min_range_quality;
     double uncertainty_sigma;
+    UncertaintyScaleMode uncertainty_scale_mode = UncertaintyScaleMode::MaxEigenvalue;
+    bool disable_reference_covariance_gate = false;
 };
 
 struct ReferenceCandidate {
@@ -131,6 +138,46 @@ inline double maximumVelocityEigenvalue(
         .maxCoeff();
 }
 
+inline double positionTrace(
+    const JointEstimateSnapshot& estimate,
+    NodeId id) {
+    return positionCovariance(estimate, id).trace();
+}
+
+inline double velocityTrace(
+    const JointEstimateSnapshot& estimate,
+    NodeId id) {
+    return velocityCovariance(estimate, id).trace();
+}
+
+inline double positionScaleRadius(
+    const JointEstimateSnapshot& estimate,
+    NodeId id,
+    double uncertainty_sigma,
+    UncertaintyScaleMode mode) {
+    if (!std::isfinite(uncertainty_sigma) || uncertainty_sigma < 0.0) {
+        throw std::invalid_argument("uncertainty sigma must be non-negative");
+    }
+    const double scalar = mode == UncertaintyScaleMode::TraceRoot
+        ? positionTrace(estimate, id)
+        : maximumPositionEigenvalue(estimate, id);
+    return uncertainty_sigma * std::sqrt(std::max(0.0, scalar));
+}
+
+inline double velocityScaleRadius(
+    const JointEstimateSnapshot& estimate,
+    NodeId id,
+    double uncertainty_sigma,
+    UncertaintyScaleMode mode) {
+    if (!std::isfinite(uncertainty_sigma) || uncertainty_sigma < 0.0) {
+        throw std::invalid_argument("uncertainty sigma must be non-negative");
+    }
+    const double scalar = mode == UncertaintyScaleMode::TraceRoot
+        ? velocityTrace(estimate, id)
+        : maximumVelocityEigenvalue(estimate, id);
+    return uncertainty_sigma * std::sqrt(std::max(0.0, scalar));
+}
+
 }  // namespace detail
 
 inline EligibilitySnapshot buildEligibility(
@@ -167,8 +214,9 @@ inline EligibilitySnapshot buildEligibility(
 
     EligibilitySnapshot result;
     for (NodeId owner : estimate.mobile_ids) {
-        const double owner_eigenvalue =
-            detail::maximumPositionEigenvalue(estimate, owner);
+        const double owner_scale = detail::positionScaleRadius(
+            estimate, owner, thresholds.uncertainty_sigma,
+            thresholds.uncertainty_scale_mode);
         for (NodeId reference : references) {
             if (reference == owner) {
                 continue;
@@ -177,19 +225,21 @@ inline EligibilitySnapshot buildEligibility(
             const DirectedEdge edge{reference, owner};
             const double reference_eigenvalue =
                 detail::maximumPositionEigenvalue(estimate, reference);
+            const double reference_scale = detail::positionScaleRadius(
+                estimate, reference, thresholds.uncertainty_sigma,
+                thresholds.uncertainty_scale_mode);
             const double robust_distance =
                 (detail::nodePosition(estimate, owner) -
                  detail::nodePosition(estimate, reference)).norm() +
-                thresholds.uncertainty_sigma *
-                    (std::sqrt(std::max(0.0, owner_eigenvalue)) +
-                     std::sqrt(std::max(0.0, reference_eigenvalue)));
+                owner_scale + reference_scale;
 
             bool eligible = true;
             std::string reason;
             double age_s = std::numeric_limits<double>::infinity();
             if (!std::isfinite(reference_eigenvalue) ||
-                reference_eigenvalue >
-                    thresholds.max_reference_position_eigenvalue_m2) {
+                (!thresholds.disable_reference_covariance_gate &&
+                 reference_eigenvalue >
+                     thresholds.max_reference_position_eigenvalue_m2)) {
                 eligible = false;
                 reason = "reference_covariance";
             }

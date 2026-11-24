@@ -32,6 +32,7 @@ GF_CP_RECORD(SimpleCoveragePolicyConfig,GF_CP_F(allocation_epoch_cycles);GF_CP_F
 GF_CP_RECORD(NaturalSettlingConfig,GF_CP_F(position_tolerance_m);GF_CP_F(speed_tolerance_mps);GF_CP_F(yaw_tolerance_rad);GF_CP_F(dwell_cycles);)
 GF_CP_RECORD(LeaderCoverageBranchSpec,GF_CP_F(members);GF_CP_F(leader);GF_CP_F(coverage_origin);GF_CP_F(rotation_rad);GF_CP_F(preferred_fixed_roots);GF_CP_F(ladder_segments);)
 GF_CP_RECORD(DistanceRangeAvailability,GF_CP_F(enabled);GF_CP_F(link_seed);)
+GF_CP_RECORD(Cbf2026UwbChannelConfig,GF_CP_F(enabled);GF_CP_F(d_r_m);GF_CP_F(sigma0_m);GF_CP_F(d_max_m);GF_CP_F(link_seed);)
 GF_CP_RECORD(BoundaryPolicyConfig,GF_CP_F(policy);GF_CP_F(flight_polygon_source);GF_CP_F(explicit_flight_polygon);GF_CP_F(soft_slack_weight);)
 GF_CP_RECORD(ProgressCompatibilityConfig,GF_CP_F(max_projection_norm);GF_CP_F(min_direction_ratio);GF_CP_F(comparison_tolerance);GF_CP_F(zero_nominal_is_compatible);)
 GF_CP_RECORD(GrandFinaleSwarmAdapterConfig,
@@ -54,7 +55,7 @@ GF_CP_RECORD(GrandFinaleSwarmAdapterConfig,
     GF_CP_F(target_homotopy_enabled);GF_CP_F(target_homotopy_braking_acceleration_mps2);GF_CP_F(target_homotopy_rate_gain);GF_CP_F(target_homotopy_workspace_guard_m);
     GF_CP_F(maximum_yaw_rate_radps);GF_CP_F(position_gain);GF_CP_F(velocity_gain);GF_CP_F(estimator_acceleration_variance);GF_CP_F(initial_position_variance_m2);GF_CP_F(initial_velocity_variance_m2);
     GF_CP_F(certified_error_bound_m);GF_CP_F(certified_shadow_single_position_support_m);GF_CP_F(certified_shadow_single_velocity_support_mps);GF_CP_F(certified_shadow_relative_position_support_m);GF_CP_F(certified_shadow_relative_velocity_support_mps);
-    GF_CP_F(maximum_accepted_range_innovation_m);GF_CP_F(range_random_seed);GF_CP_F(range_noise_std_m);GF_CP_F(range_dropout_probability);GF_CP_F(distance_range_availability);
+    GF_CP_F(maximum_accepted_range_innovation_m);GF_CP_F(range_random_seed);GF_CP_F(range_noise_std_m);GF_CP_F(range_dropout_probability);GF_CP_F(distance_range_availability);GF_CP_F(cbf2026_uwb_channel);GF_CP_F(uncertainty_scale_mode);GF_CP_F(axis_velocity_limit_mps);GF_CP_F(axis_velocity_cbf_gain);GF_CP_F(normalized_range_innovation_gate_sigma);GF_CP_F(minimal_runtime_gating);
     GF_CP_F(sensor_radius_m);GF_CP_F(coverage_footprint_kind);GF_CP_F(coverage_inner_radius_m);GF_CP_F(coverage_half_angle_rad);
     GF_CP_F(reference_distance_m);GF_CP_F(add_reference_distance_m);GF_CP_F(reference_uncertainty_m);GF_CP_F(uncertainty_sigma);GF_CP_F(maximum_reference_position_eigenvalue_m2);GF_CP_F(maximum_posterior_eigenvalue_m2);GF_CP_F(maximum_range_aoi_s);GF_CP_F(minimum_range_quality);
     GF_CP_F(collision_distance_m);GF_CP_F(collision_lambda1);GF_CP_F(collision_lambda2);GF_CP_F(residual_tolerance);GF_CP_F(qp_oracle_tolerance);GF_CP_F(boundary);GF_CP_F(gamma_feedback_selection);GF_CP_F(predictive_gamma_tau_mps2);GF_CP_F(gamma_feedback_homotopy_segments);GF_CP_F(gamma_feedback_tolerance);GF_CP_F(progress_compatibility);
@@ -157,6 +158,32 @@ public:
         const auto before=capture(s,a,c,identity);
         try{load(s,a,c,saved);if(capture(s,a,c,identity)!=saved)throw std::runtime_error("checkpoint restored state mismatch");}
         catch(...){load(s,a,c,before);throw;}
+    }
+    static Json captureRouteB(Swarm& s,GrandFinaleSwarmAdapter& a,const Json& identity) {
+        if(!a.stage_zero_initialized_||a.nominal_override_||a.yaw_rate_override_)
+            throw std::logic_error("Route B checkpoint requires completed control boundary");
+        const Json imm{{"adapter_config",checkpoint::encode(a.config_)},{"swarm_config",s.config},
+            {"mobile_ids",checkpoint::encode(a.mobile_ids_)},{"anchors",checkpoint::encode(a.fixed_positions_)}};
+        return Json{{"schema","grand-finale-route-b-state-v1"},{"identity",identity},{"immutable",imm},
+            {"plant",component(s,plant)},{"adapter",component(a,adapter)}};
+    }
+    static void restoreRouteB(Swarm& s,GrandFinaleSwarmAdapter& a,const Json& saved,const Json& identity) {
+        if(a.nominal_override_||a.yaw_rate_override_)
+            throw std::logic_error("Route B restore requires completed control boundary");
+        const Json imm{{"adapter_config",checkpoint::encode(a.config_)},{"swarm_config",s.config},
+            {"mobile_ids",checkpoint::encode(a.mobile_ids_)},{"anchors",checkpoint::encode(a.fixed_positions_)}};
+        if(saved.size()!=5||saved.at("schema")!="grand-finale-route-b-state-v1"||saved.at("identity")!=identity||saved.at("immutable")!=imm) {
+            std::string which = "other";
+            if (saved.at("identity") != identity) which = "identity";
+            else if (saved.at("immutable").at("swarm_config") != imm.at("swarm_config")) which = "swarm_config";
+            else if (saved.at("immutable").at("adapter_config") != imm.at("adapter_config")) which = "adapter_config";
+            else if (saved.at("immutable").at("mobile_ids") != imm.at("mobile_ids")) which = "mobile_ids";
+            else if (saved.at("immutable").at("anchors") != imm.at("anchors")) which = "anchors";
+            throw std::invalid_argument("Route B checkpoint identity/configuration mismatch: " + which);
+        }
+        loadComponent(s,saved.at("plant"),plant);
+        loadComponent(a,saved.at("adapter"),adapter);
+        if(captureRouteB(s,a,identity)!=saved)throw std::runtime_error("Route B restored state mismatch");
     }
 };
 } // namespace gf

@@ -24,6 +24,7 @@ enum class CanonicalHardRowKind {
     Workspace,
     SpeedLimit,
     PlantSpeedAppliedControl,
+    AxisVelocityLimit,
     InputBox,
     Auxiliary
 };
@@ -95,6 +96,8 @@ struct CanonicalHardRowRequest {
     // consumed only by explicit historical SpeedLimit fixtures.
     double speed_limit_mps = 0.0;
     double speed_cbf_gain = 1.0;
+    double axis_velocity_limit_mps = 0.0;
+    double axis_velocity_cbf_gain = 5.0;
     // A positive facet count selects the formal plant-level speed applied-
     // control domain.  Zero retains the historical speed-CBF fixture path.
     std::size_t plant_speed_facet_count = 0;
@@ -380,7 +383,11 @@ inline std::vector<CanonicalHardRow> buildCanonicalHardRows(
     }
     if (!std::isfinite(request.speed_limit_mps) ||
         !std::isfinite(request.speed_cbf_gain) ||
-        request.speed_cbf_gain <= 0.0) {
+        request.speed_cbf_gain <= 0.0 ||
+        !std::isfinite(request.axis_velocity_limit_mps) ||
+        request.axis_velocity_limit_mps < 0.0 ||
+        !std::isfinite(request.axis_velocity_cbf_gain) ||
+        request.axis_velocity_cbf_gain <= 0.0) {
         throw std::invalid_argument("speed CBF parameters must be finite");
     }
     if (!std::isfinite(request.workspace_alpha1_gain) ||
@@ -648,6 +655,43 @@ inline std::vector<CanonicalHardRow> buildCanonicalHardRows(
             speed_row.velocity_uncertainty_reserve_mps =
                 tube.velocity_radius_mps;
             rows.push_back(std::move(speed_row));
+        }
+        if (request.axis_velocity_limit_mps > 0.0) {
+            SingleSnapshotTube2D tube;
+            const auto tube_it = request.speed_snapshot_tubes.find(owner);
+            if (tube_it != request.speed_snapshot_tubes.end()) {
+                tube = tube_it->second;
+            } else if (request.require_snapshot_robust_rows) {
+                throw std::invalid_argument("missing axis-velocity snapshot tube");
+            }
+            if (!std::isfinite(tube.velocity_radius_mps) ||
+                tube.velocity_radius_mps < 0.0) {
+                throw std::invalid_argument("invalid axis-velocity snapshot tube");
+            }
+            const Eigen::Vector2d velocity = request.states.at(owner).velocity;
+            const double limit = request.axis_velocity_limit_mps;
+            const double rho = tube.velocity_radius_mps;
+            const double gain = request.axis_velocity_cbf_gain;
+            const auto push_axis_row = [&](const char* suffix,
+                                           const Eigen::Vector2d& coeff,
+                                           double h) {
+                CanonicalHardRow row{
+                    "axis_velocity:" + std::to_string(owner) + ":" + suffix,
+                    CanonicalHardRowKind::AxisVelocityLimit, owner,
+                    std::nullopt, coeff, coeff, gain * h, 1.0, true, h, h,
+                    std::numeric_limits<double>::infinity(), 0.0};
+                row.tube_provenance = tube.provenance;
+                row.velocity_uncertainty_reserve_mps = rho;
+                rows.push_back(std::move(row));
+            };
+            push_axis_row("vx:lower", Eigen::Vector2d::UnitX(),
+                          limit - rho + velocity.x());
+            push_axis_row("vx:upper", -Eigen::Vector2d::UnitX(),
+                          limit - rho - velocity.x());
+            push_axis_row("vy:lower", Eigen::Vector2d::UnitY(),
+                          limit - rho + velocity.y());
+            push_axis_row("vy:upper", -Eigen::Vector2d::UnitY(),
+                          limit - rho - velocity.y());
         }
         const double bound = request.acceleration_half_box;
         rows.push_back(CanonicalHardRow{
