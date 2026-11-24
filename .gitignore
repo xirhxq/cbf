@@ -1,6 +1,8 @@
 cmake-build-release
 cmake-build-debug
-data*/
+data/*
+!data/geo_outputs/
+outputs/
 plot/
 .*
 !.gitignore

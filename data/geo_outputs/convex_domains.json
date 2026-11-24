@@ -1,0 +1,1433 @@
+{
+  "domains": [
+    {
+      "name": "wide_shallow_coastal",
+      "description": "Wide shallow coastal convex polygon favoring parallel multi-interval coverage",
+      "vertices": [
+        [
+          0.0,
+          220.0
+        ],
+        [
+          1600.0,
+          220.0
+        ],
+        [
+          1480.0,
+          760.0
+        ],
+        [
+          120.0,
+          760.0
+        ]
+      ],
+      "area_m2": 799200.0,
+      "centroid": [
+        800.0,
+        490.0
+      ],
+      "max_offshore_y_m": 760.0,
+      "alongshore_span_m": 1600.0,
+      "recommended_initial_formation": {
+        "beacons": {
+          "b0": [
+            0.0,
+            0.0
+          ],
+          "b1": [
+            400.0,
+            0.0
+          ],
+          "b2": [
+            800.0,
+            0.0
+          ],
+          "b3": [
+            1200.0,
+            0.0
+          ],
+          "b4": [
+            1600.0,
+            0.0
+          ]
+        },
+        "beacon_order": [
+          "b0",
+          "b1",
+          "b2",
+          "b3",
+          "b4"
+        ],
+        "positions": {
+          "1": [
+            200.0,
+            320.0
+          ],
+          "2": [
+            400.0,
+            400.0
+          ],
+          "3": [
+            200.0,
+            480.0
+          ],
+          "4": [
+            600.0,
+            320.0
+          ],
+          "5": [
+            800.0,
+            400.0
+          ],
+          "6": [
+            600.0,
+            480.0
+          ],
+          "7": [
+            1000.0,
+            320.0
+          ],
+          "8": [
+            1200.0,
+            400.0
+          ],
+          "9": [
+            1000.0,
+            480.0
+          ],
+          "10": [
+            1400.0,
+            320.0
+          ],
+          "11": [
+            1600.0,
+            400.0
+          ],
+          "12": [
+            1400.0,
+            480.0
+          ]
+        },
+        "parents": {
+          "1": [
+            "b0",
+            "b1"
+          ],
+          "2": [
+            "b1",
+            1
+          ],
+          "3": [
+            1,
+            2
+          ],
+          "4": [
+            "b1",
+            "b2"
+          ],
+          "5": [
+            "b2",
+            4
+          ],
+          "6": [
+            4,
+            5
+          ],
+          "7": [
+            "b2",
+            "b3"
+          ],
+          "8": [
+            "b3",
+            7
+          ],
+          "9": [
+            7,
+            8
+          ],
+          "10": [
+            "b3",
+            "b4"
+          ],
+          "11": [
+            "b4",
+            10
+          ],
+          "12": [
+            10,
+            11
+          ]
+        },
+        "faces": [
+          [
+            "b0",
+            "b1",
+            1
+          ],
+          [
+            "b1",
+            1,
+            2
+          ],
+          [
+            1,
+            2,
+            3
+          ],
+          [
+            "b1",
+            "b2",
+            4
+          ],
+          [
+            "b2",
+            4,
+            5
+          ],
+          [
+            4,
+            5,
+            6
+          ],
+          [
+            "b2",
+            "b3",
+            7
+          ],
+          [
+            "b3",
+            7,
+            8
+          ],
+          [
+            7,
+            8,
+            9
+          ],
+          [
+            "b3",
+            "b4",
+            10
+          ],
+          [
+            "b4",
+            10,
+            11
+          ],
+          [
+            10,
+            11,
+            12
+          ]
+        ],
+        "h_b_m": 100.0,
+        "h_c_m": 140.0
+      },
+      "recommended_target_formation": {
+        "beacons": {
+          "b0": [
+            0.0,
+            0.0
+          ],
+          "b1": [
+            400.0,
+            0.0
+          ],
+          "b2": [
+            800.0,
+            0.0
+          ],
+          "b3": [
+            1200.0,
+            0.0
+          ],
+          "b4": [
+            1600.0,
+            0.0
+          ]
+        },
+        "beacon_order": [
+          "b0",
+          "b1",
+          "b2",
+          "b3",
+          "b4"
+        ],
+        "positions": {
+          "1": [
+            200.0,
+            320.0
+          ],
+          "2": [
+            400.0,
+            400.0
+          ],
+          "3": [
+            200.0,
+            480.0
+          ],
+          "4": [
+            400.0,
+            560.0
+          ],
+          "5": [
+            600.0,
+            320.0
+          ],
+          "6": [
+            800.0,
+            400.0
+          ],
+          "7": [
+            1000.0,
+            320.0
+          ],
+          "8": [
+            1200.0,
+            400.0
+          ],
+          "9": [
+            1400.0,
+            320.0
+          ],
+          "10": [
+            1600.0,
+            400.0
+          ],
+          "11": [
+            1400.0,
+            480.0
+          ],
+          "12": [
+            1600.0,
+            560.0
+          ]
+        },
+        "parents": {
+          "1": [
+            "b0",
+            "b1"
+          ],
+          "2": [
+            "b1",
+            1
+          ],
+          "3": [
+            1,
+            2
+          ],
+          "4": [
+            2,
+            3
+          ],
+          "5": [
+            "b1",
+            "b2"
+          ],
+          "6": [
+            "b2",
+            5
+          ],
+          "7": [
+            "b2",
+            "b3"
+          ],
+          "8": [
+            "b3",
+            7
+          ],
+          "9": [
+            "b3",
+            "b4"
+          ],
+          "10": [
+            "b4",
+            9
+          ],
+          "11": [
+            9,
+            10
+          ],
+          "12": [
+            10,
+            11
+          ]
+        },
+        "faces": [
+          [
+            "b0",
+            "b1",
+            1
+          ],
+          [
+            "b1",
+            1,
+            2
+          ],
+          [
+            1,
+            2,
+            3
+          ],
+          [
+            2,
+            3,
+            4
+          ],
+          [
+            "b1",
+            "b2",
+            5
+          ],
+          [
+            "b2",
+            5,
+            6
+          ],
+          [
+            "b2",
+            "b3",
+            7
+          ],
+          [
+            "b3",
+            7,
+            8
+          ],
+          [
+            "b3",
+            "b4",
+            9
+          ],
+          [
+            "b4",
+            9,
+            10
+          ],
+          [
+            9,
+            10,
+            11
+          ],
+          [
+            10,
+            11,
+            12
+          ]
+        ],
+        "h_b_m": 100.0,
+        "h_c_m": 140.0
+      }
+    },
+    {
+      "name": "narrow_deep_offshore",
+      "description": "Narrow deep offshore convex polygon triggering deep-reach merging",
+      "vertices": [
+        [
+          380.0,
+          250.0
+        ],
+        [
+          820.0,
+          250.0
+        ],
+        [
+          760.0,
+          1550.0
+        ],
+        [
+          440.0,
+          1550.0
+        ]
+      ],
+      "area_m2": 494000.0,
+      "centroid": [
+        600.0,
+        900.0
+      ],
+      "max_offshore_y_m": 1550.0,
+      "alongshore_span_m": 440.0,
+      "recommended_initial_formation": {
+        "beacons": {
+          "b0": [
+            0.0,
+            0.0
+          ],
+          "b1": [
+            400.0,
+            0.0
+          ],
+          "b2": [
+            800.0,
+            0.0
+          ],
+          "b3": [
+            1200.0,
+            0.0
+          ]
+        },
+        "beacon_order": [
+          "b0",
+          "b1",
+          "b2",
+          "b3"
+        ],
+        "positions": {
+          "1": [
+            200.0,
+            380.0
+          ],
+          "2": [
+            400.0,
+            470.0
+          ],
+          "3": [
+            200.0,
+            560.0
+          ],
+          "4": [
+            400.0,
+            650.0
+          ],
+          "5": [
+            200.0,
+            740.0
+          ],
+          "6": [
+            400.0,
+            830.0
+          ],
+          "7": [
+            200.0,
+            920.0
+          ],
+          "8": [
+            1000.0,
+            380.0
+          ],
+          "9": [
+            1200.0,
+            470.0
+          ],
+          "10": [
+            1000.0,
+            560.0
+          ],
+          "11": [
+            1200.0,
+            650.0
+          ],
+          "12": [
+            1000.0,
+            740.0
+          ],
+          "13": [
+            1200.0,
+            830.0
+          ],
+          "14": [
+            1000.0,
+            920.0
+          ]
+        },
+        "parents": {
+          "1": [
+            "b0",
+            "b1"
+          ],
+          "2": [
+            "b1",
+            1
+          ],
+          "3": [
+            1,
+            2
+          ],
+          "4": [
+            2,
+            3
+          ],
+          "5": [
+            3,
+            4
+          ],
+          "6": [
+            4,
+            5
+          ],
+          "7": [
+            5,
+            6
+          ],
+          "8": [
+            "b2",
+            "b3"
+          ],
+          "9": [
+            "b3",
+            8
+          ],
+          "10": [
+            8,
+            9
+          ],
+          "11": [
+            9,
+            10
+          ],
+          "12": [
+            10,
+            11
+          ],
+          "13": [
+            11,
+            12
+          ],
+          "14": [
+            12,
+            13
+          ]
+        },
+        "faces": [
+          [
+            "b0",
+            "b1",
+            1
+          ],
+          [
+            "b1",
+            1,
+            2
+          ],
+          [
+            1,
+            2,
+            3
+          ],
+          [
+            2,
+            3,
+            4
+          ],
+          [
+            3,
+            4,
+            5
+          ],
+          [
+            4,
+            5,
+            6
+          ],
+          [
+            5,
+            6,
+            7
+          ],
+          [
+            "b2",
+            "b3",
+            8
+          ],
+          [
+            "b3",
+            8,
+            9
+          ],
+          [
+            8,
+            9,
+            10
+          ],
+          [
+            9,
+            10,
+            11
+          ],
+          [
+            10,
+            11,
+            12
+          ],
+          [
+            11,
+            12,
+            13
+          ],
+          [
+            12,
+            13,
+            14
+          ]
+        ],
+        "h_b_m": 100.0,
+        "h_c_m": 140.0
+      },
+      "recommended_target_formation": {
+        "beacons": {
+          "b0": [
+            0.0,
+            0.0
+          ],
+          "b1": [
+            400.0,
+            0.0
+          ],
+          "b2": [
+            800.0,
+            0.0
+          ],
+          "b3": [
+            1200.0,
+            0.0
+          ]
+        },
+        "beacon_order": [
+          "b0",
+          "b1",
+          "b2",
+          "b3"
+        ],
+        "positions": {
+          "1": [
+            600.0,
+            380.0
+          ],
+          "2": [
+            800.0,
+            470.0
+          ],
+          "3": [
+            600.0,
+            560.0
+          ],
+          "4": [
+            800.0,
+            650.0
+          ],
+          "5": [
+            600.0,
+            740.0
+          ],
+          "6": [
+            800.0,
+            830.0
+          ],
+          "7": [
+            600.0,
+            920.0
+          ],
+          "8": [
+            800.0,
+            1010.0
+          ],
+          "9": [
+            600.0,
+            1100.0
+          ],
+          "10": [
+            800.0,
+            1190.0
+          ],
+          "11": [
+            600.0,
+            1280.0
+          ],
+          "12": [
+            800.0,
+            1370.0
+          ],
+          "13": [
+            600.0,
+            1460.0
+          ],
+          "14": [
+            800.0,
+            1550.0
+          ]
+        },
+        "parents": {
+          "1": [
+            "b1",
+            "b2"
+          ],
+          "2": [
+            "b2",
+            1
+          ],
+          "3": [
+            1,
+            2
+          ],
+          "4": [
+            2,
+            3
+          ],
+          "5": [
+            3,
+            4
+          ],
+          "6": [
+            4,
+            5
+          ],
+          "7": [
+            5,
+            6
+          ],
+          "8": [
+            6,
+            7
+          ],
+          "9": [
+            7,
+            8
+          ],
+          "10": [
+            8,
+            9
+          ],
+          "11": [
+            9,
+            10
+          ],
+          "12": [
+            10,
+            11
+          ],
+          "13": [
+            11,
+            12
+          ],
+          "14": [
+            12,
+            13
+          ]
+        },
+        "faces": [
+          [
+            "b1",
+            "b2",
+            1
+          ],
+          [
+            "b2",
+            1,
+            2
+          ],
+          [
+            1,
+            2,
+            3
+          ],
+          [
+            2,
+            3,
+            4
+          ],
+          [
+            3,
+            4,
+            5
+          ],
+          [
+            4,
+            5,
+            6
+          ],
+          [
+            5,
+            6,
+            7
+          ],
+          [
+            6,
+            7,
+            8
+          ],
+          [
+            7,
+            8,
+            9
+          ],
+          [
+            8,
+            9,
+            10
+          ],
+          [
+            9,
+            10,
+            11
+          ],
+          [
+            10,
+            11,
+            12
+          ],
+          [
+            11,
+            12,
+            13
+          ],
+          [
+            12,
+            13,
+            14
+          ]
+        ],
+        "h_b_m": 100.0,
+        "h_c_m": 140.0
+      }
+    },
+    {
+      "name": "oblique_asymmetric",
+      "description": "Oblique asymmetric convex pentagon skewed across offshore intervals",
+      "vertices": [
+        [
+          100.0,
+          240.0
+        ],
+        [
+          920.0,
+          260.0
+        ],
+        [
+          1420.0,
+          880.0
+        ],
+        [
+          960.0,
+          1280.0
+        ],
+        [
+          320.0,
+          920.0
+        ]
+      ],
+      "area_m2": 838400.0,
+      "centroid": [
+        744.0,
+        716.0
+      ],
+      "max_offshore_y_m": 1280.0,
+      "alongshore_span_m": 1320.0,
+      "recommended_initial_formation": {
+        "beacons": {
+          "b0": [
+            0.0,
+            0.0
+          ],
+          "b1": [
+            400.0,
+            0.0
+          ],
+          "b2": [
+            800.0,
+            0.0
+          ],
+          "b3": [
+            1200.0,
+            0.0
+          ]
+        },
+        "beacon_order": [
+          "b0",
+          "b1",
+          "b2",
+          "b3"
+        ],
+        "positions": {
+          "1": [
+            200.0,
+            346.41016151377545
+          ],
+          "2": [
+            600.0,
+            346.41016151377545
+          ],
+          "3": [
+            1000.0,
+            346.41016151377545
+          ],
+          "4": [
+            400.0,
+            692.8203230275509
+          ],
+          "5": [
+            800.0,
+            692.8203230275509
+          ],
+          "6": [
+            600.0,
+            1039.2304845413264
+          ]
+        },
+        "parents": {
+          "1": [
+            "b0",
+            "b1"
+          ],
+          "2": [
+            "b1",
+            "b2"
+          ],
+          "3": [
+            "b2",
+            "b3"
+          ],
+          "4": [
+            1,
+            2
+          ],
+          "5": [
+            2,
+            3
+          ],
+          "6": [
+            4,
+            5
+          ]
+        },
+        "faces": [
+          [
+            "b0",
+            "b1",
+            1
+          ],
+          [
+            "b1",
+            "b2",
+            2
+          ],
+          [
+            "b2",
+            "b3",
+            3
+          ],
+          [
+            1,
+            2,
+            4
+          ],
+          [
+            2,
+            3,
+            5
+          ],
+          [
+            4,
+            5,
+            6
+          ],
+          [
+            1,
+            "b1",
+            2
+          ],
+          [
+            2,
+            "b2",
+            3
+          ],
+          [
+            4,
+            2,
+            5
+          ]
+        ],
+        "h_b_m": 100.0,
+        "h_c_m": 140.0
+      },
+      "recommended_target_formation": {
+        "beacons": {
+          "b0": [
+            0.0,
+            0.0
+          ],
+          "b1": [
+            400.0,
+            0.0
+          ],
+          "b2": [
+            800.0,
+            0.0
+          ],
+          "b3": [
+            1200.0,
+            0.0
+          ]
+        },
+        "beacon_order": [
+          "b0",
+          "b1",
+          "b2",
+          "b3"
+        ],
+        "positions": {
+          "1": [
+            600.0,
+            380.0
+          ],
+          "2": [
+            800.0,
+            470.0
+          ],
+          "3": [
+            600.0,
+            560.0
+          ],
+          "4": [
+            1000.0,
+            380.0
+          ],
+          "5": [
+            1200.0,
+            470.0
+          ],
+          "6": [
+            1000.0,
+            560.0
+          ]
+        },
+        "parents": {
+          "1": [
+            "b1",
+            "b2"
+          ],
+          "2": [
+            "b2",
+            1
+          ],
+          "3": [
+            1,
+            2
+          ],
+          "4": [
+            "b2",
+            "b3"
+          ],
+          "5": [
+            "b3",
+            4
+          ],
+          "6": [
+            4,
+            5
+          ]
+        },
+        "faces": [
+          [
+            "b1",
+            "b2",
+            1
+          ],
+          [
+            "b2",
+            1,
+            2
+          ],
+          [
+            1,
+            2,
+            3
+          ],
+          [
+            "b2",
+            "b3",
+            4
+          ],
+          [
+            "b3",
+            4,
+            5
+          ],
+          [
+            4,
+            5,
+            6
+          ]
+        ],
+        "h_b_m": 100.0,
+        "h_c_m": 140.0
+      }
+    }
+  ],
+  "depth_scaling_uwb": {
+    "channel": {
+      "d_dep_m": 850.0,
+      "d_max_m": 1200.0,
+      "d_r_m": 600.0,
+      "d_safe_m": 10.0,
+      "v_axis_max_mps": 25.0,
+      "uncertainty_scale": "3*sqrt(tr(P_p))",
+      "dt_s": 0.1
+    },
+    "series": {
+      "sigma_0_0.5": [
+        {
+          "n": 2,
+          "y_tip_m": 400.0,
+          "crlb_parents_only_m": 4.1282,
+          "crlb_all_le_dmax_m": 2.5544,
+          "dare_parents_only_sigma_a_025_m": 1.1771,
+          "dare_all_le_dmax_sigma_a_025_m": 0.901,
+          "dare_parents_only_sigma_a_050_m": 1.3906,
+          "dare_all_le_dmax_sigma_a_050_m": 1.0629
+        },
+        {
+          "n": 3,
+          "y_tip_m": 500.0,
+          "crlb_parents_only_m": 5.3158,
+          "crlb_all_le_dmax_m": 2.5883,
+          "dare_parents_only_sigma_a_025_m": 1.3591,
+          "dare_all_le_dmax_sigma_a_025_m": 0.9106,
+          "dare_parents_only_sigma_a_050_m": 1.6071,
+          "dare_all_le_dmax_sigma_a_050_m": 1.0745
+        },
+        {
+          "n": 4,
+          "y_tip_m": 600.0,
+          "crlb_parents_only_m": 6.7822,
+          "crlb_all_le_dmax_m": 2.8459,
+          "dare_parents_only_sigma_a_025_m": 1.6041,
+          "dare_all_le_dmax_sigma_a_025_m": 0.985,
+          "dare_parents_only_sigma_a_050_m": 1.8982,
+          "dare_all_le_dmax_sigma_a_050_m": 1.163
+        },
+        {
+          "n": 5,
+          "y_tip_m": 700.0,
+          "crlb_parents_only_m": 8.3949,
+          "crlb_all_le_dmax_m": 3.0157,
+          "dare_parents_only_sigma_a_025_m": 1.8324,
+          "dare_all_le_dmax_sigma_a_025_m": 1.0386,
+          "dare_parents_only_sigma_a_050_m": 2.1698,
+          "dare_all_le_dmax_sigma_a_050_m": 1.2267
+        },
+        {
+          "n": 6,
+          "y_tip_m": 800.0,
+          "crlb_parents_only_m": 10.2104,
+          "crlb_all_le_dmax_m": 3.3671,
+          "dare_parents_only_sigma_a_025_m": 2.0867,
+          "dare_all_le_dmax_sigma_a_025_m": 1.1332,
+          "dare_parents_only_sigma_a_050_m": 2.4721,
+          "dare_all_le_dmax_sigma_a_050_m": 1.3393
+        },
+        {
+          "n": 7,
+          "y_tip_m": 900.0,
+          "crlb_parents_only_m": 12.1468,
+          "crlb_all_le_dmax_m": 3.617,
+          "dare_parents_only_sigma_a_025_m": 2.3294,
+          "dare_all_le_dmax_sigma_a_025_m": 1.2087,
+          "dare_parents_only_sigma_a_050_m": 2.7607,
+          "dare_all_le_dmax_sigma_a_050_m": 1.4291
+        },
+        {
+          "n": 8,
+          "y_tip_m": 1000.0,
+          "crlb_parents_only_m": 14.2449,
+          "crlb_all_le_dmax_m": 4.0941,
+          "dare_parents_only_sigma_a_025_m": 2.5857,
+          "dare_all_le_dmax_sigma_a_025_m": 1.3178,
+          "dare_parents_only_sigma_a_050_m": 3.0654,
+          "dare_all_le_dmax_sigma_a_050_m": 1.5589
+        },
+        {
+          "n": 9,
+          "y_tip_m": 1100.0,
+          "crlb_parents_only_m": 16.4493,
+          "crlb_all_le_dmax_m": 4.6824,
+          "dare_parents_only_sigma_a_025_m": 2.8342,
+          "dare_all_le_dmax_sigma_a_025_m": 1.4343,
+          "dare_parents_only_sigma_a_050_m": 3.361,
+          "dare_all_le_dmax_sigma_a_050_m": 1.6974
+        },
+        {
+          "n": 10,
+          "y_tip_m": 1200.0,
+          "crlb_parents_only_m": 18.791,
+          "crlb_all_le_dmax_m": 5.357,
+          "dare_parents_only_sigma_a_025_m": 3.0909,
+          "dare_all_le_dmax_sigma_a_025_m": 1.5633,
+          "dare_parents_only_sigma_a_050_m": 3.6663,
+          "dare_all_le_dmax_sigma_a_050_m": 1.8508
+        },
+        {
+          "n": 11,
+          "y_tip_m": 1300.0,
+          "crlb_parents_only_m": 21.2295,
+          "crlb_all_le_dmax_m": 6.037,
+          "dare_parents_only_sigma_a_025_m": 3.3423,
+          "dare_all_le_dmax_sigma_a_025_m": 1.6866,
+          "dare_parents_only_sigma_a_050_m": 3.9652,
+          "dare_all_le_dmax_sigma_a_050_m": 1.9975
+        },
+        {
+          "n": 12,
+          "y_tip_m": 1400.0,
+          "crlb_parents_only_m": 23.7891,
+          "crlb_all_le_dmax_m": 6.7612,
+          "dare_parents_only_sigma_a_025_m": 3.5992,
+          "dare_all_le_dmax_sigma_a_025_m": 1.8148,
+          "dare_parents_only_sigma_a_050_m": 4.2707,
+          "dare_all_le_dmax_sigma_a_050_m": 2.15
+        },
+        {
+          "n": 13,
+          "y_tip_m": 1500.0,
+          "crlb_parents_only_m": 26.4385,
+          "crlb_all_le_dmax_m": 7.4834,
+          "dare_parents_only_sigma_a_025_m": 3.8522,
+          "dare_all_le_dmax_sigma_a_025_m": 1.9383,
+          "dare_parents_only_sigma_a_050_m": 4.5716,
+          "dare_all_le_dmax_sigma_a_050_m": 2.2968
+        },
+        {
+          "n": 14,
+          "y_tip_m": 1600.0,
+          "crlb_parents_only_m": 29.1973,
+          "crlb_all_le_dmax_m": 8.2526,
+          "dare_parents_only_sigma_a_025_m": 4.1091,
+          "dare_all_le_dmax_sigma_a_025_m": 2.0659,
+          "dare_parents_only_sigma_a_050_m": 4.8771,
+          "dare_all_le_dmax_sigma_a_050_m": 2.4486
+        }
+      ],
+      "sigma_0_1.0": [
+        {
+          "n": 2,
+          "y_tip_m": 400.0,
+          "crlb_parents_only_m": 8.2565,
+          "crlb_all_le_dmax_m": 5.1087,
+          "dare_parents_only_sigma_a_025_m": 1.9891,
+          "dare_all_le_dmax_sigma_a_025_m": 1.5241,
+          "dare_parents_only_sigma_a_050_m": 2.3543,
+          "dare_all_le_dmax_sigma_a_050_m": 1.8021
+        },
+        {
+          "n": 3,
+          "y_tip_m": 500.0,
+          "crlb_parents_only_m": 10.6315,
+          "crlb_all_le_dmax_m": 5.1766,
+          "dare_parents_only_sigma_a_025_m": 2.295,
+          "dare_all_le_dmax_sigma_a_025_m": 1.54,
+          "dare_parents_only_sigma_a_050_m": 2.7183,
+          "dare_all_le_dmax_sigma_a_050_m": 1.8212
+        },
+        {
+          "n": 4,
+          "y_tip_m": 600.0,
+          "crlb_parents_only_m": 13.5644,
+          "crlb_all_le_dmax_m": 5.6918,
+          "dare_parents_only_sigma_a_025_m": 2.7071,
+          "dare_all_le_dmax_sigma_a_025_m": 1.6651,
+          "dare_parents_only_sigma_a_050_m": 3.2081,
+          "dare_all_le_dmax_sigma_a_050_m": 1.9701
+        },
+        {
+          "n": 5,
+          "y_tip_m": 700.0,
+          "crlb_parents_only_m": 16.7897,
+          "crlb_all_le_dmax_m": 6.0315,
+          "dare_parents_only_sigma_a_025_m": 3.0912,
+          "dare_all_le_dmax_sigma_a_025_m": 1.7551,
+          "dare_parents_only_sigma_a_050_m": 3.6649,
+          "dare_all_le_dmax_sigma_a_050_m": 2.0771
+        },
+        {
+          "n": 6,
+          "y_tip_m": 800.0,
+          "crlb_parents_only_m": 20.4209,
+          "crlb_all_le_dmax_m": 6.7342,
+          "dare_parents_only_sigma_a_025_m": 3.5188,
+          "dare_all_le_dmax_sigma_a_025_m": 1.9142,
+          "dare_parents_only_sigma_a_050_m": 4.1733,
+          "dare_all_le_dmax_sigma_a_050_m": 2.2664
+        },
+        {
+          "n": 7,
+          "y_tip_m": 900.0,
+          "crlb_parents_only_m": 24.2936,
+          "crlb_all_le_dmax_m": 7.2341,
+          "dare_parents_only_sigma_a_025_m": 3.9271,
+          "dare_all_le_dmax_sigma_a_025_m": 2.0411,
+          "dare_parents_only_sigma_a_050_m": 4.6588,
+          "dare_all_le_dmax_sigma_a_050_m": 2.4174
+        },
+        {
+          "n": 8,
+          "y_tip_m": 1000.0,
+          "crlb_parents_only_m": 28.4898,
+          "crlb_all_le_dmax_m": 8.1881,
+          "dare_parents_only_sigma_a_025_m": 4.3581,
+          "dare_all_le_dmax_sigma_a_025_m": 2.2247,
+          "dare_parents_only_sigma_a_050_m": 5.1713,
+          "dare_all_le_dmax_sigma_a_050_m": 2.6357
+        },
+        {
+          "n": 9,
+          "y_tip_m": 1100.0,
+          "crlb_parents_only_m": 32.8987,
+          "crlb_all_le_dmax_m": 9.3648,
+          "dare_parents_only_sigma_a_025_m": 4.7761,
+          "dare_all_le_dmax_sigma_a_025_m": 2.4205,
+          "dare_parents_only_sigma_a_050_m": 5.6684,
+          "dare_all_le_dmax_sigma_a_050_m": 2.8685
+        },
+        {
+          "n": 10,
+          "y_tip_m": 1200.0,
+          "crlb_parents_only_m": 37.5821,
+          "crlb_all_le_dmax_m": 10.7139,
+          "dare_parents_only_sigma_a_025_m": 5.2078,
+          "dare_all_le_dmax_sigma_a_025_m": 2.6374,
+          "dare_parents_only_sigma_a_050_m": 6.1818,
+          "dare_all_le_dmax_sigma_a_050_m": 3.1265
+        },
+        {
+          "n": 11,
+          "y_tip_m": 1300.0,
+          "crlb_parents_only_m": 42.4591,
+          "crlb_all_le_dmax_m": 12.0739,
+          "dare_parents_only_sigma_a_025_m": 5.6306,
+          "dare_all_le_dmax_sigma_a_025_m": 2.8448,
+          "dare_parents_only_sigma_a_050_m": 6.6846,
+          "dare_all_le_dmax_sigma_a_050_m": 3.3732
+        },
+        {
+          "n": 12,
+          "y_tip_m": 1400.0,
+          "crlb_parents_only_m": 47.5782,
+          "crlb_all_le_dmax_m": 13.5224,
+          "dare_parents_only_sigma_a_025_m": 6.0626,
+          "dare_all_le_dmax_sigma_a_025_m": 3.0604,
+          "dare_parents_only_sigma_a_050_m": 7.1983,
+          "dare_all_le_dmax_sigma_a_050_m": 3.6296
+        },
+        {
+          "n": 13,
+          "y_tip_m": 1500.0,
+          "crlb_parents_only_m": 52.877,
+          "crlb_all_le_dmax_m": 14.9668,
+          "dare_parents_only_sigma_a_025_m": 6.4881,
+          "dare_all_le_dmax_sigma_a_025_m": 3.268,
+          "dare_parents_only_sigma_a_050_m": 7.7044,
+          "dare_all_le_dmax_sigma_a_050_m": 3.8766
+        },
+        {
+          "n": 14,
+          "y_tip_m": 1600.0,
+          "crlb_parents_only_m": 58.3946,
+          "crlb_all_le_dmax_m": 16.5053,
+          "dare_parents_only_sigma_a_025_m": 6.9202,
+          "dare_all_le_dmax_sigma_a_025_m": 3.4826,
+          "dare_parents_only_sigma_a_050_m": 8.2182,
+          "dare_all_le_dmax_sigma_a_050_m": 4.1318
+        }
+      ]
+    }
+  }
+}

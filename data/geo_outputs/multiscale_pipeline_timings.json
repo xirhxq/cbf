@@ -1,0 +1,3417 @@
+{
+  "a_crit_assumptions": {
+    "r0_m2_per_s": 6700.0,
+    "r1_m2_per_s": 13400.0,
+    "v_axis_max_mps": 25.0
+  },
+  "multiscale": [
+    {
+      "scale_N": 6,
+      "beacons_M": 3,
+      "v_cruise_mps": 4.0,
+      "t_settle_s": 10.0,
+      "d_pipe_m": 60.0,
+      "stall_prob": 0.15,
+      "serial": {
+        "makespan_s": 2483.0,
+        "total_distance_m": 9648.52373903232,
+        "num_moves": 6,
+        "gantt": [
+          {
+            "node": 6,
+            "start_s": 0.0,
+            "end_s": 392.5,
+            "duration_s": 392.5
+          },
+          {
+            "node": 5,
+            "start_s": 392.5,
+            "end_s": 811.5,
+            "duration_s": 419.0
+          },
+          {
+            "node": 4,
+            "start_s": 811.5,
+            "end_s": 1241.5,
+            "duration_s": 430.0
+          },
+          {
+            "node": 3,
+            "start_s": 1241.5,
+            "end_s": 1671.5,
+            "duration_s": 430.0
+          },
+          {
+            "node": 2,
+            "start_s": 1671.5,
+            "end_s": 2090.5,
+            "duration_s": 419.0
+          },
+          {
+            "node": 1,
+            "start_s": 2090.5,
+            "end_s": 2483.0,
+            "duration_s": 392.5
+          }
+        ],
+        "a_crit_km2": 33.272
+      },
+      "serial_reversible_berth": {
+        "makespan_s": 2666.0,
+        "total_distance_m": 10128.523739032324,
+        "num_moves": 12,
+        "gantt": [
+          {
+            "node": 6,
+            "start_s": 0.0,
+            "end_s": 324.0,
+            "duration_s": 324.0
+          },
+          {
+            "node": 5,
+            "start_s": 324.0,
+            "end_s": 610.5,
+            "duration_s": 286.5
+          },
+          {
+            "node": 4,
+            "start_s": 610.5,
+            "end_s": 859.5,
+            "duration_s": 249.0
+          },
+          {
+            "node": 3,
+            "start_s": 859.5,
+            "end_s": 1071.0,
+            "duration_s": 211.5
+          },
+          {
+            "node": 2,
+            "start_s": 1071.0,
+            "end_s": 1234.0,
+            "duration_s": 163.0
+          },
+          {
+            "node": 1,
+            "start_s": 1234.0,
+            "end_s": 1333.0,
+            "duration_s": 99.0
+          },
+          {
+            "node": 6,
+            "start_s": 1333.0,
+            "end_s": 1432.0,
+            "duration_s": 99.0
+          },
+          {
+            "node": 5,
+            "start_s": 1432.0,
+            "end_s": 1595.0,
+            "duration_s": 163.0
+          },
+          {
+            "node": 4,
+            "start_s": 1595.0,
+            "end_s": 1806.5,
+            "duration_s": 211.5
+          },
+          {
+            "node": 3,
+            "start_s": 1806.5,
+            "end_s": 2055.5,
+            "duration_s": 249.0
+          },
+          {
+            "node": 2,
+            "start_s": 2055.5,
+            "end_s": 2342.0,
+            "duration_s": 286.5
+          },
+          {
+            "node": 1,
+            "start_s": 2342.0,
+            "end_s": 2666.0,
+            "duration_s": 324.0
+          }
+        ],
+        "a_crit_km2": 35.724
+      },
+      "serial_with_delays": {
+        "makespan_s": 2919.0,
+        "total_distance_m": 9648.52373903232,
+        "num_moves": 6,
+        "gantt": [
+          {
+            "node": 6,
+            "start_s": 0.0,
+            "end_s": 459.5,
+            "duration_s": 459.5
+          },
+          {
+            "node": 5,
+            "start_s": 459.5,
+            "end_s": 952.0,
+            "duration_s": 492.5
+          },
+          {
+            "node": 4,
+            "start_s": 952.0,
+            "end_s": 1455.0,
+            "duration_s": 503.0
+          },
+          {
+            "node": 3,
+            "start_s": 1455.0,
+            "end_s": 1955.5,
+            "duration_s": 500.5
+          },
+          {
+            "node": 2,
+            "start_s": 1955.5,
+            "end_s": 2455.5,
+            "duration_s": 500.0
+          },
+          {
+            "node": 1,
+            "start_s": 2455.5,
+            "end_s": 2919.0,
+            "duration_s": 463.5
+          }
+        ],
+        "a_crit_km2": 39.115
+      },
+      "pipelined_deterministic": {
+        "makespan_s": 1006.0,
+        "ticks": 2012,
+        "deadlocked": false,
+        "final_matched": true,
+        "static_parent_violations": 0,
+        "acyclic_all_ticks": true,
+        "min_in_degree": 2,
+        "min_moving_separation_m": 59.999999999999964,
+        "min_clearance_m": 59.999999999999964,
+        "max_reference_m": 616.1168720299745,
+        "gantt": [
+          {
+            "node": 1,
+            "start_s": 601.0,
+            "end_s": 1005.5,
+            "duration_s": 404.5
+          },
+          {
+            "node": 2,
+            "start_s": 301.0,
+            "end_s": 915.0,
+            "duration_s": 614.0
+          },
+          {
+            "node": 3,
+            "start_s": 166.5,
+            "end_s": 824.5,
+            "duration_s": 658.0
+          },
+          {
+            "node": 4,
+            "start_s": 111.0,
+            "end_s": 694.5,
+            "duration_s": 583.5
+          },
+          {
+            "node": 5,
+            "start_s": 55.5,
+            "end_s": 538.5,
+            "duration_s": 483.0
+          },
+          {
+            "node": 6,
+            "start_s": 0.0,
+            "end_s": 392.0,
+            "duration_s": 392.0
+          }
+        ],
+        "speedup_vs_serial": 2.468,
+        "speedup_vs_reversible_serial": 2.65,
+        "a_crit_km2": 13.48
+      },
+      "pipelined_with_delays": {
+        "makespan_s": 1191.5,
+        "ticks": 2383,
+        "deadlocked": false,
+        "final_matched": true,
+        "static_parent_violations": 0,
+        "acyclic_all_ticks": true,
+        "min_in_degree": 2,
+        "min_moving_separation_m": 59.999999999999964,
+        "min_clearance_m": 59.999999999999964,
+        "max_reference_m": 617.1709649683789,
+        "gantt": [
+          {
+            "node": 1,
+            "start_s": 720.5,
+            "end_s": 1191.0,
+            "duration_s": 470.5
+          },
+          {
+            "node": 2,
+            "start_s": 359.0,
+            "end_s": 1083.0,
+            "duration_s": 724.0
+          },
+          {
+            "node": 3,
+            "start_s": 199.5,
+            "end_s": 969.0,
+            "duration_s": 769.5
+          },
+          {
+            "node": 4,
+            "start_s": 131.0,
+            "end_s": 817.5,
+            "duration_s": 686.5
+          },
+          {
+            "node": 5,
+            "start_s": 64.5,
+            "end_s": 639.5,
+            "duration_s": 575.0
+          },
+          {
+            "node": 6,
+            "start_s": 0.0,
+            "end_s": 461.5,
+            "duration_s": 461.5
+          }
+        ],
+        "speedup_vs_serial_delayed": 2.45,
+        "speedup_vs_serial_det": 2.084,
+        "a_crit_km2": 15.966
+      }
+    },
+    {
+      "scale_N": 6,
+      "beacons_M": 3,
+      "v_cruise_mps": 10.0,
+      "t_settle_s": 5.0,
+      "d_pipe_m": 60.0,
+      "stall_prob": 0.15,
+      "serial": {
+        "makespan_s": 1004.0,
+        "total_distance_m": 9648.52373903232,
+        "num_moves": 6,
+        "gantt": [
+          {
+            "node": 6,
+            "start_s": 0.0,
+            "end_s": 158.5,
+            "duration_s": 158.5
+          },
+          {
+            "node": 5,
+            "start_s": 158.5,
+            "end_s": 328.0,
+            "duration_s": 169.5
+          },
+          {
+            "node": 4,
+            "start_s": 328.0,
+            "end_s": 502.0,
+            "duration_s": 174.0
+          },
+          {
+            "node": 3,
+            "start_s": 502.0,
+            "end_s": 676.0,
+            "duration_s": 174.0
+          },
+          {
+            "node": 2,
+            "start_s": 676.0,
+            "end_s": 845.5,
+            "duration_s": 169.5
+          },
+          {
+            "node": 1,
+            "start_s": 845.5,
+            "end_s": 1004.0,
+            "duration_s": 158.5
+          }
+        ],
+        "a_crit_km2": 13.454
+      },
+      "serial_reversible_berth": {
+        "makespan_s": 1082.0,
+        "total_distance_m": 10128.523739032324,
+        "num_moves": 12,
+        "gantt": [
+          {
+            "node": 6,
+            "start_s": 0.0,
+            "end_s": 131.0,
+            "duration_s": 131.0
+          },
+          {
+            "node": 5,
+            "start_s": 131.0,
+            "end_s": 247.0,
+            "duration_s": 116.0
+          },
+          {
+            "node": 4,
+            "start_s": 247.0,
+            "end_s": 348.0,
+            "duration_s": 101.0
+          },
+          {
+            "node": 3,
+            "start_s": 348.0,
+            "end_s": 434.0,
+            "duration_s": 86.0
+          },
+          {
+            "node": 2,
+            "start_s": 434.0,
+            "end_s": 500.5,
+            "duration_s": 66.5
+          },
+          {
+            "node": 1,
+            "start_s": 500.5,
+            "end_s": 541.0,
+            "duration_s": 40.5
+          },
+          {
+            "node": 6,
+            "start_s": 541.0,
+            "end_s": 581.5,
+            "duration_s": 40.5
+          },
+          {
+            "node": 5,
+            "start_s": 581.5,
+            "end_s": 648.0,
+            "duration_s": 66.5
+          },
+          {
+            "node": 4,
+            "start_s": 648.0,
+            "end_s": 734.0,
+            "duration_s": 86.0
+          },
+          {
+            "node": 3,
+            "start_s": 734.0,
+            "end_s": 835.0,
+            "duration_s": 101.0
+          },
+          {
+            "node": 2,
+            "start_s": 835.0,
+            "end_s": 951.0,
+            "duration_s": 116.0
+          },
+          {
+            "node": 1,
+            "start_s": 951.0,
+            "end_s": 1082.0,
+            "duration_s": 131.0
+          }
+        ],
+        "a_crit_km2": 14.499
+      },
+      "serial_with_delays": {
+        "makespan_s": 1178.0,
+        "total_distance_m": 9648.52373903232,
+        "num_moves": 6,
+        "gantt": [
+          {
+            "node": 6,
+            "start_s": 0.0,
+            "end_s": 185.0,
+            "duration_s": 185.0
+          },
+          {
+            "node": 5,
+            "start_s": 185.0,
+            "end_s": 385.5,
+            "duration_s": 200.5
+          },
+          {
+            "node": 4,
+            "start_s": 385.5,
+            "end_s": 585.0,
+            "duration_s": 199.5
+          },
+          {
+            "node": 3,
+            "start_s": 585.0,
+            "end_s": 794.5,
+            "duration_s": 209.5
+          },
+          {
+            "node": 2,
+            "start_s": 794.5,
+            "end_s": 992.5,
+            "duration_s": 198.0
+          },
+          {
+            "node": 1,
+            "start_s": 992.5,
+            "end_s": 1178.0,
+            "duration_s": 185.5
+          }
+        ],
+        "a_crit_km2": 15.785
+      },
+      "pipelined_deterministic": {
+        "makespan_s": 410.0,
+        "ticks": 820,
+        "deadlocked": false,
+        "final_matched": true,
+        "static_parent_violations": 0,
+        "acyclic_all_ticks": true,
+        "min_in_degree": 2,
+        "min_moving_separation_m": 59.999999999999964,
+        "min_clearance_m": 59.999999999999964,
+        "max_reference_m": 616.8134871936412,
+        "gantt": [
+          {
+            "node": 1,
+            "start_s": 241.0,
+            "end_s": 409.5,
+            "duration_s": 168.5
+          },
+          {
+            "node": 2,
+            "start_s": 121.0,
+            "end_s": 372.0,
+            "duration_s": 251.0
+          },
+          {
+            "node": 3,
+            "start_s": 67.5,
+            "end_s": 334.5,
+            "duration_s": 267.0
+          },
+          {
+            "node": 4,
+            "start_s": 45.0,
+            "end_s": 281.0,
+            "duration_s": 236.0
+          },
+          {
+            "node": 5,
+            "start_s": 22.5,
+            "end_s": 217.0,
+            "duration_s": 194.5
+          },
+          {
+            "node": 6,
+            "start_s": 0.0,
+            "end_s": 158.0,
+            "duration_s": 158.0
+          }
+        ],
+        "speedup_vs_serial": 2.449,
+        "speedup_vs_reversible_serial": 2.639,
+        "a_crit_km2": 5.494
+      },
+      "pipelined_with_delays": {
+        "makespan_s": 482.0,
+        "ticks": 964,
+        "deadlocked": false,
+        "final_matched": true,
+        "static_parent_violations": 0,
+        "acyclic_all_ticks": true,
+        "min_in_degree": 2,
+        "min_moving_separation_m": 59.999999999999964,
+        "min_clearance_m": 59.999999999999964,
+        "max_reference_m": 616.8134871936412,
+        "gantt": [
+          {
+            "node": 1,
+            "start_s": 288.0,
+            "end_s": 481.5,
+            "duration_s": 193.5
+          },
+          {
+            "node": 2,
+            "start_s": 146.0,
+            "end_s": 441.0,
+            "duration_s": 295.0
+          },
+          {
+            "node": 3,
+            "start_s": 75.5,
+            "end_s": 397.5,
+            "duration_s": 322.0
+          },
+          {
+            "node": 4,
+            "start_s": 50.0,
+            "end_s": 340.5,
+            "duration_s": 290.5
+          },
+          {
+            "node": 5,
+            "start_s": 25.5,
+            "end_s": 266.0,
+            "duration_s": 240.5
+          },
+          {
+            "node": 6,
+            "start_s": 0.0,
+            "end_s": 186.5,
+            "duration_s": 186.5
+          }
+        ],
+        "speedup_vs_serial_delayed": 2.444,
+        "speedup_vs_serial_det": 2.083,
+        "a_crit_km2": 6.459
+      }
+    },
+    {
+      "scale_N": 14,
+      "beacons_M": 4,
+      "v_cruise_mps": 4.0,
+      "t_settle_s": 10.0,
+      "d_pipe_m": 60.0,
+      "stall_prob": 0.15,
+      "serial": {
+        "makespan_s": 7449.5,
+        "total_distance_m": 29053.102227610907,
+        "num_moves": 14,
+        "gantt": [
+          {
+            "node": 7,
+            "start_s": 0.0,
+            "end_s": 417.5,
+            "duration_s": 417.5
+          },
+          {
+            "node": 6,
+            "start_s": 417.5,
+            "end_s": 861.5,
+            "duration_s": 444.0
+          },
+          {
+            "node": 5,
+            "start_s": 861.5,
+            "end_s": 1316.5,
+            "duration_s": 455.0
+          },
+          {
+            "node": 4,
+            "start_s": 1316.5,
+            "end_s": 1771.5,
+            "duration_s": 455.0
+          },
+          {
+            "node": 3,
+            "start_s": 1771.5,
+            "end_s": 2226.5,
+            "duration_s": 455.0
+          },
+          {
+            "node": 2,
+            "start_s": 2226.5,
+            "end_s": 2670.5,
+            "duration_s": 444.0
+          },
+          {
+            "node": 1,
+            "start_s": 2670.5,
+            "end_s": 3088.0,
+            "duration_s": 417.5
+          },
+          {
+            "node": 14,
+            "start_s": 3088.0,
+            "end_s": 3718.0,
+            "duration_s": 630.0
+          },
+          {
+            "node": 13,
+            "start_s": 3718.0,
+            "end_s": 4348.0,
+            "duration_s": 630.0
+          },
+          {
+            "node": 12,
+            "start_s": 4348.0,
+            "end_s": 4978.0,
+            "duration_s": 630.0
+          },
+          {
+            "node": 11,
+            "start_s": 4978.0,
+            "end_s": 5608.0,
+            "duration_s": 630.0
+          },
+          {
+            "node": 10,
+            "start_s": 5608.0,
+            "end_s": 6238.0,
+            "duration_s": 630.0
+          },
+          {
+            "node": 9,
+            "start_s": 6238.0,
+            "end_s": 6857.0,
+            "duration_s": 619.0
+          },
+          {
+            "node": 8,
+            "start_s": 6857.0,
+            "end_s": 7449.5,
+            "duration_s": 592.5
+          }
+        ],
+        "a_crit_km2": 99.823
+      },
+      "serial_reversible_berth": {
+        "makespan_s": 7876.5,
+        "total_distance_m": 30173.10222761093,
+        "num_moves": 28,
+        "gantt": [
+          {
+            "node": 14,
+            "start_s": 0.0,
+            "end_s": 286.5,
+            "duration_s": 286.5
+          },
+          {
+            "node": 7,
+            "start_s": 286.5,
+            "end_s": 648.0,
+            "duration_s": 361.5
+          },
+          {
+            "node": 13,
+            "start_s": 648.0,
+            "end_s": 922.0,
+            "duration_s": 274.0
+          },
+          {
+            "node": 6,
+            "start_s": 922.0,
+            "end_s": 1246.0,
+            "duration_s": 324.0
+          },
+          {
+            "node": 12,
+            "start_s": 1246.0,
+            "end_s": 1507.5,
+            "duration_s": 261.5
+          },
+          {
+            "node": 5,
+            "start_s": 1507.5,
+            "end_s": 1794.0,
+            "duration_s": 286.5
+          },
+          {
+            "node": 11,
+            "start_s": 1794.0,
+            "end_s": 2043.0,
+            "duration_s": 249.0
+          },
+          {
+            "node": 4,
+            "start_s": 2043.0,
+            "end_s": 2292.0,
+            "duration_s": 249.0
+          },
+          {
+            "node": 10,
+            "start_s": 2292.0,
+            "end_s": 2528.5,
+            "duration_s": 236.5
+          },
+          {
+            "node": 3,
+            "start_s": 2528.5,
+            "end_s": 2740.0,
+            "duration_s": 211.5
+          },
+          {
+            "node": 9,
+            "start_s": 2740.0,
+            "end_s": 2953.0,
+            "duration_s": 213.0
+          },
+          {
+            "node": 2,
+            "start_s": 2953.0,
+            "end_s": 3116.0,
+            "duration_s": 163.0
+          },
+          {
+            "node": 8,
+            "start_s": 3116.0,
+            "end_s": 3290.0,
+            "duration_s": 174.0
+          },
+          {
+            "node": 1,
+            "start_s": 3290.0,
+            "end_s": 3389.0,
+            "duration_s": 99.0
+          },
+          {
+            "node": 14,
+            "start_s": 3389.0,
+            "end_s": 3550.5,
+            "duration_s": 161.5
+          },
+          {
+            "node": 13,
+            "start_s": 3550.5,
+            "end_s": 3751.0,
+            "duration_s": 200.5
+          },
+          {
+            "node": 12,
+            "start_s": 3751.0,
+            "end_s": 3975.0,
+            "duration_s": 224.0
+          },
+          {
+            "node": 11,
+            "start_s": 3975.0,
+            "end_s": 4211.5,
+            "duration_s": 236.5
+          },
+          {
+            "node": 10,
+            "start_s": 4211.5,
+            "end_s": 4460.5,
+            "duration_s": 249.0
+          },
+          {
+            "node": 9,
+            "start_s": 4460.5,
+            "end_s": 4722.0,
+            "duration_s": 261.5
+          },
+          {
+            "node": 8,
+            "start_s": 4722.0,
+            "end_s": 4996.0,
+            "duration_s": 274.0
+          },
+          {
+            "node": 7,
+            "start_s": 4996.0,
+            "end_s": 5295.0,
+            "duration_s": 299.0
+          },
+          {
+            "node": 6,
+            "start_s": 5295.0,
+            "end_s": 5631.5,
+            "duration_s": 336.5
+          },
+          {
+            "node": 5,
+            "start_s": 5631.5,
+            "end_s": 6005.5,
+            "duration_s": 374.0
+          },
+          {
+            "node": 4,
+            "start_s": 6005.5,
+            "end_s": 6417.0,
+            "duration_s": 411.5
+          },
+          {
+            "node": 3,
+            "start_s": 6417.0,
+            "end_s": 6866.0,
+            "duration_s": 449.0
+          },
+          {
+            "node": 2,
+            "start_s": 6866.0,
+            "end_s": 7352.5,
+            "duration_s": 486.5
+          },
+          {
+            "node": 1,
+            "start_s": 7352.5,
+            "end_s": 7876.5,
+            "duration_s": 524.0
+          }
+        ],
+        "a_crit_km2": 105.545
+      },
+      "serial_with_delays": {
+        "makespan_s": 8799.0,
+        "total_distance_m": 29053.102227610907,
+        "num_moves": 14,
+        "gantt": [
+          {
+            "node": 7,
+            "start_s": 0.0,
+            "end_s": 489.0,
+            "duration_s": 489.0
+          },
+          {
+            "node": 6,
+            "start_s": 489.0,
+            "end_s": 1013.0,
+            "duration_s": 524.0
+          },
+          {
+            "node": 5,
+            "start_s": 1013.0,
+            "end_s": 1539.0,
+            "duration_s": 526.0
+          },
+          {
+            "node": 4,
+            "start_s": 1539.0,
+            "end_s": 2075.5,
+            "duration_s": 536.5
+          },
+          {
+            "node": 3,
+            "start_s": 2075.5,
+            "end_s": 2618.5,
+            "duration_s": 543.0
+          },
+          {
+            "node": 2,
+            "start_s": 2618.5,
+            "end_s": 3138.0,
+            "duration_s": 519.5
+          },
+          {
+            "node": 1,
+            "start_s": 3138.0,
+            "end_s": 3630.0,
+            "duration_s": 492.0
+          },
+          {
+            "node": 14,
+            "start_s": 3630.0,
+            "end_s": 4382.0,
+            "duration_s": 752.0
+          },
+          {
+            "node": 13,
+            "start_s": 4382.0,
+            "end_s": 5129.5,
+            "duration_s": 747.5
+          },
+          {
+            "node": 12,
+            "start_s": 5129.5,
+            "end_s": 5878.0,
+            "duration_s": 748.5
+          },
+          {
+            "node": 11,
+            "start_s": 5878.0,
+            "end_s": 6618.0,
+            "duration_s": 740.0
+          },
+          {
+            "node": 10,
+            "start_s": 6618.0,
+            "end_s": 7358.0,
+            "duration_s": 740.0
+          },
+          {
+            "node": 9,
+            "start_s": 7358.0,
+            "end_s": 8088.5,
+            "duration_s": 730.5
+          },
+          {
+            "node": 8,
+            "start_s": 8088.5,
+            "end_s": 8799.0,
+            "duration_s": 710.5
+          }
+        ],
+        "a_crit_km2": 117.907
+      },
+      "pipelined_deterministic": {
+        "makespan_s": 1782.5,
+        "ticks": 3565,
+        "deadlocked": false,
+        "final_matched": true,
+        "static_parent_violations": 0,
+        "acyclic_all_ticks": true,
+        "min_in_degree": 2,
+        "min_moving_separation_m": 59.99999999999982,
+        "min_clearance_m": 59.99999999999982,
+        "max_reference_m": 616.1168720299745,
+        "gantt": [
+          {
+            "node": 1,
+            "start_s": 721.0,
+            "end_s": 1145.0,
+            "duration_s": 424.0
+          },
+          {
+            "node": 2,
+            "start_s": 421.0,
+            "end_s": 1054.5,
+            "duration_s": 633.5
+          },
+          {
+            "node": 3,
+            "start_s": 222.0,
+            "end_s": 940.0,
+            "duration_s": 718.0
+          },
+          {
+            "node": 4,
+            "start_s": 166.5,
+            "end_s": 849.5,
+            "duration_s": 683.0
+          },
+          {
+            "node": 5,
+            "start_s": 111.0,
+            "end_s": 719.5,
+            "duration_s": 608.5
+          },
+          {
+            "node": 6,
+            "start_s": 55.5,
+            "end_s": 563.5,
+            "duration_s": 508.0
+          },
+          {
+            "node": 7,
+            "start_s": 0.0,
+            "end_s": 417.0,
+            "duration_s": 417.0
+          },
+          {
+            "node": 8,
+            "start_s": 955.5,
+            "end_s": 1782.0,
+            "duration_s": 826.5
+          },
+          {
+            "node": 9,
+            "start_s": 329.0,
+            "end_s": 1690.0,
+            "duration_s": 1361.0
+          },
+          {
+            "node": 10,
+            "start_s": 222.0,
+            "end_s": 1598.0,
+            "duration_s": 1376.0
+          },
+          {
+            "node": 11,
+            "start_s": 166.5,
+            "end_s": 1507.0,
+            "duration_s": 1340.5
+          },
+          {
+            "node": 12,
+            "start_s": 111.0,
+            "end_s": 1416.5,
+            "duration_s": 1305.5
+          },
+          {
+            "node": 13,
+            "start_s": 55.5,
+            "end_s": 1326.0,
+            "duration_s": 1270.5
+          },
+          {
+            "node": 14,
+            "start_s": 0.0,
+            "end_s": 1235.5,
+            "duration_s": 1235.5
+          }
+        ],
+        "speedup_vs_serial": 4.179,
+        "speedup_vs_reversible_serial": 4.419,
+        "a_crit_km2": 23.886
+      },
+      "pipelined_with_delays": {
+        "makespan_s": 2122.0,
+        "ticks": 4244,
+        "deadlocked": false,
+        "final_matched": true,
+        "static_parent_violations": 0,
+        "acyclic_all_ticks": true,
+        "min_in_degree": 2,
+        "min_moving_separation_m": 59.99999999999982,
+        "min_clearance_m": 59.99999999999982,
+        "max_reference_m": 616.1168720299745,
+        "gantt": [
+          {
+            "node": 1,
+            "start_s": 868.0,
+            "end_s": 1368.0,
+            "duration_s": 500.0
+          },
+          {
+            "node": 2,
+            "start_s": 505.5,
+            "end_s": 1263.5,
+            "duration_s": 758.0
+          },
+          {
+            "node": 3,
+            "start_s": 257.5,
+            "end_s": 1121.5,
+            "duration_s": 864.0
+          },
+          {
+            "node": 4,
+            "start_s": 192.0,
+            "end_s": 1004.0,
+            "duration_s": 812.0
+          },
+          {
+            "node": 5,
+            "start_s": 126.0,
+            "end_s": 852.0,
+            "duration_s": 726.0
+          },
+          {
+            "node": 6,
+            "start_s": 62.5,
+            "end_s": 677.0,
+            "duration_s": 614.5
+          },
+          {
+            "node": 7,
+            "start_s": 0.0,
+            "end_s": 482.0,
+            "duration_s": 482.0
+          },
+          {
+            "node": 8,
+            "start_s": 1155.0,
+            "end_s": 2121.5,
+            "duration_s": 966.5
+          },
+          {
+            "node": 9,
+            "start_s": 390.5,
+            "end_s": 2012.0,
+            "duration_s": 1621.5
+          },
+          {
+            "node": 10,
+            "start_s": 263.5,
+            "end_s": 1907.0,
+            "duration_s": 1643.5
+          },
+          {
+            "node": 11,
+            "start_s": 197.0,
+            "end_s": 1797.0,
+            "duration_s": 1600.0
+          },
+          {
+            "node": 12,
+            "start_s": 132.0,
+            "end_s": 1690.0,
+            "duration_s": 1558.0
+          },
+          {
+            "node": 13,
+            "start_s": 64.5,
+            "end_s": 1584.0,
+            "duration_s": 1519.5
+          },
+          {
+            "node": 14,
+            "start_s": 0.0,
+            "end_s": 1479.0,
+            "duration_s": 1479.0
+          }
+        ],
+        "speedup_vs_serial_delayed": 4.147,
+        "speedup_vs_serial_det": 3.511,
+        "a_crit_km2": 28.435
+      }
+    },
+    {
+      "scale_N": 14,
+      "beacons_M": 4,
+      "v_cruise_mps": 10.0,
+      "t_settle_s": 5.0,
+      "d_pipe_m": 60.0,
+      "stall_prob": 0.15,
+      "serial": {
+        "makespan_s": 3006.0,
+        "total_distance_m": 29053.102227610907,
+        "num_moves": 14,
+        "gantt": [
+          {
+            "node": 7,
+            "start_s": 0.0,
+            "end_s": 168.5,
+            "duration_s": 168.5
+          },
+          {
+            "node": 6,
+            "start_s": 168.5,
+            "end_s": 348.0,
+            "duration_s": 179.5
+          },
+          {
+            "node": 5,
+            "start_s": 348.0,
+            "end_s": 532.0,
+            "duration_s": 184.0
+          },
+          {
+            "node": 4,
+            "start_s": 532.0,
+            "end_s": 716.0,
+            "duration_s": 184.0
+          },
+          {
+            "node": 3,
+            "start_s": 716.0,
+            "end_s": 900.0,
+            "duration_s": 184.0
+          },
+          {
+            "node": 2,
+            "start_s": 900.0,
+            "end_s": 1079.5,
+            "duration_s": 179.5
+          },
+          {
+            "node": 1,
+            "start_s": 1079.5,
+            "end_s": 1248.0,
+            "duration_s": 168.5
+          },
+          {
+            "node": 14,
+            "start_s": 1248.0,
+            "end_s": 1502.0,
+            "duration_s": 254.0
+          },
+          {
+            "node": 13,
+            "start_s": 1502.0,
+            "end_s": 1756.0,
+            "duration_s": 254.0
+          },
+          {
+            "node": 12,
+            "start_s": 1756.0,
+            "end_s": 2010.0,
+            "duration_s": 254.0
+          },
+          {
+            "node": 11,
+            "start_s": 2010.0,
+            "end_s": 2264.0,
+            "duration_s": 254.0
+          },
+          {
+            "node": 10,
+            "start_s": 2264.0,
+            "end_s": 2518.0,
+            "duration_s": 254.0
+          },
+          {
+            "node": 9,
+            "start_s": 2518.0,
+            "end_s": 2767.5,
+            "duration_s": 249.5
+          },
+          {
+            "node": 8,
+            "start_s": 2767.5,
+            "end_s": 3006.0,
+            "duration_s": 238.5
+          }
+        ],
+        "a_crit_km2": 40.28
+      },
+      "serial_reversible_berth": {
+        "makespan_s": 3188.0,
+        "total_distance_m": 30173.10222761093,
+        "num_moves": 28,
+        "gantt": [
+          {
+            "node": 14,
+            "start_s": 0.0,
+            "end_s": 116.0,
+            "duration_s": 116.0
+          },
+          {
+            "node": 7,
+            "start_s": 116.0,
+            "end_s": 262.0,
+            "duration_s": 146.0
+          },
+          {
+            "node": 13,
+            "start_s": 262.0,
+            "end_s": 373.0,
+            "duration_s": 111.0
+          },
+          {
+            "node": 6,
+            "start_s": 373.0,
+            "end_s": 504.0,
+            "duration_s": 131.0
+          },
+          {
+            "node": 12,
+            "start_s": 504.0,
+            "end_s": 610.0,
+            "duration_s": 106.0
+          },
+          {
+            "node": 5,
+            "start_s": 610.0,
+            "end_s": 726.0,
+            "duration_s": 116.0
+          },
+          {
+            "node": 11,
+            "start_s": 726.0,
+            "end_s": 827.0,
+            "duration_s": 101.0
+          },
+          {
+            "node": 4,
+            "start_s": 827.0,
+            "end_s": 928.0,
+            "duration_s": 101.0
+          },
+          {
+            "node": 10,
+            "start_s": 928.0,
+            "end_s": 1024.0,
+            "duration_s": 96.0
+          },
+          {
+            "node": 3,
+            "start_s": 1024.0,
+            "end_s": 1110.0,
+            "duration_s": 86.0
+          },
+          {
+            "node": 9,
+            "start_s": 1110.0,
+            "end_s": 1196.5,
+            "duration_s": 86.5
+          },
+          {
+            "node": 2,
+            "start_s": 1196.5,
+            "end_s": 1263.0,
+            "duration_s": 66.5
+          },
+          {
+            "node": 8,
+            "start_s": 1263.0,
+            "end_s": 1333.5,
+            "duration_s": 70.5
+          },
+          {
+            "node": 1,
+            "start_s": 1333.5,
+            "end_s": 1374.0,
+            "duration_s": 40.5
+          },
+          {
+            "node": 14,
+            "start_s": 1374.0,
+            "end_s": 1439.5,
+            "duration_s": 65.5
+          },
+          {
+            "node": 13,
+            "start_s": 1439.5,
+            "end_s": 1521.0,
+            "duration_s": 81.5
+          },
+          {
+            "node": 12,
+            "start_s": 1521.0,
+            "end_s": 1612.0,
+            "duration_s": 91.0
+          },
+          {
+            "node": 11,
+            "start_s": 1612.0,
+            "end_s": 1708.0,
+            "duration_s": 96.0
+          },
+          {
+            "node": 10,
+            "start_s": 1708.0,
+            "end_s": 1809.0,
+            "duration_s": 101.0
+          },
+          {
+            "node": 9,
+            "start_s": 1809.0,
+            "end_s": 1915.0,
+            "duration_s": 106.0
+          },
+          {
+            "node": 8,
+            "start_s": 1915.0,
+            "end_s": 2026.0,
+            "duration_s": 111.0
+          },
+          {
+            "node": 7,
+            "start_s": 2026.0,
+            "end_s": 2147.0,
+            "duration_s": 121.0
+          },
+          {
+            "node": 6,
+            "start_s": 2147.0,
+            "end_s": 2283.0,
+            "duration_s": 136.0
+          },
+          {
+            "node": 5,
+            "start_s": 2283.0,
+            "end_s": 2434.0,
+            "duration_s": 151.0
+          },
+          {
+            "node": 4,
+            "start_s": 2434.0,
+            "end_s": 2600.0,
+            "duration_s": 166.0
+          },
+          {
+            "node": 3,
+            "start_s": 2600.0,
+            "end_s": 2781.0,
+            "duration_s": 181.0
+          },
+          {
+            "node": 2,
+            "start_s": 2781.0,
+            "end_s": 2977.0,
+            "duration_s": 196.0
+          },
+          {
+            "node": 1,
+            "start_s": 2977.0,
+            "end_s": 3188.0,
+            "duration_s": 211.0
+          }
+        ],
+        "a_crit_km2": 42.719
+      },
+      "serial_with_delays": {
+        "makespan_s": 3536.0,
+        "total_distance_m": 29053.102227610907,
+        "num_moves": 14,
+        "gantt": [
+          {
+            "node": 7,
+            "start_s": 0.0,
+            "end_s": 195.5,
+            "duration_s": 195.5
+          },
+          {
+            "node": 6,
+            "start_s": 195.5,
+            "end_s": 409.0,
+            "duration_s": 213.5
+          },
+          {
+            "node": 5,
+            "start_s": 409.0,
+            "end_s": 620.5,
+            "duration_s": 211.5
+          },
+          {
+            "node": 4,
+            "start_s": 620.5,
+            "end_s": 841.0,
+            "duration_s": 220.5
+          },
+          {
+            "node": 3,
+            "start_s": 841.0,
+            "end_s": 1057.5,
+            "duration_s": 216.5
+          },
+          {
+            "node": 2,
+            "start_s": 1057.5,
+            "end_s": 1270.0,
+            "duration_s": 212.5
+          },
+          {
+            "node": 1,
+            "start_s": 1270.0,
+            "end_s": 1461.5,
+            "duration_s": 191.5
+          },
+          {
+            "node": 14,
+            "start_s": 1461.5,
+            "end_s": 1755.5,
+            "duration_s": 294.0
+          },
+          {
+            "node": 13,
+            "start_s": 1755.5,
+            "end_s": 2057.0,
+            "duration_s": 301.5
+          },
+          {
+            "node": 12,
+            "start_s": 2057.0,
+            "end_s": 2363.0,
+            "duration_s": 306.0
+          },
+          {
+            "node": 11,
+            "start_s": 2363.0,
+            "end_s": 2661.5,
+            "duration_s": 298.5
+          },
+          {
+            "node": 10,
+            "start_s": 2661.5,
+            "end_s": 2959.5,
+            "duration_s": 298.0
+          },
+          {
+            "node": 9,
+            "start_s": 2959.5,
+            "end_s": 3253.0,
+            "duration_s": 293.5
+          },
+          {
+            "node": 8,
+            "start_s": 3253.0,
+            "end_s": 3536.0,
+            "duration_s": 283.0
+          }
+        ],
+        "a_crit_km2": 47.382
+      },
+      "pipelined_deterministic": {
+        "makespan_s": 724.0,
+        "ticks": 1448,
+        "deadlocked": false,
+        "final_matched": true,
+        "static_parent_violations": 0,
+        "acyclic_all_ticks": true,
+        "min_in_degree": 2,
+        "min_moving_separation_m": 59.99999999999982,
+        "min_clearance_m": 59.99999999999982,
+        "max_reference_m": 616.8134871936412,
+        "gantt": [
+          {
+            "node": 1,
+            "start_s": 291.0,
+            "end_s": 461.0,
+            "duration_s": 170.0
+          },
+          {
+            "node": 2,
+            "start_s": 169.0,
+            "end_s": 423.5,
+            "duration_s": 254.5
+          },
+          {
+            "node": 3,
+            "start_s": 90.0,
+            "end_s": 382.0,
+            "duration_s": 292.0
+          },
+          {
+            "node": 4,
+            "start_s": 67.5,
+            "end_s": 344.5,
+            "duration_s": 277.0
+          },
+          {
+            "node": 5,
+            "start_s": 45.0,
+            "end_s": 291.0,
+            "duration_s": 246.0
+          },
+          {
+            "node": 6,
+            "start_s": 22.5,
+            "end_s": 227.0,
+            "duration_s": 204.5
+          },
+          {
+            "node": 7,
+            "start_s": 0.0,
+            "end_s": 168.0,
+            "duration_s": 168.0
+          },
+          {
+            "node": 8,
+            "start_s": 384.5,
+            "end_s": 723.5,
+            "duration_s": 339.0
+          },
+          {
+            "node": 9,
+            "start_s": 132.0,
+            "end_s": 686.0,
+            "duration_s": 554.0
+          },
+          {
+            "node": 10,
+            "start_s": 90.0,
+            "end_s": 648.5,
+            "duration_s": 558.5
+          },
+          {
+            "node": 11,
+            "start_s": 67.5,
+            "end_s": 611.0,
+            "duration_s": 543.5
+          },
+          {
+            "node": 12,
+            "start_s": 45.0,
+            "end_s": 573.5,
+            "duration_s": 528.5
+          },
+          {
+            "node": 13,
+            "start_s": 22.5,
+            "end_s": 536.0,
+            "duration_s": 513.5
+          },
+          {
+            "node": 14,
+            "start_s": 0.0,
+            "end_s": 498.5,
+            "duration_s": 498.5
+          }
+        ],
+        "speedup_vs_serial": 4.152,
+        "speedup_vs_reversible_serial": 4.403,
+        "a_crit_km2": 9.702
+      },
+      "pipelined_with_delays": {
+        "makespan_s": 858.0,
+        "ticks": 1716,
+        "deadlocked": false,
+        "final_matched": true,
+        "static_parent_violations": 0,
+        "acyclic_all_ticks": true,
+        "min_in_degree": 2,
+        "min_moving_separation_m": 59.99999999999982,
+        "min_clearance_m": 59.99999999999982,
+        "max_reference_m": 617.1709649683789,
+        "gantt": [
+          {
+            "node": 1,
+            "start_s": 345.5,
+            "end_s": 545.0,
+            "duration_s": 199.5
+          },
+          {
+            "node": 2,
+            "start_s": 198.0,
+            "end_s": 493.0,
+            "duration_s": 295.0
+          },
+          {
+            "node": 3,
+            "start_s": 105.5,
+            "end_s": 449.5,
+            "duration_s": 344.0
+          },
+          {
+            "node": 4,
+            "start_s": 79.5,
+            "end_s": 403.5,
+            "duration_s": 324.0
+          },
+          {
+            "node": 5,
+            "start_s": 50.5,
+            "end_s": 338.0,
+            "duration_s": 287.5
+          },
+          {
+            "node": 6,
+            "start_s": 25.0,
+            "end_s": 266.5,
+            "duration_s": 241.5
+          },
+          {
+            "node": 7,
+            "start_s": 0.0,
+            "end_s": 195.5,
+            "duration_s": 195.5
+          },
+          {
+            "node": 8,
+            "start_s": 459.5,
+            "end_s": 857.5,
+            "duration_s": 398.0
+          },
+          {
+            "node": 9,
+            "start_s": 159.5,
+            "end_s": 807.0,
+            "duration_s": 647.5
+          },
+          {
+            "node": 10,
+            "start_s": 104.0,
+            "end_s": 764.0,
+            "duration_s": 660.0
+          },
+          {
+            "node": 11,
+            "start_s": 78.5,
+            "end_s": 721.0,
+            "duration_s": 642.5
+          },
+          {
+            "node": 12,
+            "start_s": 53.0,
+            "end_s": 679.5,
+            "duration_s": 626.5
+          },
+          {
+            "node": 13,
+            "start_s": 26.5,
+            "end_s": 630.0,
+            "duration_s": 603.5
+          },
+          {
+            "node": 14,
+            "start_s": 0.0,
+            "end_s": 588.5,
+            "duration_s": 588.5
+          }
+        ],
+        "speedup_vs_serial_delayed": 4.121,
+        "speedup_vs_serial_det": 3.503,
+        "a_crit_km2": 11.497
+      }
+    },
+    {
+      "scale_N": 20,
+      "beacons_M": 5,
+      "v_cruise_mps": 4.0,
+      "t_settle_s": 10.0,
+      "d_pipe_m": 60.0,
+      "stall_prob": 0.15,
+      "serial": {
+        "makespan_s": 10406.0,
+        "total_distance_m": 40572.74580669491,
+        "num_moves": 20,
+        "gantt": [
+          {
+            "node": 10,
+            "start_s": 0.0,
+            "end_s": 492.5,
+            "duration_s": 492.5
+          },
+          {
+            "node": 9,
+            "start_s": 492.5,
+            "end_s": 1011.5,
+            "duration_s": 519.0
+          },
+          {
+            "node": 8,
+            "start_s": 1011.5,
+            "end_s": 1541.5,
+            "duration_s": 530.0
+          },
+          {
+            "node": 7,
+            "start_s": 1541.5,
+            "end_s": 2071.5,
+            "duration_s": 530.0
+          },
+          {
+            "node": 6,
+            "start_s": 2071.5,
+            "end_s": 2601.5,
+            "duration_s": 530.0
+          },
+          {
+            "node": 5,
+            "start_s": 2601.5,
+            "end_s": 3131.5,
+            "duration_s": 530.0
+          },
+          {
+            "node": 4,
+            "start_s": 3131.5,
+            "end_s": 3661.5,
+            "duration_s": 530.0
+          },
+          {
+            "node": 3,
+            "start_s": 3661.5,
+            "end_s": 4191.5,
+            "duration_s": 530.0
+          },
+          {
+            "node": 2,
+            "start_s": 4191.5,
+            "end_s": 4710.5,
+            "duration_s": 519.0
+          },
+          {
+            "node": 1,
+            "start_s": 4710.5,
+            "end_s": 5203.0,
+            "duration_s": 492.5
+          },
+          {
+            "node": 20,
+            "start_s": 5203.0,
+            "end_s": 5695.5,
+            "duration_s": 492.5
+          },
+          {
+            "node": 19,
+            "start_s": 5695.5,
+            "end_s": 6214.5,
+            "duration_s": 519.0
+          },
+          {
+            "node": 18,
+            "start_s": 6214.5,
+            "end_s": 6744.5,
+            "duration_s": 530.0
+          },
+          {
+            "node": 17,
+            "start_s": 6744.5,
+            "end_s": 7274.5,
+            "duration_s": 530.0
+          },
+          {
+            "node": 16,
+            "start_s": 7274.5,
+            "end_s": 7804.5,
+            "duration_s": 530.0
+          },
+          {
+            "node": 15,
+            "start_s": 7804.5,
+            "end_s": 8334.5,
+            "duration_s": 530.0
+          },
+          {
+            "node": 14,
+            "start_s": 8334.5,
+            "end_s": 8864.5,
+            "duration_s": 530.0
+          },
+          {
+            "node": 13,
+            "start_s": 8864.5,
+            "end_s": 9394.5,
+            "duration_s": 530.0
+          },
+          {
+            "node": 12,
+            "start_s": 9394.5,
+            "end_s": 9913.5,
+            "duration_s": 519.0
+          },
+          {
+            "node": 11,
+            "start_s": 9913.5,
+            "end_s": 10406.0,
+            "duration_s": 492.5
+          }
+        ],
+        "a_crit_km2": 139.44
+      },
+      "serial_reversible_berth": {
+        "makespan_s": 11416.0,
+        "total_distance_m": 43772.74580669489,
+        "num_moves": 40,
+        "gantt": [
+          {
+            "node": 20,
+            "start_s": 0.0,
+            "end_s": 374.0,
+            "duration_s": 374.0
+          },
+          {
+            "node": 10,
+            "start_s": 374.0,
+            "end_s": 860.5,
+            "duration_s": 486.5
+          },
+          {
+            "node": 19,
+            "start_s": 860.5,
+            "end_s": 1222.0,
+            "duration_s": 361.5
+          },
+          {
+            "node": 9,
+            "start_s": 1222.0,
+            "end_s": 1671.0,
+            "duration_s": 449.0
+          },
+          {
+            "node": 18,
+            "start_s": 1671.0,
+            "end_s": 2020.0,
+            "duration_s": 349.0
+          },
+          {
+            "node": 8,
+            "start_s": 2020.0,
+            "end_s": 2431.5,
+            "duration_s": 411.5
+          },
+          {
+            "node": 17,
+            "start_s": 2431.5,
+            "end_s": 2768.0,
+            "duration_s": 336.5
+          },
+          {
+            "node": 7,
+            "start_s": 2768.0,
+            "end_s": 3142.0,
+            "duration_s": 374.0
+          },
+          {
+            "node": 16,
+            "start_s": 3142.0,
+            "end_s": 3466.0,
+            "duration_s": 324.0
+          },
+          {
+            "node": 6,
+            "start_s": 3466.0,
+            "end_s": 3802.5,
+            "duration_s": 336.5
+          },
+          {
+            "node": 15,
+            "start_s": 3802.5,
+            "end_s": 4114.0,
+            "duration_s": 311.5
+          },
+          {
+            "node": 5,
+            "start_s": 4114.0,
+            "end_s": 4413.0,
+            "duration_s": 299.0
+          },
+          {
+            "node": 14,
+            "start_s": 4413.0,
+            "end_s": 4712.0,
+            "duration_s": 299.0
+          },
+          {
+            "node": 4,
+            "start_s": 4712.0,
+            "end_s": 4973.5,
+            "duration_s": 261.5
+          },
+          {
+            "node": 13,
+            "start_s": 4973.5,
+            "end_s": 5260.0,
+            "duration_s": 286.5
+          },
+          {
+            "node": 3,
+            "start_s": 5260.0,
+            "end_s": 5484.0,
+            "duration_s": 224.0
+          },
+          {
+            "node": 12,
+            "start_s": 5484.0,
+            "end_s": 5747.0,
+            "duration_s": 263.0
+          },
+          {
+            "node": 2,
+            "start_s": 5747.0,
+            "end_s": 5922.5,
+            "duration_s": 175.5
+          },
+          {
+            "node": 11,
+            "start_s": 5922.5,
+            "end_s": 6146.5,
+            "duration_s": 224.0
+          },
+          {
+            "node": 1,
+            "start_s": 6146.5,
+            "end_s": 6258.0,
+            "duration_s": 111.5
+          },
+          {
+            "node": 10,
+            "start_s": 6258.0,
+            "end_s": 6382.0,
+            "duration_s": 124.0
+          },
+          {
+            "node": 20,
+            "start_s": 6382.0,
+            "end_s": 6531.0,
+            "duration_s": 149.0
+          },
+          {
+            "node": 9,
+            "start_s": 6531.0,
+            "end_s": 6694.0,
+            "duration_s": 163.0
+          },
+          {
+            "node": 19,
+            "start_s": 6694.0,
+            "end_s": 6882.0,
+            "duration_s": 188.0
+          },
+          {
+            "node": 8,
+            "start_s": 6882.0,
+            "end_s": 7068.5,
+            "duration_s": 186.5
+          },
+          {
+            "node": 18,
+            "start_s": 7068.5,
+            "end_s": 7280.0,
+            "duration_s": 211.5
+          },
+          {
+            "node": 7,
+            "start_s": 7280.0,
+            "end_s": 7479.0,
+            "duration_s": 199.0
+          },
+          {
+            "node": 17,
+            "start_s": 7479.0,
+            "end_s": 7703.0,
+            "duration_s": 224.0
+          },
+          {
+            "node": 6,
+            "start_s": 7703.0,
+            "end_s": 7927.0,
+            "duration_s": 224.0
+          },
+          {
+            "node": 16,
+            "start_s": 7927.0,
+            "end_s": 8163.5,
+            "duration_s": 236.5
+          },
+          {
+            "node": 5,
+            "start_s": 8163.5,
+            "end_s": 8425.0,
+            "duration_s": 261.5
+          },
+          {
+            "node": 15,
+            "start_s": 8425.0,
+            "end_s": 8674.0,
+            "duration_s": 249.0
+          },
+          {
+            "node": 4,
+            "start_s": 8674.0,
+            "end_s": 8973.0,
+            "duration_s": 299.0
+          },
+          {
+            "node": 14,
+            "start_s": 8973.0,
+            "end_s": 9247.0,
+            "duration_s": 274.0
+          },
+          {
+            "node": 3,
+            "start_s": 9247.0,
+            "end_s": 9583.5,
+            "duration_s": 336.5
+          },
+          {
+            "node": 13,
+            "start_s": 9583.5,
+            "end_s": 9895.0,
+            "duration_s": 311.5
+          },
+          {
+            "node": 2,
+            "start_s": 9895.0,
+            "end_s": 10269.0,
+            "duration_s": 374.0
+          },
+          {
+            "node": 12,
+            "start_s": 10269.0,
+            "end_s": 10618.0,
+            "duration_s": 349.0
+          },
+          {
+            "node": 1,
+            "start_s": 10618.0,
+            "end_s": 11029.5,
+            "duration_s": 411.5
+          },
+          {
+            "node": 11,
+            "start_s": 11029.5,
+            "end_s": 11416.0,
+            "duration_s": 386.5
+          }
+        ],
+        "a_crit_km2": 152.974
+      },
+      "serial_with_delays": {
+        "makespan_s": 12292.5,
+        "total_distance_m": 40572.74580669491,
+        "num_moves": 20,
+        "gantt": [
+          {
+            "node": 10,
+            "start_s": 0.0,
+            "end_s": 575.0,
+            "duration_s": 575.0
+          },
+          {
+            "node": 9,
+            "start_s": 575.0,
+            "end_s": 1189.5,
+            "duration_s": 614.5
+          },
+          {
+            "node": 8,
+            "start_s": 1189.5,
+            "end_s": 1806.5,
+            "duration_s": 617.0
+          },
+          {
+            "node": 7,
+            "start_s": 1806.5,
+            "end_s": 2433.5,
+            "duration_s": 627.0
+          },
+          {
+            "node": 6,
+            "start_s": 2433.5,
+            "end_s": 3058.5,
+            "duration_s": 625.0
+          },
+          {
+            "node": 5,
+            "start_s": 3058.5,
+            "end_s": 3687.5,
+            "duration_s": 629.0
+          },
+          {
+            "node": 4,
+            "start_s": 3687.5,
+            "end_s": 4324.0,
+            "duration_s": 636.5
+          },
+          {
+            "node": 3,
+            "start_s": 4324.0,
+            "end_s": 4944.0,
+            "duration_s": 620.0
+          },
+          {
+            "node": 2,
+            "start_s": 4944.0,
+            "end_s": 5561.0,
+            "duration_s": 617.0
+          },
+          {
+            "node": 1,
+            "start_s": 5561.0,
+            "end_s": 6139.5,
+            "duration_s": 578.5
+          },
+          {
+            "node": 20,
+            "start_s": 6139.5,
+            "end_s": 6720.5,
+            "duration_s": 581.0
+          },
+          {
+            "node": 19,
+            "start_s": 6720.5,
+            "end_s": 7334.0,
+            "duration_s": 613.5
+          },
+          {
+            "node": 18,
+            "start_s": 7334.0,
+            "end_s": 7952.0,
+            "duration_s": 618.0
+          },
+          {
+            "node": 17,
+            "start_s": 7952.0,
+            "end_s": 8587.0,
+            "duration_s": 635.0
+          },
+          {
+            "node": 16,
+            "start_s": 8587.0,
+            "end_s": 9220.0,
+            "duration_s": 633.0
+          },
+          {
+            "node": 15,
+            "start_s": 9220.0,
+            "end_s": 9849.5,
+            "duration_s": 629.5
+          },
+          {
+            "node": 14,
+            "start_s": 9849.5,
+            "end_s": 10479.5,
+            "duration_s": 630.0
+          },
+          {
+            "node": 13,
+            "start_s": 10479.5,
+            "end_s": 11096.5,
+            "duration_s": 617.0
+          },
+          {
+            "node": 12,
+            "start_s": 11096.5,
+            "end_s": 11719.5,
+            "duration_s": 623.0
+          },
+          {
+            "node": 11,
+            "start_s": 11719.5,
+            "end_s": 12292.5,
+            "duration_s": 573.0
+          }
+        ],
+        "a_crit_km2": 164.72
+      },
+      "pipelined_deterministic": {
+        "makespan_s": 1580.5,
+        "ticks": 3161,
+        "deadlocked": false,
+        "final_matched": true,
+        "static_parent_violations": 0,
+        "acyclic_all_ticks": true,
+        "min_in_degree": 2,
+        "min_moving_separation_m": 59.99999999999982,
+        "min_clearance_m": 59.99999999999982,
+        "max_reference_m": 616.1168720299745,
+        "gantt": [
+          {
+            "node": 1,
+            "start_s": 1081.0,
+            "end_s": 1580.0,
+            "duration_s": 499.0
+          },
+          {
+            "node": 2,
+            "start_s": 781.0,
+            "end_s": 1489.5,
+            "duration_s": 708.5
+          },
+          {
+            "node": 3,
+            "start_s": 388.5,
+            "end_s": 1369.5,
+            "duration_s": 981.0
+          },
+          {
+            "node": 4,
+            "start_s": 333.0,
+            "end_s": 1249.5,
+            "duration_s": 916.5
+          },
+          {
+            "node": 5,
+            "start_s": 277.5,
+            "end_s": 1129.5,
+            "duration_s": 852.0
+          },
+          {
+            "node": 6,
+            "start_s": 222.0,
+            "end_s": 1015.0,
+            "duration_s": 793.0
+          },
+          {
+            "node": 7,
+            "start_s": 166.5,
+            "end_s": 924.5,
+            "duration_s": 758.0
+          },
+          {
+            "node": 8,
+            "start_s": 111.0,
+            "end_s": 794.5,
+            "duration_s": 683.5
+          },
+          {
+            "node": 9,
+            "start_s": 55.5,
+            "end_s": 638.5,
+            "duration_s": 583.0
+          },
+          {
+            "node": 10,
+            "start_s": 0.0,
+            "end_s": 492.0,
+            "duration_s": 492.0
+          },
+          {
+            "node": 11,
+            "start_s": 713.0,
+            "end_s": 1442.5,
+            "duration_s": 729.5
+          },
+          {
+            "node": 12,
+            "start_s": 551.0,
+            "end_s": 1352.0,
+            "duration_s": 801.0
+          },
+          {
+            "node": 13,
+            "start_s": 388.5,
+            "end_s": 1261.5,
+            "duration_s": 873.0
+          },
+          {
+            "node": 14,
+            "start_s": 333.0,
+            "end_s": 1171.0,
+            "duration_s": 838.0
+          },
+          {
+            "node": 15,
+            "start_s": 277.5,
+            "end_s": 1080.5,
+            "duration_s": 803.0
+          },
+          {
+            "node": 16,
+            "start_s": 222.0,
+            "end_s": 990.0,
+            "duration_s": 768.0
+          },
+          {
+            "node": 17,
+            "start_s": 166.5,
+            "end_s": 899.5,
+            "duration_s": 733.0
+          },
+          {
+            "node": 18,
+            "start_s": 111.0,
+            "end_s": 769.5,
+            "duration_s": 658.5
+          },
+          {
+            "node": 19,
+            "start_s": 55.5,
+            "end_s": 613.5,
+            "duration_s": 558.0
+          },
+          {
+            "node": 20,
+            "start_s": 0.0,
+            "end_s": 492.0,
+            "duration_s": 492.0
+          }
+        ],
+        "speedup_vs_serial": 6.584,
+        "speedup_vs_reversible_serial": 7.223,
+        "a_crit_km2": 21.179
+      },
+      "pipelined_with_delays": {
+        "makespan_s": 1838.0,
+        "ticks": 3676,
+        "deadlocked": false,
+        "final_matched": true,
+        "static_parent_violations": 0,
+        "acyclic_all_ticks": true,
+        "min_in_degree": 2,
+        "min_moving_separation_m": 59.99999999999982,
+        "min_clearance_m": 59.99999999999982,
+        "max_reference_m": 616.1168720299745,
+        "gantt": [
+          {
+            "node": 1,
+            "start_s": 1262.0,
+            "end_s": 1837.5,
+            "duration_s": 575.5
+          },
+          {
+            "node": 2,
+            "start_s": 911.5,
+            "end_s": 1737.5,
+            "duration_s": 826.0
+          },
+          {
+            "node": 3,
+            "start_s": 460.5,
+            "end_s": 1602.5,
+            "duration_s": 1142.0
+          },
+          {
+            "node": 4,
+            "start_s": 392.0,
+            "end_s": 1458.0,
+            "duration_s": 1066.0
+          },
+          {
+            "node": 5,
+            "start_s": 327.5,
+            "end_s": 1319.0,
+            "duration_s": 991.5
+          },
+          {
+            "node": 6,
+            "start_s": 264.0,
+            "end_s": 1202.5,
+            "duration_s": 938.5
+          },
+          {
+            "node": 7,
+            "start_s": 196.0,
+            "end_s": 1097.0,
+            "duration_s": 901.0
+          },
+          {
+            "node": 8,
+            "start_s": 130.5,
+            "end_s": 942.5,
+            "duration_s": 812.0
+          },
+          {
+            "node": 9,
+            "start_s": 62.5,
+            "end_s": 743.5,
+            "duration_s": 681.0
+          },
+          {
+            "node": 10,
+            "start_s": 0.0,
+            "end_s": 568.5,
+            "duration_s": 568.5
+          },
+          {
+            "node": 11,
+            "start_s": 841.5,
+            "end_s": 1674.0,
+            "duration_s": 832.5
+          },
+          {
+            "node": 12,
+            "start_s": 639.5,
+            "end_s": 1567.5,
+            "duration_s": 928.0
+          },
+          {
+            "node": 13,
+            "start_s": 462.0,
+            "end_s": 1464.5,
+            "duration_s": 1002.5
+          },
+          {
+            "node": 14,
+            "start_s": 395.5,
+            "end_s": 1359.0,
+            "duration_s": 963.5
+          },
+          {
+            "node": 15,
+            "start_s": 330.5,
+            "end_s": 1253.0,
+            "duration_s": 922.5
+          },
+          {
+            "node": 16,
+            "start_s": 261.0,
+            "end_s": 1149.5,
+            "duration_s": 888.5
+          },
+          {
+            "node": 17,
+            "start_s": 195.5,
+            "end_s": 1045.5,
+            "duration_s": 850.0
+          },
+          {
+            "node": 18,
+            "start_s": 131.5,
+            "end_s": 895.0,
+            "duration_s": 763.5
+          },
+          {
+            "node": 19,
+            "start_s": 64.5,
+            "end_s": 712.5,
+            "duration_s": 648.0
+          },
+          {
+            "node": 20,
+            "start_s": 0.0,
+            "end_s": 566.0,
+            "duration_s": 566.0
+          }
+        ],
+        "speedup_vs_serial_delayed": 6.688,
+        "speedup_vs_serial_det": 5.662,
+        "a_crit_km2": 24.629
+      }
+    },
+    {
+      "scale_N": 20,
+      "beacons_M": 5,
+      "v_cruise_mps": 10.0,
+      "t_settle_s": 5.0,
+      "d_pipe_m": 60.0,
+      "stall_prob": 0.15,
+      "serial": {
+        "makespan_s": 4200.0,
+        "total_distance_m": 40572.74580669491,
+        "num_moves": 20,
+        "gantt": [
+          {
+            "node": 10,
+            "start_s": 0.0,
+            "end_s": 198.5,
+            "duration_s": 198.5
+          },
+          {
+            "node": 9,
+            "start_s": 198.5,
+            "end_s": 408.0,
+            "duration_s": 209.5
+          },
+          {
+            "node": 8,
+            "start_s": 408.0,
+            "end_s": 622.0,
+            "duration_s": 214.0
+          },
+          {
+            "node": 7,
+            "start_s": 622.0,
+            "end_s": 836.0,
+            "duration_s": 214.0
+          },
+          {
+            "node": 6,
+            "start_s": 836.0,
+            "end_s": 1050.0,
+            "duration_s": 214.0
+          },
+          {
+            "node": 5,
+            "start_s": 1050.0,
+            "end_s": 1264.0,
+            "duration_s": 214.0
+          },
+          {
+            "node": 4,
+            "start_s": 1264.0,
+            "end_s": 1478.0,
+            "duration_s": 214.0
+          },
+          {
+            "node": 3,
+            "start_s": 1478.0,
+            "end_s": 1692.0,
+            "duration_s": 214.0
+          },
+          {
+            "node": 2,
+            "start_s": 1692.0,
+            "end_s": 1901.5,
+            "duration_s": 209.5
+          },
+          {
+            "node": 1,
+            "start_s": 1901.5,
+            "end_s": 2100.0,
+            "duration_s": 198.5
+          },
+          {
+            "node": 20,
+            "start_s": 2100.0,
+            "end_s": 2298.5,
+            "duration_s": 198.5
+          },
+          {
+            "node": 19,
+            "start_s": 2298.5,
+            "end_s": 2508.0,
+            "duration_s": 209.5
+          },
+          {
+            "node": 18,
+            "start_s": 2508.0,
+            "end_s": 2722.0,
+            "duration_s": 214.0
+          },
+          {
+            "node": 17,
+            "start_s": 2722.0,
+            "end_s": 2936.0,
+            "duration_s": 214.0
+          },
+          {
+            "node": 16,
+            "start_s": 2936.0,
+            "end_s": 3150.0,
+            "duration_s": 214.0
+          },
+          {
+            "node": 15,
+            "start_s": 3150.0,
+            "end_s": 3364.0,
+            "duration_s": 214.0
+          },
+          {
+            "node": 14,
+            "start_s": 3364.0,
+            "end_s": 3578.0,
+            "duration_s": 214.0
+          },
+          {
+            "node": 13,
+            "start_s": 3578.0,
+            "end_s": 3792.0,
+            "duration_s": 214.0
+          },
+          {
+            "node": 12,
+            "start_s": 3792.0,
+            "end_s": 4001.5,
+            "duration_s": 209.5
+          },
+          {
+            "node": 11,
+            "start_s": 4001.5,
+            "end_s": 4200.0,
+            "duration_s": 198.5
+          }
+        ],
+        "a_crit_km2": 56.28
+      },
+      "serial_reversible_berth": {
+        "makespan_s": 4620.0,
+        "total_distance_m": 43772.74580669489,
+        "num_moves": 40,
+        "gantt": [
+          {
+            "node": 20,
+            "start_s": 0.0,
+            "end_s": 151.0,
+            "duration_s": 151.0
+          },
+          {
+            "node": 10,
+            "start_s": 151.0,
+            "end_s": 347.0,
+            "duration_s": 196.0
+          },
+          {
+            "node": 19,
+            "start_s": 347.0,
+            "end_s": 493.0,
+            "duration_s": 146.0
+          },
+          {
+            "node": 9,
+            "start_s": 493.0,
+            "end_s": 674.0,
+            "duration_s": 181.0
+          },
+          {
+            "node": 18,
+            "start_s": 674.0,
+            "end_s": 815.0,
+            "duration_s": 141.0
+          },
+          {
+            "node": 8,
+            "start_s": 815.0,
+            "end_s": 981.0,
+            "duration_s": 166.0
+          },
+          {
+            "node": 17,
+            "start_s": 981.0,
+            "end_s": 1117.0,
+            "duration_s": 136.0
+          },
+          {
+            "node": 7,
+            "start_s": 1117.0,
+            "end_s": 1268.0,
+            "duration_s": 151.0
+          },
+          {
+            "node": 16,
+            "start_s": 1268.0,
+            "end_s": 1399.0,
+            "duration_s": 131.0
+          },
+          {
+            "node": 6,
+            "start_s": 1399.0,
+            "end_s": 1535.0,
+            "duration_s": 136.0
+          },
+          {
+            "node": 15,
+            "start_s": 1535.0,
+            "end_s": 1661.0,
+            "duration_s": 126.0
+          },
+          {
+            "node": 5,
+            "start_s": 1661.0,
+            "end_s": 1782.0,
+            "duration_s": 121.0
+          },
+          {
+            "node": 14,
+            "start_s": 1782.0,
+            "end_s": 1903.0,
+            "duration_s": 121.0
+          },
+          {
+            "node": 4,
+            "start_s": 1903.0,
+            "end_s": 2009.0,
+            "duration_s": 106.0
+          },
+          {
+            "node": 13,
+            "start_s": 2009.0,
+            "end_s": 2125.0,
+            "duration_s": 116.0
+          },
+          {
+            "node": 3,
+            "start_s": 2125.0,
+            "end_s": 2216.0,
+            "duration_s": 91.0
+          },
+          {
+            "node": 12,
+            "start_s": 2216.0,
+            "end_s": 2322.5,
+            "duration_s": 106.5
+          },
+          {
+            "node": 2,
+            "start_s": 2322.5,
+            "end_s": 2394.0,
+            "duration_s": 71.5
+          },
+          {
+            "node": 11,
+            "start_s": 2394.0,
+            "end_s": 2484.5,
+            "duration_s": 90.5
+          },
+          {
+            "node": 1,
+            "start_s": 2484.5,
+            "end_s": 2530.0,
+            "duration_s": 45.5
+          },
+          {
+            "node": 10,
+            "start_s": 2530.0,
+            "end_s": 2580.5,
+            "duration_s": 50.5
+          },
+          {
+            "node": 20,
+            "start_s": 2580.5,
+            "end_s": 2641.0,
+            "duration_s": 60.5
+          },
+          {
+            "node": 9,
+            "start_s": 2641.0,
+            "end_s": 2707.5,
+            "duration_s": 66.5
+          },
+          {
+            "node": 19,
+            "start_s": 2707.5,
+            "end_s": 2784.0,
+            "duration_s": 76.5
+          },
+          {
+            "node": 8,
+            "start_s": 2784.0,
+            "end_s": 2860.0,
+            "duration_s": 76.0
+          },
+          {
+            "node": 18,
+            "start_s": 2860.0,
+            "end_s": 2946.0,
+            "duration_s": 86.0
+          },
+          {
+            "node": 7,
+            "start_s": 2946.0,
+            "end_s": 3027.0,
+            "duration_s": 81.0
+          },
+          {
+            "node": 17,
+            "start_s": 3027.0,
+            "end_s": 3118.0,
+            "duration_s": 91.0
+          },
+          {
+            "node": 6,
+            "start_s": 3118.0,
+            "end_s": 3209.0,
+            "duration_s": 91.0
+          },
+          {
+            "node": 16,
+            "start_s": 3209.0,
+            "end_s": 3305.0,
+            "duration_s": 96.0
+          },
+          {
+            "node": 5,
+            "start_s": 3305.0,
+            "end_s": 3411.0,
+            "duration_s": 106.0
+          },
+          {
+            "node": 15,
+            "start_s": 3411.0,
+            "end_s": 3512.0,
+            "duration_s": 101.0
+          },
+          {
+            "node": 4,
+            "start_s": 3512.0,
+            "end_s": 3633.0,
+            "duration_s": 121.0
+          },
+          {
+            "node": 14,
+            "start_s": 3633.0,
+            "end_s": 3744.0,
+            "duration_s": 111.0
+          },
+          {
+            "node": 3,
+            "start_s": 3744.0,
+            "end_s": 3880.0,
+            "duration_s": 136.0
+          },
+          {
+            "node": 13,
+            "start_s": 3880.0,
+            "end_s": 4006.0,
+            "duration_s": 126.0
+          },
+          {
+            "node": 2,
+            "start_s": 4006.0,
+            "end_s": 4157.0,
+            "duration_s": 151.0
+          },
+          {
+            "node": 12,
+            "start_s": 4157.0,
+            "end_s": 4298.0,
+            "duration_s": 141.0
+          },
+          {
+            "node": 1,
+            "start_s": 4298.0,
+            "end_s": 4464.0,
+            "duration_s": 166.0
+          },
+          {
+            "node": 11,
+            "start_s": 4464.0,
+            "end_s": 4620.0,
+            "duration_s": 156.0
+          }
+        ],
+        "a_crit_km2": 61.908
+      },
+      "serial_with_delays": {
+        "makespan_s": 4952.0,
+        "total_distance_m": 40572.74580669491,
+        "num_moves": 20,
+        "gantt": [
+          {
+            "node": 10,
+            "start_s": 0.0,
+            "end_s": 234.0,
+            "duration_s": 234.0
+          },
+          {
+            "node": 9,
+            "start_s": 234.0,
+            "end_s": 477.0,
+            "duration_s": 243.0
+          },
+          {
+            "node": 8,
+            "start_s": 477.0,
+            "end_s": 729.5,
+            "duration_s": 252.5
+          },
+          {
+            "node": 7,
+            "start_s": 729.5,
+            "end_s": 980.0,
+            "duration_s": 250.5
+          },
+          {
+            "node": 6,
+            "start_s": 980.0,
+            "end_s": 1233.5,
+            "duration_s": 253.5
+          },
+          {
+            "node": 5,
+            "start_s": 1233.5,
+            "end_s": 1482.0,
+            "duration_s": 248.5
+          },
+          {
+            "node": 4,
+            "start_s": 1482.0,
+            "end_s": 1728.5,
+            "duration_s": 246.5
+          },
+          {
+            "node": 3,
+            "start_s": 1728.5,
+            "end_s": 1981.5,
+            "duration_s": 253.0
+          },
+          {
+            "node": 2,
+            "start_s": 1981.5,
+            "end_s": 2232.0,
+            "duration_s": 250.5
+          },
+          {
+            "node": 1,
+            "start_s": 2232.0,
+            "end_s": 2467.5,
+            "duration_s": 235.5
+          },
+          {
+            "node": 20,
+            "start_s": 2467.5,
+            "end_s": 2701.5,
+            "duration_s": 234.0
+          },
+          {
+            "node": 19,
+            "start_s": 2701.5,
+            "end_s": 2948.5,
+            "duration_s": 247.0
+          },
+          {
+            "node": 18,
+            "start_s": 2948.5,
+            "end_s": 3201.5,
+            "duration_s": 253.0
+          },
+          {
+            "node": 17,
+            "start_s": 3201.5,
+            "end_s": 3454.0,
+            "duration_s": 252.5
+          },
+          {
+            "node": 16,
+            "start_s": 3454.0,
+            "end_s": 3707.0,
+            "duration_s": 253.0
+          },
+          {
+            "node": 15,
+            "start_s": 3707.0,
+            "end_s": 3961.0,
+            "duration_s": 254.0
+          },
+          {
+            "node": 14,
+            "start_s": 3961.0,
+            "end_s": 4221.0,
+            "duration_s": 260.0
+          },
+          {
+            "node": 13,
+            "start_s": 4221.0,
+            "end_s": 4468.5,
+            "duration_s": 247.5
+          },
+          {
+            "node": 12,
+            "start_s": 4468.5,
+            "end_s": 4720.5,
+            "duration_s": 252.0
+          },
+          {
+            "node": 11,
+            "start_s": 4720.5,
+            "end_s": 4952.0,
+            "duration_s": 231.5
+          }
+        ],
+        "a_crit_km2": 66.357
+      },
+      "pipelined_deterministic": {
+        "makespan_s": 635.5,
+        "ticks": 1271,
+        "deadlocked": false,
+        "final_matched": true,
+        "static_parent_violations": 0,
+        "acyclic_all_ticks": true,
+        "min_in_degree": 2,
+        "min_moving_separation_m": 59.99999999999982,
+        "min_clearance_m": 59.99999999999982,
+        "max_reference_m": 616.8134871936412,
+        "gantt": [
+          {
+            "node": 1,
+            "start_s": 433.0,
+            "end_s": 635.0,
+            "duration_s": 202.0
+          },
+          {
+            "node": 2,
+            "start_s": 313.0,
+            "end_s": 597.5,
+            "duration_s": 284.5
+          },
+          {
+            "node": 3,
+            "start_s": 157.5,
+            "end_s": 549.5,
+            "duration_s": 392.0
+          },
+          {
+            "node": 4,
+            "start_s": 135.0,
+            "end_s": 501.5,
+            "duration_s": 366.5
+          },
+          {
+            "node": 5,
+            "start_s": 112.5,
+            "end_s": 453.5,
+            "duration_s": 341.0
+          },
+          {
+            "node": 6,
+            "start_s": 90.0,
+            "end_s": 412.0,
+            "duration_s": 322.0
+          },
+          {
+            "node": 7,
+            "start_s": 67.5,
+            "end_s": 374.5,
+            "duration_s": 307.0
+          },
+          {
+            "node": 8,
+            "start_s": 45.0,
+            "end_s": 321.0,
+            "duration_s": 276.0
+          },
+          {
+            "node": 9,
+            "start_s": 22.5,
+            "end_s": 257.0,
+            "duration_s": 234.5
+          },
+          {
+            "node": 10,
+            "start_s": 0.0,
+            "end_s": 198.0,
+            "duration_s": 198.0
+          },
+          {
+            "node": 11,
+            "start_s": 285.0,
+            "end_s": 590.5,
+            "duration_s": 305.5
+          },
+          {
+            "node": 12,
+            "start_s": 220.5,
+            "end_s": 553.0,
+            "duration_s": 332.5
+          },
+          {
+            "node": 13,
+            "start_s": 157.5,
+            "end_s": 515.5,
+            "duration_s": 358.0
+          },
+          {
+            "node": 14,
+            "start_s": 135.0,
+            "end_s": 478.0,
+            "duration_s": 343.0
+          },
+          {
+            "node": 15,
+            "start_s": 112.5,
+            "end_s": 440.5,
+            "duration_s": 328.0
+          },
+          {
+            "node": 16,
+            "start_s": 90.0,
+            "end_s": 403.0,
+            "duration_s": 313.0
+          },
+          {
+            "node": 17,
+            "start_s": 67.5,
+            "end_s": 365.5,
+            "duration_s": 298.0
+          },
+          {
+            "node": 18,
+            "start_s": 45.0,
+            "end_s": 312.0,
+            "duration_s": 267.0
+          },
+          {
+            "node": 19,
+            "start_s": 22.5,
+            "end_s": 248.0,
+            "duration_s": 225.5
+          },
+          {
+            "node": 20,
+            "start_s": 0.0,
+            "end_s": 198.0,
+            "duration_s": 198.0
+          }
+        ],
+        "speedup_vs_serial": 6.609,
+        "speedup_vs_reversible_serial": 7.27,
+        "a_crit_km2": 8.516
+      },
+      "pipelined_with_delays": {
+        "makespan_s": 771.0,
+        "ticks": 1542,
+        "deadlocked": false,
+        "final_matched": true,
+        "static_parent_violations": 0,
+        "acyclic_all_ticks": true,
+        "min_in_degree": 2,
+        "min_moving_separation_m": 59.99999999999982,
+        "min_clearance_m": 59.99999999999982,
+        "max_reference_m": 616.8134871936412,
+        "gantt": [
+          {
+            "node": 1,
+            "start_s": 524.0,
+            "end_s": 770.5,
+            "duration_s": 246.5
+          },
+          {
+            "node": 2,
+            "start_s": 378.5,
+            "end_s": 710.5,
+            "duration_s": 332.0
+          },
+          {
+            "node": 3,
+            "start_s": 184.0,
+            "end_s": 661.5,
+            "duration_s": 477.5
+          },
+          {
+            "node": 4,
+            "start_s": 157.5,
+            "end_s": 600.0,
+            "duration_s": 442.5
+          },
+          {
+            "node": 5,
+            "start_s": 128.0,
+            "end_s": 545.0,
+            "duration_s": 417.0
+          },
+          {
+            "node": 6,
+            "start_s": 102.0,
+            "end_s": 486.5,
+            "duration_s": 384.5
+          },
+          {
+            "node": 7,
+            "start_s": 77.0,
+            "end_s": 435.0,
+            "duration_s": 358.0
+          },
+          {
+            "node": 8,
+            "start_s": 52.0,
+            "end_s": 371.5,
+            "duration_s": 319.5
+          },
+          {
+            "node": 9,
+            "start_s": 25.0,
+            "end_s": 301.5,
+            "duration_s": 276.5
+          },
+          {
+            "node": 10,
+            "start_s": 0.0,
+            "end_s": 235.5,
+            "duration_s": 235.5
+          },
+          {
+            "node": 11,
+            "start_s": 342.0,
+            "end_s": 684.5,
+            "duration_s": 342.5
+          },
+          {
+            "node": 12,
+            "start_s": 265.5,
+            "end_s": 641.5,
+            "duration_s": 376.0
+          },
+          {
+            "node": 13,
+            "start_s": 178.5,
+            "end_s": 599.0,
+            "duration_s": 420.5
+          },
+          {
+            "node": 14,
+            "start_s": 152.5,
+            "end_s": 556.0,
+            "duration_s": 403.5
+          },
+          {
+            "node": 15,
+            "start_s": 128.5,
+            "end_s": 514.0,
+            "duration_s": 385.5
+          },
+          {
+            "node": 16,
+            "start_s": 101.5,
+            "end_s": 472.0,
+            "duration_s": 370.5
+          },
+          {
+            "node": 17,
+            "start_s": 74.0,
+            "end_s": 430.0,
+            "duration_s": 356.0
+          },
+          {
+            "node": 18,
+            "start_s": 50.0,
+            "end_s": 367.5,
+            "duration_s": 317.5
+          },
+          {
+            "node": 19,
+            "start_s": 25.5,
+            "end_s": 292.5,
+            "duration_s": 267.0
+          },
+          {
+            "node": 20,
+            "start_s": 0.0,
+            "end_s": 234.0,
+            "duration_s": 234.0
+          }
+        ],
+        "speedup_vs_serial_delayed": 6.423,
+        "speedup_vs_serial_det": 5.447,
+        "a_crit_km2": 10.331
+      }
+    }
+  ],
+  "pinball_p6_to_dual_ladder_10mps": {
+    "serial": {
+      "makespan_s": 1020.0,
+      "total_distance_m": 9512.536999827269,
+      "num_moves": 12,
+      "gantt": [
+        {
+          "node": 6,
+          "start_s": 0.0,
+          "end_s": 138.5,
+          "duration_s": 138.5
+        },
+        {
+          "node": 5,
+          "start_s": 138.5,
+          "end_s": 225.0,
+          "duration_s": 86.5
+        },
+        {
+          "node": 4,
+          "start_s": 225.0,
+          "end_s": 346.5,
+          "duration_s": 121.5
+        },
+        {
+          "node": 3,
+          "start_s": 346.5,
+          "end_s": 419.0,
+          "duration_s": 72.5
+        },
+        {
+          "node": 2,
+          "start_s": 419.0,
+          "end_s": 456.5,
+          "duration_s": 37.5
+        },
+        {
+          "node": 1,
+          "start_s": 456.5,
+          "end_s": 514.0,
+          "duration_s": 57.5
+        },
+        {
+          "node": 1,
+          "start_s": 514.0,
+          "end_s": 574.5,
+          "duration_s": 60.5
+        },
+        {
+          "node": 4,
+          "start_s": 574.5,
+          "end_s": 645.0,
+          "duration_s": 70.5
+        },
+        {
+          "node": 2,
+          "start_s": 645.0,
+          "end_s": 731.5,
+          "duration_s": 86.5
+        },
+        {
+          "node": 5,
+          "start_s": 731.5,
+          "end_s": 818.0,
+          "duration_s": 86.5
+        },
+        {
+          "node": 3,
+          "start_s": 818.0,
+          "end_s": 924.0,
+          "duration_s": 106.0
+        },
+        {
+          "node": 6,
+          "start_s": 924.0,
+          "end_s": 1020.0,
+          "duration_s": 96.0
+        }
+      ]
+    },
+    "pipelined_with_delays": {
+      "makespan_s": 562.5,
+      "ticks": 1125,
+      "deadlocked": false,
+      "final_matched": true,
+      "static_parent_violations": 0,
+      "acyclic_all_ticks": true,
+      "min_in_degree": 2,
+      "min_moving_separation_m": 121.41016151377545,
+      "min_clearance_m": 40.0,
+      "max_reference_m": 687.820323027551,
+      "gantt": [
+        {
+          "node": 1,
+          "start_s": 127.0,
+          "end_s": 264.5,
+          "duration_s": 137.5
+        },
+        {
+          "node": 2,
+          "start_s": 207.0,
+          "end_s": 389.5,
+          "duration_s": 182.5
+        },
+        {
+          "node": 3,
+          "start_s": 185.5,
+          "end_s": 505.5,
+          "duration_s": 320.0
+        },
+        {
+          "node": 4,
+          "start_s": 54.0,
+          "end_s": 366.0,
+          "duration_s": 312.0
+        },
+        {
+          "node": 5,
+          "start_s": 81.0,
+          "end_s": 460.5,
+          "duration_s": 379.5
+        },
+        {
+          "node": 6,
+          "start_s": 0.0,
+          "end_s": 562.0,
+          "duration_s": 562.0
+        }
+      ],
+      "speedup_vs_serial": 1.813
+    }
+  }
+}

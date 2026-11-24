@@ -233,11 +233,11 @@ json provenanceHeader(
 #endif
 
     return {
-        {"superproject_repo", "GrandFinale2027-ast-exploration"},
+        {"superproject_repo", "standalone"},
         {"superproject_commit", parent_commit},
         {"superproject_cbf_gitlink", gitlink},
-        {"repo", "GrandFinale2027-ast-exploration/cbf"},
-        {"branch", cbf_branch.empty() ? std::string("codex/gf-ast-flight-20261120") : cbf_branch},
+        {"repo", "cbf"},
+        {"branch", cbf_branch.empty() ? std::string("formation-reconfiguration") : cbf_branch},
         {"cbf_commit", cbf_commit},
         {"cbf_tree", cbf_tree},
         {"cbf_working_tree_dirty", !cbf_dirty_str.empty()},

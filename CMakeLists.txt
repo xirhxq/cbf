@@ -11,10 +11,10 @@ endif()
 set(CMAKE_CXX_STANDARD 17)
 
 option(ENABLE_PIQP "Enable vendored header-only PIQP Optimizer" ON)
-option(ENABLE_GUROBI "Enable Gurobi Optimizer" ON)
-option(ENABLE_HIGHS "Enable HiGHS Optimizer" ON)
-option(ENABLE_OSQP "Enable OSQP Optimizer" ON)
-option(ENABLE_PROXQP "Enable ProxQP Optimizer" ON)
+option(ENABLE_GUROBI "Enable Gurobi Optimizer" OFF)
+option(ENABLE_HIGHS "Enable HiGHS Optimizer" OFF)
+option(ENABLE_OSQP "Enable OSQP Optimizer" OFF)
+option(ENABLE_PROXQP "Enable ProxQP Optimizer" OFF)
 set(GRAND_FINALE_SOLVER_PROFILE "" CACHE STRING
     "Require a GrandFinale solver profile: gurobi, open_source, or piqp")
 set_property(CACHE GRAND_FINALE_SOLVER_PROFILE PROPERTY STRINGS

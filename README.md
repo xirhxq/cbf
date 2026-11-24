@@ -1,127 +1,78 @@
-# CBF-Based Multi-UAV Search
+# Localization-Constrained Swarm Search with Formation Reconfiguration (`formation-reconfiguration`)
 
-## Introduction
+Reference C++17 simulation and figure-reproduction code for the paper:
 
-This repository implements a multi-UAV search problem using a **Control Barrier Function (CBF)**-based approach. CBFs are a powerful mathematical tool used to ensure safety in dynamical systems by encoding safety constraints directly into the control laws of robots. For more information on CBFs, you can refer to the foundational paper: [*Control Barrier Functions: Theory and Applications*](https://arxiv.org/abs/1512.07873).
+> **Localization-Constrained Swarm Search with Formation Changes for GNSS-Denied Maritime Surveillance**
 
-The algorithm is implemented in C++, and the results are stored in `.json` files, which can be visualized using a Python script.
+This branch packages the closed-loop 4D Interim-Master D-EKF, finite-range UWB observation gate, symmetric three-reference Make-Before-Break handover controller, second-order HOCBF-QP safety filter, analytical geometry datasets, and paper plotting scripts with **zero external C++ solver dependencies** using bundled header-only **PIQP 0.6.1** (`vendor/include/piqp`).
 
-We recommend using **CLion** for development, as it provides an intuitive interface for managing CMake projects and supports Python scripting for result visualization.
+## Requirements
 
-## Installation
+- C++17 compiler toolchain and CMake >= 3.16
+- All required C++ dependencies are bundled in-tree:
+  - **Eigen** (`external/Eigen`, MPL-2.0)
+  - **PIQP 0.6.1** (`vendor/include/piqp`, `vendor/PIQP-LICENSE`, BSD-2-Clause)
+  - **nlohmann/json** (`external/nlohmann/json.hpp`, MIT)
+  - **doctest** (`external/doctest/doctest.h`, MIT)
+- Python 3.10+ with `numpy`, `matplotlib`, and `scipy` (see `scripts/formation_reconfiguration/requirements.txt`) for regenerating figures from simulation JSON outputs.
 
-### Solver Configuration
+## Build (Default Vendored Header-Only PIQP Backend)
 
-This project supports three QP solvers for the CBF optimization:
+The default CMake configuration enables vendored header-only `PIQP 0.6.1` (`-DENABLE_PIQP=ON`) and keeps optional external solvers disabled (`OFF`):
 
-| Solver | Type | Speed | Stability | License |
-|--------|------|-------|-----------|---------|
-| **OSQP** | Open-source | Fastest | Excellent | Apache 2.0 |
-| **Gurobi** | Commercial | Fast | Excellent | Commercial |
-| **HiGHS** | Open-source | Moderate | Good | MIT |
-
-**Recommendation**: Use **OSQP** for best performance and numerical stability with CBF constraints.
-
-#### Enabling Solvers
-
-Each solver has a corresponding CMake option:
-
-```bash
-cmake -DENABLE_OSQP=ON -DENABLE_GUROBI=ON -DENABLE_HIGHS=ON ..
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j8 --target GrandFinaleRouteBRunner
 ```
 
-#### Installing OSQP
+Optional external QP/LP backends (`ENABLE_GUROBI`, `ENABLE_OSQP`, `ENABLE_HIGHS`, `ENABLE_PROXQP`) remain configurable via standard `-DENABLE_<SOLVER>=ON` CMake options for legacy development targets.
 
-Install [OsqpEigen](https://github.com/robotology/osqp-eigen):
+## Run Unit Tests and Closed-Loop Campaigns
 
-```bash
-# macOS
-brew install osqp-eigen
+`scripts/formation_reconfiguration/run_campaigns.sh` builds the pure-PIQP targets and executes the test suite or closed-loop simulation campaigns under `outputs/sim/`:
 
-# Ubuntu
-sudo apt install libosqp-eigen-dev
+```sh
+# Fast unit and closed-loop verification suite (21 targets, skips long parameter sweep)
+./scripts/formation_reconfiguration/run_campaigns.sh tests
+
+# Full verification suite including the 52-case break-even sweep (22 targets)
+./scripts/formation_reconfiguration/run_campaigns.sh tests_full
+
+# Reproduce individual campaigns (examples)
+./scripts/formation_reconfiguration/run_campaigns.sh tdd5_pinball
+./scripts/formation_reconfiguration/run_campaigns.sh tdd10
+
+# Reproduce all paper campaigns and snapshots into outputs/sim/
+./scripts/formation_reconfiguration/run_campaigns.sh all
 ```
 
-#### Installing Gurobi
+Supported campaign modes: `tdd5_pinball`, `tdd5_multiscale`, `tdd6`, `tdd7` (4-arm parallel execution + merge), `tdd7_snapshots`, `tdd8`, `tdd9`, `tdd10`, and `all`.
 
-Download from [Gurobi website](https://www.gurobi.com/downloads/) and specify the installation path:
+## Reproduce Paper Data Figures
 
-```bash
-cmake -DGUROBI_DIR=/Library/gurobi1200/macos_universal2 ..
+After installing Python dependencies (`pip install -r scripts/formation_reconfiguration/requirements.txt`) and generating `outputs/sim/*.json`, regenerate Figures 4–7 (`data_closed_loop_reconfig.pdf`, `data_mechanism_and_multiseed.pdf`, `data_mission_snapshots_tdd7.pdf`, `data_two_regime_coverage.pdf`) into `outputs/figures/`:
+
+```sh
+./scripts/formation_reconfiguration/plot_figures.sh
 ```
 
-The bundled `FindGUROBI.cmake` reads the CMake variable `GUROBI_DIR` or the
-environment variable `GUROBI_HOME`. It does not read `GUROBI_ROOT`.
+Custom paths can be supplied via `--sim-dir`, `--geo-dir`, and `--out-dir`.
 
-#### Installing HiGHS
+## Repository Layout
 
-```bash
-# macOS
-brew install highs
+- `include/grand_finale/` — Closed-loop controller, 4D D-EKF, HOCBF-QP formulation, handover certifier, and search tracker
+- `include/optimisers/PIQP.hpp` — Vendored PIQP 0.6.1 adapter matching the repository `Optimiser` interface
+- `src/GrandFinaleRouteBRunner.cpp` — Closed-loop campaign runner exporting JSON outputs
+- `tests/` — Unit and closed-loop doctest targets (including `testRouteBPiqpSolver.cpp`)
+- `data/geo_outputs/` — Precomputed analytical geometry and depth-scaling JSON datasets
+- `scripts/formation_reconfiguration/` — Self-contained campaign runner (`run_campaigns.sh`), figure scripts (`plot_figures.sh`), and Python dependencies (`requirements.txt`)
+- `vendor/` — Bundled header-only PIQP 0.6.1 headers and license (`vendor/PIQP-LICENSE`)
+- `external/` — Bundled Eigen, nlohmann/json, and doctest headers
 
-# Ubuntu
-sudo apt install libhighs-dev
-```
+## Third-Party Licenses
 
-#### Selecting Solver
-
-Set the `optimiser` field in `config/config.json`:
-
-```json
-"optimiser": "OSQP"
-```
-
-#### GrandFinale experiment profiles
-
-The general solver recommendation above is not an experiment identity.
-GrandFinale experiments freeze their solver profile in the parent repository's
-preregistration and evidence. Configure a Gurobi-frozen GrandFinale build with:
-
-```bash
-cmake -S . -B build-grand-finale \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DGRAND_FINALE_SOLVER_PROFILE=gurobi \
-  -DGUROBI_DIR=/Library/gurobi1200/macos_universal2
-```
-
-Use `GRAND_FINALE_SOLVER_PROFILE=open_source` only when the corresponding
-protocol explicitly freezes the HiGHS+OSQP profile. Do not infer a scientific
-profile from this generic README. Task-specific input paths, commands, binary
-hashes, expected exit codes, and run authorization live beside the evidence in
-the GrandFinale parent repository; untracked `build-*` directories are not
-portable or authoritative artifacts.
-
-#### Common Issues
-- **How to ensure CMake finds the correct shared libraries (`.so` or `.dylib`)?**
-  Please verify that the shared libraries (either `.so` or `.dylib` files) found by CMake match the required version for your platform. File names and paths may differ across platforms, so be sure to confirm that the versions are correct based on your system and the installed solver version.
-
-
-### Python Environment Setup
-
-#### 1. **Install Anaconda or Miniconda**
-Download [Anaconda](https://www.anaconda.com/download) (recommended for data science) or [Miniconda](https://docs.conda.io/en/latest/miniconda.html) (minimal installer), then follow default installation steps.
-
-#### 2. **Create Python 3.11 Environment**
-```bash
-conda create -n cbf_env python=3.11
-conda activate cbf_env
-```  
-This creates an isolated environment with Python 3.11.
-
-#### 3. **Install FFmpeg**
-```bash
-conda install -c conda-forge ffmpeg  # Handles codec dependencies automatically
-```
-
-#### 4. **Install Project Dependencies**
-```bash
-pip install -r requirements.txt  # Use --force-reinstall if conflicts occur
-```
-
-#### 5. **CLion Integration**
-- Open **File > Settings > Build > Python Interpreter**.
-- Click ⚙️ → **Add** → **Conda Environment** → Specify path:
-   - Unix: `conda_install_path/envs/cbf_env/bin/python`
-   - Windows: `...\envs\cbf_env\python.exe`.
-
-This streamlined workflow ensures dependency isolation and cross-platform compatibility. For advanced troubleshooting, refer to the original Chinese version.
+Bundled third-party components carry their respective upstream licenses:
+- PIQP 0.6.1 (`vendor/PIQP-LICENSE`, BSD 2-Clause)
+- Eigen (`external/Eigen/`, MPL-2.0)
+- nlohmann/json (`external/nlohmann/json.hpp`, MIT)
+- doctest (`external/doctest/doctest.h`, MIT)
