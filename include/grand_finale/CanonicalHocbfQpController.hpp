@@ -134,7 +134,11 @@ public:
         };
         try {
             const std::string optimiser_name =
+#ifdef ENABLE_PIQP
+                request.profile == SolverProfile::Gurobi ? "Gurobi" : "PIQP";
+#else
                 request.profile == SolverProfile::Gurobi ? "Gurobi" : "OSQP";
+#endif
             auto found=optimisers_.find(request.profile);
             if (found==optimisers_.end()) {
                 const auto initialization_started=

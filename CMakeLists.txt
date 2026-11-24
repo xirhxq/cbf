@@ -10,14 +10,15 @@ endif()
 
 set(CMAKE_CXX_STANDARD 17)
 
+option(ENABLE_PIQP "Enable vendored header-only PIQP Optimizer" ON)
 option(ENABLE_GUROBI "Enable Gurobi Optimizer" ON)
 option(ENABLE_HIGHS "Enable HiGHS Optimizer" ON)
 option(ENABLE_OSQP "Enable OSQP Optimizer" ON)
 option(ENABLE_PROXQP "Enable ProxQP Optimizer" ON)
 set(GRAND_FINALE_SOLVER_PROFILE "" CACHE STRING
-    "Require a GrandFinale solver profile: gurobi or open_source")
+    "Require a GrandFinale solver profile: gurobi, open_source, or piqp")
 set_property(CACHE GRAND_FINALE_SOLVER_PROFILE PROPERTY STRINGS
-    "" gurobi open_source)
+    "" gurobi open_source piqp)
 
 set(CBF_EXTERNAL_INCLUDE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/external
@@ -86,19 +87,33 @@ if(ENABLE_OSQP)
     endif()
 endif()
 
+if(ENABLE_PIQP)
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/vendor/include/piqp/piqp.hpp")
+        message(FATAL_ERROR
+            "Vendored PIQP headers missing at vendor/include/piqp/piqp.hpp")
+    endif()
+    message(STATUS "Found vendored PIQP 0.6.1 (header-only)")
+    target_compile_definitions(cbf_deps INTERFACE ENABLE_PIQP)
+endif()
+
 if(GRAND_FINALE_SOLVER_PROFILE STREQUAL "gurobi")
     if(NOT ENABLE_GUROBI)
         message(FATAL_ERROR
             "GrandFinale gurobi profile requires Gurobi")
     endif()
-elseif(GRAND_FINALE_SOLVER_PROFILE STREQUAL "open_source")
-    if(NOT ENABLE_HIGHS OR NOT ENABLE_OSQP)
+elseif(GRAND_FINALE_SOLVER_PROFILE STREQUAL "piqp")
+    if(NOT ENABLE_PIQP)
         message(FATAL_ERROR
-            "GrandFinale open_source profile requires HiGHS and OSQP")
+            "GrandFinale piqp profile requires ENABLE_PIQP")
+    endif()
+elseif(GRAND_FINALE_SOLVER_PROFILE STREQUAL "open_source")
+    if(NOT ENABLE_PIQP AND (NOT ENABLE_HIGHS OR NOT ENABLE_OSQP))
+        message(FATAL_ERROR
+            "GrandFinale open_source profile requires PIQP or HiGHS+OSQP")
     endif()
 elseif(NOT GRAND_FINALE_SOLVER_PROFILE STREQUAL "")
     message(FATAL_ERROR
-        "GRAND_FINALE_SOLVER_PROFILE must be gurobi or open_source")
+        "GRAND_FINALE_SOLVER_PROFILE must be gurobi, open_source, or piqp")
 endif()
 
 set_package_properties(proxsuite PROPERTIES
@@ -135,6 +150,12 @@ target_include_directories(cbf_deps INTERFACE
 
 include_directories(include ${CBF_EXTERNAL_INCLUDE_DIRS})
 
+if(ENABLE_PIQP)
+    target_include_directories(cbf_deps INTERFACE
+        ${CMAKE_CURRENT_SOURCE_DIR}/vendor/include)
+    include_directories(${CMAKE_CURRENT_SOURCE_DIR}/vendor/include)
+endif()
+
 file(GLOB SOURCES "src/*.cpp")
 foreach(SOURCE ${SOURCES})
     get_filename_component(EXECUTABLE ${SOURCE} NAME_WE)
@@ -167,6 +188,7 @@ file(GLOB_RECURSE CBF_BUILD_FINGERPRINT_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt"
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/*.cmake"
     "${CMAKE_CURRENT_SOURCE_DIR}/external/*"
+    "${CMAKE_CURRENT_SOURCE_DIR}/vendor/*"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/*"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*"
 )
@@ -203,6 +225,11 @@ endforeach()
 
 message(STATUS "")
 message(STATUS "=== Optimizer Summary ===")
+if(ENABLE_PIQP)
+    message(STATUS "  PIQP:   ENABLED (vendored 0.6.1)")
+else()
+    message(STATUS "  PIQP:   disabled")
+endif()
 if(ENABLE_GUROBI)
     message(STATUS "  Gurobi: ENABLED")
 else()
@@ -225,10 +252,11 @@ else()
 endif()
 message(STATUS "")
 
-if(NOT ENABLE_GUROBI AND NOT ENABLE_HIGHS AND NOT ENABLE_OSQP AND NOT ENABLE_PROXQP)
+if(NOT ENABLE_PIQP AND NOT ENABLE_GUROBI AND NOT ENABLE_HIGHS AND NOT ENABLE_OSQP AND NOT ENABLE_PROXQP)
     message(WARNING "
 ===============================================================================
 WARNING: No optimizer found! Please install at least one of:
+  - PIQP (vendored): enable -DENABLE_PIQP=ON
   - Gurobi (commercial): https://www.gurobi.com/
   - HiGHS (open-source): brew install highs
   - OSQP (open-source): brew install osqp && install osqp-eigen

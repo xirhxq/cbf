@@ -164,7 +164,11 @@ inline json task10p10SwarmSettings(
         std::string(PROJECT_ROOT)+"/config/config_second_order.json"));
     settings["num"] = scenario.mobile_ids.size();
     settings["optimiser"] =
+#ifdef ENABLE_PIQP
+        profile==SolverProfile::Gurobi ? "Gurobi" : "PIQP";
+#else
         profile==SolverProfile::Gurobi ? "Gurobi" : "OSQP";
+#endif
     settings["formation"]["parts"] = 1;
     settings["formation"]["bases-id"] = {{0,1,2}};
     settings["bases"] = json::array();

@@ -131,7 +131,11 @@ public:
                        {"dual-infeasibility-tolerance",1e-8}};
         try {
             const std::string name=request.profile==SolverProfile::Gurobi
+#ifdef ENABLE_PIQP
+                ?"Gurobi":"PIQP";
+#else
                 ?"Gurobi":"OSQP";
+#endif
             auto found=optimisers_.find(request.profile);
             if (found==optimisers_.end())
                 found=optimisers_.emplace(

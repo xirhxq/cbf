@@ -52,6 +52,9 @@ inline Eigen::VectorXd makeSlackConstraintCoefficients(const Eigen::VectorXd &uC
 
 inline std::vector<std::string> getAvailableOptimisers() {
     std::vector<std::string> available;
+#ifdef ENABLE_PIQP
+    available.push_back("PIQP");
+#endif
 #ifdef ENABLE_GUROBI
     available.push_back("Gurobi");
 #endif

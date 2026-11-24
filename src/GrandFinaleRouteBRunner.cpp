@@ -245,7 +245,11 @@ json provenanceHeader(
         {"binary_path", exe_path},
         {"binary_sha256", exe_hash},
         {"build_type", build_type},
-        {"solver_profile", "open_source (HiGHS+OSQP+ProxQP)"},
+#ifdef ENABLE_PIQP
+        {"solver_profile", "open_source (PIQP 0.6.1)"},
+#else
+        {"solver_profile", "open_source (OSQP)"},
+#endif
         {"protocol", protocol},
         {"seeds", seeds_json},
         {"dt_s", 0.1},
@@ -1322,8 +1326,7 @@ json runTdd7Snapshots() {
 }  // namespace
 
 int main(int argc, char** argv) {
-    std::filesystem::path out_dir =
-        "/Users/xirhxq/Documents/Clones/GrandFinale2027-ast-exploration/experiments/route-b-20261123/sim-outputs";
+    std::filesystem::path out_dir = "./route_b_outputs";
     std::string mode = "all";
     std::string arm;
     for (int i = 1; i < argc; ++i) {

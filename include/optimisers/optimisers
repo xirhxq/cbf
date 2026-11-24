@@ -3,6 +3,12 @@
 
 #include "OptimiserBase.hpp"
 
+#ifdef ENABLE_PIQP
+
+#include "PIQP.hpp"
+
+#endif
+
 #ifdef ENABLE_GUROBI
 
 #include "Gurobi.hpp"
@@ -28,6 +34,9 @@
 #endif
 
 inline std::unique_ptr<OptimiserBase> createOptimiser(const std::string& name, json& settings) {
+#ifdef ENABLE_PIQP
+    if (name == "PIQP") return std::make_unique<PIQP>(settings);
+#endif
 #ifdef ENABLE_GUROBI
     if (name == "Gurobi") return std::make_unique<Gurobi>(settings);
 #endif

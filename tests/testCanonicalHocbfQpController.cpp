@@ -61,8 +61,8 @@ TEST_CASE("Exact progress predicate tests direction equality and empty polytope"
     CHECK(empty.reason == "hard_polytope_empty");
 }
 
-#ifdef ENABLE_OSQP
-TEST_CASE("OSQP HOCBF-QP matches exact projection and independently audits residuals") {
+#if defined(ENABLE_PIQP) || defined(ENABLE_OSQP)
+TEST_CASE("OpenSource HOCBF-QP matches exact projection and independently audits residuals") {
     gf::CanonicalHocbfQpController controller;
     const auto result = controller.solve(request(gf::SolverProfile::OpenSource));
     REQUIRE(result.solver_succeeded);
