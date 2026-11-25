@@ -1,10 +1,8 @@
-"""Figure 5: cantilever depth scaling, Monte Carlo statistics, and nonuniform beacons.
-(a) Steady-state 4D D-EKF depth scaling & certified limit n_max,
-(b) 16-trial degraded-UWB Monte Carlo statistics (makespan & position RMSE),
-(c) Nonuniform-beacon convex pentagon closed-loop coverage & trajectory inset.
+"""Figure 5: degraded-channel Monte Carlo statistics and nonuniform beacons.
+(a) 16-trial degraded-UWB Monte Carlo statistics (makespan & position RMSE),
+(b) Nonuniform-beacon convex pentagon closed-loop coverage & trajectory inset.
 
-Reads convex_domains.json, tdd8_multiseed_monte_carlo.json,
-and tdd10_nonuniform_beacon_pentagon.json.
+Reads tdd8_multiseed_monte_carlo.json and tdd10_nonuniform_beacon_pentagon.json.
 Outputs data_mechanism_and_multiseed.{pdf,png} in Times New Roman + STIX serif.
 """
 
@@ -25,7 +23,6 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from route_b_plot_fig4_domains_depth import load_depth_scaling
 from route_b_plot_style import (
     PALETTE,
     add_panel_label,
@@ -34,120 +31,32 @@ from route_b_plot_style import (
 )
 
 
-def make_figure(sim_dir: Path, geo_dir: Path, out_dir: Path) -> tuple[Path, Path]:
+def make_figure(sim_dir: Path, geo_dir: Path | None, out_dir: Path) -> tuple[Path, Path]:
+    del geo_dir
     apply_ieee_style(base_font_size=7.0)
 
-    depth = load_depth_scaling(geo_dir)
     t8 = json.loads((sim_dir / "tdd8_multiseed_monte_carlo.json").read_text(encoding="utf-8"))
     t10 = json.loads((sim_dir / "tdd10_nonuniform_beacon_pentagon.json").read_text(encoding="utf-8"))
 
-    fig = plt.figure(figsize=(7.35, 2.50))
-    # Explicit 5-column GridSpec so the (b)-(c) gutter cleanly hosts both
-    # (b)'s right y-axis (Position RMSE) and (c)'s left y-axis (Certified coverage).
+    fig = plt.figure(figsize=(7.16, 2.55))
+    # Explicit 3-column GridSpec so the central gutter cleanly separates (a)'s right
+    # y-axis (Position RMSE) from (b)'s left y-axis (Certified coverage).
     gs = GridSpec(
         1,
-        5,
+        3,
         figure=fig,
-        width_ratios=[1.00, 0.25, 1.06, 0.50, 1.06],
+        width_ratios=[1.02, 0.36, 1.06],
         wspace=0.0,
-        left=0.068,
+        left=0.075,
         right=0.988,
         top=0.87,
         bottom=0.25,
     )
 
     # ------------------------------------------------------------------
-    # (a) Steady-State 4D D-EKF Depth Scaling & Certified Limit n_max
+    # (a) 16-Trial Degraded-UWB Monte Carlo (48/48 safe, 0 violations)
     # ------------------------------------------------------------------
-    ax_a = fig.add_subplot(gs[0, 0])
-    ns = np.asarray(depth["n"], dtype=float)
-    y25_par = np.asarray(depth["dare25_s10_par"], dtype=float)
-    y50_par = np.asarray(depth["dare50_s10_par"], dtype=float)
-    y25_all = np.asarray(depth["dare25_s10_all"], dtype=float)
-    y50_all = np.asarray(depth["dare50_s10_all"], dtype=float)
-
-    ax_a.fill_between(ns, y25_par, y50_par, color=PALETTE["vermilion"], alpha=0.14, lw=0, zorder=2)
-    ax_a.plot(
-        ns,
-        y25_par,
-        color=PALETTE["vermilion"],
-        ls="--",
-        lw=1.35,
-        marker="s",
-        markersize=2.7,
-        label="Parents only, $\\sigma_0=1.0\\,\\mathrm{m}$",
-        zorder=4,
-    )
-    ax_a.fill_between(ns, y25_all, y50_all, color=PALETTE["blue"], alpha=0.14, lw=0, zorder=2)
-    ax_a.plot(
-        ns,
-        y25_all,
-        color=PALETTE["blue"],
-        ls="-",
-        lw=1.45,
-        marker="o",
-        markersize=2.7,
-        label="All within $d_{\\max}$, $\\sigma_0=1.0\\,\\mathrm{m}$",
-        zorder=4,
-    )
-
-    ax_a.axhline(3.0, color=PALETTE["slate"], ls=":", lw=0.8, zorder=1)
-    ax_a.text(14.3, 3.08, "$\\bar{\\epsilon}=3\\,\\mathrm{m}$", fontsize=5.7, color=PALETTE["slate"], ha="left", va="bottom")
-
-    n_par = 4
-    n_all = 11
-    y_par = float(y25_par[int(np.where(ns == n_par)[0][0])])
-    y_all = float(y25_all[int(np.where(ns == n_all)[0][0])])
-    ax_a.scatter([n_par], [y_par], s=24, facecolor=PALETTE["vermilion"], edgecolor="white", linewidths=0.7, zorder=6)
-    ax_a.scatter([n_all], [y_all], s=24, facecolor=PALETTE["blue"], edgecolor="white", linewidths=0.7, zorder=6)
-
-    ax_a.annotate(
-        f"$n_{{\\max}}={n_par}$",
-        (n_par, y_par),
-        xytext=(-6, 20),
-        textcoords="offset points",
-        ha="center",
-        fontsize=5.8,
-        fontweight="bold",
-        color=PALETTE["vermilion"],
-        arrowprops=dict(arrowstyle="-", color=PALETTE["vermilion"], lw=0.55),
-        zorder=7,
-    )
-    ax_a.annotate(
-        f"$n_{{\\max}}={n_all}$",
-        (n_all, y_all),
-        xytext=(10, -15),
-        textcoords="offset points",
-        ha="left",
-        fontsize=5.8,
-        fontweight="bold",
-        color=PALETTE["blue"],
-        arrowprops=dict(arrowstyle="-", color=PALETTE["blue"], lw=0.55),
-        zorder=7,
-    )
-    ax_a.text(9.6, 4.35, "slope $\\propto n^{9/8}$", fontsize=5.7, color=PALETTE["slate"], ha="left", va="center")
-
-    ax_a.set_xlim(1.1, 17.6)
-    ax_a.set_ylim(0.8, 9.0)
-    ax_a.set_xticks([2, 6, 10, 14])
-    ax_a.set_xlabel("Chain depth $n$")
-    ax_a.set_ylabel("Tip $3\\sqrt{\\mathrm{tr}(\\boldsymbol{P}_{n,\\infty}^p)}$ (m)")
-    ax_a.legend(
-        loc="upper left",
-        frameon=False,
-        fontsize=5.1,
-        title="$\\sigma_a\\in[0.25,0.50]\\,\\mathrm{m/s}^2$",
-        title_fontsize=5.0,
-        handlelength=1.8,
-        borderaxespad=0.15,
-        labelspacing=0.25,
-    )
-    add_panel_label(ax_a, "(a)", "4D D-EKF depth scaling & $n_{\\max}$", fontsize=7.3)
-
-    # ------------------------------------------------------------------
-    # (b) 16-Trial Degraded-UWB Monte Carlo (48/48 safe, 0 violations)
-    # ------------------------------------------------------------------
-    ax_b = fig.add_subplot(gs[0, 2])
+    ax_b = fig.add_subplot(gs[0, 0])
     sc_order = ["n6_converging_to_dual", "n6_dual_to_converging", "n14_dual_to_single_chain"]
     sc_labels = [
         "Converging\n$\\rightarrow$ Dual\n$N=6$",
@@ -221,13 +130,13 @@ def make_figure(sim_dir: Path, geo_dir: Path, out_dir: Path) -> tuple[Path, Path
         labelspacing=0.25,
     )
     leg_b.set_zorder(10)
-    ax_b2.text(2.48, 0.304, "48/48 trials safe, 0 violations", ha="right", va="bottom", fontsize=5.2, color=PALETTE["teal"])
-    add_panel_label(ax_b, "(b)", "16-trial degraded-UWB Monte Carlo", fontsize=7.3)
+    ax_b2.text(2.48, 0.304, "48/48 trials safe, 0 violations", ha="right", va="bottom", fontsize=5.6, color=PALETTE["teal"])
+    add_panel_label(ax_b, "(a)", "16-trial degraded-UWB Monte Carlo", fontsize=7.6)
 
     # ------------------------------------------------------------------
-    # (c) Nonuniform Beacons (320, 400, 360 m) & Pentagon Domain
+    # (b) Nonuniform Beacons (320, 400, 360 m) & Pentagon Domain
     # ------------------------------------------------------------------
-    ax_c = fig.add_subplot(gs[0, 4])
+    ax_c = fig.add_subplot(gs[0, 2])
     mis10 = t10["mission"]
     t_st10 = np.array([float(p["time_s"]) for p in mis10["stay"]["coverage_curve"]], dtype=float)
     c_st10 = np.array([float(p["certified_coverage"]) * 100.0 for p in mis10["stay"]["coverage_curve"]], dtype=float)
@@ -301,7 +210,7 @@ def make_figure(sim_dir: Path, geo_dir: Path, out_dir: Path) -> tuple[Path, Path
         ax_ins.spines[sp].set_visible(False)
     ax_ins.set_aspect("equal")
 
-    add_panel_label(ax_c, "(c)", "Nonuniform beacons, pentagon domain", fontsize=7.3)
+    add_panel_label(ax_c, "(b)", "Nonuniform beacons, pentagon domain", fontsize=7.6)
 
     return save_figure_pair(fig, out_dir, "data_mechanism_and_multiseed")
 
