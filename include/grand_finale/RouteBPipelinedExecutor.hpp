@@ -66,6 +66,10 @@ struct RouteBPipelinedConfig {
     double scale_series_interval_s = 1.0;
     bool record_trajectory_samples = false;
     double trajectory_sample_interval_s = 5.0;
+    double range_positive_bias_m = 0.0;
+    Eigen::Vector2d plant_wind_disturbance_mps2 = Eigen::Vector2d::Zero();
+    std::map<NodeId, Eigen::Vector2d> beacon_truth_offsets_m;
+    bool record_timing_stats = false;
 };
 
 struct RouteBGanttEntry {
@@ -92,6 +96,12 @@ struct RouteBPipelinedRunResult {
     std::vector<RouteBGanttEntry> gantt;
     std::vector<RouteBScaleRadiusSample> scale_radius_series;
     std::vector<RouteBTrajectorySample> trajectory_samples;
+    std::vector<double> per_uav_qp_solve_s;
+    std::vector<double> per_uav_qp_total_s;
+    std::vector<double> estimator_samples_s;
+    std::vector<double> tick_total_samples_s;
+    std::size_t total_scheduled_range_packets = 0;
+    std::size_t total_accepted_range_packets = 0;
 };
 
 namespace route_b_exec_detail {
@@ -900,6 +910,20 @@ public:
             ? adapter_.stepWithNominalAndYawRates(nominal, *yaw_rates)
             : adapter_.stepWithNominal(nominal);
         ++ticks_;
+        if (exec_cfg_.record_timing_stats && step.advanced) {
+            per_uav_qp_solve_s_.insert(
+                per_uav_qp_solve_s_.end(),
+                step.per_uav_qp_solve_s.begin(),
+                step.per_uav_qp_solve_s.end());
+            per_uav_qp_total_s_.insert(
+                per_uav_qp_total_s_.end(),
+                step.per_uav_qp_total_s.begin(),
+                step.per_uav_qp_total_s.end());
+            estimator_samples_s_.push_back(step.estimator_wall_s);
+            tick_total_samples_s_.push_back(step.tick_wall_s);
+            total_scheduled_range_packets_ += step.scheduled_range_packet_count;
+            total_accepted_range_packets_ += step.accepted_range_packet_count;
+        }
         if (!step.advanced) {
             reason_ = "step_aborted:" + step.reason;
             makespan_s_ = now_s;
@@ -923,6 +947,12 @@ public:
     std::size_t totalMbbSwaps() const { return total_mbb_swaps_; }
     std::size_t mbbRetries() const { return mbb_retries_; }
     double minInterMovingDistanceM() const { return min_inter_moving_distance_m_; }
+    const std::vector<double>& perUavQpSolveS() const { return per_uav_qp_solve_s_; }
+    const std::vector<double>& perUavQpTotalS() const { return per_uav_qp_total_s_; }
+    const std::vector<double>& estimatorSamplesS() const { return estimator_samples_s_; }
+    const std::vector<double>& tickTotalSamplesS() const { return tick_total_samples_s_; }
+    std::size_t totalScheduledRangePackets() const { return total_scheduled_range_packets_; }
+    std::size_t totalAcceptedRangePackets() const { return total_accepted_range_packets_; }
 
     std::vector<RouteBGanttEntry> gantt() const {
         std::vector<RouteBGanttEntry> out;
@@ -958,6 +988,12 @@ private:
     std::size_t total_mbb_swaps_ = 0;
     std::size_t mbb_retries_ = 0;
     double min_inter_moving_distance_m_ = std::numeric_limits<double>::infinity();
+    std::vector<double> per_uav_qp_solve_s_;
+    std::vector<double> per_uav_qp_total_s_;
+    std::vector<double> estimator_samples_s_;
+    std::vector<double> tick_total_samples_s_;
+    std::size_t total_scheduled_range_packets_ = 0;
+    std::size_t total_accepted_range_packets_ = 0;
 };
 
 inline RouteBPipelinedRunResult runClosedLoopReconfiguration(
@@ -1038,6 +1074,9 @@ inline RouteBPipelinedRunResult runClosedLoopReconfiguration(
     cfg.sensor_radius_m = 400.0;
     cfg.coverage_footprint_kind = CoverageFootprintKind::ForwardSector;
     cfg.coverage_half_angle_rad = M_PI / 3.0;
+    cfg.range_positive_bias_m = exec_cfg.range_positive_bias_m;
+    cfg.plant_wind_disturbance_mps2 = exec_cfg.plant_wind_disturbance_mps2;
+    cfg.beacon_truth_offsets_m = exec_cfg.beacon_truth_offsets_m;
 
     GrandFinaleSwarmAdapter adapter(
         swarm, scenario.mobile_ids, scenario.fixed_positions,
@@ -1121,6 +1160,14 @@ inline RouteBPipelinedRunResult runClosedLoopReconfiguration(
     for (const auto& e : target_tri.initialTopologyEdges()) target_edges.insert(e.id());
     res.final_topology_matched = (actual_edges == target_edges);
     res.gantt = session.gantt();
+    if (exec_cfg.record_timing_stats) {
+        res.per_uav_qp_solve_s = session.perUavQpSolveS();
+        res.per_uav_qp_total_s = session.perUavQpTotalS();
+        res.estimator_samples_s = session.estimatorSamplesS();
+        res.tick_total_samples_s = session.tickTotalSamplesS();
+        res.total_scheduled_range_packets = session.totalScheduledRangePackets();
+        res.total_accepted_range_packets = session.totalAcceptedRangePackets();
+    }
     res.wall_clock_s =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - wall_t0).count();
     return res;

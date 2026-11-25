@@ -1,11 +1,11 @@
-"""Figure 4: closed-loop reconfiguration timing and scaling.
+"""Fig. 5 (Wave 4): closed-loop reconfiguration timing and scaling.
 
 (a) N=14 closed-loop flight windows, (b) N=20 dual-spine flight windows,
-(c) closed-loop pipelined versus serial makespan against the
+(c) closed-loop pipelined versus serial makespan (honest timeout caps) against the
 kinematic Theta(N) / Theta(N^2) reference curves, (d) break-even area A_crit.
 
-Reads tdd5_pinball_closed_loop.json, tdd5_multiscale_closed_loop.json,
-and multiscale_pipeline_timings.json. Outputs data_closed_loop_reconfig.{pdf,png}.
+Reads sim-outputs/tdd5_pinball_closed_loop.json, sim-outputs/tdd5_multiscale_closed_loop.json
+and geo-outputs/multiscale_pipeline_timings.json. Outputs data_closed_loop_reconfig.{pdf,png}.
 """
 
 from __future__ import annotations
@@ -119,6 +119,15 @@ def make_figure(sim_dir: Path, geo_dir: Path, out_dir: Path) -> tuple[Path, Path
         ax.set_ylim(-0.8, len(order_nodes) - 0.2)
         ax.set_xticks([0, 200, 400, 600, 800])
         ax.set_xlabel("Closed-loop time (s)")
+        if idx_p == 0:
+            from matplotlib.patches import Patch
+            wing_handles = [
+                Patch(facecolor=BLUE, edgecolor="none", label="Left interval chain"),
+                Patch(facecolor=MOSS, edgecolor="none", label="Right interval chain"),
+                Line2D([0], [0], color=OCHRE, lw=0, marker="|", markersize=5.0, markeredgewidth=1.0, label="Degraded finish"),
+            ]
+            ax.legend(handles=wing_handles, loc="lower right", fontsize=5.3, handlelength=1.4,
+                      borderaxespad=0.15, labelspacing=0.25)
         add_panel_label(ax, tag, title_str, fontsize=7.6)
 
     # ------------------------------------------------------------------
@@ -162,14 +171,14 @@ def make_figure(sim_dir: Path, geo_dir: Path, out_dir: Path) -> tuple[Path, Path
             ax_c.text(x, pv / 1e3 + 0.30, txt, fontsize=6.0, color=BLUE, ha="center", va="bottom")
 
     handles_c = [
-        Line2D([0], [0], color=BLUE, lw=1.5, marker="o", markersize=3.6, label="Closed-loop pipelined"),
+        Line2D([0], [0], color=BLUE, lw=1.5, marker="o", markersize=3.6, label="Closed-loop pipelined, 15 m/s"),
         Line2D([0], [0], color=BLUE, lw=0, marker="o", markersize=5.2, markerfacecolor="none", label="Degraded channel"),
-        Line2D([0], [0], color=OCHRE, lw=0.9, marker="s", markersize=3.8, label="Closed-loop serial"),
+        Line2D([0], [0], color=OCHRE, lw=0.9, marker="s", markersize=3.8, label="Closed-loop serial, 15 m/s"),
         Line2D([0], [0], color=SKY, lw=1.0, ls=(0, (4, 2)), label="Kinematic $\\Theta(N)$, 10 m/s"),
         Line2D([0], [0], color=OCHRE_L, lw=1.0, ls=(0, (4, 2)), label="Kinematic $\\Theta(N^2)$, 10 m/s"),
     ]
-    ax_c.legend(handles=handles_c, loc="upper left", fontsize=5.7, handlelength=2.2, borderaxespad=0.1,
-                labelspacing=0.3)
+    ax_c.legend(handles=handles_c, loc="upper left", fontsize=5.5, handlelength=2.1, borderaxespad=0.1,
+                labelspacing=0.28)
     ax_c.set_xlim(4.5, 25.0)
     ax_c.set_ylim(-0.25, 5.2)
     ax_c.set_xticks([6, 14, 20])
@@ -184,10 +193,10 @@ def make_figure(sim_dir: Path, geo_dir: Path, out_dir: Path) -> tuple[Path, Path
     ax_d.axhspan(5.0, 25.0, color=MOSS, alpha=0.08, lw=0, zorder=1)
     ax_d.text(23.3, 15.0, "5–25 km$^2$", fontsize=5.9, color=MOSS, ha="right", va="center")
     styles = [
-        ("v4", "serial_acrit", None, OCHRE, (0, (4, 2)), "s", "Serial, 4 m/s"),
-        ("v10", "serial_acrit", None, OCHRE_L, (0, (4, 2)), "s", "Serial, 10 m/s"),
-        ("v4", "pipelined_acrit", "pipelined_delayed_acrit", BLUE, "-", "o", "Pipelined, 4 m/s"),
-        ("v10", "pipelined_acrit", "pipelined_delayed_acrit", SKY, "-", "o", "Pipelined, 10 m/s"),
+        ("v4", "serial_acrit", None, OCHRE, (0, (4, 2)), "s", "Serial transfer, 4 m/s"),
+        ("v10", "serial_acrit", None, OCHRE_L, (0, (4, 2)), "s", "Serial transfer, 10 m/s"),
+        ("v4", "pipelined_acrit", "pipelined_delayed_acrit", BLUE, "-", "o", "Pipelined transfer, 4 m/s"),
+        ("v10", "pipelined_acrit", "pipelined_delayed_acrit", SKY, "-", "o", "Pipelined transfer, 10 m/s"),
     ]
     for tag_v, key, key_d, col, ls, mk, lbl in styles:
         y = np.array(kin[tag_v][key])
@@ -208,9 +217,9 @@ def make_figure(sim_dir: Path, geo_dir: Path, out_dir: Path) -> tuple[Path, Path
 def main() -> None:
     parser = argparse.ArgumentParser()
     root = Path(__file__).resolve().parents[2]
-    parser.add_argument("--sim-dir", type=Path, default=root / "outputs" / "sim")
-    parser.add_argument("--geo-dir", type=Path, default=root / "data" / "geo_outputs")
-    parser.add_argument("--out-dir", type=Path, default=root / "outputs" / "figures")
+    parser.add_argument("--sim-dir", type=Path, default=root / "experiments" / "route-b-20261123" / "sim-outputs")
+    parser.add_argument("--geo-dir", type=Path, default=root / "experiments" / "route-b-20261123" / "geo-outputs")
+    parser.add_argument("--out-dir", type=Path, default=root / "experiments" / "route-b-20261123" / "figures")
     args = parser.parse_args()
     pdf_p, png_p = make_figure(args.sim_dir, args.geo_dir, args.out_dir)
     print(f"Wrote {pdf_p} and {png_p}")

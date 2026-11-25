@@ -1,8 +1,11 @@
-"""Figure 5: degraded-channel Monte Carlo statistics and nonuniform beacons.
-(a) 16-trial degraded-UWB Monte Carlo statistics (makespan & position RMSE),
-(b) Nonuniform-beacon convex pentagon closed-loop coverage & trajectory inset.
+"""Wave 9 Fig. 5 pure-data 1x3 panel:
+(a) Closed-loop two-reference collinear crossing versus three-reference dual handover,
+(b) 16-trial degraded-UWB Monte Carlo statistics (makespan & position RMSE),
+(c) Nonuniform-beacon convex pentagon closed-loop coverage & trajectory inset.
 
-Reads tdd8_multiseed_monte_carlo.json and tdd10_nonuniform_beacon_pentagon.json.
+Reads sim-outputs/tdd9_geometry_closed_loop_contrast.json,
+sim-outputs/tdd8_multiseed_monte_carlo.json, and
+sim-outputs/tdd10_nonuniform_beacon_pentagon.json.
 Outputs data_mechanism_and_multiseed.{pdf,png} in Times New Roman + STIX serif.
 """
 
@@ -35,33 +38,76 @@ def make_figure(sim_dir: Path, geo_dir: Path | None, out_dir: Path) -> tuple[Pat
     del geo_dir
     apply_ieee_style(base_font_size=7.0)
 
+    t9 = json.loads((sim_dir / "tdd9_geometry_closed_loop_contrast.json").read_text(encoding="utf-8"))
     t8 = json.loads((sim_dir / "tdd8_multiseed_monte_carlo.json").read_text(encoding="utf-8"))
     t10 = json.loads((sim_dir / "tdd10_nonuniform_beacon_pentagon.json").read_text(encoding="utf-8"))
 
-    fig = plt.figure(figsize=(7.16, 2.55))
-    # Explicit 3-column GridSpec so the central gutter cleanly separates (a)'s right
-    # y-axis (Position RMSE) from (b)'s left y-axis (Certified coverage).
+    fig = plt.figure(figsize=(7.20, 2.38))
     gs = GridSpec(
         1,
-        3,
+        5,
         figure=fig,
-        width_ratios=[1.02, 0.36, 1.06],
+        width_ratios=[1.00, 0.25, 0.92, 0.56, 1.00],
         wspace=0.0,
-        left=0.075,
+        left=0.056,
         right=0.988,
-        top=0.87,
+        top=0.86,
         bottom=0.25,
     )
 
     # ------------------------------------------------------------------
-    # (a) 16-Trial Degraded-UWB Monte Carlo (48/48 safe, 0 violations)
+    # (a) Closed-loop two-reference crossing vs three-reference handover
     # ------------------------------------------------------------------
-    ax_b = fig.add_subplot(gs[0, 0])
+    ax_a = fig.add_subplot(gs[0, 0])
+    hr = t9["handover_reference_contrast"]
+    r2 = hr["two_ref_collinear_baseline"]
+    r3 = hr["three_ref_dual_handover"]
+    t2 = np.array([float(p["time_s"]) for p in r2["scale_radius_series"]], dtype=float)
+    s2 = np.array([float(p["max_scale_radius_m"]) for p in r2["scale_radius_series"]], dtype=float)
+    t3 = np.array([float(p["time_s"]) for p in r3["scale_radius_series"]], dtype=float)
+    s3 = np.array([float(p["max_scale_radius_m"]) for p in r3["scale_radius_series"]], dtype=float)
+    pk2 = float(r2["audit"]["peak_position_scale_radius_m"])
+    pk3 = float(r3["audit"]["peak_position_scale_radius_m"])
+    ret2 = int(r2["mbb_retries"])
+    ret3 = int(r3["mbb_retries"])
+
+    ax_a.plot(t2, s2, color=PALETTE["vermilion"], lw=1.25, alpha=0.92,
+              label=f"Two-reference, {ret2} retries")
+    ax_a.plot(t3, s3, color=PALETTE["blue"], lw=1.35, alpha=0.96,
+              label=f"Three-reference, {ret3} retries")
+    i2 = int(np.argmax(s2))
+    ax_a.scatter([t2[i2]], [s2[i2]], s=18, facecolor=PALETTE["vermilion"], edgecolor="white", linewidths=0.5, zorder=6)
+    ax_a.annotate(
+        f"Peak {pk2:.2f} m",
+        (t2[i2], s2[i2]),
+        xytext=(8, 1),
+        textcoords="offset points",
+        ha="left",
+        va="center",
+        fontsize=5.3,
+        color=PALETTE["vermilion"],
+    )
+    ax_a.axhline(pk3, color=PALETTE["blue"], ls=":", lw=0.75, zorder=2)
+    ax_a.text(300.0, 0.92, f"Three-reference peak {pk3:.2f} m, -48.2%", ha="center", va="bottom",
+              fontsize=5.0, color=PALETTE["blue"])
+    ax_a.set_xlim(0.0, 565.0)
+    ax_a.set_ylim(0.5, 6.45)
+    ax_a.set_xticks([0, 150, 300, 450])
+    ax_a.set_yticks([1, 2, 3, 4, 5, 6])
+    ax_a.set_xlabel("Time $t$ (s)")
+    ax_a.set_ylabel("Peak scale $3\\sqrt{\\mathrm{tr}(\\boldsymbol{P}_i^p)}$ (m)")
+    ax_a.legend(loc="upper right", frameon=False, fontsize=5.0, handlelength=1.4, borderaxespad=0.12, labelspacing=0.20)
+    add_panel_label(ax_a, "(a)", "Crossing handover contrast", fontsize=7.4)
+
+    # ------------------------------------------------------------------
+    # (b) 16-Trial Degraded-UWB Monte Carlo (48/48 safe, 0 violations)
+    # ------------------------------------------------------------------
+    ax_b = fig.add_subplot(gs[0, 2])
     sc_order = ["n6_converging_to_dual", "n6_dual_to_converging", "n14_dual_to_single_chain"]
     sc_labels = [
-        "Converging\n$\\rightarrow$ Dual\n$N=6$",
-        "Dual $\\rightarrow$\nConverging\n$N=6$",
-        "Dual $\\rightarrow$\nSingle chain\n$N=14$",
+        "Converging\nto dual, 6",
+        "Dual to\nconverging, 6",
+        "Dual to\nsingle, 14",
     ]
     sc_map = {str(s["key"]): s for s in t8["scenarios"]}
 
@@ -83,7 +129,7 @@ def make_figure(sim_dir: Path, geo_dir: Path | None, out_dir: Path) -> tuple[Pat
     )
     for i, vals in enumerate(ms_lists):
         xj = (x_idx[i] - 0.16) + rng.uniform(-0.045, 0.045, size=len(vals))
-        ax_b.scatter(xj, vals, s=8.5, facecolor=PALETTE["blue"], edgecolor="white", linewidths=0.3, alpha=0.88, zorder=5)
+        ax_b.scatter(xj, vals, s=7.5, facecolor=PALETTE["blue"], edgecolor="white", linewidths=0.3, alpha=0.88, zorder=5)
 
     ax_b.set_ylabel("Makespan (s)", color=PALETTE["blue"])
     ax_b.tick_params(axis="y", colors=PALETTE["blue"])
@@ -108,35 +154,35 @@ def make_figure(sim_dir: Path, geo_dir: Path | None, out_dir: Path) -> tuple[Pat
     )
     for i, vals in enumerate(rmse_lists):
         xj = (x_idx[i] + 0.16) + rng.uniform(-0.045, 0.045, size=len(vals))
-        ax_b2.scatter(xj, vals, s=8.5, facecolor=PALETTE["vermilion"], edgecolor="white", linewidths=0.3, alpha=0.88, zorder=5)
+        ax_b2.scatter(xj, vals, s=7.5, facecolor=PALETTE["vermilion"], edgecolor="white", linewidths=0.3, alpha=0.88, zorder=5)
 
     ax_b2.set_ylabel("Position RMSE (m)", color=PALETTE["vermilion"])
-    ax_b2.tick_params(axis="y", colors=PALETTE["vermilion"], labelsize=6.2)
+    ax_b2.tick_params(axis="y", colors=PALETTE["vermilion"], labelsize=6.0)
     ax_b2.set_ylim(0.30, 0.44)
     ax_b2.set_yticks([0.30, 0.34, 0.38, 0.42])
 
     ax_b.set_xlim(-0.55, 2.55)
     ax_b.set_xticks(x_idx)
-    ax_b.set_xticklabels(sc_labels, fontsize=5.3)
+    ax_b.set_xticklabels(sc_labels, fontsize=4.8)
 
     leg_b = ax_b2.legend(
         [bp1["boxes"][0], bp2["boxes"][0]],
         ["Makespan, left", "Position RMSE, right"],
         loc="upper left",
         frameon=False,
-        fontsize=5.2,
-        handlelength=1.6,
-        borderaxespad=0.15,
-        labelspacing=0.25,
+        fontsize=4.9,
+        handlelength=1.4,
+        borderaxespad=0.12,
+        labelspacing=0.20,
     )
     leg_b.set_zorder(10)
-    ax_b2.text(2.48, 0.304, "48/48 trials safe, 0 violations", ha="right", va="bottom", fontsize=5.6, color=PALETTE["teal"])
-    add_panel_label(ax_b, "(a)", "16-trial degraded-UWB Monte Carlo", fontsize=7.6)
+    ax_b2.text(2.48, 0.304, "48/48 safe, 0 violations", ha="right", va="bottom", fontsize=5.1, color=PALETTE["teal"])
+    add_panel_label(ax_b, "(b)", "Degraded-UWB Monte Carlo", fontsize=7.4)
 
     # ------------------------------------------------------------------
-    # (b) Nonuniform Beacons (320, 400, 360 m) & Pentagon Domain
+    # (c) Nonuniform Beacons (320, 400, 360 m) & Pentagon Domain
     # ------------------------------------------------------------------
-    ax_c = fig.add_subplot(gs[0, 2])
+    ax_c = fig.add_subplot(gs[0, 4])
     mis10 = t10["mission"]
     t_st10 = np.array([float(p["time_s"]) for p in mis10["stay"]["coverage_curve"]], dtype=float)
     c_st10 = np.array([float(p["certified_coverage"]) * 100.0 for p in mis10["stay"]["coverage_curve"]], dtype=float)
@@ -151,47 +197,45 @@ def make_figure(sim_dir: Path, geo_dir: Path | None, out_dir: Path) -> tuple[Pat
     ax_c.plot(t_st10, c_st10, color=PALETTE["vermilion"], lw=1.45, ls="-", label=f"Stay two-chain: {stay_fin_pct:.1f}%")
     ax_c.plot(t_sw10, c_sw10, color=PALETTE["blue"], lw=1.55, ls="-", label=f"Switch single chain: {sw_fin_pct:.0f}%")
     t100_10 = float(mis10["switch"]["t100_certified_s"])
-    ax_c.scatter([t100_10], [100.0], s=22, facecolor=PALETTE["blue"], edgecolor="white", linewidths=0.65, zorder=6)
+    ax_c.scatter([t100_10], [100.0], s=20, facecolor=PALETTE["blue"], edgecolor="white", linewidths=0.6, zorder=6)
     ax_c.annotate(
         f"$T_{{100}}={t100_10:.1f}$ s",
         (t100_10, 100.0),
-        xytext=(10, -13),
+        xytext=(10, -16),
         textcoords="offset points",
         ha="left",
-        fontsize=5.8,
+        fontsize=5.3,
         fontweight="bold",
         color=PALETTE["blue"],
         arrowprops=dict(arrowstyle="-", color=PALETTE["blue"], lw=0.55),
     )
 
     ax_c.set_xlim(0.0, 900.0)
-    ax_c.set_ylim(48.0, 104.0)
+    ax_c.set_ylim(80.0, 102.2)
     ax_c.set_xticks([0, 300, 600, 900])
-    ax_c.set_yticks([50, 65, 80, 95, 100])
+    ax_c.set_yticks([80, 85, 90, 95, 100])
     ax_c.set_xlabel("Time $t$ (s)")
     ax_c.set_ylabel("Certified coverage (%)")
-    # Place frameless legend neatly in upper-left open pocket under the 98.7% curve,
-    # keeping lower-right completely dedicated to the pentagon trajectory inset.
     ax_c.legend(
         loc="upper left",
-        bbox_to_anchor=(0.01, 0.87),
+        bbox_to_anchor=(0.03, 0.85),
         frameon=False,
-        fontsize=5.1,
-        handlelength=1.7,
-        borderaxespad=0.15,
+        fontsize=4.9,
+        handlelength=1.4,
+        borderaxespad=0.12,
         labelspacing=0.22,
     )
 
-    ax_ins = inset_axes(ax_c, width="62%", height="58%", loc="lower right", borderpad=0.35)
+    ax_ins = inset_axes(ax_c, width="54%", height="54%", loc="lower right", borderpad=0.35)
     ax_ins.set_facecolor("none")
     verts = np.array(t10["vertices_m"], dtype=float)
     poly_p = MplPolygon(verts, closed=True, facecolor="#e2e8f0", edgecolor=PALETTE["navy"], linestyle="--", linewidth=0.55, alpha=0.72, zorder=1)
     ax_ins.add_patch(poly_p)
     bxs = [float(x) for x in t10["beacon_xs_m"]]
     ax_ins.axhline(0.0, color=PALETTE["navy"], lw=0.75, zorder=2)
-    ax_ins.scatter(bxs, [0.0] * len(bxs), marker="s", s=11, facecolor=PALETTE["navy"], edgecolor="white", linewidths=0.45, zorder=6)
+    ax_ins.scatter(bxs, [0.0] * len(bxs), marker="s", s=10, facecolor=PALETTE["navy"], edgecolor="white", linewidths=0.45, zorder=6)
     for bi, bx_val in enumerate(bxs, start=1):
-        ax_ins.text(bx_val, -75.0, f"$b_{bi}$", fontsize=4.8, ha="center", va="top", color=PALETTE["navy"])
+        ax_ins.text(bx_val, -75.0, f"$b_{bi}$", fontsize=4.6, ha="center", va="top", color=PALETTE["navy"])
 
     traj = mis10["switch"]["trajectory_samples"]
     node_ids = sorted(traj[0]["positions"].keys(), key=int)
@@ -199,18 +243,18 @@ def make_figure(sim_dir: Path, geo_dir: Path | None, out_dir: Path) -> tuple[Pat
         tx = [float(fr["positions"][nid][0]) for fr in traj]
         ty = [float(fr["positions"][nid][1]) for fr in traj]
         ax_ins.plot(tx, ty, color=PALETTE["blue"], lw=0.65, alpha=0.75, zorder=3)
-        ax_ins.scatter([tx[-1]], [ty[-1]], s=9.0, facecolor=PALETTE["blue"], edgecolor="white", linewidths=0.35, zorder=5)
+        ax_ins.scatter([tx[-1]], [ty[-1]], s=8.0, facecolor=PALETTE["blue"], edgecolor="white", linewidths=0.35, zorder=5)
 
     ax_ins.set_xlim(-60.0, 1200.0)
     ax_ins.set_ylim(-230.0, 1080.0)
     ax_ins.set_xticks([])
     ax_ins.set_yticks([])
-    ax_ins.set_title("(320, 400, 360) m", fontsize=5.0, pad=1.5, color=PALETTE["navy"])
+    ax_ins.set_title("320, 400, 360 m", fontsize=4.8, pad=1.5, color=PALETTE["navy"])
     for sp in ("top", "right", "bottom", "left"):
         ax_ins.spines[sp].set_visible(False)
     ax_ins.set_aspect("equal")
 
-    add_panel_label(ax_c, "(b)", "Nonuniform beacons, pentagon domain", fontsize=7.6)
+    add_panel_label(ax_c, "(c)", "Nonuniform beacons, pentagon", fontsize=7.4)
 
     return save_figure_pair(fig, out_dir, "data_mechanism_and_multiseed")
 
@@ -218,9 +262,9 @@ def make_figure(sim_dir: Path, geo_dir: Path | None, out_dir: Path) -> tuple[Pat
 def main() -> None:
     parser = argparse.ArgumentParser()
     root = Path(__file__).resolve().parents[2]
-    parser.add_argument("--sim-dir", type=Path, default=root / "outputs" / "sim")
-    parser.add_argument("--geo-dir", type=Path, default=root / "data" / "geo_outputs")
-    parser.add_argument("--out-dir", type=Path, default=root / "outputs" / "figures")
+    parser.add_argument("--sim-dir", type=Path, default=root / "experiments" / "route-b-20261123" / "sim-outputs")
+    parser.add_argument("--geo-dir", type=Path, default=root / "experiments" / "route-b-20261123" / "geo-outputs")
+    parser.add_argument("--out-dir", type=Path, default=root / "experiments" / "route-b-20261123" / "figures")
     args = parser.parse_args()
     pdf_p, png_p = make_figure(args.sim_dir, args.geo_dir, args.out_dir)
     print(f"Wrote {pdf_p} and {png_p}")

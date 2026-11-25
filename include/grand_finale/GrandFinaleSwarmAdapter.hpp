@@ -308,6 +308,9 @@ struct GrandFinaleSwarmAdapterConfig {
     double gamma_feedback_tolerance = 1.0e-10;
     ProgressCompatibilityConfig progress_compatibility{
         0.8, 0.0, 1.0e-9, true};
+    double range_positive_bias_m = 0.0;
+    Eigen::Vector2d plant_wind_disturbance_mps2 = Eigen::Vector2d::Zero();
+    std::map<NodeId, Eigen::Vector2d> beacon_truth_offsets_m;
 };
 
 struct GrandFinaleGammaFeedbackDiagnostic {
@@ -378,6 +381,13 @@ struct GrandFinaleSwarmStep {
     double truth_coverage = 0.0;
     double certified_coverage = 0.0;
     double qp_wall_s = 0.0;
+    double qp_solve_only_wall_s = 0.0;
+    double estimator_wall_s = 0.0;
+    double tick_wall_s = 0.0;
+    std::size_t scheduled_range_packet_count = 0;
+    std::size_t accepted_range_packet_count = 0;
+    std::vector<double> per_uav_qp_solve_s;
+    std::vector<double> per_uav_qp_total_s;
     CanonicalGammaFeedbackWork gamma_policy_work;
     std::map<NodeId, Eigen::Vector2d> applied_controls;
     std::map<NodeId,BoundarySoftQpResult> boundary_soft_nominal;
@@ -762,6 +772,7 @@ public:
     }
 
     GrandFinaleSwarmStep step() {
+        const auto step_wall_started = std::chrono::steady_clock::now();
         GrandFinaleSwarmStep metrics;
         metrics.mode = supervisor_.mode();
         metrics.topology_version = supervisor_.topologyVersion();
@@ -870,13 +881,16 @@ public:
                             config_.acceleration_half_box, rows,
                             config_.residual_tolerance,
                             config_.speed_initial_set_truth_gate});
-                    metrics.qp_wall_s += std::chrono::duration<double>(
+                    const double uav_qp_wall = std::chrono::duration<double>(
                         std::chrono::steady_clock::now() - qp_start).count();
+                    metrics.qp_wall_s += uav_qp_wall;
+                    metrics.qp_solve_only_wall_s += result.solver_solve_wall_s;
+                    metrics.per_uav_qp_solve_s.push_back(result.solver_solve_wall_s);
+                    metrics.per_uav_qp_total_s.push_back(uav_qp_wall);
                     const bool steady=result.solver_instance_reused;
                     metrics.compute_profile.record(
                         Task10p11ComputePhase::FinalQp,
-                        std::chrono::duration<double>(
-                            std::chrono::steady_clock::now()-qp_start).count(),
+                        uav_qp_wall,
                         steady);
                     metrics.compute_profile.record(
                         Task10p11ComputePhase::ExactHardProjection,
@@ -938,7 +952,14 @@ public:
                 }
                 return applied;
             };
-        const auto certified_controls=build_controls();
+        auto certified_controls = build_controls();
+        if (certified_controls.has_value() &&
+            config_.plant_wind_disturbance_mps2.squaredNorm() > 0.0) {
+            for (auto& [cid, acc] : *certified_controls) {
+                (void)cid;
+                acc += config_.plant_wind_disturbance_mps2;
+            }
+        }
         const auto physical_started=std::chrono::steady_clock::now();
         const auto physical = swarm_.applyCertifiedControlsAndAdvance(
             config_.dt_s, certified_controls, yaw_rate_override_,
@@ -963,10 +984,14 @@ public:
                 config_.estimator_acceleration_variance);
         }
         applyDeterministicRangeBatch();
+        const double estimator_elapsed = std::chrono::duration<double>(
+            std::chrono::steady_clock::now()-estimator_started).count();
+        metrics.estimator_wall_s = estimator_elapsed;
+        metrics.scheduled_range_packet_count = last_scheduled_range_count_;
+        metrics.accepted_range_packet_count = last_accepted_range_batch_audit_.size();
         metrics.compute_profile.record(
             Task10p11ComputePhase::OnlineEstimator,
-            std::chrono::duration<double>(
-                std::chrono::steady_clock::now()-estimator_started).count(),true);
+            estimator_elapsed, true);
         const JointEstimateSnapshot after = estimator_.reconstructForAudit();
         metrics.outside_observer_new_truth_cells=observeCoverageSnapshot(after);
         metrics.certified_control_count = applied.size();
@@ -984,6 +1009,8 @@ public:
             pending_proposal_.has_value()) {
             ++union_control_cycles_;
         }
+        metrics.tick_wall_s = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - step_wall_started).count();
         return metrics;
     }
 
@@ -2295,6 +2322,12 @@ private:
                 static_cast<std::size_t>(mobile - mobile_ids_.begin()))->model->xy();
             return {point.x, point.y};
         }
+        if (!config_.beacon_truth_offsets_m.empty()) {
+            const auto off_it = config_.beacon_truth_offsets_m.find(id);
+            if (off_it != config_.beacon_truth_offsets_m.end()) {
+                return fixed_positions_.at(id) + off_it->second;
+            }
+        }
         return fixed_positions_.at(id);
     }
 
@@ -2414,6 +2447,7 @@ private:
                 }
             }
         }
+        last_scheduled_range_count_ = measurements.size();
         for (const RangeMeasurement& measurement :
              canonicalizeRangeBatch(std::move(measurements))) {
             const auto field=range_noise_detail::sample(
@@ -2447,7 +2481,8 @@ private:
             if (config_.cbf2026_uwb_channel.enabled) {
                 const double true_sigma =
                     config_.cbf2026_uwb_channel.rangingStdM(measurement.range_m);
-                accepted.range_m += true_sigma * field.standard_normal;
+                accepted.range_m +=
+                    true_sigma * field.standard_normal + config_.range_positive_bias_m;
                 const double causal_range_m = std::max(0.0, accepted.range_m);
                 const double causal_sigma =
                     config_.cbf2026_uwb_channel.rangingStdM(causal_range_m);
@@ -2523,6 +2558,7 @@ private:
     std::optional<std::map<NodeId, Eigen::Vector2d>> nominal_override_;
     std::optional<Swarm::CertifiedYawRateBatch> yaw_rate_override_;
     std::size_t range_batch_count_ = 0;
+    std::size_t last_scheduled_range_count_ = 0;
 };
 
 }  // namespace gf

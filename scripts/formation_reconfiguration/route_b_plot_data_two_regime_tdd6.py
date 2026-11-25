@@ -1,12 +1,10 @@
-"""Figure 7: two-regime closed-loop convex-domain coverage comparison.
+"""Fig. 7 (Wave 9): two-regime closed-loop convex-domain search comparison.
 
-Combines tdd6_two_regime_missions.json (Regimes 1, 2a, 2b) and
-tdd7_regime2_positive_breakeven.json (Regime 2c). Each panel carries a
-borderless inset that sketches the convex domain, the shore beacons, the Stay
-formation (hollow ochre) and the Switch formation (solid steel blue). Formation
-geometry comes from convex_domains.json, matching the closed-loop
-runner domain specifications, and from the staggered-chain rule for Regime 2c.
-Outputs data_two_regime_coverage.{pdf,png}.
+Combines sim-outputs/tdd6_two_regime_missions.json (Regime 1a narrow_deep_offshore,
+Regime 1b oblique_asymmetric), sim-outputs/wave9_search_and_timing.json
+(Regime 2 sub-critical coastal belt where both arms reach 100% and Stay wins), and
+sim-outputs/tdd7_regime2_positive_breakeven.json (Regime 2 super-critical broad domain
+where Switch saves 393.9 s / 414.1 s). Outputs data_two_regime_coverage.{pdf,png}.
 """
 
 from __future__ import annotations
@@ -33,7 +31,6 @@ OCHRE_L = PALETTE["amber"]
 MOSS = PALETTE["teal"]
 SLATE = PALETTE["navy"]
 GRAY = PALETTE["slate"]
-SKY = PALETTE["sky"]
 
 Formation = tuple[dict[str, tuple[float, float]], list[tuple[tuple[float, float], tuple[float, float]]]]
 
@@ -41,6 +38,10 @@ Formation = tuple[dict[str, tuple[float, float]], list[tuple[tuple[float, float]
 def load_tdd6_missions(sim_dir: Path) -> dict[tuple[str, str], dict]:
     raw = json.loads((sim_dir / "tdd6_two_regime_missions.json").read_text(encoding="utf-8"))
     return {(str(m["domain_name"]), str(m["channel_group"])): m for m in raw["missions"]}
+
+
+def load_wave9(sim_dir: Path) -> dict:
+    return json.loads((sim_dir / "wave9_search_and_timing.json").read_text(encoding="utf-8"))
 
 
 def load_tdd7(sim_dir: Path) -> dict:
@@ -69,7 +70,7 @@ def formation_from_geo(spec: dict) -> Formation:
 
 
 def staggered_formation(b_xs: list[float], units: list[list[int]], h1: float, dy: float) -> Formation:
-    """Staggered triangular chain rule of the closed-loop runner (x alternates mid/right of the interval)."""
+    """Staggered triangular chain rule of the closed-loop runner."""
     pos: dict[str, tuple[float, float]] = {}
     edges = []
     for r, unit in enumerate(units):
@@ -127,6 +128,8 @@ def coverage_panel(ax: plt.Axes, nom: dict, deg: dict, labels: tuple[str, str], 
 def make_figure(sim_dir: Path, geo_dir: Path, out_dir: Path) -> tuple[Path, Path]:
     apply_ieee_style(base_font_size=7.0)
     m6 = load_tdd6_missions(sim_dir)
+    w9 = load_wave9(sim_dir)
+    sub_m = {str(m["channel_group"]): m for m in w9["subcritical_coastal_regime2"]}
     t7 = load_tdd7(sim_dir)
     m7 = {str(m["channel_group"]): m for m in t7["missions"]}
     geo = {d["name"]: d for d in json.loads((geo_dir / "convex_domains.json").read_text(encoding="utf-8"))["domains"]}
@@ -137,88 +140,85 @@ def make_figure(sim_dir: Path, geo_dir: Path, out_dir: Path) -> tuple[Path, Path
         return (d["vertices"], b_xs, formation_from_geo(d["recommended_initial_formation"]),
                 formation_from_geo(d["recommended_target_formation"]))
 
-    fig = plt.figure(figsize=(7.2, 4.10))
+    fig = plt.figure(figsize=(7.2, 4.15))
     gs = GridSpec(2, 2, figure=fig, hspace=0.55, wspace=0.24, left=0.065, right=0.985, top=0.935, bottom=0.10)
-    leg_kw = dict(fontsize=5.4, handlelength=1.9, borderaxespad=0.2, labelspacing=0.24)
+    leg_kw = dict(fontsize=5.2, handlelength=1.8, borderaxespad=0.18, labelspacing=0.22)
 
-    # (a) Regime 1: narrow deep
+    # (a) Regime 1a: narrow deep offshore
     ax_a = fig.add_subplot(gs[0, 0])
     nd_nom, nd_deg = m6[("narrow_deep_offshore", "nominal")], m6[("narrow_deep_offshore", "degraded")]
     coverage_panel(ax_a, nd_nom, nd_deg, ("2-chain", "1-chain"), 1350.0)
     ax_a.axhline(95.0, color=GRAY, ls=":", lw=0.6)
     ax_a.axhline(100.0, color=GRAY, ls="-.", lw=0.6)
-    t95, t100 = float(nd_nom["switch"]["t95_certified_s"]), float(nd_nom["switch"]["t100_certified_s"])
-    ax_a.scatter([t95, t100], [95.0, 100.0], s=18, facecolor=BLUE, edgecolor="white", linewidths=0.6, zorder=6)
-    ax_a.annotate(f"$T_{{100}}={t100:.1f}$ s", (t100, 100.0), xytext=(12, -12), textcoords="offset points",
-                  fontsize=5.9, color=BLUE, arrowprops=dict(arrowstyle="-", color=BLUE, lw=0.5))
+    t100 = float(nd_nom["switch"]["t100_certified_s"])
+    ax_a.scatter([t100], [100.0], s=18, facecolor=BLUE, edgecolor="white", linewidths=0.6, zorder=6)
+    ax_a.annotate(f"$T_{{100}}={t100:.1f}$ s", (t100, 100.0), xytext=(10, -12), textcoords="offset points",
+                  fontsize=5.8, color=BLUE, arrowprops=dict(arrowstyle="-", color=BLUE, lw=0.5))
     plateau = float(nd_nom["stay"]["final_certified_coverage"]) * 100.0
-    ax_a.text(1330.0, plateau - 2.5, f"Stay plateau {plateau:.1f}%", ha="right", va="top", fontsize=5.9, color=OCHRE)
+    ax_a.text(1330.0, plateau - 2.5, f"Stay plateau {plateau:.1f}%", ha="right", va="top", fontsize=5.8, color=OCHRE)
     ax_a.set_xlim(0.0, 1350.0)
-    ax_a.set_ylim(40.0, 103.0)
+    ax_a.set_ylim(40.0, 103.5)
     ax_a.set_xticks([0, 300, 600, 900, 1200])
     ax_a.set_xlabel("Time $t$ (s)")
     ax_a.set_ylabel("Certified coverage (%)")
     ax_a.legend(loc="lower right", **leg_kw)
     v, bx, st, sw = geo_inset("narrow_deep_offshore")
     draw_inset(ax_a, [0.08, 0.03, 0.42, 0.62], v, bx, st, sw, anchor="S")
-    add_panel_label(ax_a, "(a)", "Regime 1: narrow deep, $N=14$, $0.49\\,\\mathrm{km}^2$", fontsize=7.6)
+    add_panel_label(ax_a, "(a)", "Regime 1a: narrow deep, $N=14$, $0.49\\,\\mathrm{km}^2$", fontsize=7.5)
 
-    # (b) Regime 2a: wide shallow (bar comparison)
+    # (b) Regime 1b: oblique pentagon (skewed flank reachability)
     ax_b = fig.add_subplot(gs[0, 1])
-    ws_nom, ws_deg = m6[("wide_shallow_coastal", "nominal")], m6[("wide_shallow_coastal", "degraded")]
-    mx = np.array([0.0, 1.0, 2.0])
-    stay_t = [float(ws_nom["stay"]["t95_certified_s"]), float(ws_nom["stay"]["t100_certified_s"]), float(ws_nom["stay"]["final_time_s"])]
-    sw_n = [float(ws_nom["switch"]["t95_certified_s"]), float(ws_nom["switch"]["t100_certified_s"]), float(ws_nom["switch"]["reconfig_complete_s"])]
-    sw_d = [float(ws_deg["switch"]["t95_certified_s"]), float(ws_deg["switch"]["t100_certified_s"]), float(ws_deg["switch"]["reconfig_complete_s"])]
-    bw = 0.23
-    ax_b.bar(mx - bw, stay_t, width=bw, color=OCHRE, label="Stay 4-chain, nominal / degraded")
-    ax_b.bar(mx, sw_n, width=bw, color=BLUE, label="Switch rebalanced 4-chain, nominal")
-    ax_b.bar(mx + bw, sw_d, width=bw, color=SKY, label="Switch rebalanced 4-chain, degraded")
-    ax_b.set_yscale("log")
-    ax_b.set_ylim(0.8, 12000.0)
-    ax_b.set_xlim(-0.55, 2.55)
-    ax_b.set_xticks(mx)
-    ax_b.set_xticklabels(["$T_{95}$", "$T_{100}$", "Mission / switch"], fontsize=6.5)
-    ax_b.set_yticks([1, 10, 100, 1000])
-    ax_b.set_yticklabels(["1", "10", "100", "1000"])
-    ax_b.minorticks_off()
-    ax_b.set_ylabel("Duration (s, log scale)")
-    ax_b.text(1.0 - bw, stay_t[1] * 1.25, f"{stay_t[1]:.1f} s", ha="center", va="bottom", fontsize=5.7, color=OCHRE)
-    ax_b.text(1.0 + 0.5 * bw, max(sw_n[1], sw_d[1]) * 1.18,
-              f"{min(sw_n[1], sw_d[1]):.0f}–{max(sw_n[1], sw_d[1]):.0f} s", ha="center", va="bottom", fontsize=5.7, color=BLUE)
-    ax_b.text(2.0 - bw, stay_t[2] * 1.25, f"{stay_t[2]:.1f} s", ha="center", va="bottom", fontsize=5.7, color=OCHRE)
-    ax_b.text(2.0 + 0.5 * bw, max(sw_n[2], sw_d[2]) * 1.18,
-              f"{min(sw_n[2], sw_d[2]):.0f}–{max(sw_n[2], sw_d[2]):.0f} s", ha="center", va="bottom", fontsize=5.7, color=BLUE)
-    ax_b.legend(loc="upper left", **leg_kw)
-    v, bx, st, sw = geo_inset("wide_shallow_coastal")
-    draw_inset(ax_b, [0.02, 0.25, 0.33, 0.40], v, bx, st, sw, anchor="W")
-    add_panel_label(ax_b, "(b)", "Regime 2a: wide shallow, $N=12$, $0.80\\,\\mathrm{km}^2$", fontsize=7.6)
-
-    # (c) Regime 2b: oblique pentagon (Stay saturates below 95%; Switch surpasses T_95)
-    ax_c = fig.add_subplot(gs[1, 0])
     ob_nom, ob_deg = m6[("oblique_asymmetric", "nominal")], m6[("oblique_asymmetric", "degraded")]
-    coverage_panel(ax_c, ob_nom, ob_deg, ("converging", "2-chain"), None)
-    ax_c.axhline(95.0, color=GRAY, ls=":", lw=0.6)
+    coverage_panel(ax_b, ob_nom, ob_deg, ("converging", "2-chain"), None)
+    ax_b.axhline(95.0, color=GRAY, ls=":", lw=0.6)
     t95_sw = float(ob_nom["switch"]["t95_certified_s"])
-    ax_c.scatter([t95_sw], [95.0], s=18, facecolor=BLUE, edgecolor="white", linewidths=0.6, zorder=6)
-    ax_c.annotate(f"$T_{{95}}={t95_sw:.1f}$ s", (t95_sw, 95.0), xytext=(-14, -18), textcoords="offset points",
-                  ha="right", fontsize=5.9, color=BLUE, arrowprops=dict(arrowstyle="-", color=BLUE, lw=0.5))
+    ax_b.scatter([t95_sw], [95.0], s=18, facecolor=BLUE, edgecolor="white", linewidths=0.6, zorder=6)
+    ax_b.annotate(f"$T_{{95}}={t95_sw:.1f}$ s", (t95_sw, 95.0), xytext=(-14, -18), textcoords="offset points",
+                  ha="right", fontsize=5.8, color=BLUE, arrowprops=dict(arrowstyle="-", color=BLUE, lw=0.5))
     st_fin_lo = min(float(ob_nom["stay"]["final_certified_coverage"]), float(ob_deg["stay"]["final_certified_coverage"])) * 100.0
     st_fin_hi = max(float(ob_nom["stay"]["final_certified_coverage"]), float(ob_deg["stay"]["final_certified_coverage"])) * 100.0
     sw_fin = float(ob_nom["switch"]["final_certified_coverage"]) * 100.0
-    ax_c.text(300.0, st_fin_hi + 1.4, f"Stay {st_fin_lo:.1f}–{st_fin_hi:.1f}%", ha="center", va="bottom", fontsize=5.9, color=OCHRE)
-    ax_c.text(645.0, sw_fin + 1.4, f"Switch {sw_fin:.1f}%", ha="right", va="bottom", fontsize=5.9, color=BLUE)
-    ax_c.set_xlim(0.0, 650.0)
-    ax_c.set_ylim(42.0, 103.5)
-    ax_c.set_xticks([0, 150, 300, 450, 600])
+    ax_b.text(300.0, st_fin_hi + 1.4, f"Stay {st_fin_lo:.1f}–{st_fin_hi:.1f}%", ha="center", va="bottom", fontsize=5.8, color=OCHRE)
+    ax_b.text(645.0, sw_fin + 1.4, f"Switch {sw_fin:.1f}%", ha="right", va="bottom", fontsize=5.8, color=BLUE)
+    ax_b.set_xlim(0.0, 650.0)
+    ax_b.set_ylim(42.0, 103.5)
+    ax_b.set_xticks([0, 150, 300, 450, 600])
+    ax_b.set_xlabel("Time $t$ (s)")
+    ax_b.set_ylabel("Certified coverage (%)")
+    ax_b.legend(loc="lower right", **leg_kw)
+    v, bx, st, sw = geo_inset("oblique_asymmetric")
+    draw_inset(ax_b, [0.06, 0.04, 0.44, 0.56], v, bx, st, sw, anchor="SW")
+    add_panel_label(ax_b, "(b)", "Regime 1b: oblique pentagon, $N=6$, $0.84\\,\\mathrm{km}^2$", fontsize=7.5)
+
+    # (c) Regime 2 (sub-critical): both arms complete 100%, Stay beats Switch
+    ax_c = fig.add_subplot(gs[1, 0])
+    n_sub, d_sub = sub_m["nominal"], sub_m["degraded"]
+    t_end_c = max(float(n_sub["switch"]["final_time_s"]), float(d_sub["switch"]["final_time_s"])) * 1.04
+    coverage_panel(ax_c, n_sub, d_sub, ("1-chain", "2-chain"), t_end_c)
+    t_reconf_c = float(n_sub["switch"]["reconfig_complete_s"])
+    t100_st_c = float(n_sub["stay"]["t100_certified_s"])
+    t100_sw_c = float(n_sub["switch"]["t100_certified_s"])
+    ax_c.axvline(t_reconf_c, ymax=0.58, color=GRAY, ls="--", lw=0.7, zorder=2)
+    ax_c.text(t_reconf_c - 12.0, 42.0, f"Switch complete\n{t_reconf_c:.1f} s", fontsize=5.4, color=GRAY, ha="right", va="bottom")
+    ax_c.axhline(95.0, color=GRAY, ls=":", lw=0.6)
+    ax_c.axhline(100.0, color=GRAY, ls="-.", lw=0.6)
+    ax_c.scatter([t100_st_c, t100_sw_c], [100.0, 100.0], s=18, facecolor=[OCHRE, BLUE], edgecolor="white", linewidths=0.6, zorder=6)
+    ax_c.plot([t100_st_c, t100_sw_c], [91.5, 91.5], color=OCHRE, lw=1.35, solid_capstyle="butt", zorder=5)
+    ax_c.text(0.5 * (t100_st_c + t100_sw_c) - 12.0, 88.8, f"Stay $-{t100_sw_c - t100_st_c:.1f}$ s",
+              ha="center", va="top", fontsize=6.0, fontweight="bold", color=OCHRE)
+    ax_c.set_xlim(0.0, t_end_c)
+    ax_c.set_ylim(18.0, 105.0)
     ax_c.set_xlabel("Time $t$ (s)")
     ax_c.set_ylabel("Certified coverage (%)")
     ax_c.legend(loc="lower right", **leg_kw)
-    v, bx, st, sw = geo_inset("oblique_asymmetric")
-    draw_inset(ax_c, [0.06, 0.04, 0.44, 0.56], v, bx, st, sw, anchor="SW")
-    add_panel_label(ax_c, "(c)", "Regime 2b: oblique pentagon, $N=6$, $0.84\\,\\mathrm{km}^2$", fontsize=7.6)
+    b_sub = [float(x) for x in n_sub["beacon_xs_m"]]
+    st_sub = staggered_formation(b_sub, [[], [], list(range(1, 11)), [], []], 380.0, 90.0)
+    sw_sub = staggered_formation(b_sub, [list(range(1, 6)), [], [], [], list(range(6, 11))], 380.0, 90.0)
+    draw_inset(ax_c, [0.03, 0.56, 0.42, 0.34], n_sub["vertices_m"], b_sub, st_sub, sw_sub, anchor="NW")
+    area_sub_km2 = float(n_sub["area_m2"]) / 1e6
+    add_panel_label(ax_c, "(c)", f"Regime 2, sub-critical: $N=10$, ${area_sub_km2:.2f}\\,\\mathrm{{km}}^2$", fontsize=7.5)
 
-    # (d) Regime 2c: broad coastal domain, net positive breakeven
+    # (d) Regime 2 (super-critical): broad coastal domain, net positive breakeven
     ax_d = fig.add_subplot(gs[1, 1])
     n7, d7 = m7["nominal"], m7["degraded"]
     t_end7 = max(float(n7["stay"]["final_time_s"]), float(d7["stay"]["final_time_s"]))
@@ -230,9 +230,10 @@ def make_figure(sim_dir: Path, geo_dir: Path, out_dir: Path) -> tuple[Path, Path
     ax_d.axhline(95.0, color=GRAY, ls=":", lw=0.6)
     ax_d.axhline(100.0, color=GRAY, ls="-.", lw=0.6)
     ax_d.scatter([t100_sw7, t100_st7], [100.0, 100.0], s=18, facecolor=[BLUE, OCHRE], edgecolor="white", linewidths=0.6, zorder=6)
-    ax_d.annotate("", xy=(t100_sw7, 92.5), xytext=(t100_st7, 92.5),
-                  arrowprops=dict(arrowstyle="<->", color=BLUE, lw=0.8, shrinkA=0, shrinkB=0))
-    ax_d.text(0.5 * (t100_sw7 + t100_st7), 90.0, f"$-{t100_st7 - t100_sw7:.1f}$ s", ha="center", va="top", fontsize=5.9, color=BLUE)
+    ax_d.annotate("", xy=(t100_sw7, 92.0), xytext=(t100_st7, 92.0),
+                  arrowprops=dict(arrowstyle="<->", color=BLUE, lw=0.85, shrinkA=0, shrinkB=0))
+    ax_d.text(0.5 * (t100_sw7 + t100_st7), 89.2, f"$-{t100_st7 - t100_sw7:.1f}$ s",
+              ha="center", va="top", fontsize=6.4, fontweight="bold", color=BLUE)
     ax_d.set_xlim(0.0, t_end7 * 1.03)
     ax_d.set_ylim(4.0, 105.0)
     ax_d.set_xticks([0, 500, 1000, 1500, 2000])
@@ -244,7 +245,7 @@ def make_figure(sim_dir: Path, geo_dir: Path, out_dir: Path) -> tuple[Path, Path
     sw7 = staggered_formation(b7, [list(range(1, 6)), [], [], [], list(range(6, 11))], 380.0, 90.0)
     draw_inset(ax_d, [0.03, 0.50, 0.44, 0.36], t7["vertices_m"], b7, st7, sw7, anchor="NW")
     area7_km2 = float(n7["area_m2"]) / 1e6
-    add_panel_label(ax_d, "(d)", f"Regime 2c: broad coastal, $N=10$, ${area7_km2:.2f}\\,\\mathrm{{km}}^2$", fontsize=7.6)
+    add_panel_label(ax_d, "(d)", f"Regime 2, super-critical: $N=10$, ${area7_km2:.2f}\\,\\mathrm{{km}}^2$", fontsize=7.5)
 
     return save_figure_pair(fig, out_dir, "data_two_regime_coverage")
 
@@ -252,9 +253,9 @@ def make_figure(sim_dir: Path, geo_dir: Path, out_dir: Path) -> tuple[Path, Path
 def main() -> None:
     parser = argparse.ArgumentParser()
     root = Path(__file__).resolve().parents[2]
-    parser.add_argument("--sim-dir", type=Path, default=root / "outputs" / "sim")
-    parser.add_argument("--geo-dir", type=Path, default=root / "data" / "geo_outputs")
-    parser.add_argument("--out-dir", type=Path, default=root / "outputs" / "figures")
+    parser.add_argument("--sim-dir", type=Path, default=root / "experiments" / "route-b-20261123" / "sim-outputs")
+    parser.add_argument("--geo-dir", type=Path, default=root / "experiments" / "route-b-20261123" / "geo-outputs")
+    parser.add_argument("--out-dir", type=Path, default=root / "experiments" / "route-b-20261123" / "figures")
     args = parser.parse_args()
     pdf_p, png_p = make_figure(args.sim_dir, args.geo_dir, args.out_dir)
     print(f"Wrote {pdf_p} and {png_p}")

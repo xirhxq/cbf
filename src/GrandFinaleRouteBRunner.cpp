@@ -3,6 +3,7 @@
 #include "grand_finale/RouteBPipelinedExecutor.hpp"
 #include "grand_finale/RouteBPlanner.hpp"
 #include "grand_finale/RouteBPolarEntry.hpp"
+#include "grand_finale/RouteBWave9Validations.hpp"
 #include "json.hpp"
 
 #include <algorithm>
@@ -233,11 +234,11 @@ json provenanceHeader(
 #endif
 
     return {
-        {"superproject_repo", "standalone"},
+        {"superproject_repo", "GrandFinale2027-ast-exploration"},
         {"superproject_commit", parent_commit},
         {"superproject_cbf_gitlink", gitlink},
-        {"repo", "cbf"},
-        {"branch", cbf_branch.empty() ? std::string("formation-reconfiguration") : cbf_branch},
+        {"repo", "GrandFinale2027-ast-exploration/cbf"},
+        {"branch", cbf_branch.empty() ? std::string("codex/gf-ast-flight-20261120") : cbf_branch},
         {"cbf_commit", cbf_commit},
         {"cbf_tree", cbf_tree},
         {"cbf_working_tree_dirty", !cbf_dirty_str.empty()},
@@ -1323,6 +1324,145 @@ json runTdd7Snapshots() {
     return payload;
 }
 
+json runWave9Validations() {
+    json payload;
+    payload["provenance"] = provenanceHeader("route-b-wave9-search-timing", json(20261123));
+
+    // 1. Sub-critical coastal Regime 2 search mission (nominal & degraded)
+    json sub_missions = json::array();
+    json online_subcritical_decision;
+    for (const std::string& ch : std::vector<std::string>{"nominal", "degraded"}) {
+        const auto bundle = gf::runSubcriticalCoastalMission(ch, true);
+        const auto& res = bundle.comparison;
+        const auto& dec = bundle.online_decision;
+        const auto& inp = bundle.decision_inputs;
+        if (ch == "nominal") {
+            online_subcritical_decision = {
+                {"domain_name", res.domain_name},
+                {"area_km2", res.area_m2 / 1.0e6},
+                {"fork_time_s", res.fork_time_s},
+                {"fork_certified_coverage", res.fork_certified_coverage},
+                {"measured_r0_m2ps", inp.measured_r0_m2ps},
+                {"predicted_r1_m2ps", inp.predicted_r1_m2ps},
+                {"predicted_t_trans_s", inp.predicted_t_trans_s},
+                {"predicted_a_trans_km2", inp.predicted_a_trans_m2 / 1.0e6},
+                {"remaining_area_km2", dec.remaining_area_m2 / 1.0e6},
+                {"a_crit_km2", dec.a_crit_m2 / 1.0e6},
+                {"should_switch", dec.should_switch},
+                {"decision_regime", "regime_2_subcritical_stay"},
+            };
+        }
+        sub_missions.push_back({
+            {"domain_name", res.domain_name},
+            {"channel_group", ch},
+            {"uwb_d_r_m", ch == "nominal" ? 850.0 : 600.0},
+            {"uwb_sigma0_m", ch == "nominal" ? 0.5 : 1.0},
+            {"uwb_d_max_m", 1200.0},
+            {"vertices_m", [&]() {
+                json v = json::array();
+                for (const auto& pt : gf::buildSubcriticalCoastalRegime2Spec().vertices) {
+                    v.push_back(json::array({pt.x(), pt.y()}));
+                }
+                return v;
+            }()},
+            {"beacon_xs_m", json::array({0.0, 400.0, 800.0, 1200.0, 1600.0, 2000.0})},
+            {"valid_cells", res.valid_cells},
+            {"area_m2", res.area_m2},
+            {"fork_time_s", res.fork_time_s},
+            {"checkpoint_byte_identical", res.checkpoint_byte_identical},
+            {"fork_truth_coverage", res.fork_truth_coverage},
+            {"fork_certified_coverage", res.fork_certified_coverage},
+            {"stay", missionArmToJson(res.stay)},
+            {"switch", missionArmToJson(res.switch_arm)},
+        });
+    }
+    payload["subcritical_coastal_regime2"] = std::move(sub_missions);
+
+    // 2. Online autonomous two-regime decisions across Regime 1, Sub-critical Regime 2, Broad Regime 2
+    gf::OnlineTwoRegimeInputs reg1_in;
+    reg1_in.uncertified_max_reach_m = 1550.0;
+    reg1_in.current_formation_reach_m = gf::estimateCertifiedReachY(
+        gf::findRouteBDomain("narrow_deep_offshore").initial_tri, 80.0, 400.0);
+    reg1_in.target_formation_reach_m = gf::estimateCertifiedReachY(
+        gf::findRouteBDomain("narrow_deep_offshore").target_tri, 80.0, 400.0);
+    reg1_in.remaining_area_m2 = 0.44e6;
+    reg1_in.measured_r0_m2ps = 1900.0;
+    reg1_in.predicted_r1_m2ps = 1400.0;
+    reg1_in.predicted_t_trans_s = 600.0;
+    const auto reg1_dec = gf::evaluateOnlineTwoRegimeDecision(reg1_in);
+
+    gf::OnlineTwoRegimeInputs reg2_broad_in;
+    reg2_broad_in.uncertified_max_reach_m = 2050.0;
+    reg2_broad_in.current_formation_reach_m = 3750.0;
+    reg2_broad_in.target_formation_reach_m = 3390.0;
+    reg2_broad_in.remaining_area_m2 = 0.878 * 9.650e6;
+    reg2_broad_in.measured_r0_m2ps = 4035.0;
+    reg2_broad_in.predicted_r1_m2ps = 8070.0;
+    reg2_broad_in.predicted_t_trans_s = 603.8;
+    reg2_broad_in.predicted_a_trans_m2 = (0.285 - 0.122) * 9.650e6;
+    const auto reg2_broad_dec = gf::evaluateOnlineTwoRegimeDecision(reg2_broad_in);
+
+    payload["online_autonomous_decisions"] = json::array({
+        {
+            {"domain_name", "narrow_deep_offshore"},
+            {"area_km2", 0.494},
+            {"current_reach_m", reg1_in.current_formation_reach_m},
+            {"target_reach_m", reg1_in.target_formation_reach_m},
+            {"uncertified_max_y_m", reg1_in.uncertified_max_reach_m},
+            {"should_switch", reg1_dec.should_switch},
+            {"decision_regime", "regime_1_reachability_switch"},
+        },
+        online_subcritical_decision,
+        {
+            {"domain_name", "wide_broad_regime2"},
+            {"area_km2", 9.650},
+            {"remaining_area_km2", reg2_broad_dec.remaining_area_m2 / 1.0e6},
+            {"measured_r0_m2ps", reg2_broad_in.measured_r0_m2ps},
+            {"predicted_r1_m2ps", reg2_broad_in.predicted_r1_m2ps},
+            {"predicted_t_trans_s", reg2_broad_in.predicted_t_trans_s},
+            {"predicted_a_trans_km2", reg2_broad_in.predicted_a_trans_m2 / 1.0e6},
+            {"a_crit_km2", reg2_broad_dec.a_crit_m2 / 1.0e6},
+            {"should_switch", reg2_broad_dec.should_switch},
+            {"decision_regime", "regime_2_efficiency_switch"},
+        },
+    });
+
+    // 3. Per-step real-time compute and communication telemetry across N = 6, 14, 20
+    json timing = json::array();
+    for (int scale_n : {6, 14, 20}) {
+        const auto s = gf::measureRouteBComputeAndComm(scale_n);
+        timing.push_back({
+            {"scale_N", s.scale_n},
+            {"ticks", s.ticks},
+            {"qp_calls", s.qp_calls},
+            {"qp_solve_mean_ms", s.qp_solve_mean_ms},
+            {"qp_solve_p99_ms", s.qp_solve_p99_ms},
+            {"qp_solve_max_ms", s.qp_solve_max_ms},
+            {"qp_total_mean_ms", s.qp_total_mean_ms},
+            {"qp_total_p99_ms", s.qp_total_p99_ms},
+            {"estimator_mean_ms", s.estimator_mean_ms},
+            {"estimator_p99_ms", s.estimator_p99_ms},
+            {"tick_total_mean_ms", s.tick_total_mean_ms},
+            {"tick_total_p99_ms", s.tick_total_p99_ms},
+            {"mean_packets_per_tick", s.mean_packets_per_tick},
+            {"mean_accepted_packets_per_tick", s.mean_accepted_packets_per_tick},
+            {"mean_bandwidth_bytes_per_s", s.mean_bandwidth_bytes_per_s},
+        });
+    }
+    payload["realtime_compute_and_comm"] = std::move(timing);
+
+    // 4. Mild marine perturbation check (wind + multipath positive bias + decimeter beacon drift)
+    const auto pert = gf::runMildMarinePerturbationCheck();
+    payload["mild_marine_perturbation"] = {
+        {"wind_disturbance_mps2", json::array({0.10, 0.06})},
+        {"range_positive_bias_m", 0.20},
+        {"beacon_pose_offset_norm_m", std::hypot(0.08, 0.06)},
+        {"result", reconfigResultToJson(pert)},
+        {"worst_agent_envelope_coverage", worstAgentValue(pert.audit.per_agent_envelope_coverage)},
+    };
+    return payload;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1372,6 +1512,9 @@ int main(int argc, char** argv) {
     }
     if (mode == "tdd7_merge") {
         mergeTdd7Parts(out_dir);
+    }
+    if (mode == "all" || mode == "wave9" || mode == "wave9_validations") {
+        writeJsonFile(out_dir / "wave9_search_and_timing.json", runWave9Validations());
     }
     return 0;
 }
