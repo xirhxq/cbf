@@ -36,6 +36,7 @@ FAST_TEST_TARGETS=(
   testRouteBYawControl
   testRouteBPiqpSolver
   testRouteBWave9Validations
+  testRouteBWave10Validations
 )
 
 ALL_TEST_TARGETS=(
@@ -83,13 +84,14 @@ case "${MODE}" in
     run_tdd7_parallel
     "${BUILD_DIR}/GrandFinaleRouteBRunner" --output-dir "${OUT_DIR}" --mode tdd7_snapshots
     "${BUILD_DIR}/GrandFinaleRouteBRunner" --output-dir "${OUT_DIR}" --mode wave9_validations
+    "${BUILD_DIR}/GrandFinaleRouteBRunner" --output-dir "${OUT_DIR}" --mode wave10_validations
     ;;
-  tdd5_pinball|tdd5_multiscale|tdd6|tdd8|tdd9|tdd10|tdd7_snapshots)
+  tdd5_pinball|tdd5_multiscale|tdd6|tdd8|tdd9|tdd10|tdd7_snapshots|wave9_validations|wave10_validations)
     cmake --build "${BUILD_DIR}" -j8 --target GrandFinaleRouteBRunner
     "${BUILD_DIR}/GrandFinaleRouteBRunner" --output-dir "${OUT_DIR}" --mode "${MODE}"
     ;;
   *)
-    echo "Usage: $0 {tests|tests_full|all|tdd5_pinball|tdd5_multiscale|tdd6|tdd7|tdd7_parallel|tdd7_snapshots|tdd8|tdd9|tdd10|wave9_validations}" >&2
+    echo "Usage: $0 {tests|tests_full|all|tdd5_pinball|tdd5_multiscale|tdd6|tdd7|tdd7_parallel|tdd7_snapshots|tdd8|tdd9|tdd10|wave9_validations|wave10_validations}" >&2
     exit 2
     ;;
 esac

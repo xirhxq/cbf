@@ -4,6 +4,7 @@
 #include "grand_finale/RouteBPlanner.hpp"
 #include "grand_finale/RouteBPolarEntry.hpp"
 #include "grand_finale/RouteBWave9Validations.hpp"
+#include "grand_finale/RouteBWave10Validations.hpp"
 #include "json.hpp"
 
 #include <algorithm>
@@ -1463,6 +1464,74 @@ json runWave9Validations() {
     return payload;
 }
 
+json runWave10Validations() {
+    json payload;
+    payload["provenance"] = provenanceHeader("route-b-wave10-reversible-perturbation", json(20261126));
+
+    json rev_arr = json::array();
+    for (const std::string& ch : std::vector<std::string>{"nominal", "degraded"}) {
+        const auto rev = gf::runReversibleConvexSearchComparison(ch);
+        rev_arr.push_back({
+            {"domain_name", rev.domain_name},
+            {"channel_group", rev.channel_group},
+            {"area_km2", rev.area_km2},
+            {"fixed_dual_final_cov", rev.fixed_dual.final_certified_coverage},
+            {"fixed_single_final_cov", rev.fixed_single.final_certified_coverage},
+            {"round_trip", {
+                {"reached_t95", rev.round_trip.reached_t95},
+                {"reached_t100", rev.round_trip.reached_t100},
+                {"t95_certified_s", rev.round_trip.t95_certified_s.has_value() ? json(*rev.round_trip.t95_certified_s) : json(nullptr)},
+                {"t100_certified_s", rev.round_trip.t100_certified_s.has_value() ? json(*rev.round_trip.t100_certified_s) : json(nullptr)},
+                {"forward_reconfig_s", rev.round_trip.forward_reconfig_s},
+                {"return_entry_s", rev.round_trip.return_entry_s},
+                {"return_reconfig_s", rev.round_trip.return_reconfig_s},
+                {"total_time_s", rev.round_trip.total_time_s},
+                {"return_completed", rev.round_trip.return_completed},
+                {"final_topology_matched", rev.round_trip.final_topology_matched},
+                {"final_certified_coverage", rev.round_trip.final_certified_coverage},
+                {"false_certified_count", rev.round_trip.false_certified_count},
+                {"collision_violations", rev.round_trip.collision_violations},
+                {"reference_violations", rev.round_trip.reference_violations},
+                {"axis_speed_violations", rev.round_trip.axis_speed_violations},
+                {"static_parent_violations", rev.round_trip.static_parent_violations},
+                {"dag_violations", rev.round_trip.dag_violations},
+                {"total_mbb_swaps", rev.round_trip.total_mbb_swaps},
+                {"position_rmse_m", rev.round_trip.position_rmse_m},
+                {"overall_envelope_coverage", rev.round_trip.overall_envelope_coverage},
+                {"worst_agent_envelope_coverage", rev.round_trip.worst_agent_envelope_coverage},
+            }},
+        });
+    }
+    payload["reversible_round_trip_search"] = std::move(rev_arr);
+
+    const auto batch = gf::runMarinePerturbationMonteCarlo(8);
+    json runs = json::array();
+    for (const auto& r : batch.runs) {
+        runs.push_back({
+            {"seed", r.seed},
+            {"completed", r.completed},
+            {"makespan_s", r.makespan_s},
+            {"rmse_m", r.rmse_m},
+            {"overall_cenv", r.overall_cenv},
+            {"worst_cenv", r.worst_cenv},
+            {"violations", r.violations},
+        });
+    }
+    payload["marine_perturbation_mc8"] = {
+        {"trials", batch.runs.size()},
+        {"safe_pass_count", batch.safe_pass_count},
+        {"makespan_mean_s", batch.makespan_mean_s},
+        {"makespan_std_s", batch.makespan_std_s},
+        {"rmse_mean_m", batch.rmse_mean_m},
+        {"rmse_std_m", batch.rmse_std_m},
+        {"cenv_mean", batch.cenv_mean},
+        {"cenv_std", batch.cenv_std},
+        {"worst_cenv_min", batch.worst_cenv_min},
+        {"runs", std::move(runs)},
+    };
+    return payload;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1515,6 +1584,9 @@ int main(int argc, char** argv) {
     }
     if (mode == "all" || mode == "wave9" || mode == "wave9_validations") {
         writeJsonFile(out_dir / "wave9_search_and_timing.json", runWave9Validations());
+    }
+    if (mode == "all" || mode == "wave10" || mode == "wave10_validations") {
+        writeJsonFile(out_dir / "wave10_reversible_and_perturbation.json", runWave10Validations());
     }
     return 0;
 }
