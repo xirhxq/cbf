@@ -5,6 +5,7 @@
 #include "grand_finale/RouteBPolarEntry.hpp"
 #include "grand_finale/RouteBWave9Validations.hpp"
 #include "grand_finale/RouteBWave10Validations.hpp"
+#include "grand_finale/RouteBWave11Validations.hpp"
 #include "json.hpp"
 
 #include <algorithm>
@@ -1532,6 +1533,84 @@ json runWave10Validations() {
     return payload;
 }
 
+json runWave11Validations() {
+    json payload;
+    payload["provenance"] = provenanceHeader("route-b-wave11-berth-2d-perturbed-search", json(20261126));
+
+    const auto b_nu = gf::computeTwoSidedBerthBounds({0.0, 320.0, 720.0, 1080.0}, 0.40);
+    const auto b_ref = gf::computeTwoSidedBerthBounds({0.0, 400.0, 800.0}, 0.80);
+    payload["two_sided_berth_check"] = {
+        {"nonuniform_iota040", {
+            {"feasible", b_nu.feasible},
+            {"h_b_min_m", b_nu.h_b_min_m},
+            {"h_b_max_m", b_nu.h_b_max_m},
+            {"h_b_100m_ok", gf::checkTwoSidedBerthCondition({0.0, 320.0, 720.0, 1080.0}, 100.0, 0.40)},
+        }},
+        {"counterexample_iota080", {
+            {"feasible", b_ref.feasible},
+            {"h_b_164m_ok", gf::checkTwoSidedBerthCondition({0.0, 400.0, 800.0}, 164.0, 0.80)},
+            {"endpoint_eig_164m", 1.0 - 164.0 / std::hypot(400.0, 164.0)},
+        }},
+    };
+
+    json planar = json::array();
+    for (const auto& d : gf::evaluateAllPlanarTwoRegimeDomains()) {
+        planar.push_back({
+            {"domain_name", d.domain_name},
+            {"area_km2", d.area_km2},
+            {"src_reachable_fraction", d.src_reachable_fraction},
+            {"dst_reachable_fraction", d.dst_reachable_fraction},
+            {"union_reachable_fraction", d.union_reachable_fraction},
+            {"should_switch", d.should_switch},
+            {"a_crit_km2", d.a_crit_km2},
+            {"remaining_area_km2", d.remaining_area_km2},
+        });
+    }
+    payload["planar_2d_two_regime_selector"] = std::move(planar);
+
+    const auto nu_nom = gf::runNonuniformPentagonNominalMission();
+    payload["nonuniform_pentagon_nominal"] = {
+        {"stay_reached_t100", nu_nom.stay_reached_t100},
+        {"switch_reached_t100", nu_nom.switch_reached_t100},
+        {"stay_final_cov", nu_nom.stay_final_cov},
+        {"stay_t95_s", nu_nom.stay_t95_s.has_value() ? json(*nu_nom.stay_t95_s) : json(nullptr)},
+        {"switch_t95_s", nu_nom.switch_t95_s.has_value() ? json(*nu_nom.switch_t95_s) : json(nullptr)},
+        {"switch_t100_s", nu_nom.switch_t100_s.has_value() ? json(*nu_nom.switch_t100_s) : json(nullptr)},
+        {"reconfig_s", nu_nom.reconfig_s},
+        {"false_certified_count", nu_nom.false_certified_count},
+        {"collision_violations", nu_nom.collision_violations},
+        {"reference_violations", nu_nom.reference_violations},
+        {"overall_envelope_coverage", nu_nom.overall_envelope_coverage},
+        {"worst_agent_envelope_coverage", nu_nom.worst_agent_envelope_coverage},
+    };
+
+    const auto pert = gf::runPerturbedReversibleSearchValidation();
+    payload["perturbed_reversible_search"] = {
+        {"reached_t95", pert.reached_t95},
+        {"reached_t100", pert.reached_t100},
+        {"t95_certified_s", pert.t95_certified_s.has_value() ? json(*pert.t95_certified_s) : json(nullptr)},
+        {"t100_certified_s", pert.t100_certified_s.has_value() ? json(*pert.t100_certified_s) : json(nullptr)},
+        {"forward_reconfig_s", pert.forward_reconfig_s},
+        {"return_entry_s", pert.return_entry_s},
+        {"return_reconfig_s", pert.return_reconfig_s},
+        {"total_time_s", pert.total_time_s},
+        {"return_completed", pert.return_completed},
+        {"final_topology_matched", pert.final_topology_matched},
+        {"final_certified_coverage", pert.final_certified_coverage},
+        {"false_certified_count", pert.false_certified_count},
+        {"collision_violations", pert.collision_violations},
+        {"reference_violations", pert.reference_violations},
+        {"axis_speed_violations", pert.axis_speed_violations},
+        {"static_parent_violations", pert.static_parent_violations},
+        {"dag_violations", pert.dag_violations},
+        {"total_mbb_swaps", pert.total_mbb_swaps},
+        {"position_rmse_m", pert.position_rmse_m},
+        {"overall_envelope_coverage", pert.overall_envelope_coverage},
+        {"worst_agent_envelope_coverage", pert.worst_agent_envelope_coverage},
+    };
+    return payload;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1587,6 +1666,9 @@ int main(int argc, char** argv) {
     }
     if (mode == "all" || mode == "wave10" || mode == "wave10_validations") {
         writeJsonFile(out_dir / "wave10_reversible_and_perturbation.json", runWave10Validations());
+    }
+    if (mode == "all" || mode == "wave11" || mode == "wave11_validations") {
+        writeJsonFile(out_dir / "wave11_berth_2d_and_perturbed_search.json", runWave11Validations());
     }
     return 0;
 }
